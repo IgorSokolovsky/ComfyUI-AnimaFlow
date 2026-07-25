@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._anima_generator_helpers import (
+from nodes.anima._anima_generator_helpers import (
     get_upscale_model_names,
     load_usdu_upscale_model,
     run_detailer_stage,
@@ -41,7 +41,7 @@ from nodes._anima_generator_helpers import (
     run_upscale_stage,
     run_usdu_upscale_stage,
 )
-from nodes._optional_pack_bridge import find_optional_node_class, require_optional_node_class
+from nodes.anima._optional_pack_bridge import find_optional_node_class, require_optional_node_class
 
 _SENTINEL = object()
 

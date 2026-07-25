@@ -30,8 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 
-from nodes._anima_conditioning_helpers import encode_text_conditioning, resolve_conditioning
-from nodes._anima_generator_helpers import (
+from nodes.anima._anima_conditioning_helpers import encode_text_conditioning, resolve_conditioning
+from nodes.anima._anima_generator_helpers import (
     DEFAULT_HEIGHT,
     DEFAULT_WIDTH,
     MAX_SEED,
@@ -42,8 +42,8 @@ from nodes._anima_generator_helpers import (
     pick_default,
     resolve_pane_conditioning,
 )
-from nodes._comfy_core_bridge import find_core_node_class, require_core_node_class
-from nodes.node_anima_generator import AnimaGenerator
+from nodes.anima._comfy_core_bridge import find_core_node_class, require_core_node_class
+from nodes.anima.node_anima_generator import AnimaGenerator
 
 
 class _FakeClip:

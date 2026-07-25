@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 
-from nodes._scene_creator_helpers import (
+from nodes.panel._scene_creator_helpers import (
     assemble_background_block,
     assemble_characters,
     build_scene_data,
@@ -21,7 +21,7 @@ from nodes._scene_creator_helpers import (
     parse_scene_state,
     render_character_paragraph,
 )
-from nodes.node_scene_creator import SceneCreator
+from nodes.panel.node_scene_creator import SceneCreator
 
 
 def test_parse_scene_state_valid():
@@ -507,7 +507,7 @@ def test_node_input_types_contract():
     assert "bg_1" in optional
     assert "anything_at_all" in optional
     assert "hidden" not in schema
-    assert SceneCreator.CATEGORY == "AnimaFlow/scene"
+    assert SceneCreator.CATEGORY == "AnimaFlow/panel"
     assert SceneCreator.FUNCTION == "build"
     assert SceneCreator.RETURN_TYPES == ("STRING", "PROMPT_DATA")
     assert SceneCreator.RETURN_NAMES == ("scene", "data")

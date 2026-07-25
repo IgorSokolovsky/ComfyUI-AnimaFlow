@@ -18,15 +18,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import nodes._anima_preview_channel as preview_channel
-from nodes._anima_preview_channel import (
+import nodes.anima._anima_preview_channel as preview_channel
+from nodes.anima._anima_preview_channel import (
     DEFAULT_CHANNEL,
     PREVIEW_EVENT,
     broadcast_preview,
     build_preview_payload,
     normalize_channel,
 )
-from nodes.node_anima_preview import AnimaPreview
+from nodes.anima.node_anima_preview import AnimaPreview
 
 
 class _BlockImportFinder:

@@ -1,8 +1,8 @@
 /**
  * Rule Builder API — thin fetch wrappers for the `/wtn/rules/*` routes
  * described in `docs/nodes-and-api.md` §2. These power the Rule Builder
- * overlay (`js/rule_builder/`) and (later) the picker popover
- * (`js/prompt_rules/`).
+ * overlay (`js/anima_prompt/rule_builder/`) and (later) the picker popover
+ * (`js/anima_prompt/prompt_rules/`).
  *
  * Every export returns **parsed JSON** on a 2xx response and **throws** on
  * anything else (non-2xx status, a network failure, or a route that simply

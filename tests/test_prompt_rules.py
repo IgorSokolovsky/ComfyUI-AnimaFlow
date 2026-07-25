@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 
-from nodes import _rules_helpers as rh
-from nodes.prompt_rules import PromptRulesClip, PromptRulesText
+from nodes.anima_prompt import _rules_helpers as rh
+from nodes.anima_prompt.prompt_rules import PromptRulesClip, PromptRulesText
 
 # ---------------------------------------------------------------------------
 # `_rules_helpers` resolution over the real `rules/celica.yaml` sample --

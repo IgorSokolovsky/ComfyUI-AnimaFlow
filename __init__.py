@@ -11,17 +11,19 @@ Add a node:
 
 from __future__ import annotations
 
-from .nodes.node_anima_detailer_hook import AnimaDetailerAlignHook
-from .nodes.node_anima_generator import AnimaGenerator
-from .nodes.node_anima_image_scale import AnimaImageScaleByMultiple
-from .nodes.node_anima_preview import AnimaPreview
-from .nodes.node_llm_panels import LLMPanels
-from .nodes.node_panel_parser import PanelBatch
-from .nodes.node_prompt_builder import PromptBuilder
-from .nodes.node_prompt_combiner import PromptCombiner
-from .nodes.node_save_panel import SavePanel
-from .nodes.node_scene_creator import SceneCreator
-from .nodes.prompt_rules import PromptRulesClip, PromptRulesText
+from .nodes.anima.node_anima_conditioning_encode import AnimaConditioningEncode
+from .nodes.anima.node_anima_detailer_hook import AnimaDetailerAlignHook
+from .nodes.anima.node_anima_generator import AnimaGenerator
+from .nodes.anima.node_anima_image_scale import AnimaImageScaleByMultiple
+from .nodes.anima.node_anima_preview import AnimaPreview
+from .nodes.anima_prompt.node_anima_prompt_studio import AnimaPromptStudio
+from .nodes.panel.node_llm_panels import LLMPanels
+from .nodes.panel.node_panel_parser import PanelBatch
+from .nodes.anima_prompt.node_prompt_builder import PromptBuilder
+from .nodes.anima_prompt.node_prompt_combiner import PromptCombiner
+from .nodes.panel.node_save_panel import SavePanel
+from .nodes.panel.node_scene_creator import SceneCreator
+from .nodes.anima_prompt.prompt_rules import PromptRulesClip, PromptRulesText
 
 # Registers the `/wtn/rules/*` aiohttp routes as an import side effect (see
 # `api/rules_api.py`); guarded there so this import is a no-op outside a live
@@ -49,6 +51,8 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
     "AnimaDetailerAlignHook": AnimaDetailerAlignHook,
     "AnimaPreview": AnimaPreview,
     "AnimaGenerator": AnimaGenerator,
+    "AnimaConditioningEncode": AnimaConditioningEncode,
+    "AnimaPromptStudio": AnimaPromptStudio,
 }
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptBuilder": "Prompt Builder",
@@ -63,6 +67,8 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "AnimaDetailerAlignHook": "Anima Detailer Align Hook",
     "AnimaPreview": "Anima Preview",
     "AnimaGenerator": "Anima Generator",
+    "AnimaConditioningEncode": "Anima Conditioning Encode",
+    "AnimaPromptStudio": "Anima Prompt Studio",
 }
 
 WEB_DIRECTORY = "./js"

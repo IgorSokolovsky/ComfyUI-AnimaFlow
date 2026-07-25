@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._prompt_builder_helpers import (
+from nodes.anima_prompt._prompt_builder_helpers import (
     DEFAULT_TEMPLATE,
     build_field_text,
     build_prompt_data,
@@ -19,7 +19,7 @@ from nodes._prompt_builder_helpers import (
     parse_tokens,
     render_prompt,
 )
-from nodes.node_prompt_builder import PromptBuilder
+from nodes.anima_prompt.node_prompt_builder import PromptBuilder
 
 
 def test_parse_tokens_order_and_uniqueness():
@@ -171,7 +171,7 @@ def test_node_input_types_contract():
     assert schema["required"]["prompt_builder_state"][0] == "STRING"
     assert schema["required"]["prompt_builder_state"][1]["default"] == "{}"
     assert "hidden" not in schema or "prompt_builder_state" not in schema.get("hidden", {})
-    assert PromptBuilder.CATEGORY == "AnimaFlow/prompt"
+    assert PromptBuilder.CATEGORY == "AnimaFlow/anima_prompt"
     assert PromptBuilder.FUNCTION == "build"
     assert PromptBuilder.RETURN_TYPES == ("STRING", "PROMPT_DATA")
     assert PromptBuilder.RETURN_NAMES == ("prompt", "data")

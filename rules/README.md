@@ -2,7 +2,7 @@
 
 Each `*.yaml` in this directory is a **Ruleset** (`prompt-rules/SCHEMA.md`) --
 a "sheet" the Prompt Rules encode nodes can apply to a prompt. They're
-authored/edited via the Rule Builder overlay (`js/rule_builder/`, `POST/GET
+authored/edited via the Rule Builder overlay (`js/anima_prompt/rule_builder/`, `POST/GET
 /wtn/rules/sheet`) or by hand.
 
 - File name (sans `.yaml`) is the sheet's `name`, e.g. `rules/celica.yaml` ->

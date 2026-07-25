@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import re
 
-from nodes._llm_panels_helpers import (
+from nodes.panel._llm_panels_helpers import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
@@ -27,7 +27,7 @@ from nodes._llm_panels_helpers import (
     extract_content,
     split_panels_and_synopsis,
 )
-from nodes.node_llm_panels import LLMPanels
+from nodes.panel.node_llm_panels import LLMPanels
 
 
 def test_build_messages_roles_and_brief():
@@ -392,7 +392,7 @@ def test_node_input_types_contract():
     assert optional["max_tokens"][1] == {"default": 2048, "min": 64, "max": 32768}
     assert optional["seed"][1] == {"default": 0, "min": 0}
 
-    assert LLMPanels.CATEGORY == "AnimaFlow/llm"
+    assert LLMPanels.CATEGORY == "AnimaFlow/panel"
     assert LLMPanels.FUNCTION == "generate"
     assert LLMPanels.RETURN_TYPES == ("STRING", "STRING")
     assert LLMPanels.RETURN_NAMES == ("panels_text", "synopsis")

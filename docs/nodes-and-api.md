@@ -46,7 +46,7 @@ ruleset; the engine applies them sequentially to the same document bundle.
 **`IS_CHANGED`** = `sha256(positive + negative + profile + selected-sheet digests + embedded_rules)`
 → re-encode only on real change + free hot-reload of edited sheets (mirrors the original).
 
-Thin nodes: all resolution/loading logic in `nodes/_rules_helpers.py`; engine stays in `core/`.
+Thin nodes: all resolution/loading logic in `nodes/anima_prompt/_rules_helpers.py`; engine stays in `core/`.
 
 ---
 
@@ -77,7 +77,7 @@ Route handlers live in `api/rules_api.py`, importing `core` + `_rules_helpers`.
 
 ## 3. Frontend surfaces (house theme, shared classes)
 
-### Rule Builder overlay — `js/rule_builder/`
+### Rule Builder overlay — `js/anima_prompt/rule_builder/`
 Port of `playground/rule-builder.html`, but styled with the shared `.wtn-*` classes
 (drop the playground's inline palette; keep only overlay-specific layout). Full-screen
 modal over the canvas.
@@ -97,7 +97,7 @@ Suggested modules: `index.js` (registerExtension, menu command, `openRuleBuilder
 (preview + trace render). Shared: `js/shared/api.mjs` (fetch wrappers for the routes),
 `js/shared/theme.mjs` (`injectTheme`).
 
-### Picker popover — `js/prompt_rules/`
+### Picker popover — `js/anima_prompt/prompt_rules/`
 Lighter overlay opened by **Pick…** on an encode node. Loads `GET /characters`, groups by
 kind, click inserts the `token(s)` into the node's `positive` (or `negative`) text widget.
 Modules: `index.js` (adds the two buttons to the node), `picker.mjs` (the popover).
@@ -113,14 +113,14 @@ Modules: `index.js` (adds the two buttons to the node), `picker.mjs` (the popove
 
 ```
 core/                      # engine (built)
-nodes/prompt_rules.py      # 2 node classes (thin)
-nodes/_rules_helpers.py    # resolve sheets+embedded, call core, digests for IS_CHANGED
+nodes/anima_prompt/prompt_rules.py      # 2 node classes (thin)
+nodes/anima_prompt/_rules_helpers.py    # resolve sheets+embedded, call core, digests for IS_CHANGED
 api/rules_api.py           # aiohttp routes
 rules/                     # character-sheet files (*.yaml)
 js/shared/theme.{css,mjs}  # house theme (built)
 js/shared/api.mjs          # fetch wrappers
-js/rule_builder/{index.js,overlay.mjs,cards.mjs,preview.mjs}
-js/prompt_rules/{index.js,picker.mjs}
+js/anima_prompt/rule_builder/{index.js,overlay.mjs,cards.mjs,preview.mjs}
+js/anima_prompt/prompt_rules/{index.js,picker.mjs}
 __init__.py                # register nodes + WEB_DIRECTORY="./js"
 ```
 
@@ -130,7 +130,7 @@ __init__.py                # register nodes + WEB_DIRECTORY="./js"
 
 - **Track A · Python** (after engine verified): `nodes/`, `api/`, `rules/`, `__init__.py`.
   Imports `core`.
-- **Track B · JS** (can start now): `js/rule_builder/`, `js/prompt_rules/`, `js/shared/api.mjs`.
+- **Track B · JS** (can start now): `js/anima_prompt/rule_builder/`, `js/anima_prompt/prompt_rules/`, `js/shared/api.mjs`.
   Builds against §2/§3; uses the ported JS engine as offline fallback so the overlay is
   demo-able before Track A lands.
 

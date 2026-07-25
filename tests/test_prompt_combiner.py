@@ -10,12 +10,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._prompt_combiner_helpers import (
+from nodes.anima_prompt._prompt_combiner_helpers import (
     build_combined_prompt_data,
     build_field_text,
     unwrap_value,
 )
-from nodes.node_prompt_combiner import PromptCombiner
+from nodes.anima_prompt.node_prompt_combiner import PromptCombiner
 
 
 def test_unwrap_prompt_data_dict():
@@ -50,7 +50,7 @@ def test_node_input_types_contract():
     optional = schema["optional"]
     assert "anything_at_all" in optional
     assert "character" in optional
-    assert PromptCombiner.CATEGORY == "AnimaFlow/prompt"
+    assert PromptCombiner.CATEGORY == "AnimaFlow/anima_prompt"
     assert PromptCombiner.FUNCTION == "combine"
     assert PromptCombiner.RETURN_TYPES == ("STRING", "PROMPT_DATA")
     assert PromptCombiner.RETURN_NAMES == ("prompt", "data")

@@ -30,21 +30,21 @@ attach-to-any-textarea popup). No node — cross-cutting service.
 
 ### Phase 2 — AnimaGenerator + AnimaPreview + utilities: DONE, reviewed PASS (3 builder sub-calls)
 All registered in root `__init__.py`, all `CATEGORY = "AnimaFlow/anima"`:
-- **`AnimaImageScaleByMultiple`** (`nodes/node_anima_image_scale.py` +
-  `nodes/_anima_image_scale_helpers.py`) — exposes
+- **`AnimaImageScaleByMultiple`** (`nodes/anima/node_anima_image_scale.py` +
+  `nodes/anima/_anima_image_scale_helpers.py`) — exposes
   `compute_scale_by_multiple(width, height, multiple, max_long_edge=0) ->
   (new_width, new_height, scale_factor)`, pure, no torch import. Reused by
   the Generator's highres AND postprocess-resize stages.
-- **`AnimaDetailerAlignHook`** (`nodes/node_anima_detailer_hook.py` +
-  `nodes/_anima_detailer_hook_helpers.py`) — duck-typed Impact-Pack
+- **`AnimaDetailerAlignHook`** (`nodes/anima/node_anima_detailer_hook.py` +
+  `nodes/anima/_anima_detailer_hook_helpers.py`) — duck-typed Impact-Pack
   `DETAILER_HOOK`, no hard Impact Pack import.
-- **`AnimaPreview`** (`nodes/node_anima_preview.py` +
-  `nodes/_anima_preview_channel.py` + `js/anima_preview/`) — display-only
+- **`AnimaPreview`** (`nodes/anima/node_anima_preview.py` +
+  `nodes/anima/_anima_preview_channel.py` + `js/anima/anima_preview/`) — display-only
   node (`RETURN_TYPES=()`, `OUTPUT_NODE=True`). Shared helper:
   `broadcast_preview(channel: str, image, stage_label: str) -> bool`, never
   raises, safe to call repeatedly mid-pipeline.
-- **`AnimaGenerator`** (`nodes/node_anima_generator.py` +
-  `nodes/_anima_generator_helpers.py`) — the full decoupled pipeline: plain
+- **`AnimaGenerator`** (`nodes/anima/node_anima_generator.py` +
+  `nodes/anima/_anima_generator_helpers.py`) — the full decoupled pipeline: plain
   `MODEL`/`VAE`/optional `CLIP`/`CONDITIONING`×2/`STRING`×2 (positive_text/
   negative_text)/`LATENT`/`LORA_STACK` in →
   first-pass → highres → detailer (optional, soft Impact Pack via SEGS +
@@ -53,7 +53,7 @@ All registered in root `__init__.py`, all `CATEGORY = "AnimaFlow/anima"`:
   default) → `(IMAGE, LATENT, STRING metadata)` out. Broadcasts each stage's
   frame via `broadcast_preview` on the `preview_channel` field — does not
   render its own UI.
-- **`nodes/_comfy_core_bridge.py`** — `require_core_node_class(node_id)` /
+- **`nodes/anima/_comfy_core_bridge.py`** — `require_core_node_class(node_id)` /
   `find_core_node_class(node_id)`: looks up ComfyUI's OWN core node classes
   (`KSampler`, `CLIPTextEncode`, `EmptyLatentImage`, `VAEEncode`,
   `VAEDecode`, `LoraLoader`, `SaveImage`, `UpscaleModelLoader`) via a bare
@@ -61,14 +61,14 @@ All registered in root `__init__.py`, all `CATEGORY = "AnimaFlow/anima"`:
   ComfyUI's real custom-node loader; this repo's own `nodes/` package does
   NOT collide with core `nodes.py` in a live ComfyUI process). Read this
   module's docstring before touching anything that calls core nodes.
-- **`nodes/_optional_pack_bridge.py`** — `require_optional_node_class(node_id,
+- **`nodes/anima/_optional_pack_bridge.py`** — `require_optional_node_class(node_id,
   pack_name)` / `find_optional_node_class(node_id)`: looks up SEPARATELY
   INSTALLED packs (Impact Pack's `"DetailerForEach"`, USDU's
   `"UltimateSDUpscale"`, ResShift's `"ResShiftLoader"`/`"ResShiftUpscale"`)
   via `nodes.NODE_CLASS_MAPPINGS` dict lookup (different mechanism than the
   core bridge above — core nodes are module attributes, external-pack nodes
   only exist in that dict after ComfyUI's `init_extra_nodes()` loader runs).
-- **`nodes/_anima_conditioning_helpers.py`** — `encode_text_conditioning(clip,
+- **`nodes/anima/_anima_conditioning_helpers.py`** — `encode_text_conditioning(clip,
   text)` (plain encode) and **`resolve_conditioning(clip, text,
   artist_mix_enabled=False)`** — currently a documented NO-OP passthrough
   for artist mix (deliberately deferred to Phase 3, see below). Used
@@ -116,13 +116,13 @@ This call builds ONLY `AnimaConditioningEncode` (the plain node, no custom JS). 
 
 Phase 2 already built a shared helper you must reuse, not duplicate:
 
-- `nodes/_anima_conditioning_helpers.py` — already has `encode_text_conditioning(clip, text)` (plain CLIP encode, mirrors core `CLIPTextEncode`) and `resolve_conditioning(clip, text, artist_mix_enabled=False)` (currently a documented no-op passthrough for artist mix — Phase 2 deliberately deferred the real artist-mix algorithm to THIS phase, since `AnimaConditioningEncode` is meant to be the node that owns the user-facing artist-mix widgets). Read this file in full first.
-- `nodes/_comfy_core_bridge.py` — `require_core_node_class(node_id)` for looking up core ComfyUI node classes (e.g. `CLIPTextEncode`) via a verified-safe bare `import nodes` (already reviewed and confirmed safe in this pack — see the module's own docstring for why).
-- `AnimaGenerator` (`nodes/node_anima_generator.py`) already calls `resolve_conditioning` internally for its STRING+CLIP fallback path when no CONDITIONING socket is wired — whatever artist-mix logic you add to `resolve_conditioning` in this call will automatically also apply to `AnimaGenerator`'s fallback path, so keep the function's existing signature/behavior for the `artist_mix_enabled=False` case unchanged (default OFF must still be a byte-identical plain encode, don't change default behavior).
+- `nodes/anima/_anima_conditioning_helpers.py` — already has `encode_text_conditioning(clip, text)` (plain CLIP encode, mirrors core `CLIPTextEncode`) and `resolve_conditioning(clip, text, artist_mix_enabled=False)` (currently a documented no-op passthrough for artist mix — Phase 2 deliberately deferred the real artist-mix algorithm to THIS phase, since `AnimaConditioningEncode` is meant to be the node that owns the user-facing artist-mix widgets). Read this file in full first.
+- `nodes/anima/_comfy_core_bridge.py` — `require_core_node_class(node_id)` for looking up core ComfyUI node classes (e.g. `CLIPTextEncode`) via a verified-safe bare `import nodes` (already reviewed and confirmed safe in this pack — see the module's own docstring for why).
+- `AnimaGenerator` (`nodes/anima/node_anima_generator.py`) already calls `resolve_conditioning` internally for its STRING+CLIP fallback path when no CONDITIONING socket is wired — whatever artist-mix logic you add to `resolve_conditioning` in this call will automatically also apply to `AnimaGenerator`'s fallback path, so keep the function's existing signature/behavior for the `artist_mix_enabled=False` case unchanged (default OFF must still be a byte-identical plain encode, don't change default behavior).
 
 ## What to build
 
-`nodes/node_anima_conditioning_encode.py` — thin node, `CATEGORY = "AnimaFlow/anima"`, `FUNCTION`, tooltips on every field.
+`nodes/anima/node_anima_conditioning_encode.py` — thin node, `CATEGORY = "AnimaFlow/anima"`, `FUNCTION`, tooltips on every field.
 
 **Inputs:**
 - `clip` (CLIP, required).

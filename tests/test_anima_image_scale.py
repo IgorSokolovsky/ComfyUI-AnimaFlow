@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._anima_image_scale_helpers import (
+from nodes.anima._anima_image_scale_helpers import (
     DEFAULT_UPSCALE_METHOD,
     IMAGE_UPSCALE_METHODS,
     align_down,
@@ -23,7 +23,7 @@ from nodes._anima_image_scale_helpers import (
     compute_scale_by_multiple,
     normalize_upscale_method,
 )
-from nodes.node_anima_image_scale import AnimaImageScaleByMultiple
+from nodes.anima.node_anima_image_scale import AnimaImageScaleByMultiple
 
 
 def test_align_up_rounds_up_to_multiple():

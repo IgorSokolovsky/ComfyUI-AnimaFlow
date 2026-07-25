@@ -19,14 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 
-from nodes._save_panel_helpers import (
+from nodes.panel._save_panel_helpers import (
     COMFY_PROMPT_KEY,
     WEBTOON_PANEL_INDEX_KEY,
     WEBTOON_PROMPT_KEY,
     WEBTOON_STORY_KEY,
     build_text_metadata,
 )
-from nodes.node_save_panel import SavePanel
+from nodes.panel.node_save_panel import SavePanel
 
 
 def test_build_text_metadata_distinct_webtoon_keys():
@@ -149,7 +149,7 @@ def test_node_input_types_contract():
     assert hidden["extra_pnginfo"] == "EXTRA_PNGINFO"
 
     assert not hasattr(SavePanel, "INPUT_IS_LIST")
-    assert SavePanel.CATEGORY == "AnimaFlow/io"
+    assert SavePanel.CATEGORY == "AnimaFlow/panel"
     assert SavePanel.FUNCTION == "save"
     assert SavePanel.RETURN_TYPES == ()
     assert SavePanel.OUTPUT_NODE is True

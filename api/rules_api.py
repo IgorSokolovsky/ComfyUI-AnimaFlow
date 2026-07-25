@@ -26,7 +26,7 @@ try:  # pragma: no cover - exercised implicitly by whichever context imports us
     # custom-node pack's top-level package, so a relative cross-package
     # import is correct here (and avoids ever doing a bare `import nodes`,
     # which would collide with ComfyUI's OWN top-level `nodes.py`).
-    from ..nodes._rules_helpers import (  # type: ignore
+    from ..nodes.anima_prompt._rules_helpers import (  # type: ignore
         PROFILE_CHOICES,
         RULES_DIR,
         apply_rulesets,
@@ -39,7 +39,7 @@ except ImportError:
     # Standalone context (plain-script tests, run from the repo root with the
     # repo root on `sys.path`): no parent package to relate to, so fall back
     # to the same bare import the project's other `test_*.py` scripts use.
-    from nodes._rules_helpers import (  # type: ignore
+    from nodes.anima_prompt._rules_helpers import (  # type: ignore
         PROFILE_CHOICES,
         RULES_DIR,
         apply_rulesets,

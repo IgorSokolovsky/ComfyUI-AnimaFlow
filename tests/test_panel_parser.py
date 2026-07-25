@@ -10,13 +10,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._panel_parser_helpers import (
+from nodes.panel._panel_parser_helpers import (
     DEFAULT_DELIMITER_REGEX,
     DEFAULT_STORY_REGEX,
     split_panel_body,
     split_panels,
 )
-from nodes.node_panel_parser import PanelBatch
+from nodes.panel.node_panel_parser import PanelBatch
 
 SAMPLE_TEXT = """=== PANEL 1 ===
 score_7, masterpiece

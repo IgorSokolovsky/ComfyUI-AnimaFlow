@@ -15,8 +15,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nodes._anima_detailer_hook_helpers import AnimaAlignedDetailerHook, align_up
-from nodes.node_anima_detailer_hook import AnimaDetailerAlignHook
+from nodes.anima._anima_detailer_hook_helpers import AnimaAlignedDetailerHook, align_up
+from nodes.anima.node_anima_detailer_hook import AnimaDetailerAlignHook
 
 
 class _FakeBaseHook:
