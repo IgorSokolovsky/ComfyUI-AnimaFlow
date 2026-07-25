@@ -27,9 +27,11 @@ module only assembles `INPUT_TYPES`/tooltips and sequences the calls.
 from __future__ import annotations
 
 from ._anima_generator_helpers import (
+    DEFAULT_AURA_FLOW_SHIFT,
     DEFAULT_HEIGHT,
     DEFAULT_WIDTH,
     MAX_SEED,
+    apply_aura_flow_shift,
     apply_lora_stack,
     build_empty_latent,
     build_metadata,
@@ -59,7 +61,7 @@ class AnimaGenerator:
     OUTPUT_TOOLTIPS = (
         "The final generated image - the result of the LAST stage that actually ran this pass (postprocess resize > upscale > detailer > highres > first pass, in that priority order).",
         "The matching LATENT for the returned image (before VAE decode) - re-encoded via VAE after any stage that changed the image's pixels, so it's always in sync with the image output. Wire onward into further latent-space nodes without a redundant VAE re-encode.",
-        "Small JSON blob recording the settings actually used this run (seed, steps, cfg, sampler, scheduler, highres/detailer/upscale/postprocess/save settings, applied LoRAs) - for logging/debugging or feeding into a save/metadata node.",
+        "Small JSON blob recording the settings actually used this run (seed, steps, cfg, sampler, scheduler, highres/detailer/upscale/postprocess/save settings, the AuraFlow shift patch's own outcome, applied LoRAs) - for logging/debugging or feeding into a save/metadata node.",
     )
 
     @classmethod
@@ -79,6 +81,23 @@ class AnimaGenerator:
                         "Used to decode sampled latents to pixel-space IMAGE, and (only if "
                         "highres_enabled) to re-encode the upscaled highres image back to a "
                         "latent before its second sampling pass."
+                    ),
+                }),
+                "shift": ("FLOAT", {
+                    "default": DEFAULT_AURA_FLOW_SHIFT,
+                    "min": 0.0,
+                    "max": 10.0,
+                    "step": 0.1,
+                    "tooltip": (
+                        "AuraFlow model-sampling shift, applied to `model` via core's own "
+                        "ModelSamplingAuraFlow before sampling - Anima is an AuraFlow-architecture "
+                        "model and expects this patch (the reference EasyUseAnima pack applies it "
+                        "unconditionally with this same 3.0 default). Set to 0.0 to SKIP patching "
+                        "entirely - use 0.0 if you already wire your own ModelSamplingAuraFlow node "
+                        "upstream of this node's `model` input, otherwise the shift would be applied "
+                        "twice. If the core node isn't reachable or the patch call fails for any "
+                        "reason, this logs a warning and continues UNPATCHED rather than failing "
+                        "the whole generation."
                     ),
                 }),
                 "seed": ("INT", {
@@ -133,11 +152,28 @@ class AnimaGenerator:
                     "default": False,
                     "tooltip": "Runs a second, higher-resolution sampling pass on the first pass's result (a classic highres-fix). Off by default (first-pass-only generator).",
                 }),
+                "highres_scale_by": ("FLOAT", {
+                    "default": 1.5,
+                    "min": 0.01,
+                    "max": 8.0,
+                    "step": 0.01,
+                    "tooltip": (
+                        "Only used if highres_enabled: the first pass's decoded size is multiplied "
+                        "by this, then rounded to a multiple-aligned size close to that target - this "
+                        "is what makes the highres pass actually enlarge the image (without it, every "
+                        "standard SDXL/Anima resolution is already multiple-aligned, so the stage "
+                        "would silently run a second full pass at the SAME resolution - see "
+                        "AnimaImageScaleByMultiple's own scale_by tooltip for the identical math, "
+                        "including the small aspect-drift tradeoff used to avoid overshooting this "
+                        "scale for awkward aspect ratios). 1.0 disables enlargement (align only, exact "
+                        "aspect ratio, no drift)."
+                    ),
+                }),
                 "highres_multiple": ("INT", {
                     "default": 64,
                     "min": 1,
                     "max": 1024,
-                    "tooltip": "Only used if highres_enabled: the highres target size is rounded UP to this multiple (aspect-preserving), via the same math AnimaImageScaleByMultiple uses, so the upscaled latent stays safe to VAE-encode/sample.",
+                    "tooltip": "Only used if highres_enabled: the highres target size is rounded to this multiple (close to the exact aspect ratio - see highres_scale_by's tooltip), via the same math AnimaImageScaleByMultiple uses, so the upscaled latent stays safe to VAE-encode/sample.",
                 }),
                 "highres_max_long_edge": ("INT", {
                     "default": 0,
@@ -325,6 +361,7 @@ class AnimaGenerator:
         self,
         model,
         vae,
+        shift,
         seed,
         steps,
         cfg,
@@ -334,6 +371,7 @@ class AnimaGenerator:
         width,
         height,
         highres_enabled,
+        highres_scale_by,
         highres_multiple,
         highres_max_long_edge,
         highres_denoise,
@@ -372,6 +410,11 @@ class AnimaGenerator:
         # like a standard "Load LoRA -> CLIPTextEncode -> KSampler" chain.
         model, clip, applied_loras = apply_lora_stack(model, clip, lora_stack)
 
+        # AuraFlow model-sampling shift is applied next - after LoRAs, before
+        # conditioning/sampling - matching the reference pipeline's own stage
+        # order (see `apply_aura_flow_shift`'s own docstring).
+        model, aura_flow_metadata = apply_aura_flow_shift(model, shift)
+
         positive_cond = resolve_pane_conditioning("positive", clip, positive, positive_text)
         negative_cond = resolve_pane_conditioning("negative", clip, negative, negative_text)
 
@@ -395,10 +438,12 @@ class AnimaGenerator:
                 current_width, current_height,
                 highres_multiple, highres_max_long_edge,
                 seed, steps, cfg, sampler_name, scheduler, highres_denoise,
+                scale_by=highres_scale_by,
             )
             broadcast_preview(preview_channel, hi_image, "highres")
             result_latent, result_image = hi_latent, hi_image
             highres_metadata.update({
+                "scale_by": float(highres_scale_by),
                 "multiple": int(highres_multiple),
                 "max_long_edge": int(highres_max_long_edge),
                 "denoise": float(highres_denoise),
@@ -462,6 +507,7 @@ class AnimaGenerator:
             highres=highres_metadata, loras=applied_loras,
             detailer=detailer_metadata, upscale=upscale_metadata,
             postprocess=postprocess_metadata, save=save_metadata,
+            aura_flow=aura_flow_metadata,
         )
         return (result_image, result_latent, metadata)
 

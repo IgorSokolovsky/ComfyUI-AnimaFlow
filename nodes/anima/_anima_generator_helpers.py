@@ -49,7 +49,7 @@ import logging
 from typing import Any
 
 from ._anima_conditioning_helpers import resolve_conditioning
-from ._comfy_core_bridge import require_core_node_class
+from ._comfy_core_bridge import find_core_node_class, require_core_node_class
 from ._optional_pack_bridge import require_optional_node_class
 from ._anima_image_scale_helpers import (
     DEFAULT_UPSCALE_METHOD,
@@ -111,6 +111,26 @@ _FALLBACK_SCHEDULER_NAMES = (
     "ddim_uniform",
     "beta",
 )
+
+# Anima is an AuraFlow-architecture model; the reference pack applies
+# `ModelSamplingAuraFlow.patch_aura(model, shift)` UNCONDITIONALLY with this
+# same default (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/
+# generation_defaults.py`). This pack instead exposes `shift` as an opt-out-
+# able widget - see `apply_aura_flow_shift` below.
+DEFAULT_AURA_FLOW_SHIFT = 3.0
+
+# The documented "skip patching entirely" value for `shift` - see
+# `apply_aura_flow_shift`'s own docstring for why this exists (double-
+# patching prevention for users who already wire `ModelSamplingAuraFlow`
+# upstream themselves).
+AURA_FLOW_SHIFT_SKIP_VALUE = 0.0
+
+# Set the first time `apply_aura_flow_shift`'s live-core `patch_aura` call
+# raises, so the fallback warning fires once per process instead of once
+# per run - matches `_anima_regional_conditioning_helpers.py`'s own
+# `_warned_core_conditioning_set_mask_failed` pattern.
+_warned_aura_flow_shift_unreachable = False
+_warned_aura_flow_shift_failed = False
 
 
 def get_sampler_names() -> tuple[str, ...]:
@@ -275,6 +295,103 @@ def apply_lora_stack(model, clip, lora_stack):
     return patched_model, patched_clip, applied
 
 
+def apply_aura_flow_shift(model, shift: float) -> tuple[Any, dict[str, Any]]:
+    """Apply core ComfyUI's `ModelSamplingAuraFlow.patch_aura(model, shift)`
+    to `model` - Anima is an AuraFlow-architecture model, and the reference
+    pack's own AiO pipeline applies this patch UNCONDITIONALLY with a
+    default `shift` of 3.0 (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/
+    model_preparation.py`'s `_patch_model_sampling_aura_flow`,
+    `.../generation_defaults.py`'s `"shift": 3.0`). Before this fix,
+    `AnimaGenerator` applied no such patch at all and had no `shift` widget,
+    so a user wiring `MODEL` straight from a checkpoint loader silently got
+    different (worse) results than the reference pack - see the R2
+    regression report.
+
+    Called right after `apply_lora_stack` and before conditioning is
+    resolved/sampling starts, matching the reference pipeline's own stage
+    order (LoRA application, THEN model-sampling patches, in
+    `../ComfyUI-EasyUseAnima/easyuse_anima/aio/legacy_generation.py`).
+
+    Unlike the reference, this is SOFT and provides an explicit OPT-OUT:
+
+    - `shift == AURA_FLOW_SHIFT_SKIP_VALUE` (0.0) skips patching entirely -
+      no core node lookup at all - for users who already wire their own
+      `ModelSamplingAuraFlow` node upstream (e.g. between a checkpoint
+      loader and this node's `model` input) and would otherwise get the
+      shift applied TWICE.
+    - Otherwise, this looks up core's `ModelSamplingAuraFlow` via
+      `_comfy_core_bridge.find_core_node_class` (deliberately NOT
+      `require_core_node_class` - a missing/unreachable core class here
+      must never raise) and calls its own `.patch_aura(model, shift)`,
+      mirroring the guarded-delegation SHAPE of
+      `_anima_regional_conditioning_helpers.combine_regional_conditioning`
+      (try the live core class; on ANY failure - class unreachable, or the
+      call itself raising - log a one-time warning via this module's own
+      `logger` and fall through UNPATCHED rather than raising into the
+      user's graph). A soft, best-effort model-sampling tweak is never
+      worth failing an entire generation over.
+
+    VERIFY-IN-COMFYUI: the exact `ModelSamplingAuraFlow().patch_aura(model,
+    shift)` call signature assumed here (mirroring the reference pack's own
+    call) has not been exercised against a real ComfyUI install in this dev
+    environment - `_comfy_core_bridge.find_core_node_class` always returns
+    `None` here (see that module's own docstring for why), so this always
+    takes the "unreachable, falls through unpatched" branch in this repo's
+    own test suite.
+
+    Returns `(patched_or_original_model, metadata)` where `metadata` is
+    `{"enabled": False, "shift": 0.0, "reason": ...}` when skipped (opt-out,
+    unreachable, or failed), or `{"enabled": True, "shift": <float>}` when
+    the patch actually applied - fed into this node's own `metadata` JSON
+    output.
+    """
+    global _warned_aura_flow_shift_unreachable, _warned_aura_flow_shift_failed
+
+    shift = float(shift)
+    if shift == AURA_FLOW_SHIFT_SKIP_VALUE:
+        return model, {
+            "enabled": False,
+            "shift": AURA_FLOW_SHIFT_SKIP_VALUE,
+            "reason": "shift is the documented skip value (0.0) - patching intentionally skipped",
+        }
+
+    aura_cls = find_core_node_class("ModelSamplingAuraFlow")
+    if aura_cls is None:
+        if not _warned_aura_flow_shift_unreachable:
+            logger.warning(
+                "[AnimaGenerator] ModelSamplingAuraFlow core node is not reachable in this "
+                "environment - continuing UNPATCHED (shift=%.3f was requested but not applied). "
+                "This is expected outside a live ComfyUI process; if you see this warning while "
+                "actually running ComfyUI, your ComfyUI build may be missing this core node.",
+                shift,
+            )
+            _warned_aura_flow_shift_unreachable = True
+        return model, {
+            "enabled": False,
+            "shift": shift,
+            "reason": "ModelSamplingAuraFlow core node not reachable",
+        }
+
+    try:
+        patcher = aura_cls()
+        # VERIFY-IN-COMFYUI: see this function's own docstring.
+        result = patcher.patch_aura(model, shift)
+        patched_model = result[0] if isinstance(result, (tuple, list)) else result
+        if patched_model is None:
+            raise RuntimeError("ModelSamplingAuraFlow.patch_aura returned no MODEL.")
+    except Exception as exc:
+        if not _warned_aura_flow_shift_failed:
+            logger.warning(
+                "[AnimaGenerator] ModelSamplingAuraFlow.patch_aura(shift=%.3f) failed (%s) - "
+                "continuing UNPATCHED.",
+                shift, exc,
+            )
+            _warned_aura_flow_shift_failed = True
+        return model, {"enabled": False, "shift": shift, "reason": f"patch_aura failed: {exc}"}
+
+    return patched_model, {"enabled": True, "shift": shift}
+
+
 def build_empty_latent(width: int, height: int, batch_size: int = 1):
     """A fresh `LATENT` sized `width` x `height`, via core's own
     `EmptyLatentImage.generate()` - so this node never has to guess at
@@ -333,15 +450,25 @@ def run_highres_pass(
     scheduler,
     denoise,
     upscale_method: str = DEFAULT_UPSCALE_METHOD,
+    scale_by: float = 1.5,
 ):
     """The highres-fix stage: rescale the first pass's decoded `image` up
     to the size `compute_scale_by_multiple` (from
     `_anima_image_scale_helpers` - the SAME math `AnimaImageScaleByMultiple`
     itself uses, imported and reused rather than reimplemented) computes
-    from its actual current size, VAE-encode it back to a latent, sample
-    again at partial `denoise` (same seed/steps/cfg/sampler/scheduler as
-    the first pass - this v1 has no separate highres sampler-override
-    widgets, matching the plan's field list), then VAE-decode.
+    from its actual current size and `scale_by`, VAE-encode it back to a
+    latent, sample again at partial `denoise` (same seed/steps/cfg/sampler/
+    scheduler as the first pass - this v1 has no separate highres sampler-
+    override widgets, matching the plan's field list), then VAE-decode.
+
+    `scale_by` (threaded through from `AnimaGenerator`'s `highres_scale_by`
+    widget, default 1.5) is what makes this an actual highres-FIX rather
+    than a same-resolution second pass - see the R1 regression fix's build
+    report / `_anima_image_scale_helpers`'s own module docstring for why
+    this parameter had to be added: every standard SDXL/Anima resolution is
+    already 64-aligned, so without a scale_by, `compute_scale_by_multiple`
+    silently no-ops (target size == current size) and this whole stage was
+    burning a full extra img2img pass for zero resolution gain.
 
     Reuses `positive`/`negative` as-is (no re-encode) - a standard
     highres-fix workflow's second pass conditions on the same prompt, not
@@ -351,7 +478,7 @@ def run_highres_pass(
     """
     upscale_method = normalize_upscale_method(upscale_method)
     target_width, target_height, scale_factor = compute_scale_by_multiple(
-        current_width, current_height, multiple, max_long_edge
+        current_width, current_height, multiple, max_long_edge, scale_by
     )
 
     import comfy.utils  # lazy: matches AnimaImageScaleByMultiple.scale()'s own pattern
@@ -385,12 +512,14 @@ def build_metadata(
     upscale: dict[str, Any] | None = None,
     postprocess: dict[str, Any] | None = None,
     save: dict[str, Any] | None = None,
+    aura_flow: dict[str, Any] | None = None,
 ) -> str:
     """Assemble the small JSON metadata blob this node's `metadata` output
     returns: first-pass sampler settings, requested first-pass size,
     whatever highres/detailer/upscale/postprocess/save settings were
     actually used this run (each `{"enabled": False}` if that stage was
-    skipped), and the LoRA stack actually applied."""
+    skipped), the AuraFlow model-sampling shift patch's own outcome (see
+    `apply_aura_flow_shift`), and the LoRA stack actually applied."""
     payload = {
         "seed": int(seed),
         "steps": int(steps),
@@ -406,6 +535,7 @@ def build_metadata(
         "upscale": upscale if upscale is not None else {"enabled": False},
         "postprocess": postprocess if postprocess is not None else {"enabled": False},
         "save": save if save is not None else {"enabled": False},
+        "aura_flow": aura_flow if aura_flow is not None else {"enabled": False},
     }
     return json.dumps(payload)
 
@@ -785,6 +915,10 @@ def run_postprocess_resize(
 
     current_height = int(image.shape[1])
     current_width = int(image.shape[2])
+    # scale_by is deliberately OMITTED here (keeping the function's own
+    # neutral default, 1.0) - this stage genuinely wants pure alignment, not
+    # enlargement; see `_anima_image_scale_helpers`'s module docstring and
+    # the R1 fix's build report for why that default had to stay 1.0.
     target_width, target_height, scale_factor = compute_scale_by_multiple(
         current_width, current_height, multiple, 0
     )
@@ -833,9 +967,12 @@ def run_save_output_stage(image, save_prefix: str):
 
 
 __all__ = (
+    "AURA_FLOW_SHIFT_SKIP_VALUE",
+    "DEFAULT_AURA_FLOW_SHIFT",
     "DEFAULT_HEIGHT",
     "DEFAULT_WIDTH",
     "MAX_SEED",
+    "apply_aura_flow_shift",
     "apply_lora_stack",
     "build_empty_latent",
     "build_metadata",

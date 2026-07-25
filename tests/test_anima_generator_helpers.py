@@ -32,9 +32,12 @@ import json
 
 from nodes.anima._anima_conditioning_helpers import encode_text_conditioning, resolve_conditioning
 from nodes.anima._anima_generator_helpers import (
+    AURA_FLOW_SHIFT_SKIP_VALUE,
+    DEFAULT_AURA_FLOW_SHIFT,
     DEFAULT_HEIGHT,
     DEFAULT_WIDTH,
     MAX_SEED,
+    apply_aura_flow_shift,
     build_metadata,
     get_scheduler_names,
     get_sampler_names,
@@ -44,6 +47,32 @@ from nodes.anima._anima_generator_helpers import (
 )
 from nodes.anima._comfy_core_bridge import find_core_node_class, require_core_node_class
 from nodes.anima.node_anima_generator import AnimaGenerator
+
+_SENTINEL = object()
+
+
+def _set_fake_core_mappings(mappings: dict):
+    """Same simulation shape as `test_anima_generator_stages.py`'s own
+    `_set_fake_mappings`: this dev environment's bare `import nodes`
+    resolves to THIS repo's own `nodes/` package (see
+    `_comfy_core_bridge.py`'s module docstring), so temporarily attaching a
+    plain dict as that module's `NODE_CLASS_MAPPINGS` simulates "these core
+    node ids are reachable" for `find_core_node_class`/`require_core_node_class`."""
+    import nodes as nodes_pkg
+
+    previous = getattr(nodes_pkg, "NODE_CLASS_MAPPINGS", _SENTINEL)
+    nodes_pkg.NODE_CLASS_MAPPINGS = mappings
+    return previous
+
+
+def _restore_fake_core_mappings(previous):
+    import nodes as nodes_pkg
+
+    if previous is _SENTINEL:
+        if hasattr(nodes_pkg, "NODE_CLASS_MAPPINGS"):
+            delattr(nodes_pkg, "NODE_CLASS_MAPPINGS")
+    else:
+        nodes_pkg.NODE_CLASS_MAPPINGS = previous
 
 
 class _FakeClip:
@@ -187,6 +216,10 @@ def test_normalize_lora_stack_defaults_clip_strength_to_model_strength():
 
 
 def test_build_metadata_assembles_expected_json():
+    # R2 fix: build_metadata now also carries an "aura_flow" field recording
+    # the AuraFlow model-sampling shift patch's own outcome (see
+    # apply_aura_flow_shift) - {"enabled": False} when omitted, same
+    # convention as every other optional stage field below.
     text = build_metadata(
         seed=42, steps=28, cfg=5.0, sampler_name="euler_ancestral", scheduler="normal",
         denoise=1.0, width=832, height=1216,
@@ -207,7 +240,18 @@ def test_build_metadata_assembles_expected_json():
         "upscale": {"enabled": False},
         "postprocess": {"enabled": False},
         "save": {"enabled": False},
+        "aura_flow": {"enabled": False},
     }
+
+
+def test_build_metadata_includes_aura_flow_when_given():
+    text = build_metadata(
+        seed=1, steps=20, cfg=6.0, sampler_name="euler", scheduler="karras", denoise=1.0,
+        width=832, height=1216,
+        aura_flow={"enabled": True, "shift": 3.0},
+    )
+    data = json.loads(text)
+    assert data["aura_flow"] == {"enabled": True, "shift": 3.0}
 
 
 def test_build_metadata_includes_highres_and_loras_when_given():
@@ -242,6 +286,81 @@ def test_build_metadata_includes_new_stage_flags_when_given():
     assert data["upscale"]["backend"] == "usdu"
     assert data["postprocess"]["resized"] is True
     assert data["save"]["prefix"] == "Anima"
+
+
+# --- apply_aura_flow_shift (R2 fix): pure gating logic, no torch needed --
+
+
+def test_apply_aura_flow_shift_skips_when_shift_is_skip_value():
+    model = object()
+    patched_model, metadata = apply_aura_flow_shift(model, AURA_FLOW_SHIFT_SKIP_VALUE)
+    assert patched_model is model
+    assert metadata["enabled"] is False
+    assert metadata["shift"] == 0.0
+    assert "skip" in metadata["reason"].lower()
+
+
+def test_apply_aura_flow_shift_falls_through_unpatched_when_core_node_unreachable():
+    # Default dev-environment state: this repo's own `nodes` package has no
+    # `ModelSamplingAuraFlow` attribute/mapping at all (see
+    # `_comfy_core_bridge.py`'s own docstring) - so this must degrade to
+    # "unpatched", not raise.
+    model = object()
+    patched_model, metadata = apply_aura_flow_shift(model, DEFAULT_AURA_FLOW_SHIFT)
+    assert patched_model is model
+    assert metadata["enabled"] is False
+    assert metadata["shift"] == DEFAULT_AURA_FLOW_SHIFT
+    assert "not reachable" in metadata["reason"]
+
+
+def test_apply_aura_flow_shift_patches_when_core_node_reachable():
+    calls = {}
+
+    class _FakeModelSamplingAuraFlow:
+        def patch_aura(self, model, shift):
+            calls["model"] = model
+            calls["shift"] = shift
+            return (f"patched:{model}",)
+
+    previous = _set_fake_core_mappings({"ModelSamplingAuraFlow": _FakeModelSamplingAuraFlow})
+    try:
+        patched_model, metadata = apply_aura_flow_shift("base_model", 3.0)
+        assert patched_model == "patched:base_model"
+        assert metadata == {"enabled": True, "shift": 3.0}
+        assert calls == {"model": "base_model", "shift": 3.0}
+    finally:
+        _restore_fake_core_mappings(previous)
+
+
+def test_apply_aura_flow_shift_falls_through_unpatched_when_patch_call_raises():
+    class _BrokenModelSamplingAuraFlow:
+        def patch_aura(self, model, shift):
+            raise RuntimeError("simulated signature mismatch")
+
+    previous = _set_fake_core_mappings({"ModelSamplingAuraFlow": _BrokenModelSamplingAuraFlow})
+    try:
+        model = object()
+        patched_model, metadata = apply_aura_flow_shift(model, 3.0)
+        assert patched_model is model
+        assert metadata["enabled"] is False
+        assert "patch_aura failed" in metadata["reason"]
+    finally:
+        _restore_fake_core_mappings(previous)
+
+
+def test_apply_aura_flow_shift_falls_through_unpatched_when_no_model_returned():
+    class _EmptyResultModelSamplingAuraFlow:
+        def patch_aura(self, model, shift):
+            return ()
+
+    previous = _set_fake_core_mappings({"ModelSamplingAuraFlow": _EmptyResultModelSamplingAuraFlow})
+    try:
+        model = object()
+        patched_model, metadata = apply_aura_flow_shift(model, 3.0)
+        assert patched_model is model
+        assert metadata["enabled"] is False
+    finally:
+        _restore_fake_core_mappings(previous)
 
 
 def test_get_sampler_and_scheduler_names_fallback_when_comfy_unavailable():
@@ -288,6 +407,8 @@ def test_node_input_types_contract():
 
     assert required["model"][0] == "MODEL"
     assert required["vae"][0] == "VAE"
+    assert required["shift"][0] == "FLOAT" and required["shift"][1]["default"] == DEFAULT_AURA_FLOW_SHIFT == 3.0
+    assert required["shift"][1]["min"] == 0.0  # 0.0 is the documented skip/opt-out value
     assert required["seed"][0] == "INT" and required["seed"][1]["max"] == MAX_SEED
     assert required["steps"][0] == "INT"
     assert required["cfg"][0] == "FLOAT"
@@ -298,6 +419,7 @@ def test_node_input_types_contract():
     assert required["width"][1]["default"] == DEFAULT_WIDTH
     assert required["height"][1]["default"] == DEFAULT_HEIGHT
     assert required["highres_enabled"][0] == "BOOLEAN" and required["highres_enabled"][1]["default"] is False
+    assert required["highres_scale_by"][0] == "FLOAT" and required["highres_scale_by"][1]["default"] == 1.5
     assert required["highres_multiple"][1]["default"] == 64
     assert required["highres_max_long_edge"][1]["default"] == 0
     assert required["highres_denoise"][1]["default"] == 0.4
@@ -378,8 +500,14 @@ ALL_TESTS = [
     test_normalize_lora_stack_handles_malformed_input_gracefully,
     test_normalize_lora_stack_defaults_clip_strength_to_model_strength,
     test_build_metadata_assembles_expected_json,
+    test_build_metadata_includes_aura_flow_when_given,
     test_build_metadata_includes_highres_and_loras_when_given,
     test_build_metadata_includes_new_stage_flags_when_given,
+    test_apply_aura_flow_shift_skips_when_shift_is_skip_value,
+    test_apply_aura_flow_shift_falls_through_unpatched_when_core_node_unreachable,
+    test_apply_aura_flow_shift_patches_when_core_node_reachable,
+    test_apply_aura_flow_shift_falls_through_unpatched_when_patch_call_raises,
+    test_apply_aura_flow_shift_falls_through_unpatched_when_no_model_returned,
     test_get_sampler_and_scheduler_names_fallback_when_comfy_unavailable,
     test_pick_default_prefers_requested_name_when_present,
     test_pick_default_falls_back_to_first_when_missing,
