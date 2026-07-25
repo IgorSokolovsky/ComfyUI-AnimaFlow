@@ -10,9 +10,11 @@
 ## What's inside
 
 - **🎛️ Rule Builder** — a visual editor for **prompt-transform rules**. Define your character/outfit/scene logic as declarative rules; the engine rewrites your prompt before it's encoded. Works for **Anima labelled-prose** *and* **booru tags**. → [**docs/rule-builder.md**](docs/rule-builder.md)
+- **🧱 Prompt Studio** — a **block editor** for prompts: add/remove/reorder labelled blocks across positive/negative panes, **pin** a block to keep it verbatim (for LoRA triggers), optional rules correction. Outputs plain `STRING`.
 - **✍️ Prompt tools** — Prompt Builder (templated `{wildcards}` → live fields) and Prompt Combiner (named sockets → one prompt).
 - **🎬 Scene & panel tools** — Scene Creator, LLM Panels, Panel Parser, Save Panel (metadata) — a small webtoon/comic pipeline.
-- **🌸 Anima helpers** — Anima Generator, Detailer Align Hook, Image Scale, Preview.
+- **🌸 Anima helpers** — Anima Generator (six-stage pipeline), Conditioning Encode (artist mix), Detailer Align Hook, Image Scale, Preview.
+- **🗺️ Regional prompting** — draw rect/ellipse regions on a canvas → real `MASK` tensors, then apply a **per-region prompt** on top of a global one using ComfyUI-native conditioning masks. Up to 6 regions.
 - **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
 
 All node UIs share one **house theme** (dark slate + teal) so the pack feels like a single tool.
@@ -36,9 +38,11 @@ Nodes appear in the node picker under a single **`AnimaFlow`** category, grouped
 
 | Group | Nodes |
 |---|---|
-| `AnimaFlow/anima` | Anima Generator, Anima Conditioning Encode, Detailer Align Hook, Image Scale, Preview |
+| `AnimaFlow/anima` | Anima Generator, Anima Conditioning Encode, Anima Region Mask Editor, Anima Regional Conditioning, Detailer Align Hook, Image Scale, Preview |
 | `AnimaFlow/anima_prompt` | Prompt Builder, Prompt Combiner, Prompt Rules (+ CLIP), Anima Prompt Studio |
 | `AnimaFlow/panel` | Scene Creator, LLM Panels, Panel Parser, Save Panel |
+
+Sixteen nodes in total; every one is catalogued with its inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
 
 ---
 
@@ -108,6 +112,10 @@ The prompt tools serve **booru tags** (Illustrious/Pony), **labelled prose** (An
 
 ## Credits & license
 
-The Rule Builder's *concept* was inspired by [ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu); AnimaFlow's engine is a **clean-room** reimplementation from its own spec (`prompt-rules/SCHEMA.md`) — no code was copied.
+AnimaFlow is **MIT** licensed — see [`LICENSE`](LICENSE). It stands on two other projects, in two very different ways:
 
-License: see [`LICENSE`](LICENSE).
+**[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — the `AnimaFlow/anima` node line is a **deliberately leaner port** of this pack, with logic copied and adapted under its MIT license. Thank you to n0va39: the generator pipeline, the highres scaling maths, the detailer hook, artist-mix conditioning, regional prompting and the tag-autocomplete approach all originate there. AnimaFlow trades breadth for decoupling — plain `MODEL`/`CLIP`/`VAE`/`CONDITIONING` sockets instead of a bundled context object, preview split into its own node, and one artist-mix blend mode instead of ten.
+
+**[ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu)** (GPL-3.0) — **concept inspiration only; no code was copied.** The Rule Builder idea comes from here, but AnimaFlow's engine (`core/`) is a **clean-room** implementation written against its own spec, [`prompt-rules/SCHEMA.md`](prompt-rules/SCHEMA.md), and is architecturally different (a Document tree with profiles and selectors, versus a flat weighted tag list). Since that project is copyleft, this boundary is what keeps AnimaFlow MIT — please don't copy code across it.
+
+Full notices, and a per-file breakdown of what derives from where: [**THIRD_PARTY_NOTICES.md**](THIRD_PARTY_NOTICES.md).
