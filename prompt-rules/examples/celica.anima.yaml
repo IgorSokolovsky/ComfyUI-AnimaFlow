@@ -1,0 +1,56 @@
+# Prose / Anima profile — rules operate on labelled character sections.
+# Input (structured):
+#   [quality] masterpiece, best quality
+#   [character:celica]
+#   appearance:
+#   clothes:
+#   action: standing
+#   [global] cafe, morning light
+#
+# `set` overwrites a section; `add` appends into a section; targets are labels.
+#
+# Output (v1 engine, `core/`): with the input above (using "focus: celica,
+# jacket" instead of a bare "celica" mention, since the sample input has no
+# unsectioned place to put the activation word) the actual v1 render is:
+#   [quality] masterpiece, best quality
+#   appearance: short black hair, pixie cut, blue eyes
+#   clothes: black leather jacket
+#   action: standing
+#   [global] cafe, morning light
+# ("focus" itself still contains the leftover "jacket" tag — v1's `remove`
+# only removes what a rule explicitly names, so "jacket" stays there)
+
+version: 1
+profile: anima
+options:
+  boundary: word          # whole-word `mentions`
+  caseSensitive: false
+rules:
+  - name: celica
+    any_of: celica         # sugar → when:{any:[{mentions:celica}]}, reads positive doc
+    into: "character:celica"   # children write here by default
+    type: group
+    children:
+
+      - name: remove-activation
+        remove: { value: celica, from: "*" }   # the model doesn't know her name
+
+      - name: appearance
+        set: { section: appearance, to: "short black hair, pixie cut" }
+
+      - name: eyes
+        none_of: closed eyes, eyes out of frame
+        add: { section: appearance, value: "blue eyes" }
+
+      - name: outfit          # mutually-exclusive: first matching branch wins
+        type: switch
+        children:
+          - any_of: jacket
+            set: { section: clothes, to: "black leather jacket" }
+          - any_of: shirt
+            set: { section: clothes, to: "black t-shirt" }
+          - default: true
+            set: { section: clothes, to: "black camisole" }
+
+      - name: quality-guard
+        add_negative: "blurry, low quality, extra fingers"

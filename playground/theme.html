@@ -1,0 +1,305 @@
+<style>
+  /* ============================================================================
+     HOUSE THEME — reference stylesheet (this is what js/shared/theme.css contains)
+     Everything scoped under .wtn so it never leaks into ComfyUI's own DOM.
+     ========================================================================= */
+  .wtn {
+    /* surfaces & ink */
+    --wtn-bg: #0e1116;
+    --wtn-surface: #151a21;
+    --wtn-surface-2: #1b212a;
+    --wtn-line: #28303b;
+    --wtn-line-soft: #1f2731;
+    --wtn-ink: #e7ecf3;
+    --wtn-ink-dim: #93a0b1;
+    --wtn-ink-faint: #5f6c7d;
+    --wtn-console: #0a0d12;
+    /* brand accent */
+    --wtn-accent: #2dd4bf;
+    --wtn-accent-strong: #34e5d2;
+    --wtn-accent-deep: #14b8a6;
+    --wtn-on-accent: #062420;
+    /* semantic */
+    --wtn-ok: #4ade80;
+    --wtn-warn: #fbbf24;
+    --wtn-bad: #f87171;
+    --wtn-info: #7dd3fc;
+    --wtn-tmp: #c4b5fd;
+    /* shape / type */
+    --wtn-radius: 10px; --wtn-radius-sm: 7px; --wtn-radius-lg: 13px;
+    --wtn-shadow: 0 10px 28px rgba(0,0,0,.55);
+    --wtn-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --wtn-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    color: var(--wtn-ink); font-family: var(--wtn-font-ui);
+  }
+  .wtn *, .wtn *::before, .wtn *::after { box-sizing: border-box; }
+
+  /* buttons */
+  .wtn-btn { font-family: var(--wtn-font-ui); font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 9px; padding: 9px 15px; border: 1px solid var(--wtn-line);
+    background: transparent; color: var(--wtn-ink); transition: .14s; }
+  .wtn-btn:hover { border-color: var(--wtn-accent); color: var(--wtn-accent); }
+  .wtn-btn--primary { background: var(--wtn-accent); color: var(--wtn-on-accent); border: none; }
+  .wtn-btn--primary:hover { background: var(--wtn-accent-strong); color: var(--wtn-on-accent); }
+  .wtn-btn--ghost { color: var(--wtn-ink-dim); }
+  .wtn-btn--danger { color: var(--wtn-bad); border-color: rgba(248,113,113,.4); }
+  .wtn-btn--danger:hover { background: rgba(248,113,113,.14); color: var(--wtn-bad); }
+  .wtn-btn--icon { background: transparent; border: none; color: var(--wtn-ink-faint);
+    padding: 4px 8px; font-size: 15px; border-radius: 6px; }
+  .wtn-btn--icon:hover { color: var(--wtn-bad); background: rgba(248,113,113,.14); }
+  .wtn-btn:disabled { background: var(--wtn-line); color: var(--wtn-ink-faint); border-color: transparent;
+    cursor: default; }
+  .wtn-btn:focus-visible { outline: 2px solid var(--wtn-accent); outline-offset: 2px; }
+
+  /* inputs */
+  .wtn-input, .wtn-select, .wtn-textarea {
+    font-family: var(--wtn-font-mono); font-size: 12.5px; color: var(--wtn-ink);
+    background: var(--wtn-console); border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius-sm);
+    padding: 8px 10px; }
+  .wtn-select { font-family: var(--wtn-font-ui); }
+  .wtn-input:focus, .wtn-select:focus, .wtn-textarea:focus { outline: none; border-color: var(--wtn-accent); }
+  .wtn-textarea { width: 100%; resize: vertical; line-height: 1.5; }
+
+  /* label */
+  .wtn-label { font-family: var(--wtn-font-mono); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--wtn-ink-dim); }
+
+  /* card */
+  .wtn-card { background: var(--wtn-surface); border: 1px solid var(--wtn-line);
+    border-radius: var(--wtn-radius-lg); overflow: hidden; }
+  .wtn-card__hd { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    background: var(--wtn-surface-2); border-bottom: 1px solid var(--wtn-line); }
+  .wtn-card__hd h3 { margin: 0; font-size: 13px; font-weight: 650; }
+  .wtn-card__hd .meta { margin-left: auto; font-family: var(--wtn-font-mono); font-size: 11.5px; color: var(--wtn-ink-faint); }
+  .wtn-card__bd { padding: 14px 16px; }
+
+  /* collapse (details) */
+  .wtn-collapse { background: var(--wtn-surface); border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius); overflow: hidden; }
+  .wtn-collapse > summary { cursor: pointer; list-style: none; padding: 11px 14px; font-weight: 600; font-size: 13px;
+    display: flex; align-items: center; gap: 10px; background: var(--wtn-surface-2); user-select: none; }
+  .wtn-collapse > summary::-webkit-details-marker { display: none; }
+  .wtn-collapse > summary::before { content: "▸"; color: var(--wtn-accent); transition: transform .15s; }
+  .wtn-collapse[open] > summary::before { transform: rotate(90deg); }
+  .wtn-collapse__bd { padding: 12px 14px; color: var(--wtn-ink-dim); font-size: 13px; }
+
+  /* segmented toggle */
+  .wtn-seg { display: inline-flex; background: var(--wtn-console); border: 1px solid var(--wtn-line); border-radius: 9px; padding: 3px; }
+  .wtn-seg button { font-family: var(--wtn-font-ui); font-size: 12.5px; color: var(--wtn-ink-dim);
+    background: transparent; border: none; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+  .wtn-seg button[aria-pressed="true"] { background: var(--wtn-accent); color: var(--wtn-on-accent); font-weight: 600; }
+
+  /* chips */
+  .wtn-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--wtn-font-mono);
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--wtn-line); color: var(--wtn-ink-dim); }
+  .wtn-chip--ok { color: var(--wtn-ok); border-color: rgba(74,222,128,.35); }
+  .wtn-chip--warn { color: var(--wtn-warn); border-color: rgba(251,191,36,.35); }
+  .wtn-chip--bad { color: var(--wtn-bad); border-color: rgba(248,113,113,.35); }
+  .wtn-chip--info { color: var(--wtn-info); border-color: rgba(125,211,252,.35); }
+
+  /* status pill */
+  .wtn-pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--wtn-font-mono);
+    font-size: 12px; font-weight: 700; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--wtn-line); background: var(--wtn-console); letter-spacing: .03em; color: var(--wtn-ink-dim); }
+  .wtn-pill .led { width: 8px; height: 8px; border-radius: 50%; background: var(--wtn-ink-faint); }
+  .wtn-pill[data-state="running"] { color: var(--wtn-ok); border-color: rgba(74,222,128,.45); }
+  .wtn-pill[data-state="running"] .led { background: var(--wtn-ok); box-shadow: 0 0 9px var(--wtn-ok); }
+  .wtn-pill[data-state="starting"] { color: var(--wtn-warn); border-color: rgba(251,191,36,.45); }
+  .wtn-pill[data-state="starting"] .led { background: var(--wtn-warn); box-shadow: 0 0 9px var(--wtn-warn); }
+  .wtn-pill[data-state="error"] { color: var(--wtn-bad); border-color: rgba(248,113,113,.45); }
+  .wtn-pill[data-state="error"] .led { background: var(--wtn-bad); box-shadow: 0 0 9px var(--wtn-bad); }
+
+  /* log / trace console */
+  .wtn-log { font-family: var(--wtn-font-mono); font-size: 12px; line-height: 1.65;
+    background: var(--wtn-console); border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius-sm);
+    padding: 10px 12px; color: var(--wtn-ink-dim); white-space: pre-wrap; }
+  .wtn-log .is-ok { color: var(--wtn-ok); } .wtn-log .is-bad { color: var(--wtn-bad); }
+  .wtn-log .is-warn { color: var(--wtn-warn); } .wtn-log .is-head { color: var(--wtn-ink); font-weight: 600; }
+  .wtn-log .is-dim { color: var(--wtn-ink-faint); } .wtn-log .is-accent { color: var(--wtn-accent); }
+  .wtn-log .is-info { color: var(--wtn-info); } .wtn-log .is-tmp { color: var(--wtn-tmp); }
+
+  /* tooltip */
+  .wtn-tip { position: fixed; z-index: 999; max-width: 250px; pointer-events: none;
+    background: var(--wtn-console); color: var(--wtn-ink); border: 1px solid var(--wtn-line);
+    border-radius: 8px; padding: 8px 10px; font-family: var(--wtn-font-ui); font-size: 12px; line-height: 1.45;
+    box-shadow: var(--wtn-shadow); opacity: 0; transition: opacity .12s; }
+  .wtn-tip.show { opacity: 1; }
+  .wtn-tip b { color: var(--wtn-accent); }
+
+  /* ===== page chrome for THIS reference doc ===== */
+  body { margin: 0; background:
+      radial-gradient(1000px 480px at 78% -180px, rgba(45,212,191,.09), transparent 70%), var(--wtn-bg); }
+  .page { max-width: 1080px; margin: 0 auto; padding: 34px 22px 90px; }
+  .page h1 { font-size: 24px; font-weight: 680; letter-spacing: -.02em; margin: 0 0 4px;
+    display: flex; align-items: center; gap: 12px; }
+  .page h1 .dot { width: 12px; height: 12px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, var(--wtn-accent), var(--wtn-accent-deep));
+    box-shadow: 0 0 16px var(--wtn-accent); }
+  .lede { color: var(--wtn-ink-dim); font-size: 13.5px; margin: 0 0 30px; max-width: 62ch; line-height: 1.6; }
+  .sec { margin: 34px 0; }
+  .sec > h2 { font-family: var(--wtn-font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--wtn-ink-faint); margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--wtn-line); }
+  .grid { display: grid; gap: 12px; }
+  .swatches { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .sw { border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius); overflow: hidden; background: var(--wtn-surface); }
+  .sw .chip { height: 58px; }
+  .sw .cap { padding: 8px 10px; font-family: var(--wtn-font-mono); font-size: 11px; }
+  .sw .cap .nm { color: var(--wtn-ink); } .sw .cap .hx { color: var(--wtn-ink-faint); }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .type-row { display: flex; align-items: baseline; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--wtn-line-soft); }
+  .type-row .sz { font-family: var(--wtn-font-mono); font-size: 11px; color: var(--wtn-ink-faint); width: 118px; flex: none; }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .cols2 { grid-template-columns: 1fr; } }
+</style>
+
+<div class="wtn">
+<div class="page">
+  <h1><span class="dot"></span>Node-Pack House Theme</h1>
+  <p class="lede">One palette and one component set shared by every node UI — the Rule Builder overlay,
+  picker popovers, and in-node widgets. Dark-committed to sit over ComfyUI's canvas. Everything is
+  scoped under <code style="font-family:var(--wtn-font-mono);color:var(--wtn-accent)">.wtn</code> so it
+  never touches ComfyUI's own styles. This page <em>is</em> the reference stylesheet.</p>
+
+  <div class="sec">
+    <h2>Surfaces &amp; ink</h2>
+    <div class="grid swatches" id="sw-surface"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Brand accent · teal</h2>
+    <div class="grid swatches" id="sw-accent"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Semantic · state (separate from the accent)</h2>
+    <div class="grid swatches" id="sw-semantic"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Type</h2>
+    <div class="stack">
+      <div class="type-row"><span class="sz">17 · h1 · ui 680</span><span style="font-size:17px;font-weight:680">Character sheet · celica</span></div>
+      <div class="type-row"><span class="sz">15 · title · 650</span><span style="font-size:15px;font-weight:650">Rule Builder</span></div>
+      <div class="type-row"><span class="sz">13 · body · ui</span><span style="font-size:13px">Rules run top to bottom; groups and switches nest.</span></div>
+      <div class="type-row"><span class="sz">12.5 · data · mono</span><span style="font-size:12.5px;font-family:var(--wtn-font-mono)">any_of: celica → add: black hair, pixie cut</span></div>
+      <div class="type-row"><span class="sz">11 · label · mono</span><span class="wtn-label">into · section</span></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Buttons</h2>
+    <div class="row">
+      <button class="wtn-btn wtn-btn--primary">Apply</button>
+      <button class="wtn-btn">Neutral</button>
+      <button class="wtn-btn wtn-btn--ghost">Ghost</button>
+      <button class="wtn-btn wtn-btn--danger">Remove</button>
+      <button class="wtn-btn wtn-btn--icon">✕</button>
+      <button class="wtn-btn" disabled>Disabled</button>
+      <span class="wtn-seg"><button aria-pressed="true">Anima · prose</button><button aria-pressed="false">Booru · tags</button></span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Inputs</h2>
+    <div class="cols2">
+      <div class="stack">
+        <span class="wtn-label">text</span>
+        <input class="wtn-input" value="black leather jacket" spellcheck="false" style="width:100%">
+        <span class="wtn-label">select</span>
+        <select class="wtn-select"><option>add</option><option>remove</option><option>set</option></select>
+      </div>
+      <div class="stack">
+        <span class="wtn-label">textarea</span>
+        <textarea class="wtn-textarea" rows="3" spellcheck="false">1girl, celica, jacket, smile</textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Chips &amp; status</h2>
+    <div class="row" style="margin-bottom:12px">
+      <span class="wtn-chip">neutral</span>
+      <span class="wtn-chip wtn-chip--ok">+ add</span>
+      <span class="wtn-chip wtn-chip--bad">− remove</span>
+      <span class="wtn-chip wtn-chip--info">? condition</span>
+      <span class="wtn-chip wtn-chip--warn">= set</span>
+    </div>
+    <div class="row">
+      <span class="wtn-pill" data-state="idle"><span class="led"></span>IDLE</span>
+      <span class="wtn-pill" data-state="starting"><span class="led"></span>STARTING</span>
+      <span class="wtn-pill" data-state="running"><span class="led"></span>RUNNING</span>
+      <span class="wtn-pill" data-state="error"><span class="led"></span>ERROR</span>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Cards, collapse &amp; console</h2>
+    <div class="cols2">
+      <div class="stack">
+        <div class="wtn-card">
+          <div class="wtn-card__hd"><h3>celica</h3><span class="meta">group · 5 rules</span></div>
+          <div class="wtn-card__bd" style="color:var(--wtn-ink-dim);font-size:13px">A card groups related controls with a raised header and a body.</div>
+        </div>
+        <details class="wtn-collapse" open>
+          <summary>How to use this</summary>
+          <div class="wtn-collapse__bd">Native <code style="font-family:var(--wtn-font-mono);color:var(--wtn-accent)">&lt;details&gt;</code> — instant toggle, teal chevron, no round-trip.</div>
+        </details>
+      </div>
+      <div class="wtn-log" aria-label="trace sample"><span class="is-info">&gt; group (celica)</span>
+<span class="is-dim">  ? any_of(celica) = true</span>
+<span class="is-warn">  = set [clothes] black leather jacket</span>
+<span class="is-ok">  + add [appearance] blue eyes</span>
+<span class="is-bad">  - remove celica</span>
+<span class="is-tmp">  ~ tmp thighhighs</span>
+<span class="is-ok">✔ done</span></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Tooltip</h2>
+    <div class="row">
+      <button class="wtn-btn" data-tip="Contextual help appears on hover — teal <b>emphasis</b>, auto-positioned, never steals the pointer.">Hover me</button>
+      <span class="wtn-label">hover the button →</span>
+    </div>
+  </div>
+
+  <p class="lede" style="margin-top:40px;border-top:1px solid var(--wtn-line);padding-top:18px">
+    Approve this and it becomes <code style="font-family:var(--wtn-font-mono);color:var(--wtn-accent)">js/shared/theme.css</code> +
+    <code style="font-family:var(--wtn-font-mono);color:var(--wtn-accent)">theme.mjs</code> (an idempotent injector). Change a token in one
+    place, the whole pack retunes. Full spec: <code style="font-family:var(--wtn-font-mono)">THEME.md</code>.
+  </p>
+</div>
+</div>
+
+<script>
+(() => {
+  const cs = getComputedStyle(document.querySelector(".wtn"));
+  const hex = v => cs.getPropertyValue(v).trim();
+  const groups = {
+    "sw-surface": [["--wtn-bg","bg"],["--wtn-surface","surface"],["--wtn-surface-2","surface-2"],
+      ["--wtn-line","line"],["--wtn-console","console"],["--wtn-ink","ink"],["--wtn-ink-dim","ink-dim"],["--wtn-ink-faint","ink-faint"]],
+    "sw-accent": [["--wtn-accent","accent"],["--wtn-accent-strong","accent-strong"],["--wtn-accent-deep","accent-deep"],["--wtn-on-accent","on-accent"]],
+    "sw-semantic": [["--wtn-ok","ok"],["--wtn-warn","warn"],["--wtn-bad","bad"],["--wtn-info","info"],["--wtn-tmp","tmp"]],
+  };
+  for (const [host, list] of Object.entries(groups)) {
+    document.getElementById(host).innerHTML = list.map(([tok, nm]) => {
+      const h = hex(tok);
+      const border = nm.startsWith("ink") || nm === "on-accent" ? "border:1px solid var(--wtn-line)" : "";
+      return `<div class="sw"><div class="chip" style="background:${h};${border}"></div>
+        <div class="cap"><div class="nm">${nm}</div><div class="hx">${h}</div></div></div>`;
+    }).join("");
+  }
+
+  // tooltip demo
+  const tip = document.createElement("div"); tip.className = "wtn-tip"; document.querySelector(".wtn").appendChild(tip);
+  document.addEventListener("mouseover", e => {
+    const el = e.target.closest("[data-tip]"); if (!el) return;
+    tip.innerHTML = el.dataset.tip; tip.classList.add("show");
+    const r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
+    tip.style.left = Math.max(8, r.left + r.width/2 - t.width/2) + "px";
+    tip.style.top = (r.top - t.height - 8 < 8 ? r.bottom + 8 : r.top - t.height - 8) + "px";
+  });
+  document.addEventListener("mouseout", e => { if (e.target.closest("[data-tip]")) tip.classList.remove("show"); });
+})();
+</script>

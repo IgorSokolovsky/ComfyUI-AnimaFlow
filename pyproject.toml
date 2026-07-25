@@ -1,0 +1,16 @@
+[project]
+name = "comfyui-animaflow"
+description = "AnimaFlow: a lightweight quality-of-life node pack for the Anima model — prompt rules, prompt building, scene tools, and related helpers. Beta."
+version = "0.1.0"
+
+keywords = ["comfyui", "anima", "prompt", "webtoon", "scene", "rules"]
+
+# Core dependencies are listed in requirements.txt; torch/numpy/comfy come
+# from the ComfyUI environment and are intentionally not pinned here.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/IgorSokolovsky/ComfyUI-AnimaFlow"
+
+[tool.comfy]
+DisplayName = "AnimaFlow"

@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webtoon-generator/prompt-rules/ruleset.schema.json",
+  "title": "Prompt Rules — Ruleset",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rules"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1, "default": 1 },
+    "profile": { "type": "string", "description": "Default profile id (host may override)." },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "conditionScope": { "$ref": "#/$defs/selector", "default": "*" },
+        "caseSensitive": { "type": "boolean", "default": false },
+        "boundary": { "enum": ["word", "substring"], "default": "word" }
+      }
+    },
+    "rules": { "type": "array", "items": { "$ref": "#/$defs/rule" } }
+  },
+
+  "$defs": {
+    "selector": {
+      "type": "string",
+      "description": "Block address: '*', a label, 'a/b' path, 'label:*' glob, '#id', or '@negative'.",
+      "minLength": 1
+    },
+
+    "stringList": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      ]
+    },
+
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "mentions": { "$ref": "#/$defs/stringList" },
+        "matches": { "type": "string" },
+        "flags": { "type": "string" },
+        "in": { "$ref": "#/$defs/selector" },
+        "all": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "any": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "none": { "type": "array", "items": { "$ref": "#/$defs/condition" } },
+        "not": { "$ref": "#/$defs/condition" }
+      },
+      "not": { "required": ["mentions", "matches"] }
+    },
+
+    "mutation": {
+      "oneOf": [
+        { "$ref": "#/$defs/stringList" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value"],
+          "properties": {
+            "value": { "$ref": "#/$defs/stringList" },
+            "into": { "$ref": "#/$defs/selector" },
+            "section": { "type": "string", "description": "Shorthand target: a child block labelled <section> under the current `into` anchor (same resolution as SetOp.section)." },
+            "at": { "enum": ["start", "end"] },
+            "after": { "$ref": "#/$defs/stringList" },
+            "before": { "$ref": "#/$defs/stringList" },
+            "weight": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "not": { "required": ["after", "before"] }
+        }
+      ]
+    },
+    "mutationOrList": {
+      "oneOf": [
+        { "$ref": "#/$defs/mutation" },
+        { "type": "array", "items": { "$ref": "#/$defs/mutation" } }
+      ]
+    },
+
+    "removal": {
+      "oneOf": [
+        { "$ref": "#/$defs/stringList" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value"],
+          "properties": {
+            "value": { "$ref": "#/$defs/stringList" },
+            "from": { "$ref": "#/$defs/selector" }
+          }
+        }
+      ]
+    },
+    "removalOrList": {
+      "oneOf": [
+        { "$ref": "#/$defs/removal" },
+        { "type": "array", "items": { "$ref": "#/$defs/removal" } }
+      ]
+    },
+
+    "setOp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to"],
+      "properties": {
+        "target": { "$ref": "#/$defs/selector" },
+        "section": { "type": "string" },
+        "to": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "setOrList": {
+      "oneOf": [
+        { "$ref": "#/$defs/setOp" },
+        { "type": "array", "items": { "$ref": "#/$defs/setOp" } }
+      ]
+    },
+
+    "commonRuleProps": {
+      "properties": {
+        "name": { "type": "string", "pattern": "^[\\w \\-]+$" },
+        "type": { "enum": ["tag", "group", "switch", "swap"] },
+        "when": { "$ref": "#/$defs/condition" },
+        "into": { "$ref": "#/$defs/selector" },
+        "any_of": { "$ref": "#/$defs/stringList" },
+        "all_of": { "$ref": "#/$defs/stringList" },
+        "none_of": { "$ref": "#/$defs/stringList" }
+      }
+    },
+
+    "tagRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
+      "properties": {
+        "name": true, "type": true, "when": true, "into": true,
+        "any_of": true, "all_of": true, "none_of": true,
+        "add": { "$ref": "#/$defs/mutationOrList" },
+        "add_negative": { "$ref": "#/$defs/mutationOrList" },
+        "remove": { "$ref": "#/$defs/removalOrList" },
+        "remove_negative": { "$ref": "#/$defs/removalOrList" },
+        "tmp": { "$ref": "#/$defs/mutationOrList" },
+        "set": { "$ref": "#/$defs/setOrList" }
+      },
+      "anyOf": [
+        { "required": ["add"] }, { "required": ["add_negative"] },
+        { "required": ["remove"] }, { "required": ["remove_negative"] },
+        { "required": ["tmp"] }, { "required": ["set"] }
+      ]
+    },
+
+    "groupRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "children"],
+      "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
+      "properties": {
+        "name": true, "type": true, "when": true, "into": true,
+        "any_of": true, "all_of": true, "none_of": true,
+        "children": { "type": "array", "items": { "$ref": "#/$defs/rule" } }
+      }
+    },
+
+    "switchRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "children"],
+      "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
+      "properties": {
+        "name": true, "type": true, "when": true, "into": true,
+        "any_of": true, "all_of": true, "none_of": true,
+        "children": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/rule" }],
+            "properties": { "default": { "const": true } }
+          }
+        }
+      }
+    },
+
+    "swapRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "match"],
+      "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
+      "properties": {
+        "name": true, "type": true, "when": true, "into": true,
+        "any_of": true, "all_of": true, "none_of": true,
+        "match": { "$ref": "#/$defs/stringList" },
+        "add": { "$ref": "#/$defs/mutationOrList" },
+        "add_negative": { "$ref": "#/$defs/mutationOrList" }
+      },
+      "anyOf": [{ "required": ["add"] }, { "required": ["add_negative"] }]
+    },
+
+    "rule": {
+      "type": "object",
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "group" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/groupRule" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "switch" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/switchRule" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "swap" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/swapRule" }
+        },
+        {
+          "if": {
+            "not": { "required": ["type"] }
+          },
+          "then": { "$ref": "#/$defs/tagRule" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "tag" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/tagRule" }
+        }
+      ]
+    }
+  }
+}

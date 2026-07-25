@@ -1,0 +1,45 @@
+# Booru / Illustrious profile — SAME logic as celica.anima.yaml, but the document
+# is a single tag leaf, so targets collapse to "*" and mutations are plain adds.
+# Input (tags):
+#   1girl, celica, jacket, smile
+# Output (v1 engine, `core/`): adds always append at the END of the target
+# block (no after/before anchor insertion yet — see core/__init__.py's
+# v1-simplifications docstring), so the actual v1 output is:
+#   1girl, jacket, smile, short black hair, pixie cut, blue eyes, black leather jacket
+# The line below is the ILLUSTRATIVE end-state a future anchor-aware engine
+# would produce (inserting "black leather jacket" where "jacket" was, etc.) —
+# kept for readability, not as a literal assertion:
+#   1girl, short black hair, pixie cut, blue eyes, black leather jacket, smile
+version: 1
+profile: illustrious
+options:
+  boundary: word
+rules:
+  - name: celica
+    any_of: celica
+    into: "*"                # single leaf → everything lands here
+    type: group
+    children:
+
+      - name: remove-activation
+        remove: celica
+
+      - name: appearance
+        add: "short black hair, pixie cut"
+
+      - name: eyes
+        none_of: closed eyes, eyes out of frame
+        add: "blue eyes"
+
+      - name: outfit
+        type: switch
+        children:
+          - any_of: jacket
+            add: "black leather jacket"
+          - any_of: shirt
+            add: "black t-shirt"
+          - default: true
+            add: "black camisole"
+
+      - name: quality-guard
+        add_negative: "blurry, low quality, extra fingers"

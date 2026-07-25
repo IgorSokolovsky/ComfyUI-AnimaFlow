@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Playwright browser cache (installed at runtime, never committed)
+.cache/
+ms-playwright/
+
+# Generated output during local testing
+/scratch/
+*.png.tmp
+
+# Runtime logs
+logs/
+*.log
+
+# Dev tooling (not part of the pack)
+.claude/

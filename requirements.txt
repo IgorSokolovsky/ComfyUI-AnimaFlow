@@ -1,0 +1,13 @@
+# Runtime dependencies for webtoon-generator.
+# torch, numpy, and comfy are provided by the ComfyUI environment and are
+# intentionally NOT pinned here to avoid clashing with ComfyUI's own versions.
+#
+# Add dependencies as nodes need them. `requests` is kept as the likely base
+# for LLM-backed nodes (scene generators, prompt expansion).
+
+requests>=2.31
+
+# Loads the prompt-rules ruleset examples/definitions (prompt-rules/examples/*.yaml)
+# for the clean-room rules engine (`core/`, see test_rules.py). The engine
+# core itself works on plain dicts and does not import yaml.
+pyyaml>=6.0

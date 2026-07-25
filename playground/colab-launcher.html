@@ -1,0 +1,889 @@
+<style>
+  :root {
+    --bg: #0d1015;
+    --panel: #151a21;
+    --panel-2: #1b212a;
+    --line: #28303b;
+    --line-soft: #1f2731;
+    --ink: #e7ecf3;
+    --ink-dim: #93a0b1;
+    --ink-faint: #5f6c7d;
+    --brand: #2dd4bf;
+    --brand-deep: #14b8a6;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --console-bg: #090c11;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 500px at 50% -200px, rgba(45,212,191,.10), transparent 70%),
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--ui);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+  }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 20px;
+    padding: 20px 22px;
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 20px 40px -30px rgba(0,0,0,.9);
+  }
+  .brand-block { display: flex; flex-direction: column; gap: 3px; margin-right: auto; }
+  .brand-title {
+    font-size: 19px; font-weight: 650; letter-spacing: -.02em;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .brand-title .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--brand); box-shadow: 0 0 12px var(--brand);
+  }
+  .brand-sub { font-size: 12.5px; color: var(--ink-dim); }
+  .brand-sub code { font-family: var(--mono); color: var(--brand); font-size: 12px; }
+
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 11.5px;
+    padding: 6px 10px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line);
+    color: var(--ink-dim); white-space: nowrap;
+  }
+  .chip .led { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); transition: .3s; }
+  .chip.ok    { color: var(--ink); border-color: rgba(74,222,128,.35); }
+  .chip.ok .led    { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .chip.warn .led  { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .chip.bad .led   { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+
+  .statuspill {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 600;
+    padding: 9px 15px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line);
+    letter-spacing: .02em;
+  }
+  .statuspill .led { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-faint); }
+  .statuspill[data-state="stopped"] { color: var(--ink-dim); }
+  .statuspill[data-state="starting"] { color: var(--warn); border-color: rgba(251,191,36,.4); }
+  .statuspill[data-state="starting"] .led { background: var(--warn); box-shadow: 0 0 10px var(--warn); animation: pulse 1s infinite; }
+  .statuspill[data-state="running"] { color: var(--ok); border-color: rgba(74,222,128,.45); }
+  .statuspill[data-state="running"] .led { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  .statuspill[data-state="error"] { color: var(--bad); border-color: rgba(248,113,113,.45); }
+  .statuspill[data-state="error"] .led { background: var(--bad); box-shadow: 0 0 10px var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  .demo-note {
+    margin: 14px 2px 24px;
+    font-size: 12.5px; color: var(--ink-faint);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .demo-note b { color: var(--warn); font-weight: 600; }
+
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .card[open] { border-color: #33404e; }
+  .card-hd {
+    display: flex; align-items: center; gap: 14px;
+    padding: 15px 18px; cursor: pointer; list-style: none;
+    user-select: none;
+  }
+  .card-hd::-webkit-details-marker { display: none; }
+  .card-hd:hover { background: var(--panel-2); }
+  .step-no {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    color: var(--brand); background: rgba(45,212,191,.10);
+    border: 1px solid rgba(45,212,191,.25);
+    width: 30px; height: 30px; border-radius: 8px;
+    display: grid; place-items: center; flex: none;
+  }
+  .card-title { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .card-sub {
+    margin-left: auto; font-family: var(--mono); font-size: 11.5px;
+    color: var(--ink-dim); text-align: right;
+  }
+  .chev { color: var(--ink-faint); transition: transform .2s; flex: none; font-size: 18px; }
+  .card[open] .chev { transform: rotate(90deg); }
+  .card-bd {
+    padding: 4px 18px 20px;
+    border-top: 1px solid var(--line-soft);
+    margin-top: -1px;
+  }
+  .card-bd > .row:first-child { margin-top: 16px; }
+
+  .hint { font-size: 12.5px; color: var(--ink-dim); margin: 2px 0 14px; }
+  .hint code { font-family: var(--mono); color: var(--brand); font-size: 12px; }
+
+  /* ---------- controls ---------- */
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+  .spacer { flex: 1; }
+
+  button.btn {
+    font-family: var(--ui); font-size: 13.5px; font-weight: 600;
+    color: #062420; background: var(--brand);
+    border: none; border-radius: 9px; padding: 10px 18px;
+    cursor: pointer; transition: .15s; letter-spacing: .01em;
+  }
+  button.btn:hover { background: #34e5d2; }
+  button.btn:active { transform: translateY(1px); }
+  button.btn:disabled { background: var(--line); color: var(--ink-faint); cursor: default; transform: none; }
+  button.btn.ghost {
+    background: transparent; color: var(--ink); border: 1px solid var(--line);
+  }
+  button.btn.ghost:hover { border-color: var(--brand); color: var(--brand); }
+  button.btn.danger { background: transparent; color: var(--bad); border: 1px solid rgba(248,113,113,.4); }
+  button.btn.danger:hover { background: rgba(248,113,113,.12); }
+
+  .radios { display: flex; gap: 8px; flex-wrap: wrap; }
+  .radios label {
+    font-size: 13px; padding: 8px 13px; border-radius: 8px;
+    border: 1px solid var(--line); cursor: pointer; color: var(--ink-dim);
+    display: inline-flex; align-items: center; gap: 8px; transition: .15s;
+  }
+  .radios input { accent-color: var(--brand); margin: 0; }
+  .radios label:has(input:checked) { border-color: var(--brand); color: var(--ink); background: rgba(45,212,191,.07); }
+
+  .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 22px; margin: 8px 0 4px; }
+  @media (max-width: 640px) { .checklist { grid-template-columns: 1fr; } }
+  .check {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 4px; font-family: var(--mono); font-size: 12.5px;
+    color: var(--ink); border-bottom: 1px solid transparent;
+  }
+  .check input { accent-color: var(--brand); flex: none; }
+  .check-main { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; cursor: pointer; }
+  .check .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rm {
+    flex: none; background: transparent; border: none; color: var(--ink-faint);
+    cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 7px; border-radius: 6px;
+  }
+  .rm:hover { color: var(--bad); background: rgba(248,113,113,.12); }
+  .check .badge {
+    margin-left: auto; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--ink-faint); white-space: nowrap;
+  }
+  .check .badge.present { color: var(--ok); border-color: rgba(74,222,128,.3); }
+  .check .badge.missing { color: var(--warn); border-color: rgba(251,191,36,.3); }
+  .selectall {
+    display: flex; align-items: center; gap: 9px; margin: 6px 0 10px;
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    padding-bottom: 10px; border-bottom: 1px solid var(--line-soft);
+  }
+  .selectall input { accent-color: var(--brand); }
+  .group-label {
+    font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--ink-faint); margin: 16px 0 4px;
+  }
+
+  input.text, textarea.text {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    background: var(--console-bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; width: 100%;
+  }
+  input.text:focus, textarea.text:focus { outline: none; border-color: var(--brand); }
+  textarea.text { resize: vertical; min-height: 78px; line-height: 1.6; }
+  .field-label {
+    font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; display: block;
+    font-weight: 600;
+  }
+  .field { flex: 1; min-width: 200px; }
+
+  .urlbtn { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .urlout {
+    font-family: var(--mono); font-size: 12.5px;
+    background: var(--console-bg); border: 1px dashed var(--line);
+    border-radius: 8px; padding: 10px 12px; color: var(--ink-faint);
+    flex: 1; min-width: 220px;
+  }
+  .urlout a { color: var(--brand); text-decoration: none; }
+  .urlout a:hover { text-decoration: underline; }
+
+  /* ---------- console ---------- */
+  .console {
+    font-family: var(--mono); font-size: 12px; line-height: 1.65;
+    background: var(--console-bg); border: 1px solid var(--line);
+    border-radius: 9px; padding: 12px 14px; margin-top: 12px;
+    max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+    color: var(--ink-dim);
+  }
+  .console:empty::before { content: "— idle —"; color: var(--ink-faint); }
+  .console .ok { color: var(--ok); }
+  .console .warn { color: var(--warn); }
+  .console .bad { color: var(--bad); }
+  .console .accent { color: var(--brand); }
+  .console .dim { color: var(--ink-faint); }
+  .console .head { color: var(--ink); font-weight: 600; }
+
+  .progress {
+    height: 5px; background: var(--line); border-radius: 999px; overflow: hidden;
+    margin-top: 12px; display: none;
+  }
+  .progress.on { display: block; }
+  .progress > i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .3s; }
+
+  .toggle-tail {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-dim);
+  }
+  .toggle-tail input { accent-color: var(--brand); }
+
+  .saved-tag {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ok);
+    opacity: 0; transition: opacity .3s;
+  }
+  .saved-tag.show { opacity: 1; }
+
+  footer.note {
+    margin-top: 28px; font-size: 12px; color: var(--ink-faint);
+    text-align: center; line-height: 1.7;
+  }
+  footer.note code { font-family: var(--mono); color: var(--ink-dim); }
+</style>
+
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand-block">
+      <div class="brand-title"><span class="dot"></span>ComfyUI · Colab Control</div>
+      <div class="brand-sub">base <code>/content/drive/MyDrive/ComfyUI</code> · app <code>/content/ComfyUI</code></div>
+    </div>
+    <div class="chips">
+      <span class="chip" id="chip-drive"><span class="led"></span>Drive</span>
+      <span class="chip" id="chip-comfy"><span class="led"></span>ComfyUI</span>
+      <span class="chip" id="chip-gpu"><span class="led"></span>GPU</span>
+    </div>
+    <span class="statuspill" id="statuspill" data-state="stopped"><span class="led"></span>STOPPED</span>
+  </div>
+
+  <div class="demo-note"><b>Demo</b> — every action here is simulated in your browser. This mocks the real ipywidgets panel so you can judge the layout &amp; flow before it goes in Colab.</div>
+
+  <!-- 01 Environment -->
+  <details class="card" open>
+    <summary class="card-hd">
+      <span class="step-no">01</span>
+      <span class="card-title">Environment</span>
+      <span class="card-sub" id="env-sub">not bootstrapped</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Clones/updates ComfyUI, installs its <code>requirements.txt</code>, creates the Drive symlinks, and installs ComfyUI-Manager. Run once per session (or after a ComfyUI update).</p>
+      <div class="row">
+        <label class="toggle-tail"><input type="checkbox" id="env-force"> Force-reinstall ComfyUI requirements</label>
+      </div>
+      <div class="row">
+        <button class="btn" id="env-run">Bootstrap / Update</button>
+        <span class="spacer"></span>
+      </div>
+      <div class="progress" id="env-prog"><i></i></div>
+      <div class="console" id="env-log"></div>
+    </div>
+  </details>
+
+  <!-- 02 Node Packs -->
+  <details class="card" open>
+    <summary class="card-hd">
+      <span class="step-no">02</span>
+      <span class="card-title">Node Packs</span>
+      <span class="card-sub" id="packs-sub">— selected</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Clone missing packs, pull existing ones, and install requirements only when the pull actually advances <code>HEAD</code> (SHA-diff check).</p>
+      <div class="radios" id="packs-mode">
+        <label><input type="radio" name="pmode" value="pull" checked> Pull &amp; update</label>
+        <label><input type="radio" name="pmode" value="skip"> Skip existing</label>
+        <label><input type="radio" name="pmode" value="force"> Force reinstall reqs</label>
+      </div>
+      <div class="selectall"><input type="checkbox" id="packs-all" checked> Select all</div>
+      <div class="checklist" id="packs-list"></div>
+      <div class="row">
+        <div class="field">
+          <input class="text" id="packs-custom" placeholder="+ add custom repo URL  (https://github.com/…/repo.git)">
+        </div>
+        <button class="btn ghost" id="packs-add">Add</button>
+      </div>
+      <div class="row">
+        <button class="btn" id="packs-run">Sync &amp; Install</button>
+      </div>
+      <div class="progress" id="packs-prog"><i></i></div>
+      <div class="console" id="packs-log"></div>
+    </div>
+  </details>
+
+  <!-- 03 Extra pip -->
+  <details class="card">
+    <summary class="card-hd">
+      <span class="step-no">03</span>
+      <span class="card-title">Extra pip packages</span>
+      <span class="card-sub">optional</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Free-form <code>pip install</code> for anything a workflow needs on top of the packs. Edit freely — installs into the Drive pip cache.</p>
+      <label class="field-label">Packages</label>
+      <textarea class="text" id="pip-text">ffmpeg torchlanc requests Pillow opencv-python-headless jinja2 deepdiff piexif dpath open_clip_torch "kornia==0.7.3"</textarea>
+      <div class="row">
+        <button class="btn" id="pip-run">Install</button>
+      </div>
+      <div class="console" id="pip-log"></div>
+    </div>
+  </details>
+
+  <!-- 04 Models -->
+  <details class="card">
+    <summary class="card-hd">
+      <span class="step-no">04</span>
+      <span class="card-title">Models</span>
+      <span class="card-sub" id="models-sub">— to download</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Only missing files download; present files are skipped. Everything lands on Drive so it persists across runtimes.</p>
+      <div class="selectall"><input type="checkbox" id="models-all" checked> Select all missing</div>
+      <div id="models-list"></div>
+      <div class="row">
+        <input class="text" id="model-folder" list="folder-opts" placeholder="folder  (models/loras)" style="flex:1;min-width:150px">
+        <input class="text" id="model-file" placeholder="filename.safetensors" style="flex:1.4;min-width:170px">
+      </div>
+      <div class="row">
+        <input class="text" id="model-url" placeholder="https://…/model.safetensors" style="flex:1;min-width:220px">
+        <button class="btn ghost" id="model-add">Add model</button>
+      </div>
+      <datalist id="folder-opts">
+        <option value="models/checkpoints"><option value="models/loras"><option value="models/controlnet">
+        <option value="models/vae"><option value="models/ipadapter"><option value="models/clip_vision">
+        <option value="models/upscale_models"><option value="models/text_encoders"><option value="models/unet">
+      </datalist>
+      <div class="row">
+        <button class="btn" id="models-run">Download selected</button>
+      </div>
+      <div class="progress" id="models-prog"><i></i></div>
+      <div class="console" id="models-log"></div>
+    </div>
+  </details>
+
+  <!-- 05 Launch & Tunnel -->
+  <details class="card" open>
+    <summary class="card-hd">
+      <span class="step-no">05</span>
+      <span class="card-title">Launch &amp; Tunnel</span>
+      <span class="card-sub" id="launch-sub">stopped</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Starts ComfyUI in the background and opens a Pinggy tunnel. The status pill up top tracks the live server.</p>
+      <div class="row">
+        <div class="field">
+          <label class="field-label">Pinggy token</label>
+          <input class="text" id="pinggy-token" type="password" placeholder="paste token (blank = free random URL)">
+        </div>
+      </div>
+      <div class="row">
+        <label class="toggle-tail"><input type="checkbox" id="pinggy-remember" checked> Remember token in config</label>
+      </div>
+      <div class="row">
+        <button class="btn" id="launch-run">Launch ComfyUI</button>
+        <button class="btn ghost" id="launch-restart" disabled>Restart</button>
+        <button class="btn danger" id="launch-stop" disabled>Stop</button>
+      </div>
+      <div class="row urlbtn">
+        <div class="urlout" id="tunnel-url">tunnel URL appears here once running…</div>
+      </div>
+      <div class="progress" id="launch-prog"><i></i></div>
+      <div class="console" id="launch-log"></div>
+    </div>
+  </details>
+
+  <!-- 06 Logs -->
+  <details class="card">
+    <summary class="card-hd">
+      <span class="step-no">06</span>
+      <span class="card-title">Server log</span>
+      <span class="card-sub"><code>/content/comfy.log</code></span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Tail of the ComfyUI process log — for debugging startup and node-load errors.</p>
+      <div class="row">
+        <button class="btn ghost" id="log-refresh">Refresh (tail -40)</button>
+        <label class="toggle-tail"><input type="checkbox" id="log-auto"> Auto-tail</label>
+      </div>
+      <div class="console" id="server-log" style="max-height:300px"></div>
+    </div>
+  </details>
+
+  <!-- 07 Config -->
+  <details class="card">
+    <summary class="card-hd">
+      <span class="step-no">07</span>
+      <span class="card-title">Config</span>
+      <span class="card-sub" id="cfg-sub">launcher_config.json</span>
+      <span class="chev">›</span>
+    </summary>
+    <div class="card-bd">
+      <p class="hint">Everything you change is auto-saved to <code>{GDRIVE_BASE}/launcher_config.json</code> and reloaded next session. This is the live contents.</p>
+      <div class="row">
+        <span class="saved-tag" id="saved-tag">saved ✓</span>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="cfg-copy">Copy JSON</button>
+        <button class="btn danger" id="cfg-reset">Reset to defaults</button>
+      </div>
+      <textarea class="text" id="cfg-json" readonly style="min-height:220px"></textarea>
+      <p class="hint" style="margin-top:12px">⚠ The Pinggy token is stored in this file on your Drive. Untick <b>remember token</b> in Launch if you'd rather not persist it.</p>
+    </div>
+  </details>
+
+  <footer class="note">
+    Simulated preview · maps to a 3-cell Colab notebook — <code>Drive mount</code> → <code>Backend</code> → <code>Control panel</code>.<br>
+    Tell Claude what to change and it'll rebuild this, then translate the approved version into real ipywidgets cells.
+  </footer>
+
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const esc = (s) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  function logline(el, html, cls) {
+    const span = document.createElement('span');
+    span.innerHTML = (cls ? `<span class="${cls}">${html}</span>` : html) + '\n';
+    el.appendChild(span);
+    el.scrollTop = el.scrollHeight;
+  }
+  async function stream(el, lines, opts = {}) {
+    const { min = 90, max = 260 } = opts;
+    for (const [txt, cls] of lines) {
+      logline(el, txt, cls);
+      await sleep(rand(min, max));
+    }
+  }
+  function setProg(bar, pct) { bar.classList.add('on'); bar.firstElementChild.style.width = pct + '%'; }
+  function resetProg(bar) { bar.classList.remove('on'); bar.firstElementChild.style.width = '0'; }
+  function chip(id, state, label) {
+    const c = $(id); c.className = 'chip ' + state;
+    if (label) c.lastChild.textContent = ' ' + label;
+    else c.childNodes[c.childNodes.length - 1].textContent = c.childNodes[c.childNodes.length - 1].textContent;
+  }
+  function busy(btn, on, label) {
+    btn.disabled = on;
+    if (on) { btn.dataset.label = btn.textContent; btn.textContent = label || 'Working…'; }
+    else if (btn.dataset.label) { btn.textContent = btn.dataset.label; }
+  }
+
+  /* ---------------- config + persistence ---------------- */
+  // In Colab this whole object lives in {GDRIVE_BASE}/launcher_config.json.
+  // Here we mirror it to localStorage so edits survive a page reload.
+  const LS_KEY = 'comfyui_colab_cfg_v1';
+
+  const DEFAULT_CFG = () => ({
+    version: 1,
+    paths: { gdrive_base: '/content/drive/MyDrive/ComfyUI', comfy_path: '/content/ComfyUI' },
+    settings: { packs_update_mode: 'pull', env_force_reqs: false },
+    node_packs: [
+      { name: 'ComfyUI_IPAdapter_plus', url: 'https://github.com/cubiq/ComfyUI_IPAdapter_plus.git', enabled: true },
+      { name: 'comfyui_controlnet_aux', url: 'https://github.com/Fannovel16/comfyui_controlnet_aux.git', enabled: true },
+      { name: 'ComfyUI_essentials', url: 'https://github.com/cubiq/ComfyUI_essentials.git', enabled: true },
+      { name: 'was-node-suite-comfyui', url: 'https://github.com/WASasquatch/was-node-suite-comfyui.git', enabled: true },
+      { name: 'rgthree-comfy', url: 'https://github.com/rgthree/rgthree-comfy.git', enabled: true },
+      { name: 'ComfyUI-Custom-Scripts', url: 'https://github.com/pythongosssss/ComfyUI-Custom-Scripts.git', enabled: true },
+      { name: 'ComfyUI-KJNodes', url: 'https://github.com/kijai/ComfyUI-KJNodes.git', enabled: true },
+      { name: 'ComfyUI-RMBG', url: 'https://github.com/1038lab/ComfyUI-RMBG.git', enabled: true },
+      { name: 'ComfyUI-Lora-Manager', url: 'https://github.com/willmiao/ComfyUI-Lora-Manager.git', enabled: true },
+      { name: 'ComfyUI_Comfyroll_CustomNodes', url: 'https://github.com/Suzie1/ComfyUI_Comfyroll_CustomNodes.git', enabled: true },
+      { name: 'cg-use-everywhere', url: 'https://github.com/chrisgoringe/cg-use-everywhere.git', enabled: true },
+      { name: 'Civicomfy', url: 'https://github.com/MoonGoblinDev/Civicomfy.git', enabled: true },
+      { name: 'ComfyUI-EasyIllustrious', url: 'https://github.com/regiellis/ComfyUI-EasyIllustrious.git', enabled: true },
+      { name: 'ComfyUI-EasyUseAnima', url: 'https://github.com/n0va39/ComfyUI-EasyUseAnima.git', enabled: true },
+      { name: 'ComfyUI-Pixaroma', url: 'https://github.com/pixaroma/ComfyUI-Pixaroma.git', enabled: true },
+      { name: 'comfyui_model_installer', url: 'https://github.com/gignit/comfyui_model_installer.git', enabled: true },
+      { name: 'ComfyUI-Crystools', url: 'https://github.com/crystian/ComfyUI-Crystools.git', enabled: true },
+      { name: 'Anima_Regional_Canvas', url: 'https://github.com/ukr8b3g-cmyk/Anima_Regional_Canvas.git', enabled: true },
+    ],
+    extra_pip: 'ffmpeg torchlanc requests Pillow opencv-python-headless jinja2 deepdiff piexif dpath open_clip_torch "kornia==0.7.3"',
+    models: [
+      { folder: 'models/clip_vision', file: 'CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors', url: 'https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors', enabled: true },
+      { folder: 'models/ipadapter', file: 'ip-adapter-plus_sdxl_vit-h.safetensors', url: 'https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors', enabled: true },
+      { folder: 'models/ipadapter', file: 'ip-adapter-plus-face_sdxl_vit-h.safetensors', url: 'https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors', enabled: true },
+      { folder: 'models/controlnet', file: 'OpenPoseXL2.safetensors', url: 'https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0/resolve/main/OpenPoseXL2.safetensors', enabled: true },
+      { folder: 'models/controlnet', file: 'diffusers_xl_depth_full.safetensors', url: 'https://huggingface.co/diffusers/controlnet-depth-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors', enabled: true },
+      { folder: 'models/upscale_models', file: '4x_NMKD-Siax_200k.pth', url: 'https://icedrive.net/1/43GNBihZyi', enabled: true },
+      { folder: 'models/text_encoders', file: 'qwen_3_06b_base.safetensors', url: 'https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors', enabled: true },
+    ],
+    tunnel: { pinggy_token: '', remember_token: true },
+  });
+
+  let cfg;
+  function load() {
+    try { const raw = localStorage.getItem(LS_KEY); cfg = raw ? JSON.parse(raw) : DEFAULT_CFG(); }
+    catch { cfg = DEFAULT_CFG(); }
+  }
+  let saveTimer = null;
+  function save() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch {}
+    renderCfgJson();
+    const tag = $('saved-tag'); tag.classList.add('show');
+    clearTimeout(saveTimer); saveTimer = setTimeout(() => tag.classList.remove('show'), 1200);
+  }
+  function renderCfgJson() { $('cfg-json').value = JSON.stringify(cfg, null, 2); }
+
+  // Runtime-only (NOT persisted): which model files already exist on disk.
+  // In Colab this is computed by os.path.exists — here it's a seeded set.
+  const presentFiles = new Set([
+    'models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors',
+    'models/controlnet/diffusers_xl_depth_full.safetensors',
+  ]);
+  const mkey = (m) => m.folder + '/' + m.file;
+  const isPresent = (m) => presentFiles.has(mkey(m));
+  const SIZES = {
+    'CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors': '2.5 GB',
+    'ip-adapter-plus_sdxl_vit-h.safetensors': '850 MB',
+    'ip-adapter-plus-face_sdxl_vit-h.safetensors': '850 MB',
+    'OpenPoseXL2.safetensors': '2.5 GB',
+    'diffusers_xl_depth_full.safetensors': '2.5 GB',
+    '4x_NMKD-Siax_200k.pth': '67 MB',
+    'qwen_3_06b_base.safetensors': '1.2 GB',
+  };
+
+  load();
+
+  /* ---------------- 01 Environment ---------------- */
+  $('env-force').addEventListener('change', e => { cfg.settings.env_force_reqs = e.target.checked; save(); });
+  $('env-run').addEventListener('click', async () => {
+    const btn = $('env-run'), log = $('env-log'), prog = $('env-prog');
+    busy(btn, true, 'Bootstrapping…'); log.innerHTML = ''; resetProg(prog);
+    const force = $('env-force').checked;
+    $('env-sub').textContent = 'running…';
+    await stream(log, [['▸ git pull ComfyUI', 'head']]);
+    setProg(prog, 15);
+    await stream(log, [
+      ['  Already up to date.', 'dim'],
+      ['▸ pip install -r requirements.txt' + (force ? '  (--force-reinstall)' : ''), 'head'],
+    ]);
+    setProg(prog, 45);
+    await stream(log, [
+      ['  Using cached torch, torchvision, torchaudio', 'dim'],
+      ['  Requirement already satisfied: numpy, Pillow, tqdm …', 'dim'],
+      ['  Successfully installed comfyui-frontend-package', 'ok'],
+    ]);
+    setProg(prog, 70);
+    await stream(log, [
+      ['▸ symlink models, custom_nodes, input, output, user, my_workflows → Drive', 'head'],
+      ['  6 symlinks OK', 'ok'],
+      ['▸ ComfyUI-Manager', 'head'],
+      ['  already present', 'dim'],
+    ]);
+    setProg(prog, 90);
+    await stream(log, [['  CUDA: True · Tesla T4', 'accent']]);
+    setProg(prog, 100);
+    logline(log, '✔ Environment ready.', 'ok');
+    chip('chip-drive', 'ok'); chip('chip-comfy', 'ok'); chip('chip-gpu', 'ok', 'GPU · T4');
+    $('env-sub').textContent = 'ready · T4';
+    busy(btn, false);
+    setTimeout(() => resetProg(prog), 600);
+  });
+
+  /* ---------------- 02 Node Packs ---------------- */
+  const packsList = $('packs-list');
+  function renderPacks() {
+    packsList.innerHTML = '';
+    cfg.node_packs.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'check';
+      row.innerHTML = `<label class="check-main"><input type="checkbox" data-i="${i}" ${p.enabled === false ? '' : 'checked'}>
+        <span class="name">${esc(p.name)}</span></label>` +
+        (p.custom ? `<span class="badge">custom</span>` : '') +
+        `<button class="rm" data-i="${i}" title="remove ${esc(p.name)}">×</button>`;
+      packsList.appendChild(row);
+    });
+    packsList.querySelectorAll('input').forEach(cb =>
+      cb.addEventListener('change', e => { cfg.node_packs[+e.target.dataset.i].enabled = e.target.checked; save(); syncPackSummary(); }));
+    packsList.querySelectorAll('.rm').forEach(b =>
+      b.addEventListener('click', e => { cfg.node_packs.splice(+e.currentTarget.dataset.i, 1); save(); renderPacks(); }));
+    syncPackSummary();
+  }
+  function packMode() { return cfg.settings.packs_update_mode; }
+  function syncPackSummary() {
+    const list = cfg.node_packs;
+    const n = list.filter(p => p.enabled !== false).length;
+    $('packs-sub').textContent = `${n}/${list.length} · ${packMode()}`;
+    const all = list.length > 0 && list.every(p => p.enabled !== false);
+    const allCb = $('packs-all');
+    allCb.checked = all; allCb.indeterminate = !all && list.some(p => p.enabled !== false);
+  }
+  $('packs-all').addEventListener('change', e => {
+    cfg.node_packs.forEach(p => p.enabled = e.target.checked); save(); renderPacks();
+  });
+  $('packs-mode').addEventListener('change', e => {
+    cfg.settings.packs_update_mode = e.target.value; save(); syncPackSummary();
+  });
+  $('packs-add').addEventListener('click', () => {
+    const v = $('packs-custom').value.trim();
+    if (!v) return;
+    const name = v.replace(/\.git$/, '').split('/').pop();
+    if (!name) return;
+    cfg.node_packs.push({ name, url: v, enabled: true, custom: true });
+    $('packs-custom').value = '';
+    save(); renderPacks();
+  });
+  $('packs-run').addEventListener('click', async () => {
+    const btn = $('packs-run'), log = $('packs-log'), prog = $('packs-prog');
+    const mode = packMode();
+    const sel = cfg.node_packs.filter(p => p.enabled !== false);
+    busy(btn, true, 'Syncing…'); log.innerHTML = ''; resetProg(prog);
+    if (!sel.length) { logline(log, '⚠ No packs selected.', 'warn'); busy(btn, false); return; }
+    logline(log, `Mode: ${mode} · ${sel.length} pack(s)`, 'dim');
+    let installed = 0;
+    for (let i = 0; i < sel.length; i++) {
+      const p = sel[i];
+      logline(log, `▸ ${p.name}`, 'head');
+      await sleep(rand(120, 300));
+      const roll = Math.random();
+      if (mode === 'skip') {
+        logline(log, '  exists — skipping', 'dim');
+      } else if (roll < 0.4 || p.custom) {
+        const a = rand(0x100000, 0xffffff).toString(16), b = rand(0x100000, 0xffffff).toString(16);
+        logline(log, p.custom ? '  cloning…' : `  updated ${a} → ${b}`, 'accent');
+        await sleep(rand(150, 400));
+        logline(log, '  · installing requirements…', 'dim');
+        installed++;
+      } else if (mode === 'force') {
+        logline(log, '  already up to date', 'dim');
+        logline(log, '  · reinstalling requirements (force)…', 'dim');
+        installed++;
+      } else {
+        logline(log, '  already up to date', 'dim');
+      }
+      setProg(prog, Math.round(((i + 1) / sel.length) * 100));
+    }
+    logline(log, `✔ Done · ${installed} pack(s) touched requirements.`, 'ok');
+    busy(btn, false);
+    setTimeout(() => resetProg(prog), 600);
+  });
+
+  /* ---------------- 03 Extra pip ---------------- */
+  $('pip-text').addEventListener('input', e => { cfg.extra_pip = e.target.value; save(); });
+  $('pip-run').addEventListener('click', async () => {
+    const btn = $('pip-run'), log = $('pip-log');
+    const pkgs = $('pip-text').value.trim().split(/\s+/).filter(Boolean);
+    busy(btn, true, 'Installing…'); log.innerHTML = '';
+    if (!pkgs.length) { logline(log, '⚠ Nothing to install.', 'warn'); busy(btn, false); return; }
+    logline(log, `▸ pip install ${pkgs.length} package(s)`, 'head');
+    for (const p of pkgs.slice(0, 6)) {
+      await sleep(rand(120, 260));
+      logline(log, `  Requirement already satisfied: ${p.replace(/"/g, '')}`, 'dim');
+    }
+    await sleep(300);
+    logline(log, '✔ Done.', 'ok');
+    busy(btn, false);
+  });
+
+  /* ---------------- 04 Models ---------------- */
+  const modelsList = $('models-list');
+  const badgeText = (m) => isPresent(m) ? 'present' : (SIZES[m.file] || 'new');
+  function renderModels() {
+    modelsList.innerHTML = '';
+    const groups = {};
+    cfg.models.forEach((m, i) => { (groups[m.folder] ||= []).push({ m, i }); });
+    Object.entries(groups).forEach(([folder, items]) => {
+      const gl = document.createElement('div');
+      gl.className = 'group-label'; gl.textContent = folder;
+      modelsList.appendChild(gl);
+      items.forEach(({ m, i }) => {
+        const present = isPresent(m);
+        const row = document.createElement('div');
+        row.className = 'check';
+        const disabled = present ? 'disabled' : '';
+        row.innerHTML = `<label class="check-main"><input type="checkbox" data-i="${i}" ${present ? '' : (m.enabled === false ? '' : 'checked')} ${disabled}>
+          <span class="name">${esc(m.file)}</span></label>
+          <span class="badge ${present ? 'present' : 'missing'}">${badgeText(m)}</span>
+          <button class="rm" data-i="${i}" title="remove ${esc(m.file)}">×</button>`;
+        modelsList.appendChild(row);
+      });
+    });
+    modelsList.querySelectorAll('input').forEach(cb =>
+      cb.addEventListener('change', e => { cfg.models[+e.target.dataset.i].enabled = e.target.checked; save(); syncModelSummary(); }));
+    modelsList.querySelectorAll('.rm').forEach(b =>
+      b.addEventListener('click', e => { cfg.models.splice(+e.currentTarget.dataset.i, 1); save(); renderModels(); }));
+    syncModelSummary();
+  }
+  function syncModelSummary() {
+    const present = cfg.models.filter(isPresent).length;
+    const sel = cfg.models.filter(m => !isPresent(m) && m.enabled !== false).length;
+    $('models-sub').textContent = `${sel} to download · ${present} present`;
+  }
+  $('models-all').addEventListener('change', e => {
+    cfg.models.forEach(m => { if (!isPresent(m)) m.enabled = e.target.checked; }); save(); renderModels();
+  });
+  $('model-add').addEventListener('click', () => {
+    const folder = $('model-folder').value.trim() || 'models/checkpoints';
+    const file = $('model-file').value.trim();
+    const url = $('model-url').value.trim();
+    if (!file || !url) {
+      logline($('models-log'), '⚠ Add needs both a filename and a URL.', 'warn');
+      return;
+    }
+    cfg.models.push({ folder, file, url, enabled: true, custom: true });
+    $('model-folder').value = $('model-file').value = $('model-url').value = '';
+    save(); renderModels();
+  });
+  $('models-run').addEventListener('click', async () => {
+    const btn = $('models-run'), log = $('models-log'), prog = $('models-prog');
+    const sel = cfg.models.filter(m => !isPresent(m) && m.enabled !== false);
+    busy(btn, true, 'Downloading…'); log.innerHTML = ''; resetProg(prog);
+    if (!sel.length) { logline(log, 'Nothing to download — all present.', 'dim'); busy(btn, false); return; }
+    for (let i = 0; i < sel.length; i++) {
+      const m = sel[i];
+      logline(log, `▸ ${m.file}  (${SIZES[m.file] || '? MB'})`, 'head');
+      for (let p = 0; p <= 100; p += rand(18, 34)) {
+        setProg(prog, Math.min(100, Math.round(((i + p / 100) / sel.length) * 100)));
+        await sleep(rand(80, 160));
+      }
+      logline(log, '  saved to Drive', 'ok');
+      presentFiles.add(mkey(m)); m.enabled = false;
+    }
+    logline(log, '✔ Models ready.', 'ok');
+    save(); renderModels();
+    busy(btn, false);
+    setTimeout(() => resetProg(prog), 600);
+  });
+
+  /* ---------------- 05 Launch & Tunnel ---------------- */
+  $('pinggy-token').addEventListener('input', e => {
+    if (cfg.tunnel.remember_token) { cfg.tunnel.pinggy_token = e.target.value; save(); }
+  });
+  $('pinggy-remember').addEventListener('change', e => {
+    cfg.tunnel.remember_token = e.target.checked;
+    cfg.tunnel.pinggy_token = e.target.checked ? $('pinggy-token').value : '';
+    save();
+  });
+  let serverUp = false;
+  const pill = $('statuspill');
+  function setState(s, label) { pill.dataset.state = s; pill.lastChild.textContent = ' ' + (label || s.toUpperCase()); $('launch-sub').textContent = label ? label.toLowerCase() : s; }
+
+  const bootLog = [
+    ['** ComfyUI startup **', 'dim'],
+    ['Total VRAM 15102 MB · Tesla T4', 'dim'],
+    ['Set vram state to: NORMAL_VRAM', 'dim'],
+    ['Loading custom nodes…', 'accent'],
+    ['  Import times for custom nodes:', 'dim'],
+    ['  0.4s  ComfyUI_IPAdapter_plus', 'dim'],
+    ['  1.1s  comfyui_controlnet_aux', 'dim'],
+    ['  0.2s  ComfyUI-KJNodes', 'dim'],
+    ['Starting server', 'accent'],
+    ['To see the GUI go to: http://0.0.0.0:8188', 'ok'],
+  ];
+
+  $('launch-run').addEventListener('click', async () => {
+    const btn = $('launch-run'), log = $('launch-log'), prog = $('launch-prog');
+    if (serverUp) return;
+    busy(btn, true, 'Launching…'); log.innerHTML = ''; resetProg(prog);
+    setState('starting', 'starting');
+    setProg(prog, 20);
+    await stream(log, bootLog, { min: 120, max: 320 });
+    setProg(prog, 70);
+    logline(log, '▸ pinggy tunnel → localhost:8188', 'head');
+    const token = $('pinggy-token').value.trim();
+    logline(log, token ? '  using token ••••' + token.slice(-4) : '  no token — free random URL', 'dim');
+    await sleep(700);
+    setProg(prog, 100);
+    const url = 'https://' + Math.random().toString(36).slice(2, 8) + '.a.pinggy.link';
+    $('tunnel-url').innerHTML = `open → <a href="#" onclick="return false">${url}</a>`;
+    setState('running', 'running');
+    serverUp = true;
+    $('launch-stop').disabled = false; $('launch-restart').disabled = false;
+    busy(btn, false); btn.disabled = true; btn.textContent = 'Running';
+    setTimeout(() => resetProg(prog), 600);
+    mirrorServerLog();
+  });
+  $('launch-stop').addEventListener('click', () => {
+    serverUp = false;
+    setState('stopped');
+    $('tunnel-url').textContent = 'tunnel URL appears here once running…';
+    $('launch-stop').disabled = true; $('launch-restart').disabled = true;
+    const b = $('launch-run'); b.disabled = false; b.textContent = 'Launch ComfyUI';
+    logline($('launch-log'), '■ stopped.', 'warn');
+  });
+  $('launch-restart').addEventListener('click', () => {
+    $('launch-stop').click();
+    setTimeout(() => $('launch-run').click(), 400);
+  });
+
+  /* ---------------- 06 Server log ---------------- */
+  function mirrorServerLog() {
+    const el = $('server-log'); el.innerHTML = '';
+    bootLog.forEach(([t, c]) => logline(el, t, c));
+  }
+  $('log-refresh').addEventListener('click', () => {
+    const el = $('server-log');
+    if (!serverUp) { logline(el, '(server not running)', 'dim'); return; }
+    logline(el, `got prompt · queue remaining: ${rand(0, 3)}`, 'dim');
+    logline(el, `Prompt executed in ${(Math.random() * 8 + 2).toFixed(1)}s`, 'ok');
+  });
+  let autoTimer = null;
+  $('log-auto').addEventListener('change', e => {
+    if (e.target.checked) {
+      autoTimer = setInterval(() => { if (serverUp) $('log-refresh').click(); }, 1800);
+    } else { clearInterval(autoTimer); }
+  });
+
+  /* ---------------- 07 Config ---------------- */
+  $('cfg-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(JSON.stringify(cfg, null, 2)); $('cfg-copy').textContent = 'Copied ✓'; }
+    catch { $('cfg-copy').textContent = 'Copy failed'; }
+    setTimeout(() => $('cfg-copy').textContent = 'Copy JSON', 1400);
+  });
+  $('cfg-reset').addEventListener('click', () => {
+    if (!confirm('Reset all launcher config to defaults? Your custom packs/models and token will be lost.')) return;
+    cfg = DEFAULT_CFG();
+    save();
+    applyCfgToControls();
+    renderPacks(); renderModels();
+  });
+
+  /* ---------------- apply loaded config to the controls ---------------- */
+  function applyCfgToControls() {
+    const modeRadio = document.querySelector(`input[name=pmode][value="${cfg.settings.packs_update_mode}"]`);
+    if (modeRadio) modeRadio.checked = true;
+    $('env-force').checked = !!cfg.settings.env_force_reqs;
+    $('pip-text').value = cfg.extra_pip || '';
+    $('pinggy-remember').checked = cfg.tunnel.remember_token !== false;
+    $('pinggy-token').value = cfg.tunnel.remember_token !== false ? (cfg.tunnel.pinggy_token || '') : '';
+  }
+
+  /* ---------------- init ---------------- */
+  chip('chip-drive', 'ok');   // Drive mount is cell 1, done before the panel
+  applyCfgToControls();
+  renderCfgJson();
+  renderPacks();
+  renderModels();
+})();
+</script>

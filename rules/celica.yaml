@@ -1,0 +1,34 @@
+version: 1
+profile: anima
+options:
+  boundary: word          # whole-word `mentions`
+  caseSensitive: false
+rules:
+  - name: celica
+    any_of: celica         # sugar → when:{any:[{mentions:celica}]}, reads positive doc
+    into: "character:celica"   # children write here by default
+    type: group
+    children:
+
+      - name: remove-activation
+        remove: { value: celica, from: "*" }   # the model doesn't know her name
+
+      - name: appearance
+        set: { section: appearance, to: "short black hair, pixie cut" }
+
+      - name: eyes
+        none_of: closed eyes, eyes out of frame
+        add: { section: appearance, value: "blue eyes" }
+
+      - name: outfit          # mutually-exclusive: first matching branch wins
+        type: switch
+        children:
+          - any_of: jacket
+            set: { section: clothes, to: "black leather jacket" }
+          - any_of: shirt
+            set: { section: clothes, to: "black t-shirt" }
+          - default: true
+            set: { section: clothes, to: "black camisole" }
+
+      - name: quality-guard
+        add_negative: "blurry, low quality, extra fingers"

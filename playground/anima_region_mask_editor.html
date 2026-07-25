@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anima Region Mask Editor — Playground</title>
+<style>
+  .wtn {
+    --wtn-bg:#0e1116; --wtn-surface:#151a21; --wtn-surface-2:#1b212a; --wtn-line:#28303b;
+    --wtn-line-soft:#1f2731; --wtn-ink:#e7ecf3; --wtn-ink-dim:#93a0b1; --wtn-ink-faint:#5f6c7d;
+    --wtn-console:#0a0d12; --wtn-accent:#2dd4bf; --wtn-accent-strong:#34e5d2; --wtn-accent-deep:#14b8a6;
+    --wtn-on-accent:#062420; --wtn-ok:#4ade80; --wtn-warn:#fbbf24; --wtn-bad:#f87171; --wtn-info:#7dd3fc; --wtn-tmp:#c4b5fd;
+    --wtn-radius:10px; --wtn-radius-sm:7px; --wtn-radius-lg:13px; --wtn-shadow:0 10px 28px rgba(0,0,0,.55);
+    --wtn-font-ui: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --wtn-font-mono: ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--wtn-ink); font-family:var(--wtn-font-ui);
+  }
+  .wtn *,.wtn *::before,.wtn *::after{box-sizing:border-box;}
+  body{margin:0;background:var(--wtn-bg);padding:28px;}
+  .wtn-btn{font-family:var(--wtn-font-ui);font-size:12px;font-weight:600;cursor:pointer;border-radius:8px;padding:6px 11px;border:1px solid var(--wtn-line);background:transparent;color:var(--wtn-ink);transition:.14s;}
+  .wtn-btn:hover{border-color:var(--wtn-accent);color:var(--wtn-accent);}
+  .wtn-btn--primary{background:var(--wtn-accent);color:var(--wtn-on-accent);border:none;}
+  .wtn-btn--primary:hover{background:var(--wtn-accent-strong);}
+  .wtn-btn--ghost{color:var(--wtn-ink-dim);}
+  .wtn-btn--icon{background:transparent;border:none;color:var(--wtn-ink-faint);padding:2px 6px;font-size:13px;border-radius:6px;}
+  .wtn-btn--icon:hover{color:var(--wtn-bad);background:rgba(248,113,113,.14);}
+  .wtn-btn--icon.on{color:var(--wtn-accent);}
+  .wtn-input,.wtn-select{font-family:var(--wtn-font-mono);font-size:12px;color:var(--wtn-ink);background:var(--wtn-console);border:1px solid var(--wtn-line);border-radius:var(--wtn-radius-sm);padding:6px 9px;}
+  .wtn-select{font-family:var(--wtn-font-ui);}
+  .wtn-input:focus,.wtn-select:focus{outline:none;border-color:var(--wtn-accent);}
+  .wtn-label{font-family:var(--wtn-font-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--wtn-ink-dim);}
+  .wtn-card{background:var(--wtn-surface);border:1px solid var(--wtn-line);border-radius:var(--wtn-radius-lg);overflow:hidden;box-shadow:var(--wtn-shadow);}
+  .wtn-card__hd{display:flex;align-items:center;gap:9px;padding:11px 15px;background:var(--wtn-surface-2);border-bottom:1px solid var(--wtn-line);}
+  .wtn-card__hd h3{margin:0;font-size:13px;font-weight:650;}
+  .wtn-card__hd .meta{margin-left:auto;font-family:var(--wtn-font-mono);font-size:11px;color:var(--wtn-ink-faint);}
+  .wtn-card__bd{padding:14px 15px;}
+  .wtn-chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--wtn-font-mono);font-size:10.5px;padding:2px 8px;border-radius:999px;border:1px solid var(--wtn-line);color:var(--wtn-ink-dim);}
+  .wtn-chip--ok{color:var(--wtn-ok);border-color:rgba(74,222,128,.35);}
+  .wtn-tip{position:fixed;z-index:999;max-width:270px;pointer-events:none;background:var(--wtn-console);color:var(--wtn-ink);border:1px solid var(--wtn-line);border-radius:8px;padding:8px 10px;font-family:var(--wtn-font-ui);font-size:11.5px;line-height:1.45;box-shadow:var(--wtn-shadow);opacity:0;transition:opacity .12s;}
+  .wtn-tip.show{opacity:1;} .wtn-tip b{color:var(--wtn-accent);}
+  [data-tip]{border-bottom:1px dotted var(--wtn-ink-faint);cursor:help;}
+
+  .page-head{max-width:1180px;margin:0 auto 18px;}
+  .page-head h1{font-size:16px;font-weight:650;margin:0 0 4px;}
+  .page-head .sub{color:var(--wtn-ink-dim);font-size:12.5px;margin:0 0 10px;max-width:820px;line-height:1.55;}
+
+  .canvas-wrap{max-width:1180px;margin:0 auto;display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;}
+  .editor-card{width:560px;}
+  .stage{position:relative;width:100%;aspect-ratio:1216/832;background:
+      linear-gradient(45deg,#161b22 25%,transparent 25%) 0 0/16px 16px,
+      linear-gradient(-45deg,#161b22 25%,transparent 25%) 0 0/16px 16px,
+      linear-gradient(45deg,transparent 75%,#161b22 75%) 0 0/16px 16px,
+      linear-gradient(-45deg,transparent 75%,#161b22 75%) 0 0/16px 16px,
+      var(--wtn-console);
+    border:1px solid var(--wtn-line);border-radius:var(--wtn-radius-sm);overflow:hidden;cursor:crosshair;user-select:none;}
+  .region{position:absolute;border:2px solid; box-shadow:0 0 0 1px rgba(0,0,0,.4) inset; cursor:move;}
+  .region .rlabel{position:absolute;top:-1px;left:-1px;font-family:var(--wtn-font-mono);font-size:10px;font-weight:700;padding:1px 6px;color:#04110f;transform:translateY(-100%);border-radius:4px 4px 0 0;}
+  .region .handle{position:absolute;width:9px;height:9px;background:#fff;border:1px solid rgba(0,0,0,.5);border-radius:2px;}
+  .region .h-se{right:-5px;bottom:-5px;cursor:se-resize;}
+
+  .toolbar{display:flex;gap:8px;padding:10px 15px;background:var(--wtn-surface-2);border-top:1px solid var(--wtn-line);align-items:center;flex-wrap:wrap;}
+  .toolbar .spacer{flex:1;}
+
+  .side{width:290px;display:flex;flex-direction:column;gap:14px;}
+  .mask-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--wtn-line);border-radius:8px;margin-bottom:7px;background:var(--wtn-surface-2);}
+  .mask-row .swatch{width:13px;height:13px;border-radius:3px;flex:0 0 auto;}
+  .mask-row .nm{font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .mask-row select{font-size:10.5px;padding:3px 5px;}
+  .mask-row.active{border-color:var(--wtn-accent);}
+
+  .out-port{display:grid;grid-template-columns:1fr 14px;gap:8px;align-items:center;margin-bottom:6px;}
+  .out-port .nm{font-size:12px;color:var(--wtn-ink-dim);text-align:right;}
+  .out-port .sock{width:9px;height:9px;border-radius:50%;background:#3a4149;border:2px solid #3a4149;}
+  .out-port.conn .sock{background:var(--wtn-warn);border-color:var(--wtn-warn);box-shadow:0 0 6px rgba(251,191,36,.55);}
+
+  .rc-card{width:380px;}
+  .pair-row{display:grid;grid-template-columns:16px 1fr 16px 1fr;gap:6px;align-items:center;margin-bottom:8px;}
+  .pair-row .sock{width:9px;height:9px;border-radius:50%;}
+  .pair-row .sock.mask{border:2px solid #3a4149;background:#1a1f26;}
+  .pair-row .sock.mask.conn{background:var(--wtn-warn);border-color:var(--wtn-warn);box-shadow:0 0 6px rgba(251,191,36,.55);}
+  .pair-row .sock.cond{border:2px solid #3a4149;background:#1a1f26;}
+  .pair-row .sock.cond.conn{background:var(--wtn-tmp);border-color:var(--wtn-tmp);box-shadow:0 0 6px rgba(196,181,253,.55);}
+  .pair-row .nm{font-size:11.5px;color:var(--wtn-ink-dim);}
+  .field-row{display:grid;grid-template-columns:100px minmax(0,1fr);gap:9px;align-items:center;margin-bottom:7px;}
+  .field-row label{color:var(--wtn-ink-dim);font-size:11.5px;text-align:right;}
+
+  .foot{max-width:1180px;margin:16px auto 0;font-size:11.5px;color:var(--wtn-ink-faint);line-height:1.6;}
+</style>
+</head>
+<body class="wtn">
+
+<div class="page-head">
+  <h1>Anima Region Mask Editor + Regional Conditioning — Playground</h1>
+  <p class="sub">Rect/ellipse mask authoring rasterized to real <code>MASK</code> tensors before they ever leave the node — no geometry blob crosses the wire. Drag a region to move it, drag its corner handle to resize. <b>Anima Regional Conditioning</b> (right) then takes up to 6 numbered <code>MASK</code>+<code>CONDITIONING</code> pairs — plain standard sockets, so masks or conditioning from ANY source work, not just these two nodes.</p>
+</div>
+
+<div class="canvas-wrap">
+
+  <!-- ============ MASK EDITOR ============ -->
+  <div class="wtn-card editor-card">
+    <div class="wtn-card__hd">
+      <h3>Anima Region Mask Editor</h3>
+      <span class="meta">webtoon/anima</span>
+    </div>
+    <div class="wtn-card__bd" style="padding-bottom:0;">
+      <div class="stage" id="stage"></div>
+    </div>
+    <div class="toolbar">
+      <button class="wtn-btn wtn-btn--ghost" data-shape="rect" title="add a rectangular mask region">▭ + rect</button>
+      <button class="wtn-btn wtn-btn--ghost" data-shape="ellipse" title="add an elliptical mask region">◯ + ellipse</button>
+      <span class="spacer"></span>
+      <span class="wtn-chip wtn-chip--ok" data-tip="Regions are stored as normalized 0..1 canvas coordinates internally, then rasterized to a real MASK tensor at the node's configured canvas size on output — downstream nodes never see geometry, only tensors.">rasterized on output</span>
+    </div>
+  </div>
+
+  <!-- ============ SIDE: mask list + outputs ============ -->
+  <div class="side">
+    <div class="wtn-card">
+      <div class="wtn-card__hd"><h3 style="font-size:12px;">Masks</h3></div>
+      <div class="wtn-card__bd" id="maskList"></div>
+    </div>
+    <div class="wtn-card">
+      <div class="wtn-card__hd"><h3 style="font-size:12px;">Outputs</h3><span class="meta">up to 6</span></div>
+      <div class="wtn-card__bd" id="outPorts"></div>
+    </div>
+  </div>
+
+  <!-- ============ ANIMA REGIONAL CONDITIONING ============ -->
+  <div class="wtn-card rc-card">
+    <div class="wtn-card__hd">
+      <h3>Anima Regional Conditioning</h3>
+      <span class="meta">webtoon/anima</span>
+    </div>
+    <div class="wtn-card__bd">
+      <div class="pair-row" style="grid-template-columns:16px 1fr;">
+        <span class="sock cond conn"></span><span class="nm">positive (global) <span style="color:var(--wtn-ink-faint);font-family:var(--wtn-font-mono);font-size:9.5px;">CONDITIONING</span></span>
+      </div>
+      <div class="pair-row" style="grid-template-columns:16px 1fr; margin-bottom:12px;">
+        <span class="sock cond conn"></span><span class="nm">negative (global) <span style="color:var(--wtn-ink-faint);font-family:var(--wtn-font-mono);font-size:9.5px;">CONDITIONING</span></span>
+      </div>
+
+      <div class="wtn-label" style="margin-bottom:7px;" data-tip="Each numbered pair is independent and optional — wire only as many regions as you're using. mask_1 pairs with cond_1, etc.">region pairs</div>
+      <div class="pair-row"><span class="sock mask conn"></span><span class="nm">mask_1</span><span class="sock cond conn"></span><span class="nm">cond_1</span></div>
+      <div class="pair-row"><span class="sock mask conn"></span><span class="nm">mask_2</span><span class="sock cond conn"></span><span class="nm">cond_2</span></div>
+      <div class="pair-row"><span class="sock mask"></span><span class="nm" style="color:var(--wtn-ink-faint)">mask_3</span><span class="sock cond"></span><span class="nm" style="color:var(--wtn-ink-faint)">cond_3</span></div>
+      <div class="pair-row"><span class="sock mask"></span><span class="nm" style="color:var(--wtn-ink-faint)">mask_4</span><span class="sock cond"></span><span class="nm" style="color:var(--wtn-ink-faint)">cond_4</span></div>
+      <div class="pair-row"><span class="sock mask"></span><span class="nm" style="color:var(--wtn-ink-faint)">mask_5</span><span class="sock cond"></span><span class="nm" style="color:var(--wtn-ink-faint)">cond_5</span></div>
+      <div class="pair-row"><span class="sock mask"></span><span class="nm" style="color:var(--wtn-ink-faint)">mask_6</span><span class="sock cond"></span><span class="nm" style="color:var(--wtn-ink-faint)">cond_6</span></div>
+
+      <div class="field-row" style="margin-top:10px;">
+        <label data-tip="How strongly each region's own conditioning overrides the global prompt within its mask — 1.0 fully replaces it there, lower values blend.">mask_strength</label>
+        <input class="wtn-input" value="1.0" style="width:100%">
+      </div>
+      <div class="field-row">
+        <label data-tip="'mask bounds' restricts sampling attention to the mask's bounding box (cheaper, faster); 'default' applies the mask as a soft weight over the full canvas.">area mode</label>
+        <select class="wtn-select" style="width:100%"><option>mask bounds</option><option>default</option></select>
+      </div>
+
+      <div style="margin-top:12px; display:flex; gap:20px;">
+        <div style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--wtn-ink-dim);"><span style="width:9px;height:9px;border-radius:50%;background:var(--wtn-tmp);box-shadow:0 0 6px rgba(196,181,253,.55);"></span>positive</div>
+        <div style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--wtn-ink-dim);"><span style="width:9px;height:9px;border-radius:50%;background:var(--wtn-tmp);box-shadow:0 0 6px rgba(196,181,253,.55);"></span>negative</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="foot">This node attaches native ComfyUI conditioning-mask metadata (<code>mask</code>, <code>set_area_to_bounds</code>, <code>mask_strength</code>, <code>area</code>) per region — substantially simpler than the reference pack's version, since masks arrive pre-rasterized as real tensors instead of a geometry blob this node would otherwise have to rasterize itself.</p>
+
+<div class="wtn-tip" id="tip"></div>
+<script>
+const COLORS = ['#2dd4bf','#fbbf24','#c4b5fd','#7dd3fc','#f87171','#4ade80'];
+const stage = document.getElementById('stage');
+const maskListEl = document.getElementById('maskList');
+const outPortsEl = document.getElementById('outPorts');
+
+let masks = [
+  {id:1, label:'character A', shape:'rect', x:.06, y:.18, w:.36, h:.62},
+  {id:2, label:'character B', shape:'ellipse', x:.55, y:.22, w:.38, h:.58},
+];
+let nextId = 3;
+let drag = null;
+
+function color(m){ return COLORS[(m.id-1)%COLORS.length]; }
+
+function renderStage(){
+  stage.innerHTML='';
+  masks.forEach(m=>{
+    const el = document.createElement('div');
+    el.className='region';
+    el.style.left=(m.x*100)+'%'; el.style.top=(m.y*100)+'%';
+    el.style.width=(m.w*100)+'%'; el.style.height=(m.h*100)+'%';
+    el.style.borderColor=color(m);
+    el.style.background=color(m)+'33';
+    el.style.borderRadius = m.shape==='ellipse' ? '50%' : '4px';
+    const lbl=document.createElement('span'); lbl.className='rlabel'; lbl.textContent=m.id+' · '+m.label;
+    lbl.style.background=color(m);
+    el.appendChild(lbl);
+    const h=document.createElement('div'); h.className='handle h-se'; el.appendChild(h);
+    el.addEventListener('mousedown', e=>{
+      if(e.target===h){ drag={m,mode:'resize',sx:e.clientX,sy:e.clientY,ow:m.w,oh:m.h}; }
+      else { drag={m,mode:'move',sx:e.clientX,sy:e.clientY,ox:m.x,oy:m.y}; }
+      selectMask(m.id);
+      e.preventDefault(); e.stopPropagation();
+    });
+    stage.appendChild(el);
+  });
+}
+
+window.addEventListener('mousemove', e=>{
+  if(!drag) return;
+  const r = stage.getBoundingClientRect();
+  if(drag.mode==='move'){
+    drag.m.x = clamp(drag.ox + (e.clientX-drag.sx)/r.width, 0, 1-drag.m.w);
+    drag.m.y = clamp(drag.oy + (e.clientY-drag.sy)/r.height, 0, 1-drag.m.h);
+  } else {
+    drag.m.w = clamp(drag.ow + (e.clientX-drag.sx)/r.width, .06, 1-drag.m.x);
+    drag.m.h = clamp(drag.oh + (e.clientY-drag.sy)/r.height, .06, 1-drag.m.y);
+  }
+  renderStage();
+});
+window.addEventListener('mouseup', ()=> drag=null);
+function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
+
+let activeId = 1;
+function selectMask(id){ activeId=id; renderList(); }
+
+function renderList(){
+  maskListEl.innerHTML='';
+  masks.forEach(m=>{
+    const row=document.createElement('div');
+    row.className='mask-row'+(m.id===activeId?' active':'');
+    row.innerHTML = `<span class="swatch" style="background:${color(m)}"></span>
+      <span class="nm">${m.id} · ${m.label}</span>
+      <select title="switch this region's shape">
+        <option ${m.shape==='rect'?'selected':''}>rect</option>
+        <option ${m.shape==='ellipse'?'selected':''}>ellipse</option>
+      </select>
+      <button class="wtn-btn wtn-btn--icon" title="delete mask">✕</button>`;
+    row.querySelector('select').addEventListener('change', e=>{ m.shape=e.target.value; renderStage(); });
+    row.querySelector('button').addEventListener('click', ()=>{ masks=masks.filter(x=>x!==m); renderAll(); });
+    row.addEventListener('click', e=>{ if(e.target.tagName!=='SELECT' && e.target.tagName!=='BUTTON') selectMask(m.id); });
+    maskListEl.appendChild(row);
+  });
+}
+
+function renderOutputs(){
+  outPortsEl.innerHTML='';
+  for(let i=1;i<=6;i++){
+    const active = masks.some(m=>m.id===i);
+    const row=document.createElement('div'); row.className='out-port'+(active?' conn':'');
+    row.innerHTML = `<span class="nm">mask_${i}</span><span class="sock"></span>`;
+    outPortsEl.appendChild(row);
+  }
+}
+
+function renderAll(){ renderStage(); renderList(); renderOutputs(); }
+
+document.querySelectorAll('.toolbar [data-shape]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    if(masks.length>=6) return;
+    masks.push({id:nextId, label:'region '+nextId, shape:btn.dataset.shape, x:.3,y:.3,w:.3,h:.3});
+    nextId++;
+    renderAll();
+  });
+});
+
+const tip = document.getElementById('tip');
+document.querySelectorAll('[data-tip]').forEach(el=>{
+  el.addEventListener('mouseenter', ()=>{ tip.innerHTML = el.getAttribute('data-tip'); tip.classList.add('show'); });
+  el.addEventListener('mousemove', e=>{ tip.style.left=Math.min(e.clientX+14,window.innerWidth-290)+'px'; tip.style.top=(e.clientY+14)+'px'; });
+  el.addEventListener('mouseleave', ()=> tip.classList.remove('show'));
+});
+
+renderAll();
+</script>
+</body>
+</html>

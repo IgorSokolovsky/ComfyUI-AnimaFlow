@@ -1,0 +1,725 @@
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #151a21;
+    --panel-2: #1b212a;
+    --line: #28303b;
+    --line-soft: #1f2731;
+    --ink: #e7ecf3;
+    --ink-dim: #93a0b1;
+    --ink-faint: #5f6c7d;
+    --accent: #2dd4bf;
+    --accent-deep: #14b8a6;
+    --op-add: #6ee7a8;
+    --op-rem: #f59e9e;
+    --op-cond: #7dd3fc;
+    --op-tmp: #c4b5fd;
+    --op-anchor: #fcd34d;
+    --console: #0d0c14;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); font-family: var(--ui);
+    background:
+      radial-gradient(900px 420px at 82% -160px, rgba(45,212,191,.10), transparent 70%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 20px; }
+
+  /* top bar */
+  .topbar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 18px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line); border-radius: 13px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; margin-right: auto; }
+  .brand .glyph {
+    width: 30px; height: 30px; border-radius: 9px; flex: none;
+    background: radial-gradient(circle at 30% 30%, var(--accent), var(--accent-deep));
+    box-shadow: 0 0 18px rgba(45,212,191,.35);
+  }
+  .brand h1 { font-size: 17px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+  .brand .sub { font-size: 12px; color: var(--ink-dim); }
+  .sheet-name {
+    font-family: var(--mono); font-size: 13px; color: var(--ink);
+    background: var(--console); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 11px; width: 170px;
+  }
+  .seg { display: inline-flex; background: var(--console); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+  .seg button {
+    font-family: var(--ui); font-size: 12.5px; color: var(--ink-dim); background: transparent;
+    border: none; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #062420; font-weight: 600; }
+  .btn {
+    font-family: var(--ui); font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 9px; padding: 9px 15px; border: 1px solid var(--line);
+    background: transparent; color: var(--ink); transition: .14s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #062420; border: none; }
+  .btn.primary:hover { background: #34e5d2; color: #062420; }
+
+  .demo-note { margin: 12px 2px 18px; font-size: 12.5px; color: var(--ink-faint); }
+  .demo-note b { color: var(--op-anchor); }
+
+  /* two-pane */
+  .panes { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+    overflow: hidden;
+  }
+  .pane-hd {
+    display: flex; align-items: center; gap: 10px; padding: 13px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel-2);
+  }
+  .pane-hd h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .01em; }
+  .pane-hd .spacer { flex: 1; }
+  .pane-bd { padding: 14px 16px; }
+
+  /* rule cards */
+  .rules { display: flex; flex-direction: column; gap: 10px; }
+  .rule {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px;
+    border-left: 3px solid var(--tone, var(--ink-faint));
+  }
+  .rule[data-type="group"]  { --tone: var(--op-cond); }
+  .rule[data-type="switch"] { --tone: var(--op-tmp); }
+  .rule[data-type="swap"]   { --tone: var(--op-anchor); }
+  .rule[data-type="tag"]    { --tone: var(--accent); }
+  .rule-hd { display: flex; align-items: center; gap: 8px; padding: 9px 11px; }
+  .rule-hd select, .rule-hd input { font-family: var(--ui); }
+  .rule-body { padding: 0 11px 11px 11px; display: flex; flex-direction: column; gap: 8px; }
+  .children { margin: 2px 0 0 10px; padding-left: 11px; border-left: 1px dashed var(--line);
+              display: flex; flex-direction: column; gap: 9px; }
+
+  select, input.f, textarea.f {
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+    background: var(--console); border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 9px;
+  }
+  select { font-family: var(--ui); }
+  input.f:focus, textarea.f:focus, select:focus { outline: none; border-color: var(--accent); }
+  input.f.grow { flex: 1; min-width: 0; }
+  .name-input { flex: 1; min-width: 40px; background: transparent; border: none; color: var(--ink);
+                font-family: var(--ui); font-weight: 600; font-size: 13px; padding: 4px; }
+  .name-input::placeholder { color: var(--ink-faint); font-weight: 400; }
+  .type-pill { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+               color: var(--tone); border: 1px solid var(--tone); opacity:.85; border-radius: 999px; padding: 2px 7px; flex: none; }
+
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row > .lbl { font-size: 11px; color: var(--ink-dim); font-family: var(--mono);
+                text-transform: uppercase; letter-spacing: .06em; width: 46px; flex: none; }
+  .mut { display: flex; align-items: center; gap: 7px; }
+  .mut select { width: 116px; flex: none; }
+  .icon-btn {
+    background: transparent; border: none; color: var(--ink-faint); cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 3px 6px; border-radius: 6px; flex: none;
+  }
+  .icon-btn:hover { color: var(--op-rem); background: rgba(245,158,158,.14); }
+  .add-inline {
+    align-self: flex-start; font-family: var(--ui); font-size: 12px; color: var(--ink-dim);
+    background: transparent; border: 1px dashed var(--line); border-radius: 7px; padding: 5px 10px; cursor: pointer;
+  }
+  .add-inline:hover { border-color: var(--accent); color: var(--accent); }
+  .cond-tags { display: none; }
+  .rule[data-cond="true"] .cond-tags { display: block; }
+
+  .default-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-dim); }
+  .default-toggle input { accent-color: var(--op-tmp); }
+
+  /* live pane */
+  .io-label { font-size: 11px; color: var(--ink-dim); font-family: var(--mono);
+              text-transform: uppercase; letter-spacing: .07em; margin: 2px 0 5px; }
+  textarea.io { width: 100%; min-height: 52px; resize: vertical; line-height: 1.5; }
+  .out {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+    background: var(--console); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 24px;
+  }
+  .out.pos { border-color: rgba(110,231,168,.3); }
+  .out.neg { border-color: rgba(245,158,158,.3); }
+  .out:empty::before { content: "— empty —"; color: var(--ink-faint); }
+  .stack { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+
+  details.trace { border: 1px solid var(--line); border-radius: 9px; background: var(--console); }
+  details.trace > summary { cursor: pointer; padding: 9px 12px; font-size: 12px; color: var(--ink-dim);
+                            font-family: var(--mono); user-select: none; list-style: none; }
+  details.trace > summary::-webkit-details-marker { display: none; }
+  details.trace[open] > summary { border-bottom: 1px solid var(--line); color: var(--ink); }
+  .tracebody { font-family: var(--mono); font-size: 11.5px; line-height: 1.65; padding: 10px 12px;
+               white-space: pre; overflow-x: auto; color: var(--ink-dim); }
+  .tracebody .g { color: var(--op-cond); }        /* group/switch */
+  .tracebody .t { color: var(--accent); }         /* tag/swap */
+  .tracebody .q { color: var(--ink-faint); }      /* condition */
+  .tracebody .add { color: var(--op-add); }
+  .tracebody .rem { color: var(--op-rem); }
+  .tracebody .anc { color: var(--op-anchor); }
+  .tracebody .tmp { color: var(--op-tmp); }
+  .tracebody .skip { color: var(--ink-faint); font-style: italic; }
+  .tracebody .ok { color: var(--op-add); }
+
+  .export { font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre;
+            overflow-x: auto; background: var(--console); border: 1px solid var(--line);
+            border-radius: 9px; padding: 12px 14px; color: var(--ink-dim); }
+  .add-rule-row { display: flex; gap: 8px; margin-top: 12px; }
+  .foot { margin-top: 22px; font-size: 12px; color: var(--ink-faint); text-align: center; line-height: 1.7; }
+  .foot code { font-family: var(--mono); color: var(--ink-dim); }
+
+  /* guide */
+  .guide-card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+                margin-bottom: 16px; overflow: hidden; }
+  .guide-card > summary { cursor: pointer; list-style: none; padding: 13px 18px; font-weight: 600;
+                          font-size: 13.5px; color: var(--ink); display: flex; align-items: center;
+                          gap: 10px; background: var(--panel-2); user-select: none; }
+  .guide-card > summary::-webkit-details-marker { display: none; }
+  .guide-card > summary::before { content: "▸"; color: var(--accent); transition: transform .15s; }
+  .guide-card[open] > summary::before { transform: rotate(90deg); }
+  .guide-card > summary .tag { margin-left: auto; font-family: var(--mono); font-size: 11px;
+                               color: var(--ink-faint); font-weight: 400; }
+  .guide { padding: 6px 20px 20px; font-size: 13px; line-height: 1.65; color: var(--ink-dim);
+           max-width: 780px; }
+  .guide h3 { color: var(--ink); font-size: 13px; margin: 20px 0 6px; letter-spacing: .02em;
+              text-transform: uppercase; font-family: var(--mono); }
+  .guide p { margin: 6px 0; }
+  .guide code { font-family: var(--mono); font-size: 12px; color: var(--accent);
+                background: rgba(45,212,191,.08); padding: 1px 5px; border-radius: 5px; }
+  .guide ol, .guide ul { margin: 6px 0; padding-left: 20px; }
+  .guide li { margin: 5px 0; }
+  .guide table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  .guide td { border-top: 1px solid var(--line); padding: 7px 10px; vertical-align: top; font-size: 12.5px; }
+  .guide td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; width: 84px; }
+  .legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 7px 18px; margin: 10px 0; }
+  .legend span { font-family: var(--mono); font-size: 12px; display: flex; align-items: center; gap: 9px; color: var(--ink); }
+  .legend .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+  /* tooltip */
+  #tip {
+    position: fixed; z-index: 999; max-width: 250px; pointer-events: none;
+    background: #0a0d12; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font-family: var(--ui); font-size: 12px;
+    line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,.55);
+    opacity: 0; transform: translateY(3px); transition: opacity .12s, transform .12s;
+  }
+  #tip.show { opacity: 1; transform: none; }
+  #tip b { color: var(--accent); }
+  [data-tip] { cursor: help; }
+  input[data-tip], select[data-tip] { cursor: text; }
+  select[data-tip] { cursor: pointer; }
+</style>
+
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <div class="glyph"></div>
+      <div>
+        <h1>Waifu Rule Builder</h1>
+        <div class="sub">character sheet → prompt transform</div>
+      </div>
+    </div>
+    <input class="sheet-name" id="sheet-name" value="celica" spellcheck="false">
+    <div class="seg" id="profile" role="tablist" data-tip="&lt;b&gt;Anima · prose&lt;/b&gt;: section-based prompts (appearance / clothes / …). &lt;b&gt;Booru · tags&lt;/b&gt;: one comma-separated tag list.">
+      <button data-p="anima" aria-pressed="true">Anima · prose</button>
+      <button data-p="booru" aria-pressed="false">Booru · tags</button>
+    </div>
+    <button class="btn" id="export-btn">Export YAML</button>
+  </div>
+
+  <div class="demo-note"><b>Demo</b> — this mock runs a faithful (simplified) engine in your browser so the live preview really transforms. The real node uses the full Python engine. Edit rules on the left, watch the right update.</div>
+
+  <details class="guide-card">
+    <summary>How to use this <span class="tag">new here? start here</span></summary>
+    <div class="guide">
+      <p>You write <b>rules</b> that rewrite a prompt <i>before</i> it's encoded. Define your
+      character once — her hair, eyes, outfits, the conditions they appear under — and the engine
+      transforms a short prompt into the full one, every time.</p>
+
+      <h3>Quick start</h3>
+      <ol>
+        <li>Pick a <b>profile</b> (top-right): <code>Anima · prose</code> for section-based prompts,
+            or <code>Booru · tags</code> for comma-separated tags.</li>
+        <li>Edit the <b>rules</b> on the left — the seeded <code>celica</code> sheet is a working example.</li>
+        <li>Type a test prompt in <b>Input · positive</b>; the <b>Output</b> and <b>trace</b> update live.</li>
+        <li>Hit <b>Export YAML</b> — that's the character-sheet file the ComfyUI node will load.</li>
+      </ol>
+
+      <h3>Every rule is four ideas</h3>
+      <ul>
+        <li><code>when</code> — the condition that <b>gates</b> the rule (e.g. <code>any_of: celica</code>). <code>always</code> = no condition.</li>
+        <li><code>into</code> — <b>where</b> new tags go: a section like <code>clothes</code>, or <code>*</code> for the single tag list.</li>
+        <li><b>mutation</b> — <b>what</b> it does: <code>add</code>, <code>add_negative</code>, <code>remove</code>, <code>set</code>, <code>tmp</code>.</li>
+        <li>Rules run <b>top → bottom</b>; groups and switches nest.</li>
+      </ul>
+
+      <h3>Rule types</h3>
+      <table>
+        <tr><td>tag</td><td>Add / remove / set tags. The everyday rule.</td></tr>
+        <tr><td>group</td><td>Run <b>all</b> child rules under one shared <code>when</code> + <code>into</code>. Keeps related rules together.</td></tr>
+        <tr><td>switch</td><td>Run the <b>first</b> matching child, else the <code>default</code>. Mutually-exclusive — perfect for picking an outfit.</td></tr>
+        <tr><td>swap</td><td>Replace a placeholder tag with expanded tags at its position.</td></tr>
+      </table>
+
+      <h3>Conditions (when)</h3>
+      <table>
+        <tr><td>any_of</td><td>fires if <b>at least one</b> listed tag is in the prompt</td></tr>
+        <tr><td>all_of</td><td>fires only if <b>all</b> are present</td></tr>
+        <tr><td>none_of</td><td>fires only if <b>none</b> are present</td></tr>
+        <tr><td>always</td><td>no condition — always fires</td></tr>
+      </table>
+
+      <h3>Mutations</h3>
+      <table>
+        <tr><td>add</td><td>append to the positive prompt (<b>deduped</b> — never doubles a tag)</td></tr>
+        <tr><td>add_negative</td><td>append to the negative prompt</td></tr>
+        <tr><td>remove</td><td>drop a tag — stays visible to later rules, gone from output</td></tr>
+        <tr><td>set</td><td>overwrite a whole section (Anima mode)</td></tr>
+        <tr><td>tmp</td><td>temporary tag: visible to later rules, not rendered</td></tr>
+      </table>
+
+      <h3>Reading the trace</h3>
+      <p>The trace shows <i>exactly</i> what fired and why — the engine's killer feature:</p>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--op-cond)"></i>&gt; group / switch</span>
+        <span><i class="dot" style="background:var(--accent)"></i>$ tag / swap</span>
+        <span><i class="dot" style="background:var(--ink-faint)"></i>? condition result</span>
+        <span><i class="dot" style="background:var(--op-add)"></i>+ added</span>
+        <span><i class="dot" style="background:var(--op-rem)"></i>- removed</span>
+        <span><i class="dot" style="background:var(--op-anchor)"></i>= set</span>
+        <span><i class="dot" style="background:var(--op-tmp)"></i>~ temporary</span>
+        <span><i class="dot" style="background:var(--ink-faint)"></i>x skipped</span>
+      </div>
+
+      <h3>Pro tip</h3>
+      <p>Put your character's <b>activation word</b> (e.g. <code>celica</code>) in the prompt to fire her
+      rules — then add a <code>remove: celica</code> rule so the name never reaches the model (it doesn't
+      know it, and might misread it). In the real node, a <b>picker button</b> will insert that word for you.</p>
+    </div>
+  </details>
+
+  <div class="panes">
+    <!-- RULES -->
+    <div class="pane">
+      <div class="pane-hd">
+        <h2>Rules</h2>
+        <span class="spacer"></span>
+        <span id="rule-count" style="font-family:var(--mono);font-size:11.5px;color:var(--ink-faint)"></span>
+      </div>
+      <div class="pane-bd">
+        <div class="rules" id="rules"></div>
+        <div class="add-rule-row">
+          <button class="btn primary" data-add="tag">+ Rule</button>
+          <button class="btn" data-add="group">+ Group</button>
+          <button class="btn" data-add="switch">+ Switch</button>
+          <button class="btn" data-add="swap">+ Swap</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div class="pane">
+      <div class="pane-hd"><h2>Live preview</h2></div>
+      <div class="pane-bd">
+        <div class="stack">
+          <div class="io-label">Input · positive</div>
+          <textarea class="f io" id="in-pos" spellcheck="false">1girl, celica, jacket, smile</textarea>
+          <div class="io-label">Input · negative</div>
+          <textarea class="f io" id="in-neg" spellcheck="false">sketch</textarea>
+        </div>
+        <div class="stack">
+          <div class="io-label">Output · positive</div>
+          <div class="out pos" id="out-pos"></div>
+          <div class="io-label">Output · negative</div>
+          <div class="out neg" id="out-neg"></div>
+        </div>
+        <details class="trace" open>
+          <summary>▸ trace — why each rule fired</summary>
+          <div class="tracebody" id="trace"></div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div class="pane" id="export-pane" style="display:none;margin-top:16px">
+    <div class="pane-hd"><h2>Ruleset · YAML</h2><span class="spacer"></span>
+      <button class="btn" id="copy-yaml">Copy</button>
+      <button class="icon-btn" id="close-export" style="font-size:18px">✕</button>
+    </div>
+    <div class="pane-bd"><div class="export" id="export-out"></div></div>
+  </div>
+
+  <div class="foot">
+    Mock of the in-ComfyUI Rule Builder · clean-room engine, concept inspired by ComfyUI-MyOriginalWaifu<br>
+    Tell Claude what to change — this iterates before it becomes real ComfyUI UI.
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const uid = (() => { let n = 0; return () => "r" + (++n); })();
+  let PROFILE = "anima";
+
+  /* ---------------- tooltips ---------------- */
+  const TIP = {
+    type: {
+      tag: "<b>Tag rule</b> — add, remove, or set tags. The everyday rule.",
+      group: "<b>Group</b> — runs ALL child rules under this rule's condition + target.",
+      switch: "<b>Switch</b> — runs the FIRST child whose condition matches, else the default. Mutually-exclusive, like picking an outfit.",
+      swap: "<b>Swap</b> — removes a placeholder tag and inserts expanded tags in its place.",
+    },
+    when: "Condition that <b>gates</b> this rule. 'always' = no condition.",
+    condTags: "Tags to test (comma-separated), matched against the positive prompt.",
+    into: "<b>Where</b> added tags go — a section like 'clothes', or '*' for the single tag list.",
+    name: "Optional label — shows up in the trace and error messages.",
+    def: "<b>Default</b> child — used when no other branch matches. Can't have a condition.",
+    matchF: "Placeholder tag to find and remove.",
+    addF: "Tags to insert where the placeholder was.",
+    section: "Section to overwrite (e.g. appearance, clothes).",
+    value: "Tags / text for this mutation, comma-separated.",
+    removeVal: "Tag to drop from the prompt (still visible to later rules).",
+    profile: "<b>Anima · prose</b>: section-based prompts (appearance / clothes / …).<br><b>Booru · tags</b>: one comma-separated tag list.",
+    mut: {
+      add: "Append to the <b>positive</b> prompt — deduped, never doubles a tag.",
+      add_negative: "Append to the <b>negative</b> prompt.",
+      remove: "Drop a tag — stays visible to later rules, gone from output.",
+      set: "Overwrite a <b>whole section</b> with these tags.",
+      tmp: "Temporary tag: visible to later rules, <b>not</b> rendered.",
+    },
+  };
+  const tipEl = document.createElement("div"); tipEl.id = "tip"; document.body.appendChild(tipEl);
+  function showTip(el) {
+    tipEl.innerHTML = el.dataset.tip; tipEl.classList.add("show");
+    const r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect();
+    let left = Math.max(8, Math.min(r.left + r.width / 2 - t.width / 2, innerWidth - t.width - 8));
+    let top = r.top - t.height - 8; if (top < 8) top = r.bottom + 8;
+    tipEl.style.left = left + "px"; tipEl.style.top = top + "px";
+  }
+  const hideTip = () => tipEl.classList.remove("show");
+  document.addEventListener("mouseover", e => { const el = e.target.closest("[data-tip]"); if (el) showTip(el); });
+  document.addEventListener("mouseout", e => { if (e.target.closest("[data-tip]")) hideTip(); });
+  document.addEventListener("scroll", hideTip, true);
+
+  /* ---------------- data model ---------------- */
+  // rule: {id, type, name, cond:{mode,tags}, into, muts:[{op,value,section}], children:[], isDefault, match, addv}
+  const mk = (type) => ({
+    id: uid(), type, name: "", cond: { mode: "always", tags: "" }, into: "",
+    muts: type === "tag" ? [{ op: "add", value: "", section: "" }] : [],
+    children: (type === "group" || type === "switch") ? [] : null,
+    isDefault: false, match: "", addv: "",
+  });
+
+  // seed = the celica example
+  let RULES = [{
+    id: uid(), type: "group", name: "celica",
+    cond: { mode: "any_of", tags: "celica" }, into: "character:celica", muts: [], isDefault: false,
+    children: [
+      { id: uid(), type: "tag", name: "remove-name", cond: { mode: "always", tags: "" }, into: "",
+        muts: [{ op: "remove", value: "celica", section: "" }], children: null },
+      { id: uid(), type: "tag", name: "appearance", cond: { mode: "always", tags: "" }, into: "",
+        muts: [{ op: "set", value: "short black hair, pixie cut", section: "appearance" }], children: null },
+      { id: uid(), type: "tag", name: "eyes", cond: { mode: "none_of", tags: "closed eyes" }, into: "",
+        muts: [{ op: "add", value: "blue eyes", section: "appearance" }], children: null },
+      { id: uid(), type: "switch", name: "outfit", cond: { mode: "always", tags: "" }, into: "", muts: [],
+        children: [
+          { id: uid(), type: "tag", name: "", cond: { mode: "any_of", tags: "jacket" }, into: "",
+            muts: [{ op: "set", value: "black leather jacket", section: "clothes" }], children: null, isDefault: false },
+          { id: uid(), type: "tag", name: "", cond: { mode: "any_of", tags: "shirt" }, into: "",
+            muts: [{ op: "set", value: "black t-shirt", section: "clothes" }], children: null, isDefault: false },
+          { id: uid(), type: "tag", name: "", cond: { mode: "always", tags: "" }, into: "",
+            muts: [{ op: "set", value: "black camisole", section: "clothes" }], children: null, isDefault: true },
+        ] },
+      { id: uid(), type: "tag", name: "quality", cond: { mode: "always", tags: "" }, into: "",
+        muts: [{ op: "add_negative", value: "blurry, low quality", section: "" }], children: null },
+    ],
+  }];
+
+  /* ---------------- engine (faithful mock) ---------------- */
+  // doc = [{label, items:[{text,enabled}]}]
+  const splitItems = s => s.split(/[,\n]/).map(t => t.trim()).filter(Boolean).map(t => ({ text: t, enabled: true }));
+
+  function parseDoc(text) {
+    if (PROFILE === "booru") return [{ label: "", items: splitItems(text) }];
+    const blocks = []; let base = { label: "", items: [] };
+    text.split("\n").forEach(line => {
+      const m = line.match(/^\s*([\w][\w :\-]*?):\s*(.*)$/);
+      if (m) blocks.push({ label: m[1].trim(), items: splitItems(m[2]) });
+      else base.items.push(...splitItems(line));
+    });
+    return [base, ...blocks];
+  }
+  function renderDoc(doc) {
+    if (PROFILE === "booru") {
+      const items = doc.flatMap(b => b.items).filter(i => i.enabled).map(i => i.text);
+      return items.join(", ");
+    }
+    return doc.map(b => {
+      const items = b.items.filter(i => i.enabled).map(i => i.text);
+      if (!items.length) return null;
+      return b.label ? `${b.label}: ${items.join(", ")}` : items.join(", ");
+    }).filter(Boolean).join("\n");
+  }
+  const lastSeg = sel => (sel || "").split("/").filter(Boolean).pop() || "";
+  function findBlock(doc, label, create) {
+    label = lastSeg(label);
+    if (!label || label === "*") return doc[0];
+    let b = doc.find(x => x.label === label);
+    if (!b && create) { b = { label, items: [] }; doc.push(b); }
+    return b;
+  }
+  const norm = t => t.toLowerCase().replace(/\s+/g, " ").trim();
+  function mentions(doc, phrase) {
+    const p = norm(phrase); if (!p) return false;
+    const hay = " " + doc.flatMap(b => b.items).map(i => norm(i.text)).join(" , ") + " ";
+    return new RegExp("(^|[ ,])" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([ ,]|$)").test(hay);
+  }
+  function condTags(s) { return s.split(",").map(t => t.trim()).filter(Boolean); }
+  function evalCond(cond, doc, T) {
+    if (cond.mode === "always") return true;
+    const tags = condTags(cond.tags);
+    let r;
+    if (cond.mode === "any_of") r = tags.some(t => mentions(doc, t));
+    else if (cond.mode === "all_of") r = tags.every(t => mentions(doc, t));
+    else r = !tags.some(t => mentions(doc, t)); // none_of
+    T(`q`, `? ${cond.mode}(${cond.tags}) = ${r}`);
+    return r;
+  }
+  function addItems(block, value, disabled) {
+    splitItems(value).forEach(({ text }) => {
+      const ex = block.items.find(i => norm(i.text) === norm(text));
+      if (ex) { if (!disabled) ex.enabled = true; }
+      else block.items.push({ text, enabled: !disabled });
+    });
+  }
+  function removeItems(doc, value) {
+    splitItems(value).forEach(({ text }) =>
+      doc.forEach(b => b.items.forEach(i => { if (norm(i.text) === norm(text)) i.enabled = false; })));
+  }
+
+  function runRule(rule, pos, neg, intoInherit, T) {
+    const into = rule.into || intoInherit || "";
+    if (!evalCond(rule.cond, pos, T)) { T("skip", "x skipped"); return false; }
+
+    if (rule.type === "group") {
+      T("g", `> group ${rule.name ? "(" + rule.name + ")" : ""}`);
+      rule.children.forEach(c => T.child(() => runRule(c, pos, neg, into, T)));
+      return true;
+    }
+    if (rule.type === "switch") {
+      T("g", `> switch ${rule.name ? "(" + rule.name + ")" : ""}`);
+      const def = rule.children.find(c => c.isDefault);
+      for (const c of rule.children) {
+        if (c.isDefault) continue;
+        let hit = false;
+        T.child(() => { if (evalCond(c.cond, pos, T)) { hit = true; runBody(c, pos, neg, into, T); } else T("skip", "x"); });
+        if (hit) return true;
+      }
+      if (def) T.child(() => { T("ok", "✓ default"); runBody(def, pos, neg, into, T); });
+      return true;
+    }
+    if (rule.type === "swap") {
+      const hit = condTags(rule.match).find(t => mentions(pos, t));
+      T("t", `$ swap ${rule.name ? "(" + rule.name + ")" : ""}  match(${rule.match}) = ${hit || "—"}`);
+      if (!hit) { T("skip", "x no match"); return false; }
+      removeItems(pos, hit);
+      if (rule.addv) { addItems(findBlock(pos, into, true), rule.addv, false); T("add", `+ ${rule.addv}`); }
+      return true;
+    }
+    // tag
+    T("t", `$ tag ${rule.name ? "(" + rule.name + ")" : ""}`);
+    runBody(rule, pos, neg, into, T);
+    return true;
+  }
+
+  function runBody(rule, pos, neg, into, T) {
+    (rule.muts || []).forEach(m => {
+      if (!m.value && m.op !== "remove") return;
+      const target = m.section || into;
+      if (m.op === "add") { addItems(findBlock(pos, target, true), m.value, false); T("add", `+ add ${target ? "["+lastSeg(target)+"] " : ""}${m.value}`); }
+      else if (m.op === "add_negative") { addItems(findBlock(neg, target, true), m.value, false); T("add", `+ add_negative ${m.value}`); }
+      else if (m.op === "remove") { removeItems(pos, m.value); T("rem", `- remove ${m.value}`); }
+      else if (m.op === "set") { const b = findBlock(pos, target, true); b.items = []; addItems(b, m.value, false); T("anc", `= set [${lastSeg(target)||"*"}] ${m.value}`); }
+      else if (m.op === "tmp") { addItems(findBlock(pos, target, true), m.value, true); addItems(findBlock(neg, target, true), m.value, true); T("tmp", `~ tmp ${m.value}`); }
+    });
+  }
+
+  function makeTracer(lines) {
+    let depth = 0;
+    const T = (cls, msg) => lines.push(`<span class="${cls}">${"  ".repeat(depth)}${esc(msg)}</span>`);
+    T.child = (fn) => { depth++; try { fn(); } finally { depth--; } };
+    return T;
+  }
+  const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+  function runPreview() {
+    const pos = parseDoc($("in-pos").value);
+    const neg = parseDoc($("in-neg").value);
+    const lines = []; const T = makeTracer(lines);
+    RULES.forEach((r, i) => { T.child ? null : 0; runRule(r, pos, neg, "", T); });
+    $("out-pos").textContent = renderDoc(pos);
+    $("out-neg").textContent = renderDoc(neg);
+    $("trace").innerHTML = lines.join("\n") || '<span class="skip">— no rules —</span>';
+    $("rule-count").textContent = countRules(RULES) + " rules";
+    if ($("export-pane").style.display !== "none") $("export-out").textContent = toYAML();
+  }
+  function countRules(rs) { return rs.reduce((n, r) => n + 1 + (r.children ? countRules(r.children) : 0), 0); }
+
+  /* ---------------- rendering the builder ---------------- */
+  const TARGETS = { anima: ["", "*", "appearance", "clothes", "action", "focus", "quality", "global"],
+                    booru: ["", "*"] };
+
+  function renderAll() {
+    const host = $("rules"); host.innerHTML = "";
+    RULES.forEach((r, i) => host.appendChild(renderRule(r, RULES, i, false)));
+    runPreview();
+  }
+
+  function renderRule(rule, arr, idx, isSwitchChild) {
+    const el = document.createElement("div");
+    el.className = "rule"; el.dataset.type = rule.type; el.dataset.cond = rule.cond.mode !== "always";
+
+    // header
+    const hd = document.createElement("div"); hd.className = "rule-hd";
+    hd.innerHTML = `<span class="type-pill" data-tip="${TIP.type[rule.type]}">${rule.type}</span>`;
+    const name = inp(rule.name, "name (optional)", v => { rule.name = v; runPreview(); }, "", TIP.name); name.className = "name-input";
+    hd.appendChild(name);
+    if (isSwitchChild) {
+      const wrap = document.createElement("label"); wrap.className = "default-toggle"; wrap.dataset.tip = TIP.def;
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = rule.isDefault;
+      cb.onchange = () => { arr.forEach(c => c.isDefault = false); rule.isDefault = cb.checked; renderAll(); };
+      wrap.append(cb, document.createTextNode("default"));
+      hd.appendChild(wrap);
+    }
+    hd.appendChild(iconBtn("✕", () => { arr.splice(idx, 1); renderAll(); }));
+    el.appendChild(hd);
+
+    const body = document.createElement("div"); body.className = "rule-body";
+
+    // condition (hidden for switch-default)
+    if (!(isSwitchChild && rule.isDefault)) {
+      const cond = document.createElement("div"); cond.className = "row";
+      cond.innerHTML = `<span class="lbl">when</span>`;
+      cond.appendChild(sel(["always", "any_of", "all_of", "none_of"], rule.cond.mode, v => {
+        rule.cond.mode = v; el.dataset.cond = v !== "always"; renderAll();
+      }, TIP.when));
+      if (rule.cond.mode !== "always") {
+        cond.appendChild(inp(rule.cond.tags, "tags, comma, separated", v => { rule.cond.tags = v; runPreview(); }, "grow", TIP.condTags));
+      }
+      body.appendChild(cond);
+    }
+
+    // into (tag/group/switch/swap)
+    const intoRow = document.createElement("div"); intoRow.className = "row";
+    intoRow.innerHTML = `<span class="lbl">into</span>`;
+    intoRow.appendChild(datalistInp(rule.into, "target (blank = default)", TARGETS[PROFILE], v => { rule.into = v; runPreview(); }, TIP.into));
+    body.appendChild(intoRow);
+
+    // body by type
+    if (rule.type === "tag") {
+      (rule.muts || []).forEach((m, mi) => body.appendChild(renderMut(m, rule.muts, mi)));
+      body.appendChild(addInline("+ mutation", () => { rule.muts.push({ op: "add", value: "", section: "" }); renderAll(); },
+        "Add another action (add / remove / set / tmp) to this rule."));
+    } else if (rule.type === "swap") {
+      const r1 = document.createElement("div"); r1.className = "row";
+      r1.innerHTML = `<span class="lbl">match</span>`;
+      r1.appendChild(inp(rule.match, "placeholder tag", v => { rule.match = v; runPreview(); }, "grow", TIP.matchF));
+      const r2 = document.createElement("div"); r2.className = "row";
+      r2.innerHTML = `<span class="lbl">add</span>`;
+      r2.appendChild(inp(rule.addv, "expanded tags", v => { rule.addv = v; runPreview(); }, "grow", TIP.addF));
+      body.append(r1, r2);
+    } else { // group / switch
+      const kids = document.createElement("div"); kids.className = "children";
+      rule.children.forEach((c, ci) => kids.appendChild(renderRule(c, rule.children, ci, rule.type === "switch")));
+      body.appendChild(kids);
+      const addRow = document.createElement("div"); addRow.className = "row";
+      ["tag", "group", "switch", "swap"].forEach(t =>
+        addRow.appendChild(addInline("+ " + t, () => { rule.children.push(mk(t)); renderAll(); }, TIP.type[t])));
+      body.appendChild(addRow);
+    }
+
+    el.appendChild(body);
+    return el;
+  }
+
+  function renderMut(m, arr, idx) {
+    const row = document.createElement("div"); row.className = "row mut";
+    row.appendChild(sel(["add", "add_negative", "remove", "set", "tmp"], m.op, v => { m.op = v; renderAll(); }, TIP.mut[m.op]));
+    if (m.op === "set") row.appendChild(datalistInp(m.section, "section", TARGETS[PROFILE], v => { m.section = v; runPreview(); }, TIP.section));
+    row.appendChild(inp(m.value, m.op === "remove" ? "tag to remove" : "value", v => { m.value = v; runPreview(); }, "grow", m.op === "remove" ? TIP.removeVal : TIP.value));
+    row.appendChild(iconBtn("✕", () => { arr.splice(idx, 1); renderAll(); }));
+    return row;
+  }
+
+  /* ---------------- small widget helpers ---------------- */
+  function inp(val, ph, on, cls, tip) {
+    const e = document.createElement("input"); e.className = "f " + (cls || ""); e.value = val || "";
+    e.placeholder = ph; e.spellcheck = false; e.oninput = () => on(e.value);
+    if (tip) e.dataset.tip = tip; return e;
+  }
+  function datalistInp(val, ph, opts, on, tip) {
+    const e = inp(val, ph, on, "grow", tip);
+    const id = "dl" + uid(); const dl = document.createElement("datalist"); dl.id = id;
+    opts.forEach(o => { const op = document.createElement("option"); op.value = o; dl.appendChild(op); });
+    e.setAttribute("list", id); e.appendChild(dl); e.parentNode ? 0 : 0;
+    const frag = document.createElement("span"); frag.style.display = "contents"; frag.append(e, dl); return frag;
+  }
+  function sel(opts, val, on, tip) {
+    const e = document.createElement("select");
+    opts.forEach(o => { const op = document.createElement("option"); op.value = o; op.textContent = o; if (o === val) op.selected = true; e.appendChild(op); });
+    e.onchange = () => on(e.value); if (tip) e.dataset.tip = tip; return e;
+  }
+  function iconBtn(txt, on) { const b = document.createElement("button"); b.className = "icon-btn"; b.textContent = txt; b.onclick = on; return b; }
+  function addInline(txt, on, tip) { const b = document.createElement("button"); b.className = "add-inline"; b.textContent = txt; b.onclick = on; if (tip) b.dataset.tip = tip; return b; }
+
+  /* ---------------- YAML export ---------------- */
+  function toYAML() {
+    const lines = [`version: 1`, `profile: ${PROFILE === "anima" ? "anima" : "illustrious"}`, `rules:`];
+    RULES.forEach(r => emitRule(r, lines, 1));
+    return lines.join("\n");
+  }
+  function emitRule(r, lines, d) {
+    const pad = "  ".repeat(d), p2 = "  ".repeat(d + 1);
+    const head = [];
+    if (r.name) head.push(`name: ${r.name}`);
+    if (r.cond.mode !== "always") head.push(`${r.cond.mode}: ${r.cond.tags}`);
+    if (r.type !== "tag") head.push(`type: ${r.type}`);
+    if (r.into) head.push(`into: "${r.into}"`);
+    lines.push(`${pad}- ${head.shift() || ""}`.trimEnd());
+    head.forEach(h => lines.push(`${p2}${h}`));
+    if (r.type === "tag") {
+      (r.muts || []).forEach(m => {
+        if (m.op === "set") lines.push(`${p2}set: { section: ${m.section || "*"}, to: "${m.value}" }`);
+        else lines.push(`${p2}${m.op}: "${m.value}"`);
+      });
+    } else if (r.type === "swap") {
+      lines.push(`${p2}match: "${r.match}"`); if (r.addv) lines.push(`${p2}add: "${r.addv}"`);
+    } else {
+      lines.push(`${p2}children:`);
+      r.children.forEach(c => {
+        if (c.isDefault) { const s = c.muts[0]; lines.push(`${"  ".repeat(d + 2)}- default: true`);
+          lines.push(`${"  ".repeat(d + 3)}set: { section: ${s.section || "*"}, to: "${s.value}" }`); }
+        else emitRule(c, lines, d + 2);
+      });
+    }
+  }
+
+  /* ---------------- wire ---------------- */
+  document.querySelectorAll("[data-add]").forEach(b => {
+    b.dataset.tip = TIP.type[b.dataset.add];
+    b.onclick = () => { RULES.push(mk(b.dataset.add)); renderAll(); };
+  });
+  $("in-pos").oninput = runPreview; $("in-neg").oninput = runPreview;
+  $("profile").querySelectorAll("button").forEach(b => b.onclick = () => {
+    PROFILE = b.dataset.p;
+    $("profile").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    renderAll();
+  });
+  $("export-btn").onclick = () => { $("export-pane").style.display = "block"; $("export-out").textContent = toYAML(); $("export-pane").scrollIntoView({ behavior: "smooth" }); };
+  $("close-export").onclick = () => $("export-pane").style.display = "none";
+  $("copy-yaml").onclick = async () => { try { await navigator.clipboard.writeText(toYAML()); $("copy-yaml").textContent = "Copied ✓"; setTimeout(() => $("copy-yaml").textContent = "Copy", 1400); } catch {} };
+
+  renderAll();
+})();
+</script>
