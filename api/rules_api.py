@@ -19,7 +19,18 @@ from typing import Optional
 
 import yaml
 
-import core
+try:  # pragma: no cover - exercised implicitly by whichever context imports us
+    # Real ComfyUI context: this module is a subpackage of this custom-node
+    # pack's top-level package (`api/` -> pack root), so a relative import
+    # up to the pack's own `core` is correct here (a bare `import core` would
+    # only resolve if the pack's parent dir -- not the pack root -- were on
+    # `sys.path`, which it isn't).
+    from .. import core  # type: ignore
+except ImportError:
+    # Standalone context (plain-script tests, run from the repo root with the
+    # repo root on `sys.path`): no parent package to relate to, so fall back
+    # to the bare import the project's other `test_*.py` scripts rely on.
+    import core
 
 try:  # pragma: no cover - exercised implicitly by whichever context imports us
     # Real ComfyUI context: `api` and `nodes` are both subpackages of this
