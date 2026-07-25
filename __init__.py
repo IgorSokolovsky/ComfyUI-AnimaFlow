@@ -16,6 +16,8 @@ from .nodes.anima.node_anima_detailer_hook import AnimaDetailerAlignHook
 from .nodes.anima.node_anima_generator import AnimaGenerator
 from .nodes.anima.node_anima_image_scale import AnimaImageScaleByMultiple
 from .nodes.anima.node_anima_preview import AnimaPreview
+from .nodes.anima.node_anima_region_mask_editor import AnimaRegionMaskEditor
+from .nodes.anima.node_anima_regional_conditioning import AnimaRegionalConditioning
 from .nodes.anima_prompt.node_anima_prompt_studio import AnimaPromptStudio
 from .nodes.panel.node_llm_panels import LLMPanels
 from .nodes.panel.node_panel_parser import PanelBatch
@@ -53,6 +55,8 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
     "AnimaGenerator": AnimaGenerator,
     "AnimaConditioningEncode": AnimaConditioningEncode,
     "AnimaPromptStudio": AnimaPromptStudio,
+    "AnimaRegionMaskEditor": AnimaRegionMaskEditor,
+    "AnimaRegionalConditioning": AnimaRegionalConditioning,
 }
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptBuilder": "Prompt Builder",
@@ -69,6 +73,8 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "AnimaGenerator": "Anima Generator",
     "AnimaConditioningEncode": "Anima Conditioning Encode",
     "AnimaPromptStudio": "Anima Prompt Studio",
+    "AnimaRegionMaskEditor": "Anima Region Mask Editor",
+    "AnimaRegionalConditioning": "Anima Regional Conditioning",
 }
 
 WEB_DIRECTORY = "./js"
