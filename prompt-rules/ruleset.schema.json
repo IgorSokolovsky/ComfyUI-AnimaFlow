@@ -14,10 +14,17 @@
       "properties": {
         "conditionScope": { "$ref": "#/$defs/selector", "default": "*" },
         "caseSensitive": { "type": "boolean", "default": false },
-        "boundary": { "enum": ["word", "substring"], "default": "word" }
+        "boundary": { "enum": ["word", "substring"], "default": "word" },
+        "characterLabel": {
+          "enum": ["generic", "name", "none"],
+          "description": "Per-sheet override for the boundary header a `character:*` container this ruleset targets (via `into`, resolved or created) renders before its sections: 'generic' -> 'character <N>:', 'name' -> 'character: <name>' (the container's label with its 'character:' prefix stripped), 'none' -> no header. Deliberately absent-by-default (no implicit default value here) so 'no sheet opinion' is distinguishable from an explicit choice; the profile's `containerLabelStyle` (default 'generic') applies when no sheet stamps a style onto that container."
+        }
       }
     },
-    "rules": { "type": "array", "items": { "$ref": "#/$defs/rule" } }
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule", "unevaluatedProperties": false }
+    }
   },
 
   "$defs": {
@@ -130,7 +137,6 @@
 
     "tagRule": {
       "type": "object",
-      "additionalProperties": false,
       "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
       "properties": {
         "name": true, "type": true, "when": true, "into": true,
@@ -151,19 +157,20 @@
 
     "groupRule": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["type", "children"],
       "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
       "properties": {
         "name": true, "type": true, "when": true, "into": true,
         "any_of": true, "all_of": true, "none_of": true,
-        "children": { "type": "array", "items": { "$ref": "#/$defs/rule" } }
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rule", "unevaluatedProperties": false }
+        }
       }
     },
 
     "switchRule": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["type", "children"],
       "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
       "properties": {
@@ -173,7 +180,8 @@
           "type": "array",
           "items": {
             "allOf": [{ "$ref": "#/$defs/rule" }],
-            "properties": { "default": { "const": true } }
+            "properties": { "default": { "const": true } },
+            "unevaluatedProperties": false
           }
         }
       }
@@ -181,7 +189,6 @@
 
     "swapRule": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["type", "match"],
       "allOf": [{ "$ref": "#/$defs/commonRuleProps" }],
       "properties": {
