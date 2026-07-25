@@ -84,6 +84,73 @@ export function debounce(fn, wait) {
   return wrapped;
 }
 
+// Escapes a literal `(`/`)` in `text` as `\(`/`\)`, UNLESS it's already
+// escaped (an odd number of immediately-preceding backslashes) -- so a tag
+// arriving pre-escaped (`fate_\(series\)`, as some CSV rows already are)
+// isn't double-escaped into `fate \\(series\\)`. Mirrors the reference
+// pack's `_escape_literal_parentheses` (ComfyUI-EasyUseAnima/anima_prompt/
+// correction.py), minus its wider prompt-syntax context (weight suffixes,
+// outer-paren grouping) which doesn't apply to a single freshly-inserted tag.
+function escapeLiteralParens(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "(" || ch === ")") {
+      let backslashes = 0;
+      let cursor = i - 1;
+      while (cursor >= 0 && text[cursor] === "\\") {
+        backslashes += 1;
+        cursor -= 1;
+      }
+      if (backslashes % 2 === 0) {
+        out += "\\";
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Converts a canonical booru tag NAME (as stored in `autocomplete/data/
+ * {gelbooru,danbooru}.csv`, e.g. `looking_at_viewer`, `fate_(series)`) into
+ * safe, insertable PROMPT TEXT: underscores become spaces (booru tag names
+ * use `_` as a word-joiner; trained models -- Anima included -- see the
+ * space form), literal parentheses are backslash-escaped (bare `(`/`)` is
+ * ComfyUI/A1111 attention-weighting syntax, not literal text), and a
+ * leading `@` artist marker (this pack's convention, consumed by
+ * `AnimaConditioningEncode`'s `artist_tags`) is preserved rather than
+ * space-separated from the rest of the tag.
+ *
+ * Deliberately does NOT lowercase -- unlike the reference pack's
+ * `normalize_tag` (a lookup/dedupe KEY function), this is an INSERTION
+ * function: the text it produces lands directly in the user's prompt, so a
+ * tag's own casing must survive verbatim.
+ *
+ * Display (`render.mjs`) and search/matching (the `/wtn/autocomplete` API)
+ * both keep operating on the raw canonical tag; this function is used ONLY
+ * at the point of committing a completion into the textarea.
+ *
+ * Pure and DOM-free like the rest of this module. Never throws: null/
+ * undefined/non-string input yields `""`.
+ */
+export function tagToPromptText(tag) {
+  if (tag == null) {
+    return "";
+  }
+  let text = String(tag).trim();
+  if (!text) {
+    return "";
+  }
+  const hasArtistMarker = text.startsWith("@");
+  if (hasArtistMarker) {
+    text = text.slice(1);
+  }
+  text = text.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  text = escapeLiteralParens(text);
+  return hasArtistMarker ? "@" + text : text;
+}
+
 // Widget-NAME patterns this attaches to, per the plan: "ends in `_text`,
 // `prompt`, `positive`, `negative`" (`template` added too -- PromptBuilder's
 // own field is literally named that). This is intentionally loose/generic:

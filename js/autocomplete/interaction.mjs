@@ -5,7 +5,7 @@
  * to hide. No element creation lives here — that's `render.mjs`'s job.
  */
 
-import { commitToken, currentToken, debounce } from "./core.mjs";
+import { commitToken, currentToken, debounce, tagToPromptText } from "./core.mjs";
 import { caretCoords, ensurePopup, hidePopup, renderItems, showPopup } from "./render.mjs";
 
 const DEBOUNCE_MS = 180;
@@ -87,7 +87,13 @@ export function attachAutocomplete(el) {
     if (!item) {
       return;
     }
-    const { text, caretPos } = commitToken(el.value, state.tokenStart, state.tokenEnd, item.tag);
+    // `item.tag` is the CANONICAL booru tag name (underscores, unescaped
+    // parens) -- fine for display (render.mjs) and for the search API, but
+    // not safe to insert verbatim into the prompt: `tagToPromptText` turns
+    // it into insertable text (spaces, escaped parens) without touching
+    // `commitToken`'s own separator/trailing-comma behavior.
+    const replacement = tagToPromptText(item.tag);
+    const { text, caretPos } = commitToken(el.value, state.tokenStart, state.tokenEnd, replacement);
     el.value = text;
     if (typeof el.setSelectionRange === "function") {
       el.setSelectionRange(caretPos, caretPos);
