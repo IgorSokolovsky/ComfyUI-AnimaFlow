@@ -32,13 +32,56 @@ pip install -r requirements.txt
 > [!IMPORTANT]
 > The custom-node folder **must be named `ComfyUI-AnimaFlow`** — the frontend loads its assets from `/extensions/ComfyUI-AnimaFlow/…`. If you rename it, the Rule Builder overlay and pickers won't load. (Cloning as above gives the right name automatically.)
 
-Nodes appear in the node picker under a single **`AnimaFlow`** category (grouped: `prompt`, `scene`, `panel`, `anima`, `io`, `llm`, `rules`).
+Nodes appear in the node picker under a single **`AnimaFlow`** category, grouped into three:
+
+| Group | Nodes |
+|---|---|
+| `AnimaFlow/anima` | Anima Generator, Anima Conditioning Encode, Detailer Align Hook, Image Scale, Preview |
+| `AnimaFlow/anima_prompt` | Prompt Builder, Prompt Combiner, Prompt Rules (+ CLIP), Anima Prompt Studio |
+| `AnimaFlow/panel` | Scene Creator, LLM Panels, Panel Parser, Save Panel |
+
+---
+
+## Run on Google Colab
+
+If you run ComfyUI on Colab rather than locally, the repo ships a **launcher control panel** — an
+ipywidgets UI that replaces the usual stack of setup cells with one form: pick node packs, install
+deps, download models, start the server, and watch the live log.
+
+**Files:** [`playground/colab_launcher_cells.py`](playground/colab_launcher_cells.py) (the real
+cells — copy/paste into Colab) and [`playground/colab-launcher.html`](playground/colab-launcher.html)
+(a static preview of the UI you can open in a browser first).
+
+**Setup** — paste each of the three marked blocks into its own Colab cell, in order:
+
+| Cell | What it does |
+|---|---|
+| **1 — Drive mount** | Mounts Google Drive and creates the folder tree under `MyDrive/ComfyUI`. Kept separate because it needs Google auth. |
+| **2 — Backend** | Defines the launcher logic. Run once per runtime. |
+| **3 — Control panel** | Renders the UI. |
+
+Set cells 2 & 3 to **Form view** (⋮ → *Form* → *Hide code*) to get the clean, code-hidden panel.
+
+**What the panel gives you:** environment setup (clone/symlink ComfyUI against Drive) · node-pack
+checklist with add-your-own-repo · extra pip packages · model downloader with present/missing
+detection · launch + [pinggy](https://pinggy.io) tunnel for a public URL · live server log · config editor.
+
+> [!TIP]
+> **Everything persists across runtimes.** Panel state lives in `MyDrive/ComfyUI/launcher_config.json`,
+> and node dependencies install into a version-tagged `MyDrive/ComfyUI/py_deps/pyX.Y` folder that's
+> re-registered each session — so you install a pack's requirements *once*, not every time Colab
+> wipes the VM.
+
+> [!NOTE]
+> The launcher is **general-purpose ComfyUI-on-Colab tooling**, not AnimaFlow-specific — it manages
+> whatever packs you list (AnimaFlow is enabled in the default list). It lives under `playground/`
+> and is offered as-is; the node pack itself does not depend on it.
 
 ---
 
 ## Quick start — the Rule Builder
 
-1. Add a **Prompt Rules** node (text output) or **Prompt Rules (CLIP)** (conditioning output) — category `AnimaFlow/prompt`.
+1. Add a **Prompt Rules** node (text output) or **Prompt Rules (CLIP)** (conditioning output) — category `AnimaFlow/anima_prompt`.
 2. Click **Open Rule Builder** on the node → the overlay opens.
 3. Edit rules visually (or start from the sample `celica` sheet); the **live preview** shows the transformed prompt + a **trace** of exactly what fired.
 4. Click **Pick…** to insert a character/outfit/background token without memorizing names.

@@ -7,7 +7,9 @@ Every node in AnimaFlow, grouped by its node-picker category. All nodes are **Be
 
 ---
 
-## `AnimaFlow/prompt`
+## `AnimaFlow/anima_prompt`
+
+Anima-specific prompt authoring — build, combine, and rule-transform prompts.
 
 ### Prompt Builder
 Template-driven prompt authoring. Write a template with `{token}` placeholders and fill
@@ -31,7 +33,10 @@ encodes to conditioning. → full guide: [rule-builder.md](rule-builder.md)
 
 ---
 
-## `AnimaFlow/scene`
+## `AnimaFlow/panel`
+
+The webtoon/comic panel pipeline — compose a scene, script it into panels, render each,
+save with metadata. (Scene, LLM, panel, and save nodes all share this one group.)
 
 ### Scene Creator
 Deterministic multi-character **scene** composer: a template with `{wildcards}` plus reserved
@@ -39,10 +44,6 @@ Deterministic multi-character **scene** composer: a template with `{wildcards}` 
 structured scene into a labelled-prose document.
 - **In:** `template` (multiline), `scene_state` (per-item state, hidden by the UI) + dynamic wired sockets (incl. per-character outfit overrides)
 - **Out:** `scene` (STRING — labelled prose), `data` (PROMPT_DATA) · shows composed text + resolved slots on the node
-
----
-
-## `AnimaFlow/llm`
 
 ### LLM Panels
 Turns a story/scene **brief** into multi-panel labelled-prose text via an OpenAI-compatible
@@ -52,19 +53,11 @@ supports story continuation across runs.
 - **Out:** `panels_text`, `synopsis` (STRING)
 - Note: makes an outbound HTTPS call (stdlib `urllib`, 120 s timeout); raises with detail on error.
 
----
-
-## `AnimaFlow/panel`
-
 ### Panel Parser (Batch)
 Splits multi-panel labelled-prose text into a **per-panel list**, driving a once-per-panel
 CLIP → KSampler → Save run in one queue. Pairs downstream of LLM Panels.
 - **In:** `panels_text` (multiline) · *`delimiter_regex`, `story_delimiter_regex`, `start_index`*
 - **Out:** `panel`, `story`, `panel_index` (per-panel lists), `count` (INT) — `OUTPUT_IS_LIST`
-
----
-
-## `AnimaFlow/io`
 
 ### Save Panel (metadata)
 Saves a rendered panel PNG with the **prompt/story embedded as PNG metadata** (never drawn on

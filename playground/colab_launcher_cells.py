@@ -107,6 +107,7 @@ DEFAULT_CONFIG = {
     "paths": {"gdrive_base": GDRIVE_BASE, "comfy_path": COMFY_PATH},
     "settings": {"packs_update_mode": "pull", "env_force_reqs": False, "tail_lines": 40},
     "node_packs": [
+        {"name": "ComfyUI-AnimaFlow",             "url": "https://github.com/IgorSokolovsky/ComfyUI-AnimaFlow.git",    "enabled": True},
         {"name": "ComfyUI_IPAdapter_plus",        "url": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",        "enabled": True},
         {"name": "comfyui_controlnet_aux",        "url": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",   "enabled": True},
         {"name": "ComfyUI_essentials",            "url": "https://github.com/cubiq/ComfyUI_essentials.git",            "enabled": True},
