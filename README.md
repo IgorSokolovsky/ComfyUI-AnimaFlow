@@ -13,7 +13,7 @@
 - **✍️ Prompt tools** — Prompt Builder (templated `{wildcards}` → live fields) and Prompt Combiner (named sockets → one prompt).
 - **🎬 Scene & panel tools** — Scene Creator, LLM Panels, Panel Parser, Save Panel (metadata) — a small webtoon/comic pipeline.
 - **🌸 Anima helpers** — Anima Generator, Detailer Align Hook, Image Scale, Preview.
-- **⌨️ Tag autocomplete** — Danbooru/e621 autocomplete wired into text widgets across the pack.
+- **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
 
 All node UIs share one **house theme** (dark slate + teal) so the pack feels like a single tool.
 
