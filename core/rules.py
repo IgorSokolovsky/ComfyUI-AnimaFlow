@@ -8,6 +8,7 @@ from any other rule engine.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
@@ -16,6 +17,39 @@ from ._util import listify_phrases
 
 VALID_RULE_TYPES = {"tag", "group", "switch", "swap"}
 CONDITION_KEYS = {"mentions", "matches", "flags", "in", "all", "any", "none", "not"}
+VALID_CHARACTER_LABEL_STYLES = {"generic", "name", "none"}
+
+# Closed property sets -- mirrors `prompt-rules/ruleset.schema.json`'s
+# per-rule-type `additionalProperties: false` blocks exactly. An unknown key
+# here is NOT ignored (that's the silent-failure hole this closes): a typo'd
+# condition key (e.g. `anyof` for `any_of`) used to compile away to nothing,
+# turning a conditional rule into an unconditional one with no warning.
+TOP_LEVEL_KEYS = {"version", "profile", "options", "rules"}
+OPTIONS_KEYS = {"conditionScope", "caseSensitive", "boundary", "characterLabel"}
+
+TAG_RULE_KEYS = {
+    "add", "add_negative", "all_of", "any_of", "into", "name", "none_of",
+    "remove", "remove_negative", "set", "tmp", "type", "when",
+}
+GROUP_RULE_KEYS = {"all_of", "any_of", "children", "into", "name", "none_of", "type", "when"}
+SWITCH_RULE_KEYS = {"all_of", "any_of", "children", "into", "name", "none_of", "type", "when"}
+SWAP_RULE_KEYS = {
+    "add", "add_negative", "all_of", "any_of", "into", "match", "name", "none_of", "type", "when",
+}
+RULE_KEYS_BY_TYPE = {
+    "tag": TAG_RULE_KEYS,
+    "group": GROUP_RULE_KEYS,
+    "switch": SWITCH_RULE_KEYS,
+    "swap": SWAP_RULE_KEYS,
+}
+# `default: true` (SCHEMA.md SS3.4) is meaningful ONLY on a rule object that
+# is a direct child of a `switch`'s `children` list -- it is not part of any
+# rule type's own property set.
+SWITCH_CHILD_EXTRA_KEYS = {"default"}
+
+MUTATION_OBJECT_KEYS = {"value", "into", "section", "at", "after", "before", "weight"}
+REMOVAL_OBJECT_KEYS = {"value", "from"}
+SETOP_KEYS = {"to", "target", "section"}
 
 
 class RulesetError(Exception):
@@ -112,6 +146,20 @@ class Auditor:
     def error(self, path: str, reason: str) -> None:
         self.errors.append(f"Error at {self.source} → {path}, {reason}")
 
+    def _check_unknown_keys(self, obj: dict, valid_keys: set, path: str, allow: Optional[set] = None) -> None:
+        """Reject any key in `obj` not in `valid_keys` (plus `allow`, for the
+        switch-child `default` carve-out), with a near-miss suggestion
+        (`difflib.get_close_matches`) when the typo is close to a real key --
+        e.g. `'anyof' is not a supported property (did you mean 'any_of'?)`.
+        """
+        allowed = valid_keys | (allow or set())
+        for key in sorted(set(obj.keys()) - allowed):
+            message = f"'{key}' is not a supported property"
+            match = difflib.get_close_matches(key, sorted(allowed), n=1)
+            if match:
+                message += f" (did you mean '{match[0]}'?)"
+            self.error(f"{path}.{key}", message)
+
     # -- top level ----------------------------------------------------------
 
     def audit_ruleset(self, data) -> Optional[Ruleset]:
@@ -119,15 +167,35 @@ class Auditor:
             self.error("<root>", "ruleset must be an object")
             return None
 
+        self._check_unknown_keys(data, TOP_LEVEL_KEYS, "<root>")
+
         rules_data = data.get("rules")
         if not isinstance(rules_data, list):
             self.error("rules", "'rules' is required and must be a list")
             rules_data = []
 
-        options = dict(data.get("options") or {})
+        raw_options = data.get("options")
+        if isinstance(raw_options, dict):
+            self._check_unknown_keys(raw_options, OPTIONS_KEYS, "options")
+
+        options = dict(raw_options or {})
         options.setdefault("conditionScope", "*")
         options.setdefault("caseSensitive", False)
         options.setdefault("boundary", "word")
+        # `characterLabel` (SCHEMA.md SS3/SS7) is deliberately left
+        # absent-by-default -- NOT `setdefault`'d to a style -- so "this
+        # sheet has no opinion" stays distinguishable from an explicit
+        # choice (see `core/engine.py`'s `_stamp_character_containers`,
+        # which only stamps a `character:*` container when the key is
+        # actually present). Still validated when present.
+        if "characterLabel" in options:
+            value = options["characterLabel"]
+            if value not in VALID_CHARACTER_LABEL_STYLES:
+                self.error(
+                    "options.characterLabel",
+                    f"'{value}' is not a valid characterLabel (expected one of "
+                    f"{sorted(VALID_CHARACTER_LABEL_STYLES)})",
+                )
 
         rules: List[Rule] = []
         for i, rd in enumerate(rules_data):
@@ -145,7 +213,7 @@ class Auditor:
 
     # -- one rule -------------------------------------------------------
 
-    def audit_rule(self, rd, path: str) -> Optional[Rule]:
+    def audit_rule(self, rd, path: str, allow_default: bool = False) -> Optional[Rule]:
         if not isinstance(rd, dict):
             self.error(path, "rule must be an object")
             return None
@@ -154,6 +222,9 @@ class Auditor:
         if rtype not in VALID_RULE_TYPES:
             self.error(f"{path}.type", f"'{rtype}' is not supported")
             return None
+
+        allow = SWITCH_CHILD_EXTRA_KEYS if allow_default else None
+        self._check_unknown_keys(rd, RULE_KEYS_BY_TYPE[rtype], path, allow=allow)
 
         name = rd.get("name")
         into = rd.get("into")
@@ -199,7 +270,7 @@ class Auditor:
                 if default_seen:
                     self.error(cpath, "a switch may have at most one 'default' child")
                 default_seen = True
-            c = self.audit_rule(cd, cpath)
+            c = self.audit_rule(cd, cpath, allow_default=True)
             if c is None:
                 continue
             c.is_default = is_default
@@ -320,6 +391,7 @@ class Auditor:
                 self.error(p, "a mutation list must contain strings")
                 return None
             if isinstance(v, dict):
+                self._check_unknown_keys(v, MUTATION_OBJECT_KEYS, p)
                 if "value" not in v:
                     self.error(p, "a mutation object requires 'value'")
                     return None
@@ -359,6 +431,7 @@ class Auditor:
             if isinstance(v, list) and all(isinstance(x, str) for x in v):
                 return {"value": v}
             if isinstance(v, dict):
+                self._check_unknown_keys(v, REMOVAL_OBJECT_KEYS, p)
                 if "value" not in v:
                     self.error(p, "a removal object requires 'value'")
                     return None
@@ -389,6 +462,7 @@ class Auditor:
             if not isinstance(v, dict):
                 self.error(p, "'set' must be an object with 'to'")
                 return None
+            self._check_unknown_keys(v, SETOP_KEYS, p)
             if "to" not in v:
                 self.error(p, "'to' is required for 'set'")
                 return None

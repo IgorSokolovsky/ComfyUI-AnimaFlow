@@ -12,6 +12,7 @@ contents), not exact rendered strings.
 """
 from __future__ import annotations
 
+import glob
 import os
 import sys
 
@@ -24,9 +25,9 @@ from core import profiles as core_profiles
 from core.document import find_by_label
 from nodes.anima_prompt import _rules_helpers as rh
 
-EXAMPLES_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompt-rules", "examples"
-)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXAMPLES_DIR = os.path.join(REPO_ROOT, "prompt-rules", "examples")
+RULES_DIR = os.path.join(REPO_ROOT, "rules")
 
 
 def load_yaml(name: str) -> dict:
@@ -472,6 +473,277 @@ def test_block_order_empty_profiles_are_provable_no_ops():
 
 
 # ---------------------------------------------------------------------------
+# Container-label headers (BUG fix: `character:*` container boundaries were
+# parsed correctly but never rendered -- `_render_container` only used
+# `block.label` to pick a separator, so two characters' sections became one
+# undifferentiated pool). All assertions here are on FULL rendered strings,
+# not substrings -- a substring-only assertion is exactly what let the
+# original bug hide.
+# ---------------------------------------------------------------------------
+
+TWO_CHARACTER_INPUT = (
+    "[quality] masterpiece, best quality\n"
+    "[character:celica]\n"
+    "appearance: short black hair, blue eyes\n"
+    "clothes: black leather jacket\n"
+    "action: sitting, holding coffee\n"
+    "[character:ren]\n"
+    "appearance: long blonde hair, green eyes\n"
+    "clothes: white kimono\n"
+    "action: standing, arms crossed\n"
+    "[global] cafe interior, morning light, wooden table"
+)
+
+
+def test_container_boundary_renders_and_default_is_generic_numbering_in_render_order():
+    """The exact two-character-plus-background repro from the bug report,
+    with NO sheet opinion applied: default style is the profile's
+    `"generic"` -- `character 1:` / `character 2:`, in render order --
+    which is enough on its own to tell the two characters' sections apart.
+    """
+    doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    out = core.render(doc, "anima")
+
+    expected = (
+        "quality: masterpiece, best quality\n"
+        "character 1:\n"
+        "appearance: short black hair, blue eyes\n"
+        "clothes: black leather jacket\n"
+        "action: sitting, holding coffee\n"
+        "character 2:\n"
+        "appearance: long blonde hair, green eyes\n"
+        "clothes: white kimono\n"
+        "action: standing, arms crossed\n"
+        "global: cafe interior, morning light, wooden table"
+    )
+    assert out == expected, out
+
+
+def test_container_label_name_style_strips_character_prefix():
+    doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    for label in ("character:celica", "character:ren"):
+        find_by_label(doc.root, label)[0].render["labelStyle"] = "name"
+    out = core.render(doc, "anima")
+
+    expected = (
+        "quality: masterpiece, best quality\n"
+        "character: celica\n"
+        "appearance: short black hair, blue eyes\n"
+        "clothes: black leather jacket\n"
+        "action: sitting, holding coffee\n"
+        "character: ren\n"
+        "appearance: long blonde hair, green eyes\n"
+        "clothes: white kimono\n"
+        "action: standing, arms crossed\n"
+        "global: cafe interior, morning light, wooden table"
+    )
+    assert out == expected, out
+
+
+def test_container_label_none_style_is_byte_identical_to_pre_fix_output():
+    """`characterLabel: "none"` reproduces exactly the buggy pre-fix
+    output quoted in the bug report (today's behaviour, opted into)."""
+    doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    for label in ("character:celica", "character:ren"):
+        find_by_label(doc.root, label)[0].render["labelStyle"] = "none"
+    out = core.render(doc, "anima")
+
+    pre_fix_buggy_output = (
+        "quality: masterpiece, best quality\n"
+        "appearance: short black hair, blue eyes\n"
+        "clothes: black leather jacket\n"
+        "action: sitting, holding coffee\n"
+        "appearance: long blonde hair, green eyes\n"
+        "clothes: white kimono\n"
+        "action: standing, arms crossed\n"
+        "global: cafe interior, morning light, wooden table"
+    )
+    assert out == pre_fix_buggy_output, out
+
+
+def test_container_label_numbering_follows_render_order_not_authored_order():
+    """`[global]`/`[quality]` are authored scrambled around and BETWEEN the
+    two characters; `<N>` must still match each character's position in the
+    RENDERED (post-`blockOrder`) output, not its raw authored top-level
+    index.
+    """
+    text = (
+        "[global] GLOBALMARK\n"
+        "[character:ren]\n"
+        "action: RENACTION\n"
+        "[quality] QUALITYMARK\n"
+        "[character:celica]\n"
+        "action: CELICAACTION\n"
+    )
+    doc = core.parse(text, "anima")
+    out = core.render(doc, "anima")
+
+    expected = (
+        "quality: QUALITYMARK\n"
+        "character 1:\n"
+        "action: RENACTION\n"
+        "character 2:\n"
+        "action: CELICAACTION\n"
+        "global: GLOBALMARK"
+    )
+    assert out == expected, out
+
+
+def test_container_label_mixed_styles_numbers_by_position_not_by_style():
+    """character 1 (celica) is `"name"`, character 2 (ren) is left at the
+    profile default `"generic"` -- the second character must be
+    `character 2:`, NOT `character 1:` (numbering counts POSITION among all
+    character containers, independent of each one's own style)."""
+    doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    find_by_label(doc.root, "character:celica")[0].render["labelStyle"] = "name"
+    out = core.render(doc, "anima")
+
+    assert "character: celica" in out, out
+    assert "character 2:" in out, out
+    assert "character 1:" not in out, out
+
+
+def test_stamp_scoped_to_targeted_container_only():
+    """A sheet whose only `into` is `character:celica` must stamp ONLY
+    that container -- `character:ren` is untouched and falls back to the
+    profile default (`"generic"`)."""
+    pos_doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    neg_doc = core.parse("", "anima")
+    ruleset = {
+        "version": 1,
+        "options": {"characterLabel": "name"},
+        "rules": [{"into": "character:celica", "add": "extra detail"}],
+    }
+    result = core.apply_ruleset({"positive": pos_doc, "negative": neg_doc}, ruleset, "anima")
+
+    celica = find_by_label(result["positive"].root, "character:celica")[0]
+    ren = find_by_label(result["positive"].root, "character:ren")[0]
+    assert celica.render.get("labelStyle") == "name", celica.render
+    assert "labelStyle" not in ren.render, ren.render
+
+    out = core.render(result["positive"], "anima")
+    assert "character: celica" in out, out
+    assert "character 2:" in out, out
+    assert "character: ren" not in out, out
+
+
+def test_last_applied_sheet_wins_for_same_container():
+    """Two sheets both target `character:celica` with conflicting styles;
+    applied sequentially (as `_rules_helpers.apply_rulesets` does), the
+    LAST one applied wins."""
+    pos_doc = core.parse(TWO_CHARACTER_INPUT, "anima")
+    neg_doc = core.parse("", "anima")
+    sheet_a = {
+        "version": 1,
+        "options": {"characterLabel": "name"},
+        "rules": [{"into": "character:celica", "add": "a"}],
+    }
+    sheet_b = {
+        "version": 1,
+        "options": {"characterLabel": "none"},
+        "rules": [{"into": "character:celica", "add": "b"}],
+    }
+
+    result_a = core.apply_ruleset({"positive": pos_doc, "negative": neg_doc}, sheet_a, "anima")
+    bundle_b = {"positive": result_a["positive"], "negative": result_a["negative"]}
+    result_b = core.apply_ruleset(bundle_b, sheet_b, "anima")
+
+    celica = find_by_label(result_b["positive"].root, "character:celica")[0]
+    assert celica.render.get("labelStyle") == "none", celica.render
+
+    out = core.render(result_b["positive"], "anima")
+    assert "character: celica" not in out, out
+    assert "character 1:" not in out.split("\n"), out.split("\n")
+
+
+def test_root_never_emits_a_header():
+    """`doc.root` is a container with an empty label; a single-character
+    document must render EXACTLY one header (celica's), never a stray
+    leading `character`/`:`-only line for the root itself."""
+    text = "[quality] q\n[character:celica]\naction: a\n[global] g"
+    doc = core.parse(text, "anima")
+    out = core.render(doc, "anima")
+    lines = out.split("\n")
+
+    header_lines = [line for line in lines if line.startswith("character") and line.endswith(":")]
+    assert header_lines == ["character 1:"], lines
+    assert lines[0] == "quality: q", lines
+    assert lines[-1] == "global: g", lines
+
+
+def test_container_label_profiles_without_containers_are_byte_identical():
+    """Backward-compat guard: `raw`/`illustrious`/`pony`/`flux`/`wan` never
+    create containers, so this feature is a provable no-op for them --
+    reuses the exact fixtures from `test_block_order_empty_profiles_are_
+    provable_no_ops` (same reasoning: those profiles' renders can never
+    change from before this feature existed).
+    """
+    fixtures = {
+        "raw": ("1girl, celica, jacket, smile", "1girl, celica, jacket, smile"),
+        "illustrious": ("1girl, celica, jacket, smile", "1girl, celica, jacket, smile"),
+        "pony": ("1girl, celica, jacket, smile", "1girl, celica, jacket, smile"),
+        "flux": (
+            "A girl stands in a cafe. She wears a jacket.",
+            "A girl stands in a cafe. She wears a jacket",
+        ),
+        "wan": (
+            "A girl stands in a cafe. She wears a jacket.",
+            "A girl stands in a cafe. She wears a jacket",
+        ),
+    }
+    for profile_id, (text, expected_render) in fixtures.items():
+        doc = core.parse(text, profile_id)
+        actual_render = core.render(doc, profile_id)
+        assert actual_render == expected_render, (profile_id, actual_render)
+
+
+def test_validation_invalid_character_label_raises_path_precise_error():
+    bad = {"version": 1, "options": {"characterLabel": "bogus"}, "rules": [{"add": "x"}]}
+    result = core.validate(bad, source="bad.yaml")
+    assert result["ok"] is False, result
+    assert any(
+        "options.characterLabel" in e and "bogus" in e for e in result["errors"]
+    ), result["errors"]
+
+
+def test_celica_sheet_end_to_end_with_two_characters_fires_all_rules_no_leak():
+    """The REAL `rules/celica.yaml` sheet, via `apply_rulesets(sheets=
+    "celica")`, against a document with a SECOND character it doesn't
+    target: all five of its rules still fire, "celica" still never leaks
+    into item text, and (since the sheet itself sets no `characterLabel`)
+    BOTH characters get the profile default -- `"generic"`.
+    """
+    text = (
+        "[quality] masterpiece, best quality\n"
+        "[character:celica]\n"
+        "appearance:\n"
+        "clothes:\n"
+        "action:\n"
+        "focus: celica, jacket\n"
+        "[character:ren]\n"
+        "appearance: long blonde hair\n"
+        "clothes: white kimono\n"
+        "action: standing\n"
+        "[global] cafe interior"
+    )
+    pos_out, neg_out, trace, errors = rh.apply_rulesets(text, "sketch", "anima", sheets="celica")
+    assert errors == [], errors
+
+    trace_text = core.format_trace(trace)
+    for rule_name in ("remove-activation", "appearance", "eyes", "outfit", "quality-guard"):
+        assert f"({rule_name})" in trace_text, trace_text
+
+    assert "celica" not in pos_out.lower(), pos_out
+    assert "blurry, low quality, extra fingers" in neg_out, neg_out
+    # No `characterLabel` in celica.yaml -> profile default ("generic")
+    # applies to both containers, including the one the sheet never
+    # targets (`character:ren`).
+    assert "character 1:" in pos_out, pos_out
+    assert "character 2:" in pos_out, pos_out
+    assert "character: celica" not in pos_out, pos_out
+
+
+# ---------------------------------------------------------------------------
 # swap
 # ---------------------------------------------------------------------------
 
@@ -761,6 +1033,192 @@ def test_validation_invalid_regex_raises():
 
 
 # ---------------------------------------------------------------------------
+# Closed key sets (BUG fix: unknown keys on a rule/ruleset/options object used
+# to be silently ignored -- a typo'd condition key like `anyof` for `any_of`
+# compiled away to nothing, turning a conditional rule into an unconditional
+# one with no warning at all). The `Auditor` now rejects any key outside the
+# per-rule-type set mirrored from `prompt-rules/ruleset.schema.json`, plus the
+# ruleset top level and `options`, with a near-miss suggestion.
+# ---------------------------------------------------------------------------
+
+def test_unknown_rule_key_anyof_repro_is_rejected_with_path_precise_error():
+    """Exact repro from the bug report: 'anyof' (not 'any_of') used to be
+    dropped silently, turning a conditional rule unconditional. It must now
+    be a validation error whose path points at the RULE (not the ruleset
+    root), and `ok` must be False.
+    """
+    ruleset = {
+        "version": 1,
+        "profile": "illustrious",
+        "rules": [{"name": "t", "anyof": "celica", "add": "BLACK HAIR"}],
+    }
+    result = core.validate(ruleset, source="repro.yaml")
+
+    assert result["ok"] is False, result
+    assert result["errors"], "expected at least one error"
+    matches = [e for e in result["errors"] if "anyof" in e]
+    assert matches, result["errors"]
+    error = matches[0]
+    assert "rules[0]" in error, error
+    assert "not a supported property" in error, error
+
+
+def test_near_miss_suggestion_mentions_any_of_for_anyof_typo():
+    bad = {"version": 1, "rules": [{"anyof": "celica", "add": "x"}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    matches = [e for e in result["errors"] if "anyof" in e]
+    assert matches, result["errors"]
+    assert "did you mean 'any_of'" in matches[0], matches[0]
+
+
+def test_unrelated_unknown_key_gets_no_bogus_suggestion():
+    bad = {"version": 1, "rules": [{"bogus_key": "x", "add": "y"}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    matches = [e for e in result["errors"] if "bogus_key" in e]
+    assert matches, result["errors"]
+    assert "not a supported property" in matches[0], matches[0]
+    assert "did you mean" not in matches[0], matches[0]
+
+
+def test_unknown_key_rejected_on_each_rule_type():
+    cases = {
+        "tag": {"name": "t", "unknown_tag_key": True, "add": "x"},
+        "group": {"type": "group", "unknown_group_key": True, "children": [{"add": "x"}]},
+        "switch": {"type": "switch", "unknown_switch_key": True, "children": [{"default": True, "add": "x"}]},
+        "swap": {"type": "swap", "unknown_swap_key": True, "match": "x", "add": "y"},
+    }
+    for rtype, rule in cases.items():
+        bad = {"version": 1, "rules": [rule]}
+        result = core.validate(bad)
+        assert result["ok"] is False, (rtype, result)
+        key = [k for k in rule if k.startswith("unknown_")][0]
+        assert any(key in e for e in result["errors"]), (rtype, result["errors"])
+
+
+def test_group_rule_rejects_add_key():
+    """`add` is a tagRule/swapRule property, not groupRule's -- and the
+    reference pack rejects it too."""
+    bad = {"version": 1, "rules": [{"type": "group", "add": "x", "children": [{"add": "y"}]}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any("'add' is not a supported property" in e for e in result["errors"]), result["errors"]
+
+
+def test_switch_child_default_accepted_but_rejected_elsewhere():
+    # Accepted: `default` on a direct child of a `switch`.
+    good = {
+        "version": 1,
+        "rules": [
+            {
+                "type": "switch",
+                "children": [{"any_of": "a", "add": "x"}, {"default": True, "add": "y"}],
+            }
+        ],
+    }
+    result_good = core.validate(good)
+    assert result_good["ok"] is True, result_good["errors"]
+
+    # Rejected: `default` on a top-level rule (not a switch child at all).
+    bad_top = {"version": 1, "rules": [{"default": True, "add": "x"}]}
+    result_top = core.validate(bad_top)
+    assert result_top["ok"] is False
+    assert any("'default' is not a supported property" in e for e in result_top["errors"]), result_top["errors"]
+
+    # Rejected: `default` on a group child (only meaningful under `switch`).
+    bad_group_child = {
+        "version": 1,
+        "rules": [{"type": "group", "children": [{"default": True, "add": "x"}]}],
+    }
+    result_group_child = core.validate(bad_group_child)
+    assert result_group_child["ok"] is False
+    assert any(
+        "'default' is not a supported property" in e for e in result_group_child["errors"]
+    ), result_group_child["errors"]
+
+
+def test_unknown_top_level_ruleset_key_is_rejected():
+    bad = {"version": 1, "rule": [{"add": "x"}]}  # 'rule' instead of 'rules'
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any("'rule' is not a supported property" in e for e in result["errors"]), result["errors"]
+
+
+def test_unknown_options_key_rejected_and_correct_key_still_validates():
+    bad = {"version": 1, "options": {"characterLabl": "generic"}, "rules": [{"add": "x"}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any(
+        "'characterLabl' is not a supported property" in e and "options" in e for e in result["errors"]
+    ), result["errors"]
+
+    good = {"version": 1, "options": {"characterLabel": "generic"}, "rules": [{"add": "x"}]}
+    result_good = core.validate(good)
+    assert result_good["ok"] is True, result_good["errors"]
+
+
+def test_collect_all_reports_every_distinct_unknown_key_in_one_call():
+    bad = {
+        "version": 1,
+        "options": {"badOption": True},
+        "rules": [
+            {"name": "a", "anyof": "celica", "add": "x"},
+            {"type": "group", "add": "y", "children": [{"bogus_child_key": 1, "add": "z"}]},
+        ],
+    }
+    result = core.validate(bad)
+    assert result["ok"] is False
+
+    joined = " | ".join(result["errors"])
+    assert "badOption" in joined, joined
+    assert "anyof" in joined, joined
+    assert "'add' is not a supported property" in joined, joined
+    assert "bogus_child_key" in joined, joined
+    # four distinct unknown-key complaints, not just the first found.
+    assert len(result["errors"]) >= 4, result["errors"]
+
+
+def test_mutation_object_unknown_key_rejected():
+    bad = {"version": 1, "rules": [{"add": {"value": "x", "bogus": "y"}}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any("'bogus' is not a supported property" in e for e in result["errors"]), result["errors"]
+
+
+def test_removal_object_unknown_key_rejected():
+    bad = {"version": 1, "rules": [{"remove": {"value": "x", "bogus": "y"}}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any("'bogus' is not a supported property" in e for e in result["errors"]), result["errors"]
+
+
+def test_setop_unknown_key_rejected():
+    bad = {"version": 1, "rules": [{"set": {"to": "x", "bogus": "y"}}]}
+    result = core.validate(bad)
+    assert result["ok"] is False
+    assert any("'bogus' is not a supported property" in e for e in result["errors"]), result["errors"]
+
+
+def test_every_shipped_sheet_validates_cleanly():
+    """Every sheet actually shipped with the repo (`rules/*.yaml` plus
+    everything under `prompt-rules/examples/`) must still validate with zero
+    errors under the new closed-key-set checks. Globs the directories so a
+    newly added file is covered automatically.
+    """
+    paths = sorted(glob.glob(os.path.join(RULES_DIR, "*.yaml"))) + sorted(
+        glob.glob(os.path.join(EXAMPLES_DIR, "*.yaml"))
+    )
+    assert paths, "expected at least one shipped ruleset file to check"
+    for path in paths:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        result = core.validate(data, source=os.path.basename(path))
+        assert result["ok"] is True, (path, result["errors"])
+        assert result["errors"] == [], (path, result["errors"])
+
+
+# ---------------------------------------------------------------------------
 # Trace print (for eyeballing, per the build brief)
 # ---------------------------------------------------------------------------
 
@@ -797,6 +1255,17 @@ ALL_TESTS = [
     test_block_order_does_not_mutate_document,
     test_block_order_nested_sections_inside_character_are_not_reordered,
     test_block_order_empty_profiles_are_provable_no_ops,
+    test_container_boundary_renders_and_default_is_generic_numbering_in_render_order,
+    test_container_label_name_style_strips_character_prefix,
+    test_container_label_none_style_is_byte_identical_to_pre_fix_output,
+    test_container_label_numbering_follows_render_order_not_authored_order,
+    test_container_label_mixed_styles_numbers_by_position_not_by_style,
+    test_stamp_scoped_to_targeted_container_only,
+    test_last_applied_sheet_wins_for_same_container,
+    test_root_never_emits_a_header,
+    test_container_label_profiles_without_containers_are_byte_identical,
+    test_validation_invalid_character_label_raises_path_precise_error,
+    test_celica_sheet_end_to_end_with_two_characters_fires_all_rules_no_leak,
     test_swap_rule_expands_placeholder_and_removes_it,
     test_swap_rule_is_noop_when_placeholder_absent,
     test_matches_condition_regex_gates_add,
@@ -815,6 +1284,19 @@ ALL_TESTS = [
     test_validation_condition_mentions_and_matches_conflict_raises,
     test_validation_mutation_after_and_before_conflict_raises,
     test_validation_invalid_regex_raises,
+    test_unknown_rule_key_anyof_repro_is_rejected_with_path_precise_error,
+    test_near_miss_suggestion_mentions_any_of_for_anyof_typo,
+    test_unrelated_unknown_key_gets_no_bogus_suggestion,
+    test_unknown_key_rejected_on_each_rule_type,
+    test_group_rule_rejects_add_key,
+    test_switch_child_default_accepted_but_rejected_elsewhere,
+    test_unknown_top_level_ruleset_key_is_rejected,
+    test_unknown_options_key_rejected_and_correct_key_still_validates,
+    test_collect_all_reports_every_distinct_unknown_key_in_one_call,
+    test_mutation_object_unknown_key_rejected,
+    test_removal_object_unknown_key_rejected,
+    test_setop_unknown_key_rejected,
+    test_every_shipped_sheet_validates_cleanly,
 ]
 
 

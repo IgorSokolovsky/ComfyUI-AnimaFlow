@@ -117,11 +117,44 @@ Ruleset {
   "options": {
     "conditionScope": "*",     // where conditions look by default (positive doc)
     "caseSensitive": false,
-    "boundary": "word"         // "word" (default) | "substring" for `mentions`
+    "boundary": "word",        // "word" (default) | "substring" for `mentions`
+    "characterLabel": "generic" | "name" | "none"   // optional; see below
   },
   "rules": Rule[]              // evaluated top → bottom
 }
 ```
+
+**`options.characterLabel`** is a per-sheet override for the boundary header
+a `character:*` container renders before its sections (SS7 covers the
+mechanics; this is the *authoring* surface). It is **absent by default** —
+not defaulted to any of the three styles — so "this sheet has no opinion"
+stays distinguishable from an explicit choice: only a sheet that actually
+sets it stamps a style onto the `character:*` container(s) it targets via
+`into` (resolved or created); a container no sheet targets falls back to
+the *profile's* `containerLabelStyle` (SS6).
+
+- `"generic"` → header `character <N>:`, a distinct binding anchor with no
+  semantic baggage. **This is the profile default** (for `anima`). `<N>` is
+  that container's 1-based ordinal among **all** `character:*` containers,
+  counted in **render order** (i.e. after `blockOrder` reordering — SS6 —
+  not authored order), regardless of which style each individual container
+  ends up using.
+- `"name"` → header `character: <name>`, where `<name>` is the container's
+  own label with a leading `character:` stripped (label `character:hatsune
+  miku` → `character: hatsune miku`). Use this for a canonical character
+  Anima actually knows the name of, where the name is a correctly-grounded
+  anchor rather than noise.
+- `"none"` → no header at all (pre-this-feature behaviour).
+
+`"generic"` is the default specifically because an unknown OC name is a
+problem on **both** sides of the pipeline: it's an ungroundable token for
+the diffusion side (nothing in the model's training associates that name
+with anything), and it is not semantically neutral to an LLM text encoder
+either — an unrelated common/proper noun ("Celica" reads as a Toyota model
+in web text) can inject spurious priors the author never intended. A
+distinct anchor with no lexical meaning (`character 1:`) avoids both
+failure modes; reach for `"name"` only once a name is a real, trained
+anchor.
 
 ### 3.1 Rule (common fields)
 
@@ -297,7 +330,13 @@ Profile {
   "blockOrder": ["quality","character:*","global"],   // canonical order; see note below
   "defaults":  { "sep": ", ", "weights": "strip" },
   "perLabelSep": { "__sections__": "\n", "clothes": ", " },
-  "render": { "sectionLabelStyle": "prefix" }         // "clothes: ..." on output
+  "render": {
+    "sectionLabelStyle": "prefix",                    // "clothes: ..." on output
+    "containerLabelStyle": "generic"                   // default header style for `character:*`
+                                                        // containers no sheet has stamped a style
+                                                        // onto (SS3's `options.characterLabel`);
+                                                        // "generic" | "name" | "none", see SS3
+  }
 }
 ```
 
@@ -338,6 +377,23 @@ empty/absent `blockOrder` is not reordered at all.
 - A **container** joins children; `render.labelStyle:"prefix"` prepends `label + ": "`
   (or the profile's section style). `perLabelSep.__sections__` sets the join between
   sections (e.g. newline for Anima).
+- A non-root, non-empty-labelled **container** additionally renders a
+  boundary HEADER on its own line immediately before its (otherwise
+  unchanged) section join — e.g. a `character:celica` container renders
+  `character 1:\n<its sections>` rather than its sections alone. This is
+  the only place a container's `label` is ever emitted: `doc.root` (whose
+  label is always empty) never gets one, and no *other* container-level
+  text is derived from `label` beyond picking this header and (already,
+  pre-existing) the per-label separator. The header's own text/style comes
+  from `options.characterLabel` (SS3) if some applied ruleset targeted that
+  specific container via `into`, else the profile's `containerLabelStyle`
+  (SS6, default `"generic"` for `anima`) — see `"generic"`'s `<N>` numbering
+  rule in SS3. Like `[quality]`/`[global]`'s labels, this header is
+  deliberately **not round-trippable** back to the bracketed
+  `[character:...]` input syntax — emitting literal `[`/`]` would hand
+  those characters straight to the text encoder; encoder-facing correctness
+  wins over round-tripping here, same tradeoff as elsewhere in this
+  renderer.
 - Empty (all-disabled) leaves and empty containers are omitted; trailing separators
   are cleaned. Multi-region (`BREAK`) is a top-level container per region joined by
   ` BREAK ` (optional, profile-gated).
@@ -353,6 +409,27 @@ the whole text a single one-item leaf (rules can still `mentions`/`add`/`remove`
 ```
 Error at celica.yaml → rules[0](celica).children[1].when.any[0], 'mentons' is not a valid condition
 ```
+
+**Rule objects, `options`, and the ruleset top level are closed sets — unknown
+properties are validation errors, never silently ignored.** A dropped key is
+the worst kind of authoring mistake: it doesn't fail loudly, it *changes
+behaviour*. Concretely, `{"any_of": "celica", "add": "BLACK HAIR"}` misspelled
+as `{"anyof": "celica", "add": "BLACK HAIR"}` used to compile with no `when`
+at all — the condition silently vanished and the rule fired on *every*
+prompt, inverting the author's intent with no warning. Each rule variant
+(`tagRule`/`groupRule`/`switchRule`/`swapRule`) accepts only its own property
+set (mirrored 1:1 from `ruleset.schema.json`'s `additionalProperties: false`
+blocks); the ruleset top level accepts only `version`/`profile`/`options`/
+`rules`; `options` accepts only `conditionScope`/`caseSensitive`/`boundary`/
+`characterLabel`. An unknown key is reported at the offending rule/object's
+path, with a near-miss suggestion (e.g. `'anyof' is not a supported property
+(did you mean 'any_of'?)`) when a valid key is a close match — and, per §10,
+every such error is collected and reported together, not just the first.
+
+**`default: true` (§3.4) is valid *only* on a rule object that is a direct
+child of a `switch`'s `children` list** — it is not part of any rule type's
+own property set, so it is rejected everywhere else (a top-level rule, a
+`group` child, etc.), even though the property itself is spelled correctly.
 
 **Execution trace** (returned by `applyRuleset`, and printable as a tree) records
 every decision so a UI can show *why* a rule fired:
@@ -397,3 +474,16 @@ Trace node prefixes: `>` group/switch · `$` tag/swap · `?` condition · `→` 
 See `ruleset.schema.json` (JSON Schema, draft 2020-12) for machine validation and
 editor autocomplete. Worked examples: `examples/celica.anima.yaml` (prose) and
 `examples/celica.booru.yaml` (tags) — **same logic, two profiles**.
+
+**`ruleset.schema.json` is an editor/CI surface, not the runtime authority.**
+The Python `Auditor` (`core/rules.py`) is what actually gates a sheet at
+runtime (via `validate`/`parse_ruleset`, SS1); `ruleset.schema.json` exists
+for editor autocomplete and for a standalone JSON-Schema-based check (e.g.
+`ajv`, or Python's `jsonschema`) that a sheet is well-formed without needing
+a live `core/` import. `tests/test_ruleset_schema.py` cross-checks the two
+against each other (every shipped sheet, the `default: true`-on-switch-child
+carve-out, closed key sets, a parity corpus) so they don't silently drift
+apart. That test needs the `dev` extra (`pip install -r requirements-dev.txt`,
+or `pip install -e .[dev]`) — a plain ComfyUI install never needs it, since
+no shipped module imports `jsonschema`; the test SKIP-prints and exits 0
+when the extra isn't installed.

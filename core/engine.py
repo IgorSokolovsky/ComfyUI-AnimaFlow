@@ -498,6 +498,90 @@ def _execute_swap(rule: SwapRule, ctx: EvalContext, into: Optional[str], depth: 
 
 
 # ---------------------------------------------------------------------------
+# `options.characterLabel` -> `Block.render["labelStyle"]` stamping
+# (SCHEMA.md SS3/SS7). `render()` (core/profiles.py) only ever sees a
+# Document + Profile -- it never sees the Ruleset that produced it -- so a
+# per-sheet `characterLabel` choice has to be carried to render time via the
+# existing per-block `Block.render` override seam, stamped here at
+# apply-time (the one place that DOES see both the ruleset and the
+# resulting document).
+# ---------------------------------------------------------------------------
+
+def _consider_character_selector(selector: Optional[str], out: set) -> None:
+    """Record `selector`'s first path segment if (and only if) it names a
+    `character:*` container -- e.g. "character:celica" as-is, or
+    "character:celica/clothes" contributes just "character:celica" (the
+    CONTAINER, not the leaf section the rest of the path addresses).
+    """
+    if not selector:
+        return
+    first = selector.split("/", 1)[0]
+    if first.startswith("character:"):
+        out.add(first)
+
+
+def _collect_character_selectors(rule: Rule, out: set) -> None:
+    """Static scan of every selector `rule` (and its descendants) could
+    resolve a POSITIVE-document `character:*` container through -- so a
+    ruleset's `options.characterLabel` can be stamped onto exactly the
+    containers THIS ruleset targets via `into` (resolved or created), never
+    onto a `character:*` container only some OTHER sheet addresses (e.g.
+    applying `celica.yaml` must not stamp `character:ren`).
+
+    Deliberately excludes `add_negative`/`remove_negative` (and any of
+    their own `into`/`from` overrides): those always resolve against the
+    NEGATIVE document (see `_execute_tag`'s into-inheritance note), which
+    has no `character:*` container structure, so they can never reference a
+    positive-side container worth stamping.
+    """
+    _consider_character_selector(rule.into, out)
+
+    if isinstance(rule, TagRule):
+        for m in rule.add:
+            _consider_character_selector(m.get("into"), out)
+        for m in rule.tmp:
+            _consider_character_selector(m.get("into"), out)
+        for r in rule.remove:
+            _consider_character_selector(r.get("from"), out)
+        for s in rule.set:
+            _consider_character_selector(s.get("target"), out)
+    elif isinstance(rule, SwapRule):
+        for m in rule.add:
+            _consider_character_selector(m.get("into"), out)
+    elif isinstance(rule, (GroupRule, SwitchRule)):
+        for child in rule.children:
+            _collect_character_selectors(child, out)
+
+
+def _stamp_character_containers(doc: Document, rules: List[Rule], style: str) -> None:
+    """Write `style` into `render["labelStyle"]` for every `character:*`
+    container this ruleset's rules target (statically, via `into`/`from`/
+    `target` overrides -- see `_collect_character_selectors`), resolved
+    against `doc` AFTER this ruleset's rules have run (so a container the
+    rules just created is included, not only ones that pre-existed).
+
+    Mutates `Block.render` -- a documented rule-APPLICATION effect (SCHEMA.md
+    SS7/`core/profiles.py`'s `render()` stays a pure read of that field), and
+    "last sheet applied wins" for a container two sheets both target falls
+    out for free: `apply_ruleset` is called once per sheet against the SAME
+    (mutated-in-place) document, so a later call's stamp simply overwrites
+    an earlier one's.
+    """
+    selectors: set = set()
+    for rule in rules:
+        _collect_character_selectors(rule, selectors)
+
+    seen_ids = set()
+    for sel in selectors:
+        found = find_by_glob(doc.root, sel) if "*" in sel else find_by_label(doc.root, sel)
+        for block in found:
+            if block.is_container() and id(block) not in seen_ids:
+                seen_ids.add(id(block))
+                block.render = dict(block.render or {})
+                block.render["labelStyle"] = style
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -516,6 +600,9 @@ def apply_ruleset(bundle: Union[Bundle, dict], ruleset: Union[Ruleset, dict], pr
     ctx = EvalContext(positive, negative, prof, options)
     for rule in rs.rules:
         _run_rule(rule, ctx, None, 0)
+
+    if "characterLabel" in options:
+        _stamp_character_containers(positive, rs.rules, options["characterLabel"])
 
     return {
         "positive": positive,

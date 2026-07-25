@@ -56,7 +56,15 @@ PROFILES: dict = {
         block_order=["quality", "character:*", "global"],
         defaults={"sep": ", ", "weights": "strip"},
         per_label_sep={"__sections__": "\n", "clothes": ", "},
-        render={"sectionLabelStyle": "prefix"},
+        # `containerLabelStyle` (SCHEMA.md SS6/SS7): the header a labelled
+        # CONTAINER (in practice, only `character:*`) renders before its own
+        # sections, when no sheet's `options.characterLabel` stamped a style
+        # onto that specific container (see `core/engine.py`'s
+        # `_stamp_character_containers`). "generic" is the default -- an
+        # unknown OC name is both an ungroundable token for the diffusion
+        # side (nothing to ground it to) and semantically loaded for an LLM
+        # text encoder (an unrelated proper noun injects spurious priors).
+        render={"sectionLabelStyle": "prefix", "containerLabelStyle": "generic"},
     ),
     "flux": Profile(
         id="flux",
@@ -206,8 +214,39 @@ def _parse_labelled(text: str, prof: Profile, labels: dict) -> Block:
 def render(doc: Document, profile: Union[str, Profile, None]) -> str:
     prof = load_profile(profile)
     ordered_root_children = _ordered_top_level_children(doc.root, prof)
-    text = _render_container(doc.root, prof, children=ordered_root_children)
+    character_numbers = _number_character_containers(ordered_root_children)
+    text = _render_container(
+        doc.root, prof,
+        children=ordered_root_children,
+        character_numbers=character_numbers,
+        is_root=True,
+    )
     return text or ""
+
+
+def _number_character_containers(children: List[Block]) -> dict:
+    """1-based ordinal, in RENDER order, among all `character:*` containers
+    (used by the `"generic"` container-label style, `character <N>:`).
+
+    Takes the already-`blockOrder`-reordered top-level child list (see
+    `render()`), so numbering matches what a reader actually sees, not
+    authored order. Keyed by `id(block)` (object identity) rather than
+    `block.id`/label, since it's a purely render-local lookup that never
+    needs to survive past this one `render()` call.
+
+    `character:*` containers are always top-level children of `doc.root` in
+    this engine (created either by `_parse_labelled`'s `[character:...]`
+    handling or by `core/engine.py`'s path-selector resolution, both of
+    which only ever append to `doc.root`) -- so scanning just this one level
+    is sufficient; nested containers-within-containers don't occur.
+    """
+    numbers: dict = {}
+    n = 0
+    for c in children:
+        if c.is_container() and c.label.startswith("character:"):
+            n += 1
+            numbers[id(c)] = n
+    return numbers
 
 
 def _ordered_top_level_children(root: Block, prof: Profile) -> List[Block]:
@@ -256,7 +295,7 @@ def _ordered_top_level_children(root: Block, prof: Profile) -> List[Block]:
     return sorted(root.children, key=rank)
 
 
-def _render_block(block: Block, prof: Profile) -> Optional[str]:
+def _render_block(block: Block, prof: Profile, character_numbers: Optional[dict] = None) -> Optional[str]:
     if block.is_leaf():
         text = _render_leaf_items(block, prof)
         if not text:
@@ -267,25 +306,80 @@ def _render_block(block: Block, prof: Profile) -> Optional[str]:
             return f"{prefix}{text}"
         return text
 
-    return _render_container(block, prof)
+    return _render_container(block, prof, character_numbers=character_numbers)
 
 
-def _render_container(block: Block, prof: Profile, children: Optional[List[Block]] = None) -> Optional[str]:
-    """Render a container's children, joined by its per-label separator.
+def _render_container(
+    block: Block,
+    prof: Profile,
+    children: Optional[List[Block]] = None,
+    character_numbers: Optional[dict] = None,
+    is_root: bool = False,
+) -> Optional[str]:
+    """Render a container's children, joined by its per-label separator,
+    preceded by a boundary-marking HEADER LINE for this container itself
+    (bug fix -- previously `block.label` was only ever consulted to pick a
+    separator, never emitted, so e.g. two `character:*` containers rendered
+    as one undifferentiated attribute pool; see SCHEMA.md SS7).
 
     `children` lets callers (currently just `render()`, for `doc.root`)
     supply a reordered view without mutating `block.children`; every other
     caller (i.e. every nested container) renders in authored order.
+
+    Header text is intentionally NOT round-trippable back to the bracketed
+    `[character:...]` input syntax -- emitting literal `[`/`]` would send
+    those characters straight to the text encoder, exactly the bug already
+    fixed for `[quality]`/`[global]` (SCHEMA.md SS7's "quality"/"global"
+    leaves aren't round-trippable either; this container header keeps that
+    same, deliberate, encoder-correctness-over-round-tripping tradeoff).
     """
     parts = []
     for c in (block.children if children is None else children):
-        p = _render_block(c, prof)
+        p = _render_block(c, prof, character_numbers=character_numbers)
         if p:
             parts.append(p)
     if not parts:
         return None
     sep = prof.per_label_sep.get(block.label) or prof.per_label_sep.get("__sections__", "\n")
-    return sep.join(parts)
+    body = sep.join(parts)
+
+    # The root is a container with an empty label -- it must NEVER emit a
+    # header (guarded explicitly, not just by the `if block.label` check
+    # below, since `render()` calls `_render_container` for the root with a
+    # reordered child list and it'd be easy to accidentally fall through).
+    if is_root:
+        return body
+
+    header = _container_header(block, prof, character_numbers or {})
+    if header:
+        return f"{header}\n{body}"
+    return body
+
+
+def _container_header(block: Block, prof: Profile, character_numbers: dict) -> Optional[str]:
+    """The boundary line a labelled (non-root) container renders before its
+    own sections -- see SCHEMA.md SS7. Its own line, immediately before the
+    container's (unchanged) section join.
+
+    Per-sheet override: `core/engine.py`'s `_stamp_character_containers`
+    writes the ruleset's `options.characterLabel` choice into
+    `block.render["labelStyle"]` for exactly the `character:*` containers
+    that ruleset targets via `into`. Absent a stamp, the profile's
+    `containerLabelStyle` applies (default `"generic"` for `anima`).
+    """
+    if not block.label:
+        return None
+    style = (block.render or {}).get("labelStyle") or prof.render.get("containerLabelStyle", "generic")
+    if style == "none":
+        return None
+    if style == "name":
+        name = block.label
+        if name.startswith("character:"):
+            name = name[len("character:"):]
+        return f"character: {name}"
+    # "generic" (also the fallback for any unrecognised style value).
+    n = character_numbers.get(id(block), 1)
+    return f"character {n}:"
 
 
 def _render_leaf_items(block: Block, prof: Profile) -> str:
