@@ -601,6 +601,7 @@ def _mode_change(c): cfg["settings"]["packs_update_mode"] = c["new"]; ui_save()
 packs_mode.observe(_mode_change, names="value")
 
 packs_all  = widgets.Checkbox(value=True, description="Select all", indent=False)
+# ^ description is rewritten by sync_all_cb() to carry the n/total count.
 packs_box  = widgets.VBox()
 packs_custom = widgets.Text(placeholder="+ custom repo URL  (https://github.com/…/repo.git)",
                             layout={"flex": "1"})
@@ -640,10 +641,29 @@ def build_packs():
     sync_all_cb()
 
 def sync_all_cb():
+    """Master checkbox is an ON/OFF SWITCH for the whole group -- NOT an
+    "all are selected" indicator. It reads CHECKED whenever AT LEAST ONE pack is
+    enabled, so unticking it ALWAYS flips the value and therefore always fires,
+    clearing the list from any state.
+
+    Why not mirror "all selected": in a partial state that would leave the box
+    already unchecked, so the user's uncheck click would assign False to a value
+    that is already False -- traitlets fires nothing on an unchanged assignment,
+    so the click would be a silent no-op and the remaining packs would stay on.
+    The n/total in the label carries the all-vs-partial distinction instead.
+
+    DELIBERATE DIVERGENCE from the colab-launcher.html mock: there, a native DOM
+    checkbox gets a true tri-state via `.indeterminate`, and a browser click always
+    fires `change` regardless of the prior value -- so the mock has no dead-click to
+    avoid. `ipywidgets.Checkbox` has no indeterminate trait, so this count-in-label
+    switch is the closest faithful equivalent. Don't "resync" the two by copying the
+    mock's all()-based logic back here; that reintroduces the no-op click."""
     if _guard["on"]: return
     _guard["on"] = True
     vals = [p.get("enabled", True) for p in cfg["node_packs"]]
-    packs_all.value = bool(vals) and all(vals)
+    n = sum(1 for v in vals if v)
+    packs_all.value = n > 0
+    packs_all.description = f"Select all  ({n}/{len(vals)})"
     _guard["on"] = False
 
 def on_all(c):
