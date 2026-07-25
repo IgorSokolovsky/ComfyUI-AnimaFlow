@@ -1,6 +1,6 @@
 """Plain-script tests for the prompt-rules engine (`core/`).
 
-Run directly: `python test_rules.py` (no pytest, per project convention).
+Run directly: `python tests/test_rules.py` (no pytest, per project convention).
 
 IMPORTANT: the `# Output:` comments in the example YAML files
 (`prompt-rules/examples/*.yaml`) are ILLUSTRATIVE -- they assume anchor
@@ -13,13 +13,18 @@ contents), not exact rendered strings.
 from __future__ import annotations
 
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 
 import core
 from core.document import find_by_label
 
-EXAMPLES_DIR = os.path.join(os.path.dirname(__file__), "prompt-rules", "examples")
+EXAMPLES_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompt-rules", "examples"
+)
 
 
 def load_yaml(name: str) -> dict:

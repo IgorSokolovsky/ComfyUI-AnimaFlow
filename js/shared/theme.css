@@ -3,7 +3,7 @@
    Scoped entirely under `.wtn` so it never leaks into ComfyUI's own DOM.
    SINGLE SOURCE OF TRUTH: change a token here (or in theme.mjs's TOKENS,
    which must stay in sync) and the whole pack retunes.
-   Spec + component vocabulary: see THEME.md. Living preview: playground/theme.html.
+   Spec + component vocabulary: see docs/THEME.md. Living preview: playground/theme.html.
    Injected via theme.mjs (injectTheme()) — do not edit copies elsewhere.
    ========================================================================= */
 .wtn {

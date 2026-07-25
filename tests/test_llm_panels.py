@@ -1,6 +1,6 @@
 """Plain-script tests for the LLM Panels node's pure logic.
 
-Run directly: `python test_llm_panels.py` (no pytest, per project convention).
+Run directly: `python tests/test_llm_panels.py` (no pytest, per project convention).
 No real network calls are made anywhere in this file — `build_messages` /
 `build_payload` / `extract_content` / `split_panels_and_synopsis` are pure
 functions; the actual HTTP POST lives in `nodes/node_llm_panels.py` and is
@@ -8,6 +8,11 @@ intentionally NOT exercised here.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import re
 

@@ -74,7 +74,7 @@ All registered in root `__init__.py`, all `CATEGORY = "AnimaFlow/anima"`:
   for artist mix (deliberately deferred to Phase 3, see below). Used
   internally by `AnimaGenerator`'s STRING+CLIP fallback path.
 
-Test suite: 15 files, 304 tests, all green (`for f in test_*.py; do python3
+Test suite: 15 files, 304 tests, all green (`for f in tests/test_*.py; do python3
 "$f"; done` from repo root). Every torch/comfy-touching function is
 guarded/SKIP-printed in this dev environment (no `torch`/`comfy` installed
 here) — this is consistent across the whole build, not a gap specific to
@@ -153,7 +153,7 @@ Put this in `_anima_conditioning_helpers.py`'s `resolve_conditioning` (extend it
 
 ## When done
 
-Run the new test file, then the FULL existing suite (`for f in test_*.py; do python3 "$f"; done`), confirm all green including that no Phase 2 test regressed. Report: files created/modified, the `parse_artist_tags` syntax you chose and why, how the tensor blend is implemented, test results, and any deviations with reasoning.
+Run the new test file, then the FULL existing suite (`for f in tests/test_*.py; do python3 "$f"; done`), confirm all green including that no Phase 2 test regressed. Report: files created/modified, the `parse_artist_tags` syntax you chose and why, how the tensor blend is implemented, test results, and any deviations with reasoning.
 ```
 
 </details>

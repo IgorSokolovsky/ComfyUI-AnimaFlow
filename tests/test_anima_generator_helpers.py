@@ -1,6 +1,6 @@
 """Plain-script tests for `AnimaGenerator`'s pure-logic pieces.
 
-Run directly: `python test_anima_generator_helpers.py` (no pytest, per
+Run directly: `python tests/test_anima_generator_helpers.py` (no pytest, per
 project convention). Actual sampling needs `torch`/`comfy` - not available
 in this dev environment (same as Phase 2a's `test_anima_image_scale.py`
 guarded smoke test) - so these tests focus on: `resolve_conditioning`'s
@@ -22,6 +22,11 @@ exercises its documented fallback branch (`clip.tokenize` +
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 

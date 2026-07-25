@@ -1,6 +1,6 @@
 """Plain-script tests for AnimaDetailerAlignHook's pure logic.
 
-Run directly: `python test_anima_detailer_hook.py` (no pytest, per project
+Run directly: `python tests/test_anima_detailer_hook.py` (no pytest, per project
 convention). Everything here is plain Python objects/ints - no Impact Pack
 needed, since the hook is a pure duck-typed object (see
 `_anima_detailer_hook_helpers`'s module docstring): a fake stand-in
@@ -9,6 +9,11 @@ into a real one.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes._anima_detailer_hook_helpers import AnimaAlignedDetailerHook, align_up
 from nodes.node_anima_detailer_hook import AnimaDetailerAlignHook

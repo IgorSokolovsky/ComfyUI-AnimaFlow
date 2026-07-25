@@ -1,9 +1,14 @@
 """Plain-script tests for the Scene Creator node's pure logic.
 
-Run directly: `python test_scene_creator.py` (no pytest, per project convention).
+Run directly: `python tests/test_scene_creator.py` (no pytest, per project convention).
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 

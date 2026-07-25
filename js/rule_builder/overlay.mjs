@@ -6,7 +6,7 @@
  * name, Export YAML), the guide, the two-pane builder (rule cards +
  * live preview/trace), and the Export YAML pane. Ported from
  * `playground/rule-builder.html`, restyled onto the shared `.wtn-*`
- * component vocabulary (see THEME.md); only genuinely overlay-specific
+ * component vocabulary (see docs/THEME.md); only genuinely overlay-specific
  * LAYOUT is added here, scoped under `.wtn-rb-*` and built purely from
  * existing `--wtn-*` tokens (no new colors).
  *

@@ -4,7 +4,7 @@
  *
  * Ported from `playground/rule-builder.html`'s in-page `<script>` (the
  * approved UX), restyled onto the shared `.wtn-*` component vocabulary
- * (`js/shared/theme.{css,mjs}` — see THEME.md) instead of the playground's
+ * (`js/shared/theme.{css,mjs}` — see docs/THEME.md) instead of the playground's
  * inline palette. Layout-only additions specific to this overlay live under
  * the `.wtn-rb-*` classes injected by `overlay.mjs` (no new colors — every
  * `--rb-tone` below is one of the existing `--wtn-*` tokens).

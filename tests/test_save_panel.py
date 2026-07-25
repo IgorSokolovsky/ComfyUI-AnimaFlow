@@ -1,6 +1,6 @@
 """Plain-script tests for the Save Panel (metadata) node's pure logic.
 
-Run directly: `python test_save_panel.py` (no pytest, per project convention).
+Run directly: `python tests/test_save_panel.py` (no pytest, per project convention).
 
 Only the pure `build_text_metadata` helper is exercised here — this file
 deliberately does NOT import torch, PIL, or folder_paths (none of which are
@@ -11,6 +11,11 @@ running ComfyUI instance.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 

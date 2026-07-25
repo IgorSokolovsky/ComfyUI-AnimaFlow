@@ -1,6 +1,6 @@
 """Plain-script tests for AnimaImageScaleByMultiple's pure logic.
 
-Run directly: `python test_anima_image_scale.py` (no pytest, per project
+Run directly: `python tests/test_anima_image_scale.py` (no pytest, per project
 convention). The ratio/multiple math (`compute_scale_by_multiple`) needs no
 torch/comfy import at all; one smoke test additionally exercises the full
 node's `scale()` if `torch`/`comfy` happen to be importable in this
@@ -9,6 +9,11 @@ they aren't, since this repo's plain-script suite runs outside ComfyUI.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes._anima_image_scale_helpers import (
     DEFAULT_UPSCALE_METHOD,

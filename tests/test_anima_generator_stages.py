@@ -4,7 +4,7 @@ ResShift), postprocess-resize (reuses `compute_scale_by_multiple`), save
 (core `SaveImage`), and the `_optional_pack_bridge` lookup helper all of
 these route external-pack lookups through.
 
-Run directly: `python test_anima_generator_stages.py` (no pytest, per
+Run directly: `python tests/test_anima_generator_stages.py` (no pytest, per
 project convention).
 
 How the "pack installed / not installed" simulation works: in THIS dev
@@ -25,6 +25,11 @@ tests don't leak state into each other.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes._anima_generator_helpers import (
     get_upscale_model_names,

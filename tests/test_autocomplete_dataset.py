@@ -1,13 +1,16 @@
 """Plain-script tests for the autocomplete dataset loader's pure logic.
 
-Run directly: `python test_autocomplete_dataset.py` (no pytest, per project
+Run directly: `python tests/test_autocomplete_dataset.py` (no pytest, per project
 convention).
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from autocomplete.dataset import (
     CATEGORY_NAMES,

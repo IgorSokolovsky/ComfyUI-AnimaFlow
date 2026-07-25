@@ -231,7 +231,7 @@ export async function runPreview({ rules, profile, positive, negative, sheets, e
   }
 }
 
-// ── trace rendering (into a `.wtn-log` element; see THEME.md's log/trace
+// ── trace rendering (into a `.wtn-log` element; see docs/THEME.md's log/trace
 // component and its `.is-*` line classes) ──────────────────────────────────
 const KIND_CLASS = {
   group: "is-info", tag: "is-accent", cond: "is-dim", add: "is-ok",

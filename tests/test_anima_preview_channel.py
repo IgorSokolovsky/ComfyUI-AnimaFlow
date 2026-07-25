@@ -1,6 +1,6 @@
 """Plain-script tests for `nodes._anima_preview_channel` and `AnimaPreview`.
 
-Run directly: `python test_anima_preview_channel.py` (no pytest, per project
+Run directly: `python tests/test_anima_preview_channel.py` (no pytest, per project
 convention). `broadcast_preview` is guarded exactly like
 `autocomplete/api.py`'s route registration: `from server import
 PromptServer` (and, separately, `numpy`/`PIL` for frame encoding) must not
@@ -13,7 +13,10 @@ installed but isn't running inside ComfyUI itself.
 
 from __future__ import annotations
 
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import nodes._anima_preview_channel as preview_channel
 from nodes._anima_preview_channel import (

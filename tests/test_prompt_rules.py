@@ -2,9 +2,14 @@
 (`nodes/_rules_helpers.py`) and the `/wtn/rules/*` API's pure handlers
 (`api/rules_api.py`) -- all WITHOUT a live ComfyUI process.
 
-Run directly: `python test_prompt_rules.py` (no pytest, per project convention).
+Run directly: `python tests/test_prompt_rules.py` (no pytest, per project convention).
 """
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 

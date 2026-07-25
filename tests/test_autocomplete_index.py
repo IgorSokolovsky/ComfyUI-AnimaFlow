@@ -1,12 +1,17 @@
 """Plain-script tests for the autocomplete search tiering/dedupe logic.
 
-Run directly: `python test_autocomplete_index.py` (no pytest, per project
+Run directly: `python tests/test_autocomplete_index.py` (no pytest, per project
 convention). Uses small in-memory fixture datasets (not the full bundled
 CSVs) so the gelbooru-first/danbooru-fallback tiering is fast and
 deterministic.
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from autocomplete.dataset import AutocompleteEntry
 from autocomplete.index import search

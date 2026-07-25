@@ -1,9 +1,14 @@
 """Plain-script tests for the Panel Parser (Batch) node's pure logic.
 
-Run directly: `python test_panel_parser.py` (no pytest, per project convention).
+Run directly: `python tests/test_panel_parser.py` (no pytest, per project convention).
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes._panel_parser_helpers import (
     DEFAULT_DELIMITER_REGEX,

@@ -2,7 +2,7 @@
  * House theme — idempotent stylesheet injector + raw color tokens.
  *
  * Every node UI in this pack shares one palette and one component vocabulary
- * (see THEME.md). `theme.css` holds the actual rules, scoped under a `.wtn`
+ * (see docs/THEME.md). `theme.css` holds the actual rules, scoped under a `.wtn`
  * class so nothing leaks into ComfyUI's own DOM; this module just makes sure
  * that stylesheet is on the page exactly once, and exposes the same palette
  * as plain hex strings for JS that needs raw colors (canvas draws, computed

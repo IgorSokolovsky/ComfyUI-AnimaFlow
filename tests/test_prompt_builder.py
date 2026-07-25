@@ -1,9 +1,14 @@
 """Plain-script tests for the Prompt Builder node's pure logic.
 
-Run directly: `python test_prompt_builder.py` (no pytest, per project convention).
+Run directly: `python tests/test_prompt_builder.py` (no pytest, per project convention).
 """
 
 from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes._prompt_builder_helpers import (
     DEFAULT_TEMPLATE,
