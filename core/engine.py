@@ -441,7 +441,13 @@ def _execute_tag(rule: TagRule, ctx: EvalContext, into: Optional[str], depth: in
         if values:
             ctx.emit(depth + 1, "add", f"+ add {', '.join(values)}")
     for m in rule.add_negative:
-        values = _apply_mutation(ctx.negative, ctx.profile, m, into, disabled=False)
+        # The negative document has no character-container structure, so the
+        # inherited positive-side `into` (e.g. "character:celica") must NOT be
+        # used as this mutation's default target -- only an explicit
+        # `into`/`section` ON THE MUTATION ITSELF should route it anywhere but
+        # the negative doc's flat default leaf (see `core/__init__.py`'s
+        # negative-targeting note / SCHEMA.md gap).
+        values = _apply_mutation(ctx.negative, ctx.profile, m, None, disabled=False)
         if values:
             ctx.emit(depth + 1, "add", f"+ add_negative {', '.join(values)}")
     for r in rule.remove:
@@ -449,12 +455,15 @@ def _execute_tag(rule: TagRule, ctx: EvalContext, into: Optional[str], depth: in
         if values:
             ctx.emit(depth + 1, "remove", f"- remove {', '.join(values)}")
     for r in rule.remove_negative:
-        values = _apply_removal(ctx.negative, r, into)
+        # Same reasoning as `add_negative`: default scope is "*" (the whole
+        # negative doc), not the inherited positive-side `into`. An explicit
+        # `from` on the removal itself still wins (see `_apply_removal`).
+        values = _apply_removal(ctx.negative, r, None)
         if values:
             ctx.emit(depth + 1, "remove", f"- remove_negative {', '.join(values)}")
     for m in rule.tmp:
         values = _apply_mutation(ctx.positive, ctx.profile, m, into, disabled=True)
-        _apply_mutation(ctx.negative, ctx.profile, m, into, disabled=True)
+        _apply_mutation(ctx.negative, ctx.profile, m, None, disabled=True)
         if values:
             ctx.emit(depth + 1, "tmp", f"~ tmp {', '.join(values)}")
     for s in rule.set:
@@ -481,7 +490,9 @@ def _execute_swap(rule: SwapRule, ctx: EvalContext, into: Optional[str], depth: 
         if values:
             ctx.emit(depth + 1, "add", f"+ add {', '.join(values)}")
     for m in rule.add_negative:
-        values = _apply_mutation(ctx.negative, ctx.profile, m, into, disabled=False)
+        # Same reasoning as `_execute_tag`'s `add_negative`: don't inherit the
+        # positive-side `into` as the negative doc's default target.
+        values = _apply_mutation(ctx.negative, ctx.profile, m, None, disabled=False)
         if values:
             ctx.emit(depth + 1, "add", f"+ add_negative {', '.join(values)}")
 

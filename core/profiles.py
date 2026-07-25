@@ -50,7 +50,7 @@ PROFILES: dict = {
             "labels": {
                 "container": r"^\[character:(.+)\]$",
                 "section": r"^(appearance|clothes|action|focus):\s*(.*)$",
-                "leaf": r"^\[(quality|global)\]$",
+                "leaf": r"^\[(quality|global)\]",
             },
         },
         block_order=["quality", "character:*", "global"],
@@ -205,8 +205,55 @@ def _parse_labelled(text: str, prof: Profile, labels: dict) -> Block:
 
 def render(doc: Document, profile: Union[str, Profile, None]) -> str:
     prof = load_profile(profile)
-    text = _render_block(doc.root, prof)
+    ordered_root_children = _ordered_top_level_children(doc.root, prof)
+    text = _render_container(doc.root, prof, children=ordered_root_children)
     return text or ""
+
+
+def _ordered_top_level_children(root: Block, prof: Profile) -> List[Block]:
+    """Render-time-only ordering of `root`'s direct children per
+    `prof.block_order` (SCHEMA.md SS6 `blockOrder`). Pure and non-destructive:
+    returns a NEW list, never mutates `root.children` -- rule application
+    addresses blocks by label/id and must be unaffected by render order.
+
+    Applies to top-level children of `doc.root` ONLY; nested children (e.g.
+    a `character:celica` container's own `appearance`/`clothes`/... leaves)
+    are rendered in their own, untouched, authored order -- those labels
+    aren't in `block_order` anyway.
+
+    - Empty `block_order` (the `raw`/`illustrious`/`pony`/`flux`/`wan`
+      profiles) is a hard no-op: returns `root.children` as-is, so those
+      profiles' rendered output is byte-identical to before this ordering
+      existed.
+    - Each `block_order` entry matches a block's `label`: exact match, or
+      (for a trailing `*`) a plain-prefix glob (`"character:*"` matches
+      `"character:celica"`, `"character:ren"`, ...) -- simple
+      `str.startswith`, not `fnmatch` (no need for the extra generality).
+    - A block matching entry `i` sorts before a block matching entry `j`
+      when `i < j`.
+    - Blocks matching NO entry keep their relative authored order and sort
+      LAST, after every named entry (deliberate choice: an unrecognised/new
+      top-level block should still render, just at the end, rather than
+      vanishing or jumping to the front).
+    - Ties (blocks matching the SAME entry, or several unmatched blocks)
+      keep their original relative authored order -- `sorted()` is stable,
+      so this "just falls out" of sorting by rank alone.
+    """
+    if not prof.block_order:
+        return root.children
+
+    order = prof.block_order
+
+    def rank(block: Block) -> int:
+        for i, pattern in enumerate(order):
+            if pattern.endswith("*"):
+                if block.label.startswith(pattern[:-1]):
+                    return i
+            elif block.label == pattern:
+                return i
+        return len(order)
+
+    return sorted(root.children, key=rank)
 
 
 def _render_block(block: Block, prof: Profile) -> Optional[str]:
@@ -220,8 +267,18 @@ def _render_block(block: Block, prof: Profile) -> Optional[str]:
             return f"{prefix}{text}"
         return text
 
+    return _render_container(block, prof)
+
+
+def _render_container(block: Block, prof: Profile, children: Optional[List[Block]] = None) -> Optional[str]:
+    """Render a container's children, joined by its per-label separator.
+
+    `children` lets callers (currently just `render()`, for `doc.root`)
+    supply a reordered view without mutating `block.children`; every other
+    caller (i.e. every nested container) renders in authored order.
+    """
     parts = []
-    for c in block.children:
+    for c in (block.children if children is None else children):
         p = _render_block(c, prof)
         if p:
             parts.append(p)

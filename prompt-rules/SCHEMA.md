@@ -153,6 +153,21 @@ rule level as `string | string[]`; they compile to `when` (see §4).
   "set":            SetOp    | SetOp[]       // overwrite a block's items
 }
 
+// NEGATIVE-TARGETING OPS DO NOT INHERIT `into`.
+// An enclosing group/switch's `into` describes a POSITIVE-document location (e.g.
+// `character:celica` — which character's block to write to). The negative document has
+// no such structure, so `add_negative`, `remove_negative`, and `tmp`'s negative half
+// ignore the inherited `into` and default to the negative document's own flat/default
+// scope (equivalently `"*"` for removals). An explicit `into`/`section`/`from` on the
+// mutation or removal ITSELF is still honored. Positive-side ops (`add`, `remove`,
+// `set`, `tmp`'s positive half) do inherit `into` as described in §3.1/§5.3.
+//
+// Why this is called out: letting a positive-shaped selector leak into the negative
+// document both CREATES a spuriously labelled negative block (which then renders its
+// label as literal prompt text under `sectionLabelStyle:"prefix"`) and silently scopes
+// `remove_negative` to a block the user's negative tags are not in, making bare
+// removals no-ops.
+
 Mutation :=
    "blue eyes"                                  // string → add to `into` (or scope), at end
  | ["blue eyes", "smile"]                        // list
@@ -248,7 +263,9 @@ but keep their text), matching Deathspike's "visible to future rules" behaviour.
 3. **`into` / anchors** resolve a target block, then a position: `after`/`before` a
    phrase inside that block; else `at` (`start`/`end`, default `end`). Unresolved
    anchor → fall back to `at`. `into` on a group/switch is inherited by children
-   unless a child overrides it.
+   unless a child overrides it — **except by negative-targeting ops**
+   (`add_negative`, `remove_negative`, `tmp`'s negative half), which never inherit it
+   because `into` names a positive-document location; see the note in §3.2.
 4. **Dedup on add:** if an item with the same normalised `text` already exists in
    the target block, it is re-enabled and (if `weights:"preserve"`) upgraded to the
    **stronger** weight — never duplicated.
@@ -274,10 +291,10 @@ Profile {
     "labels": {                       // how to detect labelled blocks when parsing text
       "container": "^\\[character:(.+)\\]$",
       "section":   "^(appearance|clothes|action|focus):\\s*(.*)$",
-      "leaf":      "^\\[(quality|global)\\]$"
+      "leaf":      "^\\[(quality|global)\\]"
     }
   },
-  "blockOrder": ["quality","character:*","global"],   // canonical creation order
+  "blockOrder": ["quality","character:*","global"],   // canonical order; see note below
   "defaults":  { "sep": ", ", "weights": "strip" },
   "perLabelSep": { "__sections__": "\n", "clothes": ", " },
   "render": { "sectionLabelStyle": "prefix" }         // "clothes: ..." on output
@@ -292,6 +309,24 @@ Reference profiles to ship:
 
 > The engine reads only Document + Ruleset; **profiles affect `parse`/`render` and
 > block creation, not rule evaluation.** That keeps rules portable across models.
+
+**`parse.labels` are LINE-PREFIX patterns — do not `$`-anchor them.** All three are
+matched against the start of a line, and any trailing text on the same line is
+consumed as that block's content: for `leaf`, the remainder after the bracket becomes
+the block's separator-split items (so `[quality] masterpiece, best quality` is one
+`quality` leaf with two items); `section`'s own regex captures the remainder as its
+2nd group. Anchoring `leaf` with `$` makes it match only a bare `[quality]` line, so
+any line carrying inline content silently falls through to the unlabelled-leaf
+fallback and its bracket text survives verbatim into the rendered prompt.
+
+**`blockOrder` is a render-time ordering of the document root's top-level blocks**,
+applied non-destructively (the Document itself is never reordered, so rules that
+address blocks by label/id are unaffected). Entries match a block's label exactly, or
+as a prefix when written with a trailing `*` (`character:*`). Blocks matching the same
+entry keep their authored relative order (stable), and blocks matching no entry keep
+their relative order and are rendered last. Nested blocks are never reordered — a
+`character:*` container's own sections render in authored order. A profile with an
+empty/absent `blockOrder` is not reordered at all.
 
 ---
 
