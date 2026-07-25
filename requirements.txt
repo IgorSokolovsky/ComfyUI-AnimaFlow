@@ -1,13 +1,14 @@
-# Runtime dependencies for webtoon-generator.
+# Runtime dependencies for AnimaFlow.
 # torch, numpy, and comfy are provided by the ComfyUI environment and are
 # intentionally NOT pinned here to avoid clashing with ComfyUI's own versions.
 #
-# Add dependencies as nodes need them. `requests` is kept as the likely base
-# for LLM-backed nodes (scene generators, prompt expansion).
+# Add dependencies only as shipped code actually imports them. Nodes that need
+# HTTP use stdlib `urllib` (see nodes/panel/node_llm_panels.py) -- no `requests`.
 
-requests>=2.31
-
-# Loads the prompt-rules ruleset examples/definitions (prompt-rules/examples/*.yaml)
-# for the clean-room rules engine (`core/`, see test_rules.py). The engine
-# core itself works on plain dicts and does not import yaml.
+# Reads/writes the Rule Builder's character sheets (`rules/*.yaml`). Required at
+# RUNTIME, not just by tests: imported by nodes/anima_prompt/_rules_helpers.py
+# (sheet loading when a node runs) and api/rules_api.py (the /wtn/rules/* routes).
+# The `core/` engine itself works on plain dicts and does not import yaml.
+# Note: ComfyUI already ships PyYAML for its own extra_model_paths.yaml, so this
+# is usually already satisfied -- declared anyway since we import it directly.
 pyyaml>=6.0
