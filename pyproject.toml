@@ -5,9 +5,10 @@ version = "0.1.0"
 
 keywords = ["comfyui", "anima", "prompt", "webtoon", "scene", "rules"]
 
-# Core dependencies are listed in requirements.txt; torch/numpy/comfy come
-# from the ComfyUI environment and are intentionally not pinned here.
-dependencies = []
+# Keep in sync with requirements.txt (ComfyUI-Manager installs from that file,
+# the ComfyUI Registry reads this list). torch/numpy/comfy come from the ComfyUI
+# environment and are intentionally not pinned in either place.
+dependencies = ["pyyaml>=6.0"]
 
 [project.urls]
 Repository = "https://github.com/IgorSokolovsky/ComfyUI-AnimaFlow"
