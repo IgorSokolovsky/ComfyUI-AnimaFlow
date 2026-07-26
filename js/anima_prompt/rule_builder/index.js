@@ -33,10 +33,68 @@ app.registerExtension({
   ],
 });
 
+// Icon-only glyph for the toolbar button — a "checklist" (list-with-checks)
+// outline, rendered as a CSS mask so it tints with the button's `color`
+// (see `injectToolbarCSS` below). No server asset route exists in this pack
+// (unlike ComfyUI-Pixaroma's `/pixaroma/assets/icons/...`), so this is an
+// inline data URI instead of a served file — `<`/`>` are percent-encoded
+// (`%3C`/`%3E`) so the URL survives being embedded in a CSS `url(...)`.
+// Verified parseable: `new URL(...)` succeeds and `decodeURIComponent` of the
+// payload round-trips to well-formed, balanced-tag SVG markup.
+const TOOLBAR_ICON_SVG =
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6h11M9 12h11M9 18h11'/%3E%3Cpath d='M4 6l1.5 1.5L8 5'/%3E%3Cpath d='M4 12l1.5 1.5L8 11'/%3E%3Cpath d='M4 18l1.5 1.5L8 17'/%3E%3C/svg%3E";
+
+const TOOLBAR_CSS_ID = "webtoon-rule-builder-toolbar-css";
+// Local, scoped CSS for this one toolbar button — deliberately NOT routed
+// through `js/shared/theme.css` (that stylesheet's `--wtn-*` custom
+// properties are scoped under a `.wtn` root class, which this button — a
+// child of ComfyUI's own top action bar — never gets). Colors below are the
+// house teal accent, hardcoded to match `--wtn-accent` (#2dd4bf) /
+// `--wtn-accent-deep` (#14b8a6) so it still reads as "ours" without leaking
+// theme.css into ComfyUI's toolbar DOM. Mirrors the local
+// `injectToolbarCSS()` + `<style id>` guard pattern this file already uses
+// (see `overlay.mjs`'s `injectOverlayCss` for the sibling convention).
+function injectToolbarCSS() {
+  if (document.getElementById(TOOLBAR_CSS_ID)) return;
+  const style = document.createElement("style");
+  style.id = TOOLBAR_CSS_ID;
+  style.textContent = `
+    .webtoon-rb-toolbar-btn .webtoon-rb-toolbar-icon {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      background-color: currentColor;
+      mask-image: url("${TOOLBAR_ICON_SVG}");
+      -webkit-mask-image: url("${TOOLBAR_ICON_SVG}");
+      mask-size: contain;
+      -webkit-mask-size: contain;
+      mask-repeat: no-repeat;
+      -webkit-mask-repeat: no-repeat;
+      mask-position: center;
+      -webkit-mask-position: center;
+      pointer-events: none;
+    }
+    .webtoon-rb-toolbar-btn:hover,
+    .webtoon-rb-toolbar-btn:focus-visible {
+      background-color: rgba(45, 212, 191, 0.16) !important;
+      color: #2dd4bf !important;
+      border-color: #14b8a6 !important;
+    }
+    .webtoon-rb-toolbar-btn:focus-visible {
+      outline: 2px solid #2dd4bf;
+      outline-offset: 1px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // Best-effort toolbar button (Vue frontend only — `app.menu` doesn't exist
 // under legacy litegraph, so this quietly gives up after a few retries and
 // the command-palette entry above remains the reliable way in). Mirrors
-// ComfyUI-Pixaroma's `js/align/index.js` toolbar-mount pattern.
+// ComfyUI-Pixaroma's `js/align/index.js` toolbar-mount pattern: an icon-only
+// button (tooltip via `title`/`aria-label`, house teal instead of Pixaroma's
+// orange) wrapped in its own `.comfyui-button-group`, inserted before the
+// settings group so it sits flush with the native/rgthree toolbar groups.
 function mountToolbarButton(tries = 0) {
   const settingsGroupEl = app.menu?.settingsGroup?.element;
   if (!settingsGroupEl) {
@@ -44,14 +102,26 @@ function mountToolbarButton(tries = 0) {
     setTimeout(() => mountToolbarButton(tries + 1), 250);
     return;
   }
+  // The dedupe guard queries for the BUTTON's own attribute, not the group
+  // wrapper — the button is now nested one level deeper inside a
+  // `.comfyui-button-group` div.
   if (document.querySelector('[data-webtoon-rule-builder-btn="1"]')) return;
+
+  injectToolbarCSS();
+
   const btn = document.createElement("button");
-  btn.className = "comfyui-button";
+  btn.className = "comfyui-button webtoon-rb-toolbar-btn";
   btn.dataset.webtoonRuleBuilderBtn = "1";
-  btn.title = "Open the Webtoon Rule Builder";
-  btn.textContent = "Rule Builder";
+  btn.title = "Open the AnimaFlow Rule Builder";
+  btn.setAttribute("aria-label", "Open the AnimaFlow Rule Builder");
+  btn.innerHTML = '<span class="webtoon-rb-toolbar-icon"></span>';
   btn.addEventListener("click", () => openOverlay());
-  settingsGroupEl.before(btn);
+
+  const group = document.createElement("div");
+  group.className = "comfyui-button-group webtoon-rb-toolbar-group";
+  group.appendChild(btn);
+
+  settingsGroupEl.before(group);
 }
 mountToolbarButton();
 

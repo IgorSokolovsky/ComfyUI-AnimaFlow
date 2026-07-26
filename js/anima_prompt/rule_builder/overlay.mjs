@@ -598,6 +598,7 @@ export function openRuleBuilder(ctx = {}) {
   }
   document.addEventListener("keydown", onKeydown);
   scrim.addEventListener("mousedown", onScrimClick);
+  closeBtn.addEventListener("click", () => close());
 
   function close() {
     schedulePreview.cancel();
