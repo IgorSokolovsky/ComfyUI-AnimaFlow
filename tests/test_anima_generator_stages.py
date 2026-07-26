@@ -188,6 +188,36 @@ def test_run_detailer_stage_filters_kwargs_to_narrow_signature():
         _restore_mappings(previous)
 
 
+def test_run_detailer_stage_pins_upstream_quality_constants():
+    # `guide_size_for`/`noise_mask_feather` are two of `run_detailer_stage`'s
+    # fixed (non-widget) kwargs that were ported WRONG from upstream and
+    # silently changed detailer output quality (backlog.md SS1.1/1.2) - pin
+    # both here so a future edit that flips them fails loudly. Upstream
+    # (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/generation_defaults.py`)
+    # is the source of truth: `guide_size_for=False` for BOTH its face
+    # (`:306`) and eye (`:372`) targets, `noise_mask_feather=10` for face
+    # (`:321`) - this stage is one generic detailer, not a face/eye pair,
+    # so it picks the (conservative) face value rather than eye's `20`.
+    captured = {}
+
+    class _CapturingDetailer:
+        def doit(self, **kwargs):
+            captured.update(kwargs)
+            return (f"detailed:{kwargs['image']}",)
+
+    previous = _set_fake_mappings({"DetailerForEach": _CapturingDetailer})
+    try:
+        segs = ((512, 512), [{"seg": 1}])
+        run_detailer_stage(
+            "base_image", segs, "model", "clip", "vae", "pos", "neg",
+            0, 20, 8.0, "euler", "normal", 512, 1024, 0.5, "default",
+        )
+        assert captured["guide_size_for"] is False
+        assert captured["noise_mask_feather"] == 10
+    finally:
+        _restore_mappings(previous)
+
+
 def test_run_detailer_stage_accepts_dict_shaped_result():
     class _DictShapedDetailer:
         def doit(self, **kwargs):
@@ -488,6 +518,7 @@ ALL_TESTS = [
     test_run_detailer_stage_skips_when_segs_has_no_detections,
     test_run_detailer_stage_raises_when_segs_present_but_impact_pack_missing,
     test_run_detailer_stage_filters_kwargs_to_narrow_signature,
+    test_run_detailer_stage_pins_upstream_quality_constants,
     test_run_detailer_stage_accepts_dict_shaped_result,
     test_run_detailer_stage_raises_on_empty_dict_result,
     test_load_usdu_upscale_model_raises_when_name_empty,

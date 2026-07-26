@@ -638,11 +638,30 @@ def run_detailer_stage(
     precedent); every other required-by-`doit()` argument
     (`feather`, `noise_mask`, `force_inpaint`, `wildcard`, `cycle`,
     `inpaint_model`, `noise_mask_feather`, `scheduler_func_opt`,
-    `tiled_encode`, `tiled_decode`) is passed as a fixed constant matching
-    Impact Pack's own node defaults (see
-    `../ComfyUI-EasyUseAnima/easyuse_anima/nodes/impact_detailer_nodes.py`),
-    not exposed as a widget - keeping this pack's own settings surface
-    minimal per the plan, not replicating Impact Pack's entire options list.
+    `tiled_encode`, `tiled_decode`) is passed as a fixed constant, not
+    exposed as a widget - keeping this pack's own settings surface minimal
+    per the plan, not replicating Impact Pack's entire options list.
+
+    Two of those constants (`guide_size_for`, `noise_mask_feather`) are
+    deliberately set to mirror upstream's own AiO defaults
+    (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/generation_defaults.py`)
+    rather than Impact Pack's node defaults, because they change output
+    quality, not just structural plumbing:
+
+    - `guide_size_for=False` (upstream `:306` face / `:372` eye - both
+      `False`): decides whether Impact measures `guide_size` against the
+      tight detected bbox (`True`) or the padded crop region (`False`).
+      With the SAME `guide_size`, `True` resamples at a different scale
+      than `False` - flipping this silently changes detail-pass sharpness/
+      scale, it is not a no-op toggle.
+    - `noise_mask_feather=10` (upstream `:321` face default; upstream's eye
+      target uses `20` at `:387` - this stage is one generic detailer for
+      ANY `SEGS`, not a separate face/eye pair, so there is one value to
+      pick, not two; `10` is the conservative pick, matching upstream's
+      face default): feathers the noise mask inside the detail crop, which
+      is the main control against visible detailer seams. Upstream never
+      ships `0` for this field.
+
     `hook` (a `DETAILER_HOOK`, e.g. this pack's own `AnimaDetailerAlignHook`)
     is passed straight through if wired, `None` otherwise.
     """
@@ -663,7 +682,10 @@ def run_detailer_stage(
         "clip": clip,
         "vae": vae,
         "guide_size": float(guide_size),
-        "guide_size_for": True,
+        # False (not Impact's own True default) - matches upstream's AiO
+        # defaults for BOTH detailer targets; see this function's own
+        # docstring for why the flag matters (bbox vs. padded-crop scale).
+        "guide_size_for": False,
         "max_size": float(max_size),
         "seed": int(seed) & MAX_SEED,
         "steps": max(1, int(steps)),
@@ -680,7 +702,11 @@ def run_detailer_stage(
         "cycle": 1,
         "detailer_hook": hook,
         "inpaint_model": False,
-        "noise_mask_feather": 0,
+        # 10 (not 0) - matches upstream's face-detailer default (upstream's
+        # eye target uses 20; see this function's own docstring for why one
+        # generic value is picked here). 0 disables the seam-suppressing
+        # feather Impact applies to the noise mask inside the crop.
+        "noise_mask_feather": 10,
         "scheduler_func_opt": None,
         "tiled_encode": False,
         "tiled_decode": False,
