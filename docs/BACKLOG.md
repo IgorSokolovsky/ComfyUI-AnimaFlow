@@ -19,7 +19,11 @@ were correct as of commit `0ad756b`. Re-check before trusting them; the files mo
 Small fixes, but each one changes output today. These read as porting slips rather than
 deliberate scope calls, so they're listed as defects.
 
-### 1.1 `guide_size_for` is inverted
+### 1.1 `guide_size_for` is inverted — ✅ DONE (`e1080e4`)
+Both claims re-verified against the cited upstream lines before changing anything; both
+were correct as written. Set to `False`; a pinning test now asserts the kwargs Impact
+actually receives.
+
 `nodes/anima/_anima_generator_helpers.py:666` hardcodes `"guide_size_for": True`.
 Upstream ships **`False`** for *both* detailer targets
 (`easyuse_anima/aio/generation_defaults.py:306` face, `:372` eye).
@@ -28,7 +32,12 @@ This flag decides whether Impact measures `guide_size` against the tight bbox (`
 the padded crop region (`False`). Same `guide_size` therefore resamples at a **different
 scale** than upstream — a silent quality divergence, not just a missing knob.
 
-### 1.2 `noise_mask_feather` is 0
+### 1.2 `noise_mask_feather` is 0 — ✅ DONE (`e1080e4`)
+Set to `10` (upstream's face value). This stage is one generic pass over any `SEGS` rather
+than upstream's separate face/eye targets, so there is a single value to pick and the face
+default is the conservative one — recorded in the docstring so it isn't "corrected" blindly
+to a face/eye split without noticing the tradeoff.
+
 `nodes/anima/_anima_generator_helpers.py:683` hardcodes `"noise_mask_feather": 0`.
 Upstream ships **`10`** (face, `generation_defaults.py:321`) and **`20`** (eye, `:387`).
 
@@ -75,14 +84,21 @@ the detailer, with the wrong scheduler for it.
 
 Reference: `easyuse_anima/aio/sampling.py:378-452`.
 
-### 2.3 USDU seam fixing and tile control
-We hardcode `seam_fix_mode="None"`, so **seam repair is unreachable**. Also missing: auto
-tile planning (computes tile dims from the expected output so tiles divide evenly, aligned
-to 64 and clamped), `Chess` traversal (reduces neighbour-tile contamination), `mask_blur`,
-and `tile_padding`. Tiled upscales will show seams upstream can fix.
+### 2.3 USDU seam fixing and tile control — ✅ DONE (`29ac56d`)
+Nine widgets appended (seam-fix mode/denoise/width/mask_blur/padding, tile mask_blur and
+padding, `mode_type`, `auto_tile`), all defaulting to upstream's values. Auto-tile planning
+ported as the pure `plan_usdu_tiles`. Combo option strings read from upstream, not guessed;
+every field is accepted by USDU's own node, so none were dropped.
 
-Ours: `nodes/anima/_anima_generator_helpers.py:784-796`.
-Reference: `easyuse_anima/aio/usdu.py:12-89` and `legacy_generation.py:467-508`.
+> **Correction to this entry's original wording:** it glossed the traversal control as
+> "`Chess` traversal (`tiled_decode`/mode)", which conflates two different USDU parameters.
+> `mode_type` (`Linear`/`Chess`/`None`) is the tile-sampling **order** and is what got
+> exposed. `tiled_decode` is an unrelated VAE-decode-tiling boolean that stays a fixed
+> constant (`False`); upstream does not gate seam quality on it.
+
+Ground truth turned out to be `generation_defaults.py` (defaults + the option tuples at
+`:458-464`, `:246-266`) plus `legacy_generation.py:440-528` for the real call site — not
+`usdu.py`/`legacy_generation.py` alone as originally cited.
 
 ### 2.4 Output size cap
 Upstream's postprocess is a **downscale-to-fit** (`max_long_edge` or `max_megapixels`,
@@ -106,8 +122,13 @@ Recorded so nobody re-litigates it. The pack "trades breadth for decoupling"
   - ⚠️ The one that genuinely costs us is **Anima Mod Guidance**
     (`easyuse_anima/prompt/conditioning.py:86-140`) — the model-specific quality-tag
     steering the reference pack is built around. It's the largest *image-quality* gap on
-    Anima specifically. Needs Spectrum, so it's a real fork, not an oversight. Revisit if
-    users ask.
+    Anima specifically. Needs Spectrum, so it's a real fork, not an oversight.
+    - 🔄 **SCOPE REVERSED — the user has approved taking the Spectrum dependency**, on the
+      grounds that quality parity with upstream is the goal. So Mod Guidance moves OUT of
+      this "not porting" list and becomes planned work: soft-import `comfyui-spectrum-ksampler`
+      the way USDU/ResShift/Impact already are (absent pack ⇒ unchanged behaviour, never a
+      hard dependency), then wire the quality-tag steering into the sampling stage. This is
+      the top remaining quality item. The rest of the third-party list below stands.
 - **Bundled context object** (`EASY_USE_ANIMA_INPUT` / `PROMPT_DATA`) → we take plain
   `MODEL`/`CLIP`/`VAE`/`CONDITIONING`. Consequence: `usdu.prompt_mode="no_general"` and
   prompt-data-driven width/height are structurally unreachable. Fine.
@@ -151,3 +172,21 @@ Landed in `0ad756b`, **not yet wired into any node** (so it's inert in ComfyUI r
   silently shifts values in already-saved workflows. Upstream versions its settings blob
   and migrates (`easyuse_anima/aio/generation_migrations.py`). Cheap insurance would be
   appending new widgets at the end only — worth agreeing on as a rule.
+  - **AGREED: append-only.** New widgets go at the end of `required` (or into `optional`),
+    never inserted. `tests/test_anima_generator_helpers.py` freezes `AnimaGenerator`'s first
+    35 required keys in order as a regression guard, and the new DOM panel groups fields by
+    an explicit layout map independent of declaration order — so appending now costs nothing
+    cosmetically and there is never a reason to insert mid-list.
+  - **This already bit us once.** `42336c0` inserted `shift` as the *first* widget and
+    `highres_scale_by` mid-group, which misaligns **every** slot for any workflow saved
+    before it (`shift`←seed, `seed`←steps, `cfg`←the sampler *string*, …). It fails silently:
+    litegraph coerces or falls back, so the node loads looking fine with wrong settings.
+  - **Not repaired, deliberately.** The user has no saved workflows they care about yet
+    ("not using anything until it's very good"), so there is nothing to migrate.
+  - **Planned: one normalization pass at the END of the feature work**, before the user
+    starts keeping workflows — reorder all of `AnimaGenerator`'s required keys into pipeline
+    order (sampler → highres → detailer → upscale → postprocess → save → preview; today
+    `shift` sits oddly before `seed` and `preview_channel` is stranded between highres and
+    detailer), re-freeze the guard against the new full order, then append-only forever.
+    Doing it *now* would just mean doing it again after Spectrum/Mod Guidance add more
+    widgets. The window closes when the user starts saving workflows, not when a session ends.
