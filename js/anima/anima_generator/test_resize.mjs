@@ -8,50 +8,76 @@
  *      excluded), the upscale-backend field filtering returns only the
  *      selected backend's fields, widget-kind classification + numeric
  *      coercion + label prettifying are all correct. There is no UI-only
- *      collapse-state property anymore (removed this build -- see the
- *      report): `enabledWidget` alone drives open/closed.
- *   B. `render.mjs` DOM behavior — card shells (no collapse button on ANY
- *      card; an Enabled checkbox only on optional cards), field-row
+ *      collapse-state property anymore: `enabledWidget` alone drives
+ *      open/closed.
+ *   B. `render.mjs` DOM behavior — the outer scroll box (`.wtn-ag-box`) is
+ *      the SINGLE parent of every card, card shells (no collapse button on
+ *      ANY card; an Enabled checkbox only on optional cards), field-row
  *      construction per kind (missing/boolean/combo/number/text),
  *      full-rebuild `renderCardFields`, `setCardEnabledUI` opening/closing a
- *      card's body, the `.wtn-ag-card` CSS getting `flex-shrink: 0` (the fix
- *      for the "cards clipped mid-row" bug), and the resize mechanism
- *      (mirrors `js/anima_prompt/anima_prompt_studio/test_resize.mjs`'s copy of
- *      the same ComfyUI-Pixaroma find_replace mechanism).
+ *      card's body, and the CSS this build's box-that-scrolls architecture
+ *      depends on: `.wtn-ag-root` fills 100% of the height the DOM widget is
+ *      given, `.wtn-ag-box` fills the root and scrolls vertically only
+ *      (never horizontally), and `.wtn-ag-card` keeps `flex-shrink: 0` (so a
+ *      too-short box scrolls instead of compressing a card's content).
  *   C. `interaction.mjs` — hiding a widget sets `hidden`/`computeSize` but
  *      NEVER `serialize = false` (the regression that would silently break
  *      saved workflows), a widget named in the layout but absent at runtime
  *      is skipped without throwing (and logged exactly once),
  *      `repositionDomWidget` moves the panel above the native textareas,
- *      and the STRUCTURAL-vs-VALUE refit gating that is this build's core
- *      requirement: toggling a stage's Enabled checkbox (which now ALSO
- *      opens/closes that card) and an upscale-backend switch each schedule
- *      exactly one refit; a slider/number/other-combo/text value change
- *      never does. Always-on cards (SAMPLER, PREVIEW) expose no collapse
- *      control and no Enabled checkbox at all, and their bodies are always
- *      visible.
- *   D. `index.js` source-level assertions (same reason as
- *      `js/anima_prompt/anima_prompt_studio/test_resize.mjs`: `app` resolves only inside a
- *      real ComfyUI/browser host) — absolute import, widget-hiding call,
- *      legacy + Nodes 2.0 sizing wiring, the guarded initial fit vs.
- *      unconditional refit split, and that `restoreNode` never resizes.
- *   E. `measureMinHeight`/`computeLayoutSize` never read `node.size` (no
- *      feedback loop) — asserted both behaviorally (call with no `node`
- *      argument at all) and via a source-level check of the function body.
- *   F. External-mutation resync (the gap this build's follow-up fix closes)
- *      — `render.mjs`'s `updateFieldRowValue` and `interaction.mjs`'s
+ *      and — this build's core requirement — toggling a stage's Enabled
+ *      checkbox (which also opens/closes that card), collapsing/expanding a
+ *      card, and switching the upscale backend all change ONLY what's
+ *      inside `.wtn-ag-box`'s scroll region: NONE of them resizes the node
+ *      any more (the inverse of the previous revision's STRUCTURAL-vs-VALUE
+ *      refit gating, which no longer exists as a concept — see this file's
+ *      "no more resize machinery" section below for what was removed and
+ *      why). Always-on cards (SAMPLER, PREVIEW) expose no collapse control
+ *      and no Enabled checkbox at all, and their bodies are always visible.
+ *   D. `index.js` source-level assertions (`app` resolves only inside a real
+ *      ComfyUI/browser host) — absolute import, widget-hiding call, legacy +
+ *      Nodes 2.0 sizing wiring (now backed by the fixed `HEIGHT_MIN` floor,
+ *      not a content measurement), and that neither `setupNode` nor
+ *      `restoreNode` contains any resize-scheduling call (there is none left
+ *      in this build to make).
+ *   E. External-mutation resync (the gap the previous revision's follow-up
+ *      fix closed, preserved by this build) — `render.mjs`'s
+ *      `updateFieldRowValue` and `interaction.mjs`'s
  *      `refreshFieldValues`/`resyncAllFromWidgets`: a widget value changed
  *      PROGRAMMATICALLY (e.g. `seed` after ComfyUI's own
  *      `control_after_generate`) is picked up by a fresh resync WITHOUT
- *      rebuilding any DOM and WITHOUT calling `scheduleRefit` for a plain
- *      value change; a control the user currently has focused is left alone
- *      even while a resync fires; `resyncAllFromWidgets` degrades to a no-op
- *      (never throws) for nodes with no mounted panel or a broken `refs`
- *      shape, and keeps going for the REST of the nodes if one throws. An
- *      externally-changed `*_enabled` value DOES open/close that card and
- *      schedule exactly one refit for the whole resync pass -- but only when
- *      it actually differs from what's currently displayed, never on an
- *      unrelated resync where nothing changed.
+ *      rebuilding any DOM; a control the user currently has focused is left
+ *      alone even while a resync fires; `resyncAllFromWidgets` degrades to a
+ *      no-op (never throws) for nodes with no mounted panel or a broken
+ *      `refs` shape, and keeps going for the REST of the nodes if one
+ *      throws. An externally-changed `*_enabled` value still opens/closes
+ *      that card (never resizes anything — there is nothing left to
+ *      schedule).
+ *   F. Manual-drag width+height clamp (`computeSizeFloor`/`clampNodeSize`/
+ *      `createResizeClampHandler`) — the width floor still clamps (`WIDTH_MIN`,
+ *      unchanged); the height floor is now a FIXED constant
+ *      (`HEIGHT_MIN + CHROME`) rather than a measurement of current
+ *      content, so it no longer "tracks content live" the way the previous
+ *      revision's `measureMinHeight`-backed floor did (removed test, see
+ *      below) — it clamps to the same floor regardless of what's currently
+ *      expanded/collapsed, which is the point: a genuine minimum, not "the
+ *      node must be exactly this tall".
+ *
+ * ## What this build removed from the previous revision, and why
+ *
+ * The previous revision's "grow/shrink the node to exactly fit its content"
+ * model (`measureMinHeight`, `setNodeHeight`, `refitNode`, `scheduleRefit`,
+ * `scheduleInitialFit`) is gone entirely, replaced by upstream's "one
+ * fixed-size box that scrolls" model (see `render.mjs`'s top doc comment for
+ * the full account). Every test that exercised those removed functions, or
+ * asserted that a structural change (Enabled toggle / collapse / upscale
+ * backend switch) SCHEDULED a refit, is deleted below, not left pointing at
+ * dead code — the corresponding NEW tests assert the opposite: those same
+ * actions do NOT resize the node any more (`makeFakeNode`'s `setSizeCalls`
+ * stays empty). The stubbed `requestAnimationFrame`/`rafQueue` machinery the
+ * previous revision needed to test rAF-deferred refits is gone too — nothing
+ * in this file's resize path uses `requestAnimationFrame` any more (there is
+ * no more per-frame content measurement to defer past a layout pass).
  *
  * Run directly: `node js/anima/anima_generator/test_resize.mjs` (plain
  * script, no test framework — matches the project's `python
@@ -59,12 +85,21 @@
  *
  * MANUAL-IN-COMFYUI CHECKLIST (cannot be confirmed by this headless harness
  * — the real `addDOMWidget`/LiteGraph runtime contract only exists live):
- *   [ ] The node renders 7 cards (Sampler, Highres Fix, Detailer, Upscale,
- *       Postprocess, Save, Preview) instead of a flat widget stack;
- *       `positive_text`/`negative_text` render natively below the panel.
- *   [ ] No card's body is clipped mid-row regardless of how short the node
- *       is dragged/loaded (the flex-shrink fix) -- SAMPLER/HIGHRES/
- *       DETAILER/UPSCALE all show their FULL body, never sliced.
+ *   [ ] The node renders one bordered/themed box containing 7 cards
+ *       (Sampler, Highres Fix, Detailer, Upscale, Postprocess, Save,
+ *       Preview) instead of a flat widget stack or a pile of separately
+ *       floating cards; `positive_text`/`negative_text` render natively
+ *       below the panel.
+ *   [ ] The box visibly fills the node's current height (drag the node
+ *       taller/shorter and confirm the box's bottom edge tracks the node's
+ *       bottom edge, not the content's height) and NEVER clips a card mid-
+ *       row -- when content is taller than the box, the BOX shows an
+ *       internal scrollbar (mouse wheel over the box scrolls its content,
+ *       not the graph), and there is no HORIZONTAL scrollbar at any node
+ *       width down to WIDTH_MIN.
+ *   [ ] When content is shorter than the box (e.g. every optional stage
+ *       collapsed), the box shows empty space at the bottom -- this is
+ *       correct, matching upstream, not a bug.
  *   [ ] Every number field shows a number box + a slider, both live-synced;
  *       dragging a slider does NOT resize the node.
  *   [ ] SAMPLER and PREVIEW (the two always-on cards) show a plain header
@@ -73,10 +108,11 @@
  *   [ ] HIGHRES/DETAILER/UPSCALE/POSTPROCESS/SAVE show a header with an
  *       Enabled checkbox and NO separate chevron; unchecking it collapses
  *       the card to just that header row, checking it expands the body --
- *       toggling it resizes the node (grow or shrink to fit).
- *   [ ] Switching the Upscale backend combo resizes the node; a plain value
- *       edit (typing a number, dragging a slider, picking a non-backend
- *       combo option) never does.
+ *       toggling it does NOT resize the node (only the box's scroll content
+ *       changes; drag the node to a height shorter than all-expanded content
+ *       first, to make the scrollbar's presence/absence observable).
+ *   [ ] Switching the Upscale backend combo rebuilds the card's fields and
+ *       does NOT resize the node.
  *   [ ] `control_after_generate` is absent from the SAMPLER card (this
  *       node's `seed` widget doesn't declare `control_after_generate:
  *       True`) and shows the "(unavailable)" placeholder instead of
@@ -88,6 +124,11 @@
  *       disabled, then reloading the page, restores the same open/closed
  *       state (derived from each `*_enabled` value) and every field's
  *       value, at the saved node size (no auto-resize-on-reload).
+ *   [ ] A freshly-dragged-in node lands at a sensible default size
+ *       (DEFAULT_W x DEFAULT_H) and can be dragged narrower/shorter down to
+ *       WIDTH_MIN / the fixed height floor, but no further -- the resize
+ *       handle stops there rather than letting the box collapse to
+ *       uselessness.
  *   [ ] Queueing the node still runs `generate()` correctly (every hidden
  *       widget's value still reaches Python via the normal
  *       `widgets_values` path -- nothing about this build changes
@@ -125,11 +166,6 @@ import {
   renderCardFields,
   updateFieldRowValue,
   setCardEnabledUI,
-  measureMinHeight,
-  setNodeHeight,
-  refitNode,
-  scheduleRefit,
-  scheduleInitialFit,
   computeSizeFloor,
   clampNodeSize,
   createResizeClampHandler,
@@ -137,6 +173,7 @@ import {
   DEFAULT_W,
   DEFAULT_H,
   WIDTH_MIN,
+  HEIGHT_MIN,
 } from "./render.mjs";
 
 import {
@@ -169,22 +206,6 @@ function test(name, fn) {
     console.error(`FAIL - ${name}`);
     console.error(err && err.stack ? err.stack : err);
   }
-}
-
-// ---- Stubbed requestAnimationFrame ------------------------------------
-
-let rafQueue = [];
-globalThis.requestAnimationFrame = (cb) => {
-  rafQueue.push(cb);
-  return rafQueue.length;
-};
-function flushRAF() {
-  const pending = rafQueue;
-  rafQueue = [];
-  pending.forEach((cb) => cb());
-}
-function resetRAF() {
-  rafQueue = [];
 }
 
 globalThis.getComputedStyle = (el) => (el && el.style) || {};
@@ -483,14 +504,24 @@ test("CARD_DEFS' enabledWidget is null for exactly the two always-on cards (samp
 });
 
 // =========================================================================
-// B. render.mjs — DOM behavior
+// B. render.mjs — DOM behavior + the box-that-scrolls CSS architecture
 // =========================================================================
 
-test("buildRoot builds one card shell per CARD_DEFS entry, in order", () => {
+test("buildRoot builds ONE box (.wtn-ag-box) as root's only child, and one card shell per CARD_DEFS entry INSIDE that box, in order", () => {
   const doc = makeDocStub();
   const refs = buildRoot(doc, CARD_DEFS);
-  assert.equal(refs.root.children.length, CARD_DEFS.length);
+  assert.equal(refs.root.children.length, 1, "root must have exactly one child: the box");
+  assert.equal(refs.root.children[0], refs.box);
+  assert.equal(refs.box.children.length, CARD_DEFS.length);
   CARD_DEFS.forEach((c) => assert.ok(refs.cards[c.id], `missing shell for ${c.id}`));
+});
+
+test("buildRoot's box is the SINGLE parent of every card (not root directly)", () => {
+  const doc = makeDocStub();
+  const refs = buildRoot(doc, CARD_DEFS);
+  CARD_DEFS.forEach((c) => {
+    assert.equal(refs.cards[c.id].root.parentNode, refs.box, `${c.id}'s card root must be parented to the box, not root`);
+  });
 });
 
 test("buildCardShell only creates an Enabled checkbox for cards with an enabledWidget", () => {
@@ -617,69 +648,26 @@ test("setCardEnabledUI is a no-op (never throws) for a falsy shellRefs", () => {
   assert.doesNotThrow(() => setCardEnabledUI(undefined, false));
 });
 
-test("measureMinHeight returns the floor for a missing root", () => {
-  assert.equal(measureMinHeight(null), 220);
+test("render.mjs's .wtn-ag-root CSS rule sets height: 100% (the box-fills-the-widget's-height contract this build introduces)", () => {
+  const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
+  const rootRuleMatch = renderSource.match(/\.wtn-ag-root \{[\s\S]*?\n\}/);
+  assert.ok(rootRuleMatch, "could not find the .wtn-ag-root CSS rule in render.mjs");
+  assert.match(rootRuleMatch[0], /height:\s*100%/, "the .wtn-ag-root rule must set height: 100%");
 });
 
-test("measureMinHeight sums visible children + gap + padding, floors at 220, rounds to 4px", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  root.style.rowGap = "10px";
-  root.style.paddingTop = "3px";
-  root.style.paddingBottom = "3px";
-  const a = doc.createElement("div");
-  a.offsetHeight = 100;
-  a.offsetParent = {};
-  const b = doc.createElement("div");
-  b.offsetHeight = 100;
-  b.offsetParent = {};
-  root.appendChild(a);
-  root.appendChild(b);
-  assert.equal(measureMinHeight(root), 220);
+test("render.mjs's .wtn-ag-box CSS rule fills the root (flex: 1, min-height: 0) and scrolls vertically only (overflow-y: auto, no horizontal scroll)", () => {
+  const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
+  const boxRuleMatch = renderSource.match(/\.wtn-ag-box \{[\s\S]*?\n\}/);
+  assert.ok(boxRuleMatch, "could not find the .wtn-ag-box CSS rule in render.mjs");
+  const rule = boxRuleMatch[0];
+  assert.match(rule, /flex:\s*1/, "the box must be a flex:1 child so it fills the root's height");
+  assert.match(rule, /min-height:\s*0/, "the box needs min-height:0 to be allowed to shrink below its content and scroll instead of forcing height");
+  assert.match(rule, /overflow-y:\s*auto/, "the box must scroll vertically when content exceeds its height");
+  assert.ok(!/overflow-x:\s*(auto|scroll)/.test(rule), "the box must never scroll horizontally");
+  assert.match(rule, /overflow-x:\s*hidden/, "the box must explicitly suppress horizontal scroll/overflow");
 });
 
-test("measureMinHeight skips children whose offsetParent is null", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const visible = doc.createElement("div");
-  visible.offsetHeight = 300;
-  visible.offsetParent = {};
-  const hidden = doc.createElement("div");
-  hidden.offsetHeight = 9999;
-  hidden.offsetParent = null;
-  root.appendChild(visible);
-  root.appendChild(hidden);
-  assert.equal(measureMinHeight(root), 300);
-});
-
-test("measureMinHeight sums each child's FULL offsetHeight even when the root's own (container) height is set much shorter -- the clipping bug's 'under-report' half, ruled out", () => {
-  // measureMinHeight never reads the root's own height/size at all -- it
-  // only sums children's offsetHeight. In a real browser this is exactly
-  // why the .wtn-ag-card flex-shrink:0 fix (see the CSS source-level test
-  // below) is sufficient on its own: a card that CANNOT be compressed by
-  // its column-flex container always reports its true, uncompressed
-  // offsetHeight here, regardless of how short the DOM-widget container
-  // currently is -- so refitNode can never under-measure and get stuck in
-  // a "too small to ever grow" feedback loop.
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  root.style.height = "10px"; // simulate a much-too-short DOM-widget container
-  const cardA = doc.createElement("div");
-  cardA.offsetHeight = 400; // a card's full, uncompressed height
-  cardA.offsetParent = {};
-  const cardB = doc.createElement("div");
-  cardB.offsetHeight = 300;
-  cardB.offsetParent = {};
-  root.appendChild(cardA);
-  root.appendChild(cardB);
-  assert.equal(
-    measureMinHeight(root),
-    700,
-    "must read children's full offsetHeight -- never scaled down by the container's own (short) height",
-  );
-});
-
-test("render.mjs's .wtn-ag-card CSS rule sets flex-shrink: 0 (the fix for cards clipping mid-row under a short DOM-widget container)", () => {
+test("render.mjs's .wtn-ag-card CSS rule sets flex-shrink: 0 (so the box's overflow-y scrolls instead of compressing a card's content)", () => {
   const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
   // NOT a naive `[^}]*` -- this file's CSS is a JS template literal, so a
   // `${TOKENS.x}` interpolation's own closing `}` (mid-line) would terminate
@@ -691,110 +679,25 @@ test("render.mjs's .wtn-ag-card CSS rule sets flex-shrink: 0 (the fix for cards 
   assert.match(
     cardRuleMatch[0],
     /flex-shrink:\s*0/,
-    "the .wtn-ag-card rule must set flex-shrink: 0 so the column-flex root can never compress a card below its content height",
+    "the .wtn-ag-card rule must set flex-shrink: 0 so the box's column-flex layout can never compress a card below its content height",
   );
 });
 
-test("render.mjs no longer emits the dead 'dim' collapse styling (wtn-ag-card-bd-dim) or a collapse-button rule -- Enabled hides/shows the body directly now", () => {
+test("render.mjs no longer emits the dead 'dim' collapse styling (wtn-ag-card-bd-dim) or a collapse-button rule -- Enabled hides/shows the body directly", () => {
   const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
   assert.ok(!/wtn-ag-card-bd-dim/.test(renderSource), "dead dim class must be removed, not left unused");
   assert.ok(!/wtn-ag-collapse-btn/.test(renderSource), "dead collapse-button class must be removed, not left unused");
 });
 
-test("setNodeHeight sets height only, preserves width, records _agAutoH", () => {
-  const { node, setSizeCalls } = makeFakeNode([460, 300], []);
-  setNodeHeight(node, 700);
-  assert.equal(node.size[0], 460);
-  assert.equal(node.size[1], 700);
-  assert.equal(node._agAutoH, 700);
-  assert.deepEqual(setSizeCalls[0], [460, 700]);
-});
-
-test("refitNode grows the node when measured content + CHROME exceeds current height", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 1200;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const { node, setSizeCalls } = makeFakeNode([460, 300], []);
-
-  refitNode(node, root);
-
-  const want = Math.max(measureMinHeight(root) + CHROME, DEFAULT_H);
-  assert.ok(want > 300);
-  assert.equal(setSizeCalls.length, 1);
-  assert.equal(node.size[1], want);
-});
-
-test("refitNode does not shrink a node the user manually enlarged past the last auto-fit height", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 5;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const { node, setSizeCalls } = makeFakeNode([460, 1200], []);
-  node._agAutoH = 600;
-
-  refitNode(node, root);
-
-  assert.equal(setSizeCalls.length, 0);
-});
-
-test("scheduleRefit defers through requestAnimationFrame -- never resizes synchronously", () => {
-  resetRAF();
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 900;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const { node, setSizeCalls } = makeFakeNode([460, 300], []);
-
-  scheduleRefit(node, root);
-  assert.equal(setSizeCalls.length, 0);
-  assert.equal(rafQueue.length, 1);
-  flushRAF();
-  assert.equal(setSizeCalls.length, 1);
-});
-
-test("scheduleInitialFit does not resize when node._agConfigured is true (loaded node keeps saved size)", () => {
-  resetRAF();
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 900;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const { node, setSizeCalls } = makeFakeNode([460, 260], []);
-  node._agConfigured = true;
-
-  scheduleInitialFit(node, root);
-  flushRAF();
-
-  assert.equal(setSizeCalls.length, 0);
-  assert.equal(node.size[1], 260);
-});
-
-test("scheduleInitialFit DOES fit a genuinely fresh node", () => {
-  resetRAF();
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 900;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const { node, setSizeCalls } = makeFakeNode([460, 100], []);
-
-  scheduleInitialFit(node, root);
-  flushRAF();
-
-  assert.equal(setSizeCalls.length, 1);
+test("render.mjs no longer exports any of the removed auto-fit-to-content machinery (measureMinHeight/setNodeHeight/refitNode/scheduleRefit/scheduleInitialFit)", () => {
+  const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
+  ["measureMinHeight", "setNodeHeight", "refitNode", "scheduleRefit", "scheduleInitialFit"].forEach((name) => {
+    assert.ok(!new RegExp(`export function ${name}\\b`).test(renderSource), `${name} must be removed, not left dead`);
+  });
 });
 
 // =========================================================================
-// C. interaction.mjs — hide-and-mirror + structural-vs-value gating
+// C. interaction.mjs — hide-and-mirror + "nothing here resizes the node"
 // =========================================================================
 
 test("hideWidget sets hidden + collapses computeSize, but NEVER sets serialize = false", () => {
@@ -893,7 +796,6 @@ test("repositionDomWidget is a no-op if neither textarea widget exists", () => {
 });
 
 function makeGeneratorFixture() {
-  resetRAF();
   resetLoggedMissing();
   const doc = makeDocStub();
   const refs = buildRoot(doc, CARD_DEFS);
@@ -964,7 +866,6 @@ test("mountAllCards derives each optional card's initial open/closed state from 
 });
 
 test("mountAllCards opens an optional card whose restored Enabled widget is true", () => {
-  resetRAF();
   resetLoggedMissing();
   const doc = makeDocStub();
   const refs = buildRoot(doc, CARD_DEFS);
@@ -982,41 +883,35 @@ test("mountAllCards opens an optional card whose restored Enabled widget is true
   assert.equal(refs.cards.highres.enabledCheckbox.checked, true);
 });
 
-test("checking a stage's Enabled checkbox OPENS that card and is STRUCTURAL: writes the native widget, schedules exactly one refit", () => {
-  const { node, refs } = makeGeneratorFixture();
+test("checking a stage's Enabled checkbox OPENS that card and does NOT resize the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
   const highresEnabledWidget = findWidget(node, "highres_enabled");
   assert.equal(refs.cards.highres.bodyEl.hidden, true, "starts collapsed (fixture default)");
-  resetRAF();
 
   refs.cards.highres.enabledCheckbox.checked = true;
   fire(refs.cards.highres.enabledCheckbox, "change");
 
   assert.equal(highresEnabledWidget.value, true, "the REAL native widget must be written, not a parallel object");
   assert.equal(refs.cards.highres.bodyEl.hidden, false, "checking Enabled must EXPAND the body");
-  assert.equal(rafQueue.length, 1, "expected exactly one refit scheduled");
-  flushRAF();
+  assert.equal(setSizeCalls.length, 0, "opening a card must never resize the node -- it only changes the box's scroll content");
 });
 
-test("unchecking a stage's Enabled checkbox COLLAPSES that card to just its header row and is STRUCTURAL: exactly one refit", () => {
-  const { node, refs } = makeGeneratorFixture();
+test("unchecking a stage's Enabled checkbox COLLAPSES that card to just its header row and does NOT resize the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
   // Open it first (the fixture defaults every *_enabled widget to false).
   refs.cards.highres.enabledCheckbox.checked = true;
   fire(refs.cards.highres.enabledCheckbox, "change");
-  flushRAF();
-  resetRAF();
 
   refs.cards.highres.enabledCheckbox.checked = false;
   fire(refs.cards.highres.enabledCheckbox, "change");
 
   assert.equal(findWidget(node, "highres_enabled").value, false);
   assert.equal(refs.cards.highres.bodyEl.hidden, true, "unchecking Enabled must COLLAPSE the body to just the header row");
-  assert.equal(rafQueue.length, 1, "expected exactly one refit scheduled");
-  flushRAF();
+  assert.equal(setSizeCalls.length, 0, "collapsing a card must never resize the node either");
 });
 
-test("switching the upscale_backend combo is STRUCTURAL: rebuilds the card body to the new backend's fields, schedules exactly one refit", () => {
-  const { node, refs } = makeGeneratorFixture();
-  resetRAF();
+test("switching the upscale_backend combo rebuilds the card body to the new backend's fields and does NOT resize the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
 
   const upscaleShell = refs.cards.upscale;
   const backendSelect = upscaleShell.bodyEl.children[0].children[1].children[0]; // field -> control -> select
@@ -1025,13 +920,11 @@ test("switching the upscale_backend combo is STRUCTURAL: rebuilds the card body 
 
   assert.equal(findWidget(node, "upscale_backend").value, "resshift");
   assert.equal(upscaleShell.bodyEl.children.length, 1 + UPSCALE_BACKEND_FIELDS.resshift.length);
-  assert.equal(rafQueue.length, 1, "expected exactly one refit scheduled for the backend switch");
-  flushRAF();
+  assert.equal(setSizeCalls.length, 0, "switching the upscale backend must never resize the node -- only its own card's fields change");
 });
 
-test("dragging a number field's slider (value edit) is NOT structural: writes the widget, no refit", () => {
-  const { node, refs } = makeGeneratorFixture();
-  resetRAF();
+test("dragging a number field's slider (value edit) writes the widget and never resizes the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
 
   const cfgRow = refs.cards.sampler.bodyEl.children[3]; // seed, control_after_generate, steps, cfg
   const range = cfgRow.children[1].children[0].children[1]; // field -> control -> num-wrap -> range
@@ -1039,12 +932,11 @@ test("dragging a number field's slider (value edit) is NOT structural: writes th
   fire(range, "input");
 
   assert.equal(findWidget(node, "cfg").value, 9);
-  assert.equal(rafQueue.length, 0, "a slider/number edit must never schedule a refit");
+  assert.equal(setSizeCalls.length, 0, "a slider/number edit must never resize the node");
 });
 
-test("picking a non-backend combo option (value edit) is NOT structural: no refit", () => {
-  const { node, refs } = makeGeneratorFixture();
-  resetRAF();
+test("picking a non-backend combo option writes the widget and never resizes the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
 
   const samplerRow = refs.cards.sampler.bodyEl.children[4]; // seed, control_after_generate, steps, cfg, sampler_name
   const select = samplerRow.children[1].children[0];
@@ -1052,12 +944,11 @@ test("picking a non-backend combo option (value edit) is NOT structural: no refi
   fire(select, "change");
 
   assert.equal(findWidget(node, "sampler_name").value, "dpmpp_2m");
-  assert.equal(rafQueue.length, 0);
+  assert.equal(setSizeCalls.length, 0);
 });
 
-test("editing a text field (value edit) is NOT structural: no refit", () => {
-  const { node, refs } = makeGeneratorFixture();
-  resetRAF();
+test("editing a text field writes the widget and never resizes the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
 
   const savePrefixRow = refs.cards.save.bodyEl.children[0];
   const input = savePrefixRow.children[1].children[0];
@@ -1065,7 +956,7 @@ test("editing a text field (value edit) is NOT structural: no refit", () => {
   fire(input, "input");
 
   assert.equal(findWidget(node, "save_prefix").value, "Webtoon");
-  assert.equal(rafQueue.length, 0);
+  assert.equal(setSizeCalls.length, 0);
 });
 
 test("a widget's callback is called (if present) after a value edit, so litegraph stays consistent", () => {
@@ -1082,14 +973,13 @@ test("a widget's callback is called (if present) after a value edit, so litegrap
   assert.equal(calledWith, 40);
 });
 
-test("refreshAllCards re-renders every card's fields from current widget values, derives open/closed from the restored Enabled value, and never schedules a refit", () => {
-  const { node, refs } = makeGeneratorFixture();
+test("refreshAllCards re-renders every card's fields from current widget values, derives open/closed from the restored Enabled value, and never resizes the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
   // Simulate onConfigure having restored a different value + a stage's
   // Enabled flag flipping true (the fixture defaults every *_enabled widget
   // to false, so "detailer" here starts collapsed).
   findWidget(node, "cfg").value = 12;
   findWidget(node, "detailer_enabled").value = true;
-  resetRAF();
 
   refreshAllCards(node, refs);
 
@@ -1098,7 +988,7 @@ test("refreshAllCards re-renders every card's fields from current widget values,
   assert.equal(numInput.value, "12", "refreshAllCards must reflect the restored widget value");
   assert.equal(refs.cards.detailer.bodyEl.hidden, false, "refreshAllCards must open a card whose restored *_enabled value is true");
   assert.equal(refs.cards.detailer.enabledCheckbox.checked, true);
-  assert.equal(rafQueue.length, 0, "restore must never schedule a refit -- trust the saved node.size");
+  assert.equal(setSizeCalls.length, 0, "restore must never resize the node -- trust the saved node.size");
 });
 
 // =========================================================================
@@ -1120,15 +1010,17 @@ test("index.js hides every card-layout widget via hideLayoutWidgets before mount
   assert.match(indexCode, /hideLayoutWidgets\(node,\s*getAllLayoutWidgetNames\(\)\)/);
 });
 
-test("index.js creates the widget with the legacy getMinHeight option, backed by measureMinHeight", () => {
+test("index.js creates the widget with the legacy getMinHeight option, backed by the FIXED HEIGHT_MIN floor (not a content measurement)", () => {
   assert.match(indexSource, /getMinHeight/);
-  assert.match(indexSource, /measureMinHeight/);
+  assert.match(indexCode, /getMinHeight:\s*\(\)\s*=>\s*HEIGHT_MIN/);
   assert.ok(!/widget\.computeSize\s*=/.test(indexCode), "found a leftover widget.computeSize assignment");
   assert.ok(!/widget\.getHeight\s*=/.test(indexCode), "found a leftover widget.getHeight assignment");
+  assert.ok(!/measureMinHeight/.test(indexCode), "index.js's CODE (not its doc comments) must not reference the removed measureMinHeight");
 });
 
-test("index.js's widget.computeLayoutSize reports minWidth: 1 for the Nodes 2.0 renderer path", () => {
+test("index.js's widget.computeLayoutSize reports the fixed HEIGHT_MIN + minWidth: 1 for the Nodes 2.0 renderer path", () => {
   assert.match(indexCode, /computeLayoutSize/);
+  assert.match(indexCode, /minHeight:\s*HEIGHT_MIN/);
   assert.match(indexCode, /minWidth:\s*1/);
 });
 
@@ -1136,18 +1028,23 @@ test("index.js repositions the DOM widget above the native textareas", () => {
   assert.match(indexCode, /repositionDomWidget\(node,\s*widget\)/);
 });
 
-test("index.js schedules the guarded initial fit in setupNode, never scheduleRefit there", () => {
-  const setupIdx = indexCode.indexOf("function setupNode");
-  const setupBody = indexCode.slice(setupIdx, indexCode.indexOf("\n}", setupIdx));
-  assert.match(setupBody, /scheduleInitialFit\(/);
-  assert.ok(!/scheduleRefit\(/.test(setupBody), "setupNode must use the GUARDED initial fit, not scheduleRefit");
+test("index.js's CODE no longer imports or calls any of the removed refit/measurement helpers (scheduleRefit/scheduleInitialFit/measureMinHeight) -- doc comments may still name them when explaining what was removed and why", () => {
+  ["scheduleRefit", "scheduleInitialFit", "measureMinHeight"].forEach((name) => {
+    assert.ok(!indexCode.includes(name), `index.js's CODE must not reference the removed ${name}`);
+  });
 });
 
-test("index.js's restoreNode never calls scheduleRefit or scheduleInitialFit", () => {
+test("index.js's setupNode mounts the UI and floors a fresh node via ensureInitialFloor -- nothing else", () => {
+  const setupIdx = indexCode.indexOf("function setupNode");
+  const setupBody = indexCode.slice(setupIdx, indexCode.indexOf("\n}", setupIdx));
+  assert.match(setupBody, /mountUI\(node\)/);
+  assert.match(setupBody, /ensureInitialFloor\(node\)/);
+});
+
+test("index.js's restoreNode only calls mountUI + refreshAllCards -- no resize call of any kind", () => {
   const idx = indexCode.indexOf("function restoreNode");
   const body = indexCode.slice(idx, indexCode.indexOf("\n}", idx));
-  assert.ok(!/scheduleRefit\(/.test(body));
-  assert.ok(!/scheduleInitialFit\(/.test(body));
+  assert.match(body, /mountUI\(node\)/);
   assert.match(body, /refreshAllCards\(/);
 });
 
@@ -1171,37 +1068,12 @@ test("index.js's only serialize=false assignments are the DOM panel widget's own
   );
 });
 
-// =========================================================================
-// E. measureMinHeight / computeLayoutSize never read node.size (no
-// feedback loop)
-// =========================================================================
-
-test("measureMinHeight's signature takes only `root` -- it cannot read node.size because it never receives node", () => {
-  assert.equal(measureMinHeight.length, 1);
-  // Behavioral proof: call it with a real root and confirm no `node` needs
-  // to exist anywhere in scope for this call to work.
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  assert.equal(typeof measureMinHeight(root), "number");
-});
-
-test("render.mjs's measureMinHeight function body never references node.size", () => {
-  const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
-  const start = renderSource.indexOf("export function measureMinHeight");
-  const end = renderSource.indexOf("\n}", start);
-  const body = renderSource.slice(start, end);
-  assert.ok(!/node\.size/.test(body), "measureMinHeight must never read node.size (no feedback loop)");
-});
-
-test("index.js's computeLayoutSize function body never references node.size", () => {
-  const start = indexCode.indexOf("widget.computeLayoutSize = function");
-  const end = indexCode.indexOf("};", start);
-  const body = indexCode.slice(start, end);
-  assert.ok(!/node\.size/.test(body), "computeLayoutSize must never read node.size (no feedback loop)");
+test("index.js wraps nodeType.prototype.onResize with createResizeClampHandler, preserving the previous implementation", () => {
+  assert.match(indexCode, /createResizeClampHandler\(nodeType\.prototype\.onResize\)/);
 });
 
 // =========================================================================
-// F. External-mutation resync (the gap this build's follow-up fix closes)
+// E. External-mutation resync (preserved by this build)
 // =========================================================================
 
 test("updateFieldRowValue (number) mirrors an externally-changed widget value into both the number box and its slider", () => {
@@ -1273,7 +1145,7 @@ test("refreshFieldValues resyncs an externally-mutated widget's value into its r
 
   // Simulate ComfyUI's own control_after_generate rewriting `seed` after a
   // queued run finishes -- entirely outside this panel's own edit path (the
-  // concrete failure this build's fix targets).
+  // concrete failure this fix targets).
   findWidget(node, "seed").value = 4242;
 
   refreshFieldValues(node, refs);
@@ -1291,55 +1163,38 @@ test("refreshFieldValues resyncs an externally-mutated widget's value into its r
   );
 });
 
-test("refreshFieldValues never schedules a refit for a plain VALUE-only change (no *_enabled change) -- a value-only change can never affect layout", () => {
-  const { node, refs } = makeGeneratorFixture();
-  findWidget(node, "seed").value = 777;
-  findWidget(node, "cfg").value = 11;
-  resetRAF();
-
-  refreshFieldValues(node, refs);
-
-  assert.equal(rafQueue.length, 0, "refreshFieldValues must never call scheduleRefit for a value-only change");
-});
-
-test("refreshFieldValues opens/closes a card whose *_enabled widget was mutated externally, and schedules exactly ONE refit", () => {
-  const { node, refs } = makeGeneratorFixture();
+test("refreshFieldValues opens/closes a card whose *_enabled widget was mutated externally, and never resizes the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
   assert.equal(refs.cards.highres.bodyEl.hidden, true, "starts collapsed (fixture default: highres_enabled=false)");
   findWidget(node, "highres_enabled").value = true; // mutated externally, not via this panel's own checkbox
-  resetRAF();
 
   refreshFieldValues(node, refs);
 
   assert.equal(refs.cards.highres.bodyEl.hidden, false, "an externally-flipped Enabled widget must open the card");
   assert.equal(refs.cards.highres.enabledCheckbox.checked, true);
-  assert.equal(rafQueue.length, 1, "an actual open/close change is a structural consequence -- exactly one refit");
-  flushRAF();
+  assert.equal(setSizeCalls.length, 0, "an externally-driven open/close must never resize the node either");
 });
 
-test("refreshFieldValues coalesces MULTIPLE cards' *_enabled changes in the same resync pass into exactly ONE refit", () => {
-  const { node, refs } = makeGeneratorFixture();
+test("refreshFieldValues handles MULTIPLE cards' *_enabled changes in the same resync pass, none of them resizing the node", () => {
+  const { node, refs, setSizeCalls } = makeGeneratorFixture();
   findWidget(node, "highres_enabled").value = true;
   findWidget(node, "detailer_enabled").value = true;
-  resetRAF();
 
   refreshFieldValues(node, refs);
 
   assert.equal(refs.cards.highres.bodyEl.hidden, false);
   assert.equal(refs.cards.detailer.bodyEl.hidden, false);
-  assert.equal(rafQueue.length, 1, "must coalesce into exactly one refit, not one per changed card");
-  flushRAF();
+  assert.equal(setSizeCalls.length, 0);
 });
 
-test("refreshFieldValues does NOT schedule a refit when a *_enabled widget's value is unchanged -- the common case on every execution-finished event, when nothing actually changed", () => {
+test("refreshFieldValues is a no-op for an unchanged *_enabled value -- the common case on every execution-finished event", () => {
   const { node, refs } = makeGeneratorFixture();
   // highres_enabled is already false (fixture default) and this "mutation"
   // sets it to the SAME value -- nothing actually changed.
   findWidget(node, "highres_enabled").value = false;
-  resetRAF();
 
-  refreshFieldValues(node, refs);
-
-  assert.equal(rafQueue.length, 0, "an unchanged *_enabled value must never trigger a refit, even though refreshFieldValues runs on every execution-finished event");
+  assert.doesNotThrow(() => refreshFieldValues(node, refs));
+  assert.equal(refs.cards.highres.bodyEl.hidden, true, "must remain collapsed -- nothing changed");
 });
 
 test("refreshFieldValues does not overwrite a control the user currently has focus in, but resyncs it once focus clears", () => {
@@ -1364,18 +1219,16 @@ test("refreshFieldValues does not overwrite a control the user currently has foc
   assert.equal(seedRange.value, "999");
 });
 
-test("refreshFieldValues skips the Enabled checkbox while it is the focused element -- and never refits from a change it didn't apply", () => {
+test("refreshFieldValues skips the Enabled checkbox while it is the focused element", () => {
   const { node, refs } = makeGeneratorFixture();
   const highresEnabledWidget = findWidget(node, "highres_enabled");
   refs.doc.activeElement = refs.cards.highres.enabledCheckbox;
-  resetRAF();
 
   highresEnabledWidget.value = true;
   refreshFieldValues(node, refs);
 
   assert.equal(refs.cards.highres.enabledCheckbox.checked, false, "focused Enabled checkbox must not be clobbered");
   assert.equal(refs.cards.highres.bodyEl.hidden, true, "body must not open either -- the change was never applied");
-  assert.equal(rafQueue.length, 0, "a change skipped because the checkbox is focused must never schedule a refit");
 });
 
 test("refreshFieldValues is a no-op (never throws) for refs with no cards / no fieldRows yet", () => {
@@ -1464,139 +1317,98 @@ test("index.js's findAnimaGeneratorNodes uses the public findNodesByType API (no
 });
 
 // =========================================================================
-// G. Manual-drag width+height clamp (this build's fix -- the node can no
-//    longer be dragged into an unusable state)
+// F. Manual-drag width+height clamp (a FIXED floor now, not content-tracking)
 // =========================================================================
 
-test("WIDTH_MIN is a fixed floor at or below DEFAULT_W", () => {
+test("WIDTH_MIN is a fixed floor at or below DEFAULT_W (unchanged by this build)", () => {
   assert.ok(WIDTH_MIN <= DEFAULT_W, "WIDTH_MIN must never exceed DEFAULT_W");
   assert.equal(WIDTH_MIN, 280);
 });
 
-test("computeSizeFloor returns [WIDTH_MIN, measureMinHeight(root) + CHROME] for a real root", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 400;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const [minW, minH] = computeSizeFloor(root);
-  assert.equal(minW, WIDTH_MIN);
-  assert.equal(minH, measureMinHeight(root) + CHROME);
+test("HEIGHT_MIN is a fixed, sensible minimum -- well below DEFAULT_H, same relationship WIDTH_MIN has to DEFAULT_W", () => {
+  assert.ok(HEIGHT_MIN > 0);
+  assert.ok(HEIGHT_MIN < DEFAULT_H, "HEIGHT_MIN must never exceed DEFAULT_H");
 });
 
-test("computeSizeFloor falls back to DEFAULT_H for a missing root (never throws)", () => {
-  const [minW, minH] = computeSizeFloor(null);
+test("computeSizeFloor returns the FIXED [WIDTH_MIN, HEIGHT_MIN + CHROME] -- no root/content argument at all", () => {
+  assert.equal(computeSizeFloor.length, 0, "computeSizeFloor must take no arguments -- the floor no longer depends on measured content");
+  const [minW, minH] = computeSizeFloor();
   assert.equal(minW, WIDTH_MIN);
-  assert.equal(minH, DEFAULT_H);
+  assert.equal(minH, HEIGHT_MIN + CHROME);
 });
 
 test("clampNodeSize raises a too-narrow size[0] up to WIDTH_MIN; leaves a wider size[0] alone", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   const size = [100, 900];
-  clampNodeSize({ size: [100, 900] }, root, size);
+  clampNodeSize({ size: [100, 900] }, size);
   assert.equal(size[0], WIDTH_MIN, "below the floor must clamp up to it");
 
   const wideSize = [900, 900];
-  clampNodeSize({ size: [900, 900] }, root, wideSize);
+  clampNodeSize({ size: [900, 900] }, wideSize);
   assert.equal(wideSize[0], 900, "above the floor must be left alone -- a floor, never a ceiling");
 });
 
-test("clampNodeSize raises a too-short size[1] up to the LIVE measureMinHeight(root) + CHROME; leaves a taller size[1] alone", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const child = doc.createElement("div");
-  child.offsetHeight = 1000;
-  child.offsetParent = {};
-  root.appendChild(child);
-  const floorH = measureMinHeight(root) + CHROME;
+test("clampNodeSize raises a too-short size[1] up to the FIXED HEIGHT_MIN + CHROME floor; leaves a taller size[1] alone", () => {
+  const floorH = HEIGHT_MIN + CHROME;
 
   const shortSize = [WIDTH_MIN, 10];
-  clampNodeSize({ size: [WIDTH_MIN, 10] }, root, shortSize);
-  assert.equal(shortSize[1], floorH, "below the live content floor must clamp up to it");
+  clampNodeSize({ size: [WIDTH_MIN, 10] }, shortSize);
+  assert.equal(shortSize[1], floorH, "below the fixed floor must clamp up to it");
 
   const tallSize = [WIDTH_MIN, floorH + 500];
-  clampNodeSize({ size: [WIDTH_MIN, floorH + 500] }, root, tallSize);
+  clampNodeSize({ size: [WIDTH_MIN, floorH + 500] }, tallSize);
   assert.equal(tallSize[1], floorH + 500, "above the floor must be left alone");
 });
 
-test("clampNodeSize's height floor tracks content LIVE: fewer visible children (stages disabled) shrinks the floor, allowing a size that was previously clamped away", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
-  const cardA = doc.createElement("div");
-  cardA.offsetHeight = 400;
-  cardA.offsetParent = {};
-  const cardB = doc.createElement("div");
-  cardB.offsetHeight = 400;
-  cardB.offsetParent = {};
-  root.appendChild(cardA);
-  root.appendChild(cardB);
-
-  const bigFloor = measureMinHeight(root) + CHROME;
-  const attempt = [WIDTH_MIN, bigFloor - 50];
-  clampNodeSize({ size: [WIDTH_MIN, bigFloor - 50] }, root, attempt);
-  assert.equal(attempt[1], bigFloor, "with both cards visible, a size just below the floor is clamped up");
-
-  // Simulate a stage's Enabled toggle collapsing cardB's body (setCardEnabledUI
-  // hides it) -- measureMinHeight skips offsetParent === null children, so the
-  // live floor shrinks with NO caching required.
-  cardB.offsetParent = null;
-  const smallFloor = measureMinHeight(root) + CHROME;
-  assert.ok(smallFloor < bigFloor, "collapsing a card must shrink the live floor");
-
-  const nowAllowed = [WIDTH_MIN, bigFloor - 50];
-  clampNodeSize({ size: [WIDTH_MIN, bigFloor - 50] }, root, nowAllowed);
-  assert.equal(
-    nowAllowed[1],
-    bigFloor - 50,
-    "a height that was clamped away when both cards were visible must now be ALLOWED once the smaller floor no longer requires clamping it",
-  );
+test("clampNodeSize's height floor is FIXED -- collapsing/expanding cards never changes it (the inverse of the previous revision's content-tracking floor)", () => {
+  // The previous revision's floor read measureMinHeight(root), so it shrank
+  // when cards collapsed (fewer visible children). This build's floor
+  // (HEIGHT_MIN + CHROME) is a plain constant -- it does not change no
+  // matter what's currently expanded/collapsed inside the box, because
+  // nothing about the box's content is read here at all any more.
+  const floorH = HEIGHT_MIN + CHROME;
+  const attemptCollapsed = [WIDTH_MIN, floorH - 50];
+  const attemptExpanded = [WIDTH_MIN, floorH - 50];
+  clampNodeSize({ size: [WIDTH_MIN, floorH - 50] }, attemptCollapsed);
+  clampNodeSize({ size: [WIDTH_MIN, floorH - 50] }, attemptExpanded);
+  assert.equal(attemptCollapsed[1], floorH);
+  assert.equal(attemptExpanded[1], floorH, "the floor is identical regardless of card open/closed state");
 });
 
 test("clampNodeSize also clamps node.size directly (belt-and-braces for a host that treats node.size, not the onResize size param, as canonical)", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   const node = { size: [50, 10] };
-  clampNodeSize(node, root, [50, 10]);
+  clampNodeSize(node, [50, 10]);
   assert.equal(node.size[0], WIDTH_MIN);
-  assert.equal(node.size[1], measureMinHeight(root) + CHROME);
+  assert.equal(node.size[1], HEIGHT_MIN + CHROME);
 });
 
-test("clampNodeSize writes node.min_size to the same live floor (best-effort belt-and-braces; harmless if the host never reads it)", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
+test("clampNodeSize writes node.min_size to the same fixed floor (best-effort belt-and-braces; harmless if the host never reads it)", () => {
   const node = { size: [500, 900] };
-  clampNodeSize(node, root, [500, 900]);
-  assert.deepEqual(node.min_size, [WIDTH_MIN, measureMinHeight(root) + CHROME]);
+  clampNodeSize(node, [500, 900]);
+  assert.deepEqual(node.min_size, [WIDTH_MIN, HEIGHT_MIN + CHROME]);
 });
 
-test("clampNodeSize never throws for a missing node/root/size", () => {
-  assert.doesNotThrow(() => clampNodeSize(null, null, null));
-  assert.doesNotThrow(() => clampNodeSize({}, null, undefined));
-  assert.doesNotThrow(() => clampNodeSize({ size: "not-an-array" }, null, [10, 10]));
+test("clampNodeSize never throws for a missing node/size", () => {
+  assert.doesNotThrow(() => clampNodeSize(null, null));
+  assert.doesNotThrow(() => clampNodeSize({}, undefined));
+  assert.doesNotThrow(() => clampNodeSize({ size: "not-an-array" }, [10, 10]));
 });
 
 test("clampNodeSize is a floor only -- never lowers a size that's already above it (never fights the user growing the node)", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   const size = [900, 900];
   const node = { size: [900, 900] };
-  clampNodeSize(node, root, size);
+  clampNodeSize(node, size);
   assert.deepEqual(size, [900, 900]);
   assert.deepEqual(node.size, [900, 900]);
 });
 
 test("createResizeClampHandler clamps via the returned handler and calls through to the original onResize with the (possibly clamped) size", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   let originalCalledWith = null;
   const original = function (size) {
     originalCalledWith = size.slice();
     return "original-return-value";
   };
   const handler = createResizeClampHandler(original);
-  const node = { size: [50, 10], _agRefs: { root } };
+  const node = { size: [50, 10] };
 
   const result = handler.call(node, [50, 10]);
 
@@ -1606,10 +1418,8 @@ test("createResizeClampHandler clamps via the returned handler and calls through
 });
 
 test("createResizeClampHandler degrades safely with no original onResize (undefined) -- never throws, returns undefined", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   const handler = createResizeClampHandler(undefined);
-  const node = { size: [50, 10], _agRefs: { root } };
+  const node = { size: [50, 10] };
   let result;
   assert.doesNotThrow(() => {
     result = handler.call(node, [50, 10]);
@@ -1618,17 +1428,15 @@ test("createResizeClampHandler degrades safely with no original onResize (undefi
   assert.equal(node.size[0], WIDTH_MIN, "clamping itself must still happen even with no original onResize to call through to");
 });
 
-test("createResizeClampHandler degrades safely when the node has no mounted panel yet (_agRefs unset) -- falls back to DEFAULT_H, never throws", () => {
+test("createResizeClampHandler needs nothing but the node instance -- no mounted panel (_agRefs) required, since the floor is a fixed constant now", () => {
   const handler = createResizeClampHandler(undefined);
-  const node = { size: [50, 10] };
+  const node = { size: [50, 10] }; // deliberately no _agRefs at all
   assert.doesNotThrow(() => handler.call(node, [50, 10]));
   assert.equal(node.size[0], WIDTH_MIN);
-  assert.equal(node.size[1], DEFAULT_H);
+  assert.equal(node.size[1], HEIGHT_MIN + CHROME);
 });
 
 test("createResizeClampHandler's anti-recursion guard stops a clamp<->resize feedback loop cold -- a stubbed resize counter never runs away", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   let originalCalls = 0;
   // An original onResize that (pathologically) tries to call the SAME
   // wrapped onResize again synchronously, unconditionally -- the exact
@@ -1643,7 +1451,7 @@ test("createResizeClampHandler's anti-recursion guard stops a clamp<->resize fee
     return undefined;
   };
   wrappedRef = createResizeClampHandler(original);
-  const node = { size: [50, 10], _agRefs: { root } };
+  const node = { size: [50, 10] };
 
   assert.doesNotThrow(() => wrappedRef.call(node, [50, 10]));
   assert.equal(
@@ -1655,13 +1463,11 @@ test("createResizeClampHandler's anti-recursion guard stops a clamp<->resize fee
 });
 
 test("createResizeClampHandler's guard flag is reset in a finally -- a throwing clampNodeSize/originalOnResize can't leave clamping permanently disabled", () => {
-  const doc = makeDocStub();
-  const root = doc.createElement("div");
   const throwingOriginal = function () {
     throw new Error("boom");
   };
   const handler = createResizeClampHandler(throwingOriginal);
-  const node = { size: [50, 10], _agRefs: { root } };
+  const node = { size: [50, 10] };
 
   assert.throws(() => handler.call(node, [50, 10]));
   assert.equal(node._agResizeClampGuard, false, "guard must be reset even when the original onResize throws");
@@ -1669,10 +1475,6 @@ test("createResizeClampHandler's guard flag is reset in a finally -- a throwing 
   // A second call must still clamp normally -- guard not stuck "true".
   assert.throws(() => handler.call(node, [50, 10]));
   assert.equal(node.size[0], WIDTH_MIN);
-});
-
-test("index.js wraps nodeType.prototype.onResize with createResizeClampHandler, preserving the previous implementation", () => {
-  assert.match(indexCode, /createResizeClampHandler\(nodeType\.prototype\.onResize\)/);
 });
 
 // =========================================================================

@@ -36,16 +36,35 @@
  * panel renders above the two textareas and they land at the bottom of the
  * node, as the plan asks.
  *
- * ## Resize
+ * ## Resize: one fixed-size box that scrolls, not grow-to-fit
  *
- * Same two-renderer contract as every other DOM-widget node in this pack:
- * legacy `getMinHeight` (PRIMARY — this build targets the legacy litegraph
- * renderer) + Nodes 2.0 `computeLayoutSize` (`minWidth: 1`, forward-compat
- * only). Neither path itself resizes the node -- that's `scheduleRefit`/
- * `scheduleInitialFit`'s job (`render.mjs`), fired only at the explicit
- * structural triggers `interaction.mjs` defines (a stage's Enabled toggle --
- * which now directly opens/closes that card, replacing a separate collapse
- * control -- and the upscale-backend switch) -- never on a plain value edit.
+ * This build replaced the earlier "grow/shrink the node to exactly fit its
+ * content" model with upstream's model: `render.mjs`'s `.wtn-ag-box` always
+ * fills whatever height the DOM widget is currently given and scrolls its
+ * own content when that doesn't fit (see `render.mjs`'s top doc comment for
+ * the full account, including why `height: 100%` on the root is correct
+ * here — the ComfyUI-Pixaroma `note` node precedent). Concretely:
+ *
+ *   - Legacy `getMinHeight` (PRIMARY — this build targets the legacy
+ *     litegraph renderer) + Nodes 2.0 `computeLayoutSize` (`minWidth: 1`,
+ *     forward-compat only) both now report a FIXED floor
+ *     (`render.mjs`'s `HEIGHT_MIN`), not a measurement of current content —
+ *     the key semantic change from the previous revision's
+ *     `measureMinHeight`. Neither path resizes the node itself; they only
+ *     tell litegraph "never let this widget's box go below this height".
+ *   - Nothing in this file (or `interaction.mjs`) schedules a resize as a
+ *     *consequence* of an edit any more: collapsing/expanding a stage and
+ *     switching the upscale backend only change what's inside the box's
+ *     scroll region now. `render.mjs`'s `scheduleRefit`/`scheduleInitialFit`
+ *     /`refitNode`/`setNodeHeight`/`measureMinHeight` were all removed
+ *     entirely — there is no more auto-fit-to-content step anywhere in this
+ *     node for them to serve.
+ *   - `ensureInitialFloor` (below) still floors a freshly-created node to a
+ *     sensible default size once, and the manual-drag width+height clamp
+ *     (`createResizeClampHandler`, wired at the bottom of this file) still
+ *     stops a user from dragging the node into an unusably small box — both
+ *     are orthogonal to content height now (see `render.mjs`'s top doc
+ *     comment for why they're the two things this build keeps).
  *
  * ## External-mutation resync (the gap this build's follow-up fix closes)
  *
@@ -82,9 +101,7 @@ import { getAllLayoutWidgetNames } from "./core.mjs";
 import {
   injectStyles,
   buildRoot,
-  measureMinHeight,
-  scheduleRefit,
-  scheduleInitialFit,
+  HEIGHT_MIN,
   createResizeClampHandler,
   DEFAULT_W,
   DEFAULT_H,
@@ -153,8 +170,12 @@ function mountUI(node) {
     widget = node.addDOMWidget("ag_panel", "ag_panel", refs.root, {
       serialize: false,
       // Legacy canvas renderer sizing path (PRIMARY) -- NOT computeSize/
-      // getHeight (those fight node.setSize under the legacy renderer).
-      getMinHeight: () => measureMinHeight(refs.root),
+      // getHeight (those fight node.setSize under the legacy renderer). A
+      // FIXED floor now (render.mjs's HEIGHT_MIN), not a content
+      // measurement -- see this file's/render.mjs's top doc comments for
+      // why that's the correct contract for a box that fills the widget's
+      // height and scrolls internally.
+      getMinHeight: () => HEIGHT_MIN,
     });
   } else {
     // Defensive fallback for a host without addDOMWidget; shouldn't occur
@@ -169,7 +190,7 @@ function mountUI(node) {
   }
   // Nodes 2.0 (Vue/DOM renderer) sizing path -- forward-compat only.
   widget.computeLayoutSize = function () {
-    return { minHeight: measureMinHeight(refs.root), minWidth: 1 };
+    return { minHeight: HEIGHT_MIN, minWidth: 1 };
   };
   refs.widget = widget;
 
@@ -183,13 +204,12 @@ function mountUI(node) {
 }
 
 function setupNode(node) {
-  const refs = mountUI(node);
+  // No more scheduleInitialFit -- content scrolls inside a fixed-size box
+  // now (see render.mjs's top doc comment), so a fresh node just gets
+  // ensureInitialFloor's DEFAULT_W/DEFAULT_H floor; there is no
+  // auto-fit-to-content pass left to (guardedly) run.
+  mountUI(node);
   ensureInitialFloor(node);
-  // GUARDED initial fit -- a no-op if this node turns out to be loading from
-  // a saved workflow (see scheduleInitialFit's doc comment in render.mjs):
-  // by the time its rAF fires, onConfigure has already set
-  // `node._agConfigured` and litegraph has already restored `node.size`.
-  scheduleInitialFit(node, refs.root);
 }
 
 /**
@@ -199,10 +219,12 @@ function setupNode(node) {
  * also re-derives each optional card's open/closed state from its
  * just-restored `*_enabled` value (`refreshAllCards` -> `renderCard` ->
  * `setCardEnabledUI`) -- Enabled is the only source of truth for that now,
- * so there is no separate collapse-state property to restore. Deliberately
- * does NOT call `scheduleRefit`/`scheduleInitialFit` -- trusts the
- * `node.size` litegraph already restored (mirrors
- * `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`).
+ * so there is no separate collapse-state property to restore. Never resizes
+ * the node -- trusts the `node.size` litegraph already restored (mirrors
+ * `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`); there is
+ * no `scheduleRefit`/`scheduleInitialFit` left in this build to call even
+ * if it wanted to (see `render.mjs`'s top doc comment for why they were
+ * removed).
  */
 function restoreNode(node) {
   const refs = mountUI(node);
@@ -278,9 +300,10 @@ app.registerExtension({
     const originalOnConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (...args) {
       // Mark this node as loaded-from-a-workflow FIRST, before anything else
-      // runs -- see js/anima_prompt/anima_prompt_studio/index.js's identical pattern for
-      // why the ordering matters (the still-pending initial-fit rAF queued
-      // back in onNodeCreated must see this flag by the time it fires).
+      // runs -- see js/anima_prompt/anima_prompt_studio/index.js's identical
+      // pattern for why the ordering matters (ensureInitialFloor's own
+      // `_agConfigured` guard, back in onNodeCreated/setupNode, must see
+      // this flag correctly).
       this._agConfigured = true;
       const result = originalOnConfigure ? originalOnConfigure.apply(this, args) : undefined;
       restoreNode(this);
@@ -290,9 +313,10 @@ app.registerExtension({
     // Manual-drag width+height FLOOR -- see render.mjs's createResizeClampHandler
     // doc comment for the full mechanism/rationale (why onResize, the
     // anti-recursion guard, the min_size belt-and-braces). This is on the
-    // PROTOTYPE (applies to every AnimaGenerator instance), so the handler
-    // itself must read this node's OWN `._agRefs` -- which is exactly what
-    // createResizeClampHandler's returned function does via `this`.
+    // PROTOTYPE (applies to every AnimaGenerator instance); the handler
+    // itself needs nothing but `this` (the node instance) any more -- the
+    // floor is a fixed constant now (render.mjs's computeSizeFloor), not a
+    // measurement of this node's own `._agRefs.root`.
     nodeType.prototype.onResize = createResizeClampHandler(nodeType.prototype.onResize);
   },
 });

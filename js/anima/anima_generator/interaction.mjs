@@ -1,31 +1,25 @@
 /**
  * interaction.mjs — node/widget orchestration for the AnimaGenerator DOM
- * panel: finds+hides the real native widgets, builds/rebuilds each card's
- * field rows against them, and decides which user actions are STRUCTURAL
- * (schedule a refit) vs. plain VALUE edits (never refit) — this is the ONE
- * place that decision is made, mirroring
- * `js/anima_prompt/anima_prompt_studio/interaction.mjs`'s equivalent split.
+ * panel: finds+hides the real native widgets and builds/rebuilds each card's
+ * field rows against them.
  *
- * ## Structural-vs-value gating (the core requirement of this build)
+ * ## No action here resizes the node any more
  *
- *   STRUCTURAL (calls `scheduleRefit`):
- *     - Toggle a stage's Enabled checkbox (`wireEnabledCheckbox`'s change
- *       handler) — Enabled is the SINGLE source of truth for whether that
- *       card's body is open or closed (`render.mjs`'s `setCardEnabledUI`
- *       hides/shows `bodyEl` directly), so toggling it always changes
- *       measured height and is always structural.
- *     - Switch the `upscale_backend` combo (`onFieldChange`'s special case
- *       below) — rebuilds the upscale card's body to show only the
- *       newly-selected backend's fields (the dynamic field-swap the plan
- *       calls "the one genuinely dynamic bit").
- *   VALUE (never calls `scheduleRefit`):
- *     - Typing in a number box / dragging its paired slider.
- *     - Any other combo pick (sampler_name, scheduler, ...).
- *     - Typing in a text field (save_prefix, preview_channel, ...).
- *     - A checkbox field that ISN'T a stage's Enabled toggle (there are
- *       none today, but the distinction is enforced by `onFieldChange` vs.
- *       `wireEnabledCheckbox` being two entirely separate code paths, not by
- *       widget type).
+ * This build replaced the node's earlier "grow/shrink to fit content" model
+ * with `render.mjs`'s fixed-size, internally-scrolling `.wtn-ag-box` (see
+ * that module's top doc comment for the full account). Toggling a stage's
+ * Enabled checkbox (`wireEnabledCheckbox`'s change handler — still the
+ * single open/closed control for its card, via `render.mjs`'s
+ * `setCardEnabledUI`), collapsing/expanding a card, and switching the
+ * `upscale_backend` combo (`onFieldChange`'s special case below — still
+ * rebuilds the upscale card's body to show only the newly-selected
+ * backend's fields, the dynamic field-swap the plan calls "the one
+ * genuinely dynamic bit") all change ONLY what's inside that scroll box now
+ * — none of them calls anything resize-related any more (there is nothing
+ * left to call: `render.mjs`'s `scheduleRefit`/`refitNode` were removed
+ * entirely by this build). The STRUCTURAL-vs-VALUE distinction this file
+ * used to enforce (which edits were allowed to trigger a refit) no longer
+ * exists as a concept — nothing here ever refits.
  *
  * ## Widget-mirroring contract (per the plan's critical constraint)
  *
@@ -44,7 +38,6 @@ import { CARD_DEFS, getCardFieldNames } from "./core.mjs";
 import {
   renderCardFields,
   setCardEnabledUI,
-  scheduleRefit,
   updateFieldRowValue,
 } from "./render.mjs";
 
@@ -188,8 +181,9 @@ export function renderCard(node, refs, cardDef) {
 /** The single field-edit entry point every rendered control's `onChange`
  * funnels through (see `render.mjs`'s `buildFieldRow`). Writes the widget,
  * calls its `callback` if present, and -- ONLY for `upscale_backend` --
- * rebuilds the upscale card's body (the dynamic field-swap) and schedules a
- * refit; every other field is a plain value edit and never refits. */
+ * rebuilds the upscale card's body (the dynamic field-swap). Never resizes
+ * the node (see this file's top doc comment) -- the rebuilt fields just
+ * change what's inside `.wtn-ag-box`'s scroll region. */
 function onFieldChange(node, refs, cardDef, name, widget, value) {
   widget.value = value;
   if (typeof widget.callback === "function") {
@@ -197,7 +191,6 @@ function onFieldChange(node, refs, cardDef, name, widget, value) {
   }
   if (name === "upscale_backend") {
     renderCard(node, refs, cardDef);
-    scheduleRefit(node, refs.root);
   }
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
@@ -224,8 +217,9 @@ function wireEnabledCheckbox(node, refs, cardDef) {
     if (typeof widget.callback === "function") {
       widget.callback(widget.value, undefined, node);
     }
+    // Opens/closes the card inside the scroll box only -- never resizes the
+    // node (see this file's top doc comment).
     setCardEnabledUI(shell, widget.value);
-    scheduleRefit(node, refs.root);
     if (typeof node.setDirtyCanvas === "function") {
       node.setDirtyCanvas(true, true);
     }
@@ -282,25 +276,20 @@ export function refreshAllCards(node, refs) {
  * (skipped if it's the focused element) even though it's wired outside
  * `renderCardFields` -- it's still a plain value mirror of its widget.
  *
- * ## Enabled-driven open/close IS a structural consequence -- handled, but
- * gated so it can't fire a refit on every execution when nothing changed
+ * ## Enabled-driven open/close is still mirrored -- it just never resizes
  *
- * Because Enabled now directly controls whether a card's body is even
+ * Because Enabled still directly controls whether a card's body is even
  * rendered (`setCardEnabledUI` hides/shows `bodyEl`), an externally-mutated
  * `*_enabled` widget (nothing in this panel does that today, but a future
  * Python-side default change or another extension writing the widget
  * directly is exactly the class of external mutation this whole resync path
  * exists for) must open/close that card here too, not just refresh its
- * checkbox's `.checked`. That said, this function is invoked on EVERY
- * "queued prompt is over" event for EVERY mounted node (see
- * `resyncAllFromWidgets` below) -- most of which change no `*_enabled`
- * widget at all -- so a naive "always call `setCardEnabledUI` +
- * `scheduleRefit`" would schedule a pointless refit almost every single
- * time. Instead: compare the widget's CURRENT value against what the
+ * checkbox's `.checked`. Compare the widget's CURRENT value against what the
  * checkbox already shows; only call `setCardEnabledUI` (open/close the card)
- * and flag a refit when they actually differ, and schedule AT MOST ONE
- * `scheduleRefit` for the whole node no matter how many cards' Enabled
- * states changed in this one resync pass.
+ * when they actually differ. Unlike the previous revision, there is no
+ * refit to schedule/coalesce here at all any more (see this file's top doc
+ * comment) -- opening/closing a card only ever changes what's visible
+ * inside `.wtn-ag-box`'s scroll region, never the node's size.
  *
  * Deliberately does NOT re-derive the upscale card's backend-specific field
  * set (unlike `renderCard`) -- if `upscale_backend` itself were mutated
@@ -313,7 +302,6 @@ export function refreshFieldValues(node, refs) {
     return;
   }
   const activeEl = refs.doc ? refs.doc.activeElement : undefined;
-  let enabledStateChanged = false;
   CARD_DEFS.forEach((cardDef) => {
     const shell = refs.cards[cardDef.id];
     if (!shell || !shell.fieldRows) {
@@ -333,17 +321,10 @@ export function refreshFieldValues(node, refs) {
         const wasEnabled = !!shell.enabledCheckbox.checked;
         if (nowEnabled !== wasEnabled) {
           setCardEnabledUI(shell, nowEnabled);
-          enabledStateChanged = true;
         }
       }
     }
   });
-  // Only a REAL open/closed change schedules a refit -- an unchanged Enabled
-  // widget (the overwhelming common case on every execution-finished event)
-  // must never trigger one.
-  if (enabledStateChanged) {
-    scheduleRefit(node, refs.root);
-  }
 }
 
 /**
