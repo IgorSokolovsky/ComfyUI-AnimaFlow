@@ -28,9 +28,13 @@
  *      addressed by `data-section`.
  *   F. `index.js`'s `attachHighlighter`/`detach` — idempotent attach,
  *      initial + debounced-on-input classification with a fake
- *      timer/fetch, the "last painted text" repaint-churn guard, and that
+ *      timer/fetch, the "last painted text" repaint-churn guard, that
  *      `detach()` removes the mirror and restores the textarea's original
- *      inline styles.
+ *      inline styles, and the two-phase (plain-then-colored) paint path:
+ *      text painted synchronously at attach and on every `input` (before
+ *      any fetch resolves), the plain -> colored repaint for IDENTICAL
+ *      text surviving the churn guard, a genuinely redundant repaint
+ *      still being suppressed, and `refresh()` painting plain immediately.
  *
  * Run directly: `node js/shared/highlight/test_highlight.mjs`.
  */
@@ -857,6 +861,64 @@ await asyncTest("attachHighlighter paints an initial classification on attach", 
   assert.equal(tokensReceived[0].text, textarea.value);
 });
 
+test("attachHighlighter paints the mirror PLAIN immediately at attach -- before the very first classify response lands (workflow load with a saved, non-empty prompt must never start blank)", () => {
+  const { handle } = makeAttachedFixture({ initialValue: "1girl, masterpiece" });
+  // No timers.flush()/delay -- this must be true synchronously, right after attach.
+  assert.equal(handle.mirror.innerHTML, "1girl, masterpiece");
+  assert.ok(!handle.mirror.innerHTML.includes("wtn-hl-tok"), "no color yet -- that's the second phase");
+});
+
+test("attachHighlighter paints newly-typed text synchronously on 'input', before any fetch resolves -- text is never invisible/stale", () => {
+  const { timers, textarea, handle } = makeAttachedFixture({ initialValue: "1girl" });
+  assert.equal(handle.mirror.innerHTML, "1girl"); // the attach-time plain paint
+
+  textarea.value = "1girl, solo, new_tag";
+  fire(textarea, "input");
+
+  // The debounce timer for this edit hasn't even fired yet, let alone the
+  // network request it would trigger -- the mirror must already reflect
+  // the CURRENT text regardless.
+  assert.equal(timers.pendingCount(), 1, "input scheduled a debounce timer, not yet fired");
+  assert.equal(handle.mirror.innerHTML, "1girl, solo, new_tag");
+  assert.ok(!handle.mirror.innerHTML.includes("wtn-hl-tok"), "still plain -- color is the second phase");
+});
+
+await asyncTest("the plain -> colored repaint for the SAME text is NOT suppressed by the churn guard -- the mirror still gains color once classify resolves", async () => {
+  const { timers, handle } = makeAttachedFixture({ initialValue: "1girl, solo" });
+  // Right after attach: plain-painted synchronously, no color yet.
+  assert.equal(handle.mirror.innerHTML, "1girl, solo");
+  assert.ok(!handle.mirror.innerHTML.includes("wtn-hl-tok"));
+
+  timers.flush();
+  await delay(0);
+
+  // Same text throughout -- if the churn guard keyed purely on "text
+  // already painted", this repaint would have been (wrongly) skipped and
+  // the mirror would still be plain.
+  assert.ok(handle.mirror.innerHTML.includes("wtn-hl-tok"), "classify's result must still be allowed to color this text");
+  assert.match(handle.mirror.innerHTML, /data-section="general"/);
+});
+
+await asyncTest("a genuinely redundant repaint (same text, same resolved tokens) IS still suppressed -- no duplicate onTokens, mirror content doesn't churn", async () => {
+  const { timers, textarea, tokensReceived, handle } = makeAttachedFixture({ initialValue: "1girl, solo" });
+  timers.flush();
+  await delay(0);
+  assert.equal(tokensReceived.length, 1);
+  const coloredHtml = handle.mirror.innerHTML;
+  assert.ok(coloredHtml.includes("wtn-hl-tok"));
+
+  // Re-fire input with the IDENTICAL value (e.g. a focus/blur round trip
+  // that re-dispatches `input` without an actual edit) -- the classifier's
+  // own "identical text" cache resolves this synchronously-ish with the
+  // SAME tokens.
+  fire(textarea, "input");
+  timers.flush();
+  await delay(0);
+
+  assert.equal(tokensReceived.length, 1, "no extra onTokens call for a truly redundant repaint");
+  assert.equal(handle.mirror.innerHTML, coloredHtml, "mirror content must not churn either");
+});
+
 test("attachHighlighter is idempotent -- a second attach on the same textarea returns the same handle", () => {
   const { textarea, handle } = makeAttachedFixture();
   const second = attachHighlighter(textarea, { doc: textarea.ownerDocument });
@@ -899,6 +961,17 @@ await asyncTest("attachHighlighter's 'last painted text' guard skips onTokens fo
   timers.flush();
   await delay(0);
   assert.equal(tokensReceived.length, 1, "no additional paint for unchanged text");
+});
+
+test("refresh() paints the CURRENT text plain immediately, synchronously, before reclassifying (the programmatic textarea.value-write case)", () => {
+  const { textarea, handle } = makeAttachedFixture({ initialValue: "1girl" });
+  // Simulate `highlight_wiring.mjs`'s `refreshHighlighters` use case: a
+  // caller sets `textarea.value` directly (no `input` event fires), then
+  // calls `refresh()` to resync.
+  textarea.value = "1girl, masterpiece, programmatic_update";
+  handle.refresh();
+  assert.equal(handle.mirror.innerHTML, "1girl, masterpiece, programmatic_update");
+  assert.ok(!handle.mirror.innerHTML.includes("wtn-hl-tok"), "must be plain immediately -- color is the second phase");
 });
 
 test("attachHighlighter's detach() removes the mirror and restores the textarea's original styles", () => {

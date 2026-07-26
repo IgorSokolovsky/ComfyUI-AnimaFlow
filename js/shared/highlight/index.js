@@ -120,20 +120,92 @@ export function attachHighlighter(textarea, opts = {}) {
     clearTimeoutImpl,
   });
 
-  let paintedText = null; // "last painted text" guard -- avoids repaint churn
+  // Two-phase paint: `paintPlain()` renders `text` immediately with NO
+  // color (an empty token list, per `buildSpans(text, [])`'s documented
+  // "whole string is one gap span" fallback) so the mirror is NEVER empty
+  // or showing stale text between a keystroke and the debounced/networked
+  // `/wtn/classify` response. `paintColored()` -- called only from the
+  // classifier's resolve callback -- repaints the SAME text with real
+  // colors once that response lands. Color is a progressive enhancement
+  // layered on top of text that was already fully visible.
+  //
+  // `paintedText`/`paintedTokenSig` is the repaint-churn guard, split into
+  // two parts on purpose:
+  //  - `paintedText` -- the text currently on screen, in EITHER phase.
+  //  - `paintedTokenSig` -- `null` while that text is only plain-painted;
+  //    a token signature (see `tokenSignature()`) once it's been colored.
+  // THE TRAP this avoids: if a single "last painted text" guard treated
+  // `paintPlain()` as fully satisfying "this text is painted", the
+  // subsequent `paintColored()` call for that identical text (the normal
+  // case -- classify almost always resolves for text the user has since
+  // stopped changing) would be skipped by that same guard, and nothing
+  // would ever get colored. Keying the guard on (text, phase) instead lets
+  // plain -> colored through for identical text while still suppressing a
+  // genuinely redundant repaint (e.g. the classifier's own "identical
+  // text" cache re-invoking the resolve callback with the same tokens).
+  let paintedText = null;
+  let paintedTokenSig = null;
 
-  function paint(tokens, text) {
-    if (!mirror.isConnected && mirror.isConnected !== undefined) {
-      return; // detached mid-flight
+  /** Cheap signature of a resolved token list, used only to tell "the
+   * exact same classification result, already painted" apart from "a new
+   * (possibly still-empty) classification result for this text" -- see
+   * the `paintedTokenSig` note above. Not a security/identity hash, just
+   * enough to avoid a no-op re-render.
+   */
+  function tokenSignature(tokens) {
+    if (!Array.isArray(tokens) || !tokens.length) {
+      return ""; // a resolved-but-empty classification is still a distinct,
+      // real signature -- distinct from `null` ("nothing colored yet").
     }
-    if (text === paintedText) {
+    return tokens.map((t) => `${t && t.start}:${t && t.end}:${t && t.section}`).join("|");
+  }
+
+  function detachedMidFlight() {
+    return mirror.isConnected === false; // real DOM only; test stubs leave this `undefined`
+  }
+
+  function renderMirror(text, tokens) {
+    const spans = buildSpans(text, tokens);
+    mirror.innerHTML = renderMirrorHtml(text, spans);
+    syncBounds(textarea, mirror);
+  }
+
+  /** Paints `text` immediately, uncolored. Synchronous, no network --
+   * safe to call on every keystroke and at attach time. Skips the
+   * re-render (but still resyncs bounds) when `text` is already on
+   * screen, plain or colored, so a same-value `input` event is a no-op.
+   */
+  function paintPlain(text) {
+    if (detachedMidFlight()) {
+      return;
+    }
+    if (paintedText === text) {
       syncBounds(textarea, mirror);
       return;
     }
-    const spans = buildSpans(text, tokens);
-    mirror.innerHTML = renderMirrorHtml(text, spans);
+    renderMirror(text, []);
     paintedText = text;
-    syncBounds(textarea, mirror);
+    paintedTokenSig = null;
+  }
+
+  /** Paints `text` colored by the classifier's resolved `tokens` -- the
+   * only path that fires `onTokens`. See the guard note above for why
+   * this is allowed through even when `paintPlain()` already rendered the
+   * same `text` moments earlier, while a truly repeated (text, tokens)
+   * pair is still suppressed.
+   */
+  function paintColored(tokens, text) {
+    if (detachedMidFlight()) {
+      return;
+    }
+    const sig = tokenSignature(tokens);
+    if (paintedText === text && paintedTokenSig === sig) {
+      syncBounds(textarea, mirror);
+      return;
+    }
+    renderMirror(text, tokens);
+    paintedText = text;
+    paintedTokenSig = sig;
     onTokens?.(tokens, text);
   }
 
@@ -146,12 +218,16 @@ export function attachHighlighter(textarea, opts = {}) {
       if (resolvedText !== getText()) {
         return;
       }
-      paint(tokens, resolvedText);
+      paintColored(tokens, resolvedText);
     });
   }
 
   function onInput() {
-    syncBounds(textarea, mirror);
+    // Plain-paint the CURRENT text synchronously first -- the user must
+    // never see invisible/stale text while the debounced classify request
+    // is still in flight. `requestClassification()` below repaints the
+    // same text with color once it resolves.
+    paintPlain(getText());
     requestClassification();
   }
 
@@ -181,7 +257,12 @@ export function attachHighlighter(textarea, opts = {}) {
     doc.fonts.ready.then(() => resyncMetrics()).catch(() => {});
   }
 
-  // Initial paint.
+  // Initial paint -- plain immediately, THEN classify. Without the plain
+  // phase, a workflow reload that restores a non-empty saved prompt would
+  // show nothing at all in the mirror (transparent real text over an
+  // empty/never-painted mirror) until the very first classify response
+  // lands -- the same bug, in its worst form.
+  paintPlain(getText());
   requestClassification();
 
   const handle = {
@@ -189,9 +270,14 @@ export function attachHighlighter(textarea, opts = {}) {
     mirror,
     /** Forces an immediate metric/bounds resync and reclassification (e.g.
      * after a host-driven font-size or width change the observers above
-     * didn't catch). */
+     * didn't catch, or a caller writing `textarea.value` directly --
+     * see `js/anima_prompt/prompt_rules/highlight_wiring.mjs`'s
+     * `refreshHighlighters`). Same two-phase behaviour as `onInput()`:
+     * plain-paints the current text synchronously first, then
+     * reclassifies for color. */
     refresh() {
       resyncMetrics();
+      paintPlain(getText());
       requestClassification();
     },
     detach() {
