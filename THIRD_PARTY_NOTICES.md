@@ -22,6 +22,7 @@ the projects below, whose notices are reproduced here as their licenses require.
 | `nodes/anima/node_anima_conditioning_encode.py`, `_anima_conditioning_helpers.py` | its artist-mix conditioning concept (reduced here to a single weighted-average blend mode) |
 | `nodes/anima/node_anima_regional_conditioning.py`, `node_anima_region_mask_editor.py` (+ helpers) | its regional-conditioning and mask-editor approach, incl. the `MASK` tensor convention |
 | `autocomplete/`, `js/autocomplete/` | its booru tag-autocomplete approach and the tag-name → prompt-text normalization intent (`anima_prompt/normalize.py`) |
+| `autocomplete/classify.py` | `/wtn/classify` tag-highlighting classifier, ported from `autocomplete_dataset.py`'s `classify_prompt_text()`/`_token_section()` and `anima_prompt/ordering.py`'s builtin ANIMA vocab (`QUALITY_TAGS` etc.) — re-labeled in English and rewritten to track exact character offsets into the original text instead of upstream's destructive pre-normalization |
 
 Not ported (deliberately): the bundled input-context node, the embedded live-preview
 widget, the JSON settings-profile system, the multi-mode artist-mix system, the

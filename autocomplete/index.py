@@ -16,6 +16,51 @@ from typing import Iterable, Optional
 
 from .dataset import AutocompleteEntry, load_danbooru, load_gelbooru, normalize_tag_key
 
+# Cache for `exact_lookup`'s dict-backed index, keyed by the `id()` pair of
+# whatever gelbooru/danbooru entry lists last built it. `load_gelbooru`/
+# `load_danbooru` return the SAME cached list object while their backing CSV
+# is unchanged (see `dataset.py`'s own `_CACHE`), so this naturally
+# invalidates itself the moment either source reloads -- no separate stat
+# check needed here.
+_EXACT_CACHE: dict = {}
+
+
+def _exact_index(gelbooru_entries, danbooru_entries) -> dict:
+    cache_key = (id(gelbooru_entries), id(danbooru_entries))
+    cached = _EXACT_CACHE.get("default")
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    merged = {}
+    # Danbooru first, Gelbooru second (and therefore overwriting on a
+    # tag_key collision) -- matches `search()`'s "Gelbooru's copy wins" rule.
+    for entry in danbooru_entries:
+        merged[entry.tag_key] = entry
+    for entry in gelbooru_entries:
+        merged[entry.tag_key] = entry
+    _EXACT_CACHE["default"] = (cache_key, merged)
+    return merged
+
+
+def exact_lookup(
+    tag: str,
+    gelbooru_entries: Optional[Iterable[AutocompleteEntry]] = None,
+    danbooru_entries: Optional[Iterable[AutocompleteEntry]] = None,
+) -> Optional[AutocompleteEntry]:
+    """O(1) exact `tag_key` lookup (as opposed to `search()`'s prefix/
+    substring scan) -- e.g. for `/wtn/classify`, which needs to know whether
+    ONE specific tag is a known DB entry, not to rank candidates for it.
+
+    `gelbooru_entries`/`danbooru_entries` let callers (mainly tests) inject a
+    fixture dataset, same convention as `search()`.
+    """
+    key = normalize_tag_key(tag)
+    if not key:
+        return None
+    gelbooru = list(gelbooru_entries) if gelbooru_entries is not None else load_gelbooru()
+    danbooru = list(danbooru_entries) if danbooru_entries is not None else load_danbooru()
+    return _exact_index(gelbooru, danbooru).get(key)
+
+
 # Lower number = better match.
 _TIER_EXACT = 0
 _TIER_PREFIX = 1

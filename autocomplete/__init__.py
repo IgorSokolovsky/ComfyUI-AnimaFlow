@@ -7,8 +7,9 @@ imported explicitly by the root `__init__.py`.
 
 from __future__ import annotations
 
+from .classify import classify_text
 from .dataset import AutocompleteEntry, load_danbooru, load_gelbooru, normalize_tag_key
-from .index import search
+from .index import exact_lookup, search
 
 __all__ = [
     "AutocompleteEntry",
@@ -16,4 +17,6 @@ __all__ = [
     "load_danbooru",
     "normalize_tag_key",
     "search",
+    "exact_lookup",
+    "classify_text",
 ]

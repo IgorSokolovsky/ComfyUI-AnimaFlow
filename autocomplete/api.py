@@ -1,4 +1,21 @@
-"""aiohttp route for tag autocomplete (Gelbooru-primary / Danbooru-fallback).
+"""aiohttp routes for tag autocomplete (`GET /wtn/autocomplete`, Gelbooru-
+primary / Danbooru-fallback) and per-token prompt classification (`POST
+/wtn/classify`, for tag-highlighting — see `classify.py`'s module docstring
+for the classification rules/precedence and the offset-correctness
+guarantee).
+
+OFFSET CONTRACT for `/wtn/classify`: `classify_impl` below passes
+`classify.classify_text`'s token `start`/`end` fields straight through, byte-
+for-byte -- there is NO offset conversion at this serialization boundary.
+That means the wire format uses Unicode CODE POINT offsets (plain Python
+string indices), NOT UTF-16 code units. This is intentional: the frontend
+consumer (`js/shared/highlight/classify.mjs`) already indexes via
+`Array.from(text)` (code-point iteration) rather than raw JS `.slice()`
+(UTF-16 units) specifically to match this contract. If you "fix" this by
+converting to UTF-16 here, you will silently double-correct against the
+frontend's own fix and reintroduce the same emoji/astral-character offset
+drift bug in the opposite direction. See `classify.classify_text`'s
+docstring for the full explanation.
 
 Route REGISTRATION needs a live ComfyUI `server.PromptServer` instance, so
 the `from server import PromptServer` import (and the aiohttp import it
@@ -7,9 +24,10 @@ OUTSIDE ComfyUI (e.g. from a plain-script test, or from this pack's own
 root `__init__.py` running standalone) must not crash — it just skips
 registering the route.
 
-The pure `search_impl` function below has NO aiohttp/ComfyUI dependency at
-all (plain args in, plain dict out) — that's what's actually unit-tested;
-the thin aiohttp handler just adapts a request's query string to it.
+The pure `search_impl`/`classify_impl` functions below have NO aiohttp/
+ComfyUI dependency at all (plain args in, plain dict out) — that's what's
+actually unit-tested; the thin aiohttp handlers just adapt a request
+(query string or JSON body) to them.
 
 R5 FIX (event-loop blocking): `search_impl` does a linear heapq prefix/
 substring scan over the bundled Gelbooru+Danbooru CSVs (~417k rows) —
@@ -30,6 +48,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .classify import DEFAULT_LIMIT as CLASSIFY_DEFAULT_LIMIT
+from .classify import classify_text
 from .index import search as search_entries
 
 DEFAULT_LIMIT = 20
@@ -62,6 +82,18 @@ def search_impl(query: str, limit=DEFAULT_LIMIT, category: Optional[str] = None)
     }
 
 
+def classify_impl(text: str, limit=CLASSIFY_DEFAULT_LIMIT) -> dict:
+    """`POST /wtn/classify {text, limit}` payload: `{tokens: [...]}` -- see
+    `classify.classify_text`'s docstring for the exact token shape.
+
+    Token `start`/`end` are Unicode CODE POINT offsets, unchanged from
+    `classify_text` (see this module's OFFSET CONTRACT note above and
+    `classify_text`'s own docstring -- do not convert to UTF-16 here).
+    """
+    text = text or ""
+    return classify_text(text, limit=limit)
+
+
 try:
     import asyncio
     import functools
@@ -87,9 +119,25 @@ try:
         )
         return web.json_response(payload)
 
+    @routes.post("/wtn/classify")
+    async def _route_classify(request):  # noqa: ANN001 - aiohttp handler signature
+        body = await request.json()
+        text = (body or {}).get("text", "")
+        limit = (body or {}).get("limit", CLASSIFY_DEFAULT_LIMIT)
+        # Same R5-style offload as `/wtn/autocomplete` above: this route is
+        # hit on every debounced keystroke, and `classify_impl` does its own
+        # linear scan plus per-token dict lookups against the bundled CSVs
+        # (lazily loaded/cached on first use) - keep that off the event
+        # loop thread so it never stalls ComfyUI's HTTP/websocket server.
+        loop = asyncio.get_running_loop()
+        payload = await loop.run_in_executor(
+            None, functools.partial(classify_impl, text, limit=limit)
+        )
+        return web.json_response(payload)
+
 except Exception:  # noqa: BLE001 - any failure here means "not running inside ComfyUI"
     # VERIFY-IN-COMFYUI: route registration itself (the decorator above)
     # only actually runs inside a live ComfyUI process with `server.py`'s
     # `PromptServer.instance` constructed; not exercised by the plain-script
-    # tests, which only call `search_impl` directly.
+    # tests, which only call `search_impl`/`classify_impl` directly.
     pass
