@@ -151,6 +151,56 @@ export function tagToPromptText(tag) {
   return hasArtistMarker ? "@" + text : text;
 }
 
+// Pack ownership gate -- see index.js's top doc comment for the full
+// rationale (this used to be a pack-wide, graph-wide extension; it's now
+// scoped to AnimaFlow's own nodes only). Every node class in this repo
+// declares `CATEGORY = "AnimaFlow/<topic>"` in Python (anima / anima_prompt
+// / panel), which ComfyUI surfaces to the frontend as `nodeData.category`
+// at `beforeRegisterNodeDef` time and mirrors onto the registered node
+// type as `nodeType.category` (so `node.constructor?.category` reads the
+// same string off any live instance). Kept here, not in index.js, because
+// it's pure string/Set logic with no DOM involved -- testable the same way
+// as the rest of this module.
+export const OWNED_CATEGORY_PREFIX = "AnimaFlow/";
+
+/** Is `category` (a `nodeData.category` or `node.constructor.category`
+ * string) one of ours? Prefix match, not equality -- the three topics
+ * (`AnimaFlow/anima`, `AnimaFlow/anima_prompt`, `AnimaFlow/panel`) all
+ * qualify, and any future topic added under the same prefix is picked up
+ * automatically with no code change here.
+ */
+export function isOwnedCategory(category) {
+  return typeof category === "string" && category.startsWith(OWNED_CATEGORY_PREFIX);
+}
+
+/**
+ * Pure ownership decision for one node, given its resolved `identity`
+ * (`{className, category}` -- index.js is responsible for extracting these
+ * off a real node instance, since that extraction needs `node.comfyClass`/
+ * `node.type`/`node.constructor` duck-typing that's specific to the live
+ * litegraph object shape) and the `ownedNames` Set built from
+ * `beforeRegisterNodeDef`.
+ *
+ * PRIMARY signal: `identity.className` is in `ownedNames` -- populated once
+ * per node TYPE, at registration, from that type's own `nodeData.category`
+ * (see `isOwnedCategory`), so by the time any node of that type is placed
+ * on the graph the set already has it.
+ *
+ * FALLBACK signal: `identity.category` itself passes `isOwnedCategory` --
+ * covers the (believed impossible in current ComfyUI, but defensively
+ * handled) case where `nodeData.category` was missing/unreadable at
+ * `beforeRegisterNodeDef` time so the name never made it into `ownedNames`,
+ * by re-checking the same category string live off the node's constructor
+ * instead of ever falling back to a hardcoded node-name list.
+ */
+export function resolveOwnership(identity, ownedNames) {
+  const className = identity && identity.className;
+  if (className && ownedNames && ownedNames.has(className)) {
+    return true;
+  }
+  return isOwnedCategory(identity && identity.category);
+}
+
 // Widget-NAME patterns this attaches to, per the plan: "ends in `_text`,
 // `prompt`, `positive`, `negative`" (`template` added too -- PromptBuilder's
 // own field is literally named that). This is intentionally loose/generic:
