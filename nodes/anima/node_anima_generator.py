@@ -29,8 +29,19 @@ from __future__ import annotations
 from ._anima_generator_helpers import (
     DEFAULT_AURA_FLOW_SHIFT,
     DEFAULT_HEIGHT,
+    DEFAULT_USDU_AUTO_TILE,
+    DEFAULT_USDU_MASK_BLUR,
+    DEFAULT_USDU_MODE_TYPE,
+    DEFAULT_USDU_SEAM_FIX_DENOISE,
+    DEFAULT_USDU_SEAM_FIX_MASK_BLUR,
+    DEFAULT_USDU_SEAM_FIX_MODE,
+    DEFAULT_USDU_SEAM_FIX_PADDING,
+    DEFAULT_USDU_SEAM_FIX_WIDTH,
+    DEFAULT_USDU_TILE_PADDING,
     DEFAULT_WIDTH,
     MAX_SEED,
+    USDU_MODE_TYPES,
+    USDU_SEAM_FIX_MODES,
     apply_aura_flow_shift,
     apply_lora_stack,
     build_empty_latent,
@@ -316,6 +327,91 @@ class AnimaGenerator:
                     "default": "Anima",
                     "tooltip": "Only used if save_output: the filename prefix passed to SaveImage (same convention as core SaveImage's own filename_prefix widget - can include a subfolder, e.g. \"webtoon/panel\").",
                 }),
+                # --- APPEND-ONLY from here down (docs/backlog.md §5 /
+                # §2.3): every widget below was added in the USDU seam-fix
+                # + tile-control port. NEVER move these up next to the
+                # existing upscale_usdu_* widgets above, even though that
+                # reads better - widgets_values is positional, so inserting
+                # mid-list would silently shift every value in already
+                # -saved workflows. New USDU widgets always land HERE, at
+                # the very end, regardless of where they logically belong.
+                "upscale_usdu_seam_fix_mode": (USDU_SEAM_FIX_MODES, {
+                    "default": DEFAULT_USDU_SEAM_FIX_MODE,
+                    "tooltip": (
+                        "Only used if upscale_enabled and upscale_backend is \"usdu\": repairs the "
+                        "visible seams a tiled USDU upscale otherwise leaves at tile boundaries, by "
+                        "re-sampling a band across each seam after the main tiled pass. \"None\" "
+                        "(upstream's own default) leaves seams unrepaired - reach for \"Band Pass\" "
+                        "first if you see a seam; \"Half Tile\"/\"Half Tile + Intersections\" cover more "
+                        "area (slower) for stubborn cases. This is the fix for the seam-visible-in-"
+                        "tiled-upscales gap (docs/backlog.md §2.3)."
+                    ),
+                }),
+                "upscale_usdu_seam_fix_denoise": ("FLOAT", {
+                    "default": DEFAULT_USDU_SEAM_FIX_DENOISE,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.001,
+                    "tooltip": "Only used if upscale_enabled, upscale_backend is \"usdu\", and upscale_usdu_seam_fix_mode isn't \"None\": partial-denoise strength for the seam-repair resample pass - upstream's default (1.0) fully re-samples the seam band.",
+                }),
+                "upscale_usdu_seam_fix_width": ("INT", {
+                    "default": DEFAULT_USDU_SEAM_FIX_WIDTH,
+                    "min": 0,
+                    "max": 4096,
+                    "step": 8,
+                    "tooltip": "Only used if upscale_enabled, upscale_backend is \"usdu\", and upscale_usdu_seam_fix_mode isn't \"None\": width (in pixels) of the band straddling each tile seam that gets re-sampled to repair it.",
+                }),
+                "upscale_usdu_seam_fix_mask_blur": ("INT", {
+                    "default": DEFAULT_USDU_SEAM_FIX_MASK_BLUR,
+                    "min": 0,
+                    "max": 64,
+                    "step": 1,
+                    "tooltip": "Only used if upscale_enabled, upscale_backend is \"usdu\", and upscale_usdu_seam_fix_mode isn't \"None\": feather (in pixels) applied to the seam-repair mask, so the re-sampled band blends rather than showing its own hard edge.",
+                }),
+                "upscale_usdu_seam_fix_padding": ("INT", {
+                    "default": DEFAULT_USDU_SEAM_FIX_PADDING,
+                    "min": 0,
+                    "max": 512,
+                    "step": 8,
+                    "tooltip": "Only used if upscale_enabled, upscale_backend is \"usdu\", and upscale_usdu_seam_fix_mode isn't \"None\": extra context (in pixels) sampled around each seam-repair band, same idea as upscale_usdu_tile_padding but for the seam pass.",
+                }),
+                "upscale_usdu_mask_blur": ("INT", {
+                    "default": DEFAULT_USDU_MASK_BLUR,
+                    "min": 0,
+                    "max": 64,
+                    "step": 1,
+                    "tooltip": "Only used if upscale_enabled and upscale_backend is \"usdu\": feather (in pixels) applied to each regular tile's own blend mask - softens tile-to-tile transitions during the main tiled pass (distinct from the seam-fix pass' own mask_blur above).",
+                }),
+                "upscale_usdu_tile_padding": ("INT", {
+                    "default": DEFAULT_USDU_TILE_PADDING,
+                    "min": 0,
+                    "max": 512,
+                    "step": 8,
+                    "tooltip": "Only used if upscale_enabled and upscale_backend is \"usdu\": extra context (in pixels) sampled around each tile beyond upscale_usdu_tile_size, so each tile's sampling pass sees a bit of its neighbours - reduces visible tile-boundary contamination.",
+                }),
+                "upscale_usdu_mode_type": (USDU_MODE_TYPES, {
+                    "default": DEFAULT_USDU_MODE_TYPE,
+                    "tooltip": (
+                        "Only used if upscale_enabled and upscale_backend is \"usdu\": the order tiles "
+                        "are sampled in. \"Linear\" (upstream's default) processes tiles row by row; "
+                        "\"Chess\" processes tiles in a checkerboard order so no two adjacent tiles are "
+                        "sampled back-to-back, reducing neighbour-tile contamination/visible seams at "
+                        "some cost to cache locality; \"None\" disables tiling order entirely (whole "
+                        "-image single pass, ignoring tile_width/tile_height)."
+                    ),
+                }),
+                "upscale_usdu_auto_tile": ("BOOLEAN", {
+                    "default": DEFAULT_USDU_AUTO_TILE,
+                    "tooltip": (
+                        "Only used if upscale_enabled and upscale_backend is \"usdu\": when on "
+                        "(upstream's own default), tile width/height are computed automatically from "
+                        "the expected output size (current size x upscale_usdu_scale_by) so tiles "
+                        "divide the output evenly, 64-aligned, and clamped to a sane range - the "
+                        "auto-tile-planning gap from docs/backlog.md §2.3. When off, "
+                        "upscale_usdu_tile_size is used for both tile dimensions exactly like before "
+                        "this build (turn this off if you need an exact, manually-chosen tile size)."
+                    ),
+                }),
             },
             "optional": {
                 "clip": ("CLIP", {
@@ -393,6 +489,15 @@ class AnimaGenerator:
         postprocess_multiple,
         save_output,
         save_prefix,
+        upscale_usdu_seam_fix_mode,
+        upscale_usdu_seam_fix_denoise,
+        upscale_usdu_seam_fix_width,
+        upscale_usdu_seam_fix_mask_blur,
+        upscale_usdu_seam_fix_padding,
+        upscale_usdu_mask_blur,
+        upscale_usdu_tile_padding,
+        upscale_usdu_mode_type,
+        upscale_usdu_auto_tile,
         preview_channel=DEFAULT_CHANNEL,
         clip=None,
         positive=None,
@@ -482,6 +587,15 @@ class AnimaGenerator:
                 seed, steps, cfg, sampler_name, scheduler, preview_channel,
                 upscale_usdu_denoise, upscale_usdu_scale_by, upscale_usdu_tile_size, upscale_usdu_model_name,
                 upscale_resshift_scale, upscale_resshift_chop, upscale_resshift_overlap, upscale_resshift_tile_batch,
+                usdu_mode_type=upscale_usdu_mode_type,
+                usdu_mask_blur=upscale_usdu_mask_blur,
+                usdu_tile_padding=upscale_usdu_tile_padding,
+                usdu_seam_fix_mode=upscale_usdu_seam_fix_mode,
+                usdu_seam_fix_denoise=upscale_usdu_seam_fix_denoise,
+                usdu_seam_fix_width=upscale_usdu_seam_fix_width,
+                usdu_seam_fix_mask_blur=upscale_usdu_seam_fix_mask_blur,
+                usdu_seam_fix_padding=upscale_usdu_seam_fix_padding,
+                usdu_auto_tile=upscale_usdu_auto_tile,
             )
             result_latent = encode_image_to_latent(vae, result_image)
 

@@ -336,6 +336,19 @@ const REAL_ANIMA_GENERATOR_WIDGET_NAMES = [
   "postprocess_multiple",
   "save_output",
   "save_prefix",
+  // Appended in the USDU seam-fix + tile-control port (docs/backlog.md
+  // §2.3) — declared LAST in Python's INPUT_TYPES (append-only), listed
+  // here in that same declaration order for easy hand-sync, independent of
+  // core.mjs's own (purely presentational) UPSCALE_BACKEND_FIELDS.usdu order.
+  "upscale_usdu_seam_fix_mode",
+  "upscale_usdu_seam_fix_denoise",
+  "upscale_usdu_seam_fix_width",
+  "upscale_usdu_seam_fix_mask_blur",
+  "upscale_usdu_seam_fix_padding",
+  "upscale_usdu_mask_blur",
+  "upscale_usdu_tile_padding",
+  "upscale_usdu_mode_type",
+  "upscale_usdu_auto_tile",
 ];
 
 test("CARD_DEFS has the 7 expected cards in order", () => {
@@ -845,6 +858,16 @@ function makeGeneratorFixture() {
     makeWidget("save_output", false, {}),
     makeWidget("save_prefix", "Anima", {}),
     makeWidget("preview_channel", "default", {}),
+    // USDU seam-fix + tile-control port (docs/backlog.md §2.3).
+    makeWidget("upscale_usdu_seam_fix_mode", "None", { values: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }),
+    makeWidget("upscale_usdu_seam_fix_denoise", 1.0, { min: 0, max: 1, step: 0.001 }),
+    makeWidget("upscale_usdu_seam_fix_width", 64, { min: 0, max: 4096 }),
+    makeWidget("upscale_usdu_seam_fix_mask_blur", 8, { min: 0, max: 64 }),
+    makeWidget("upscale_usdu_seam_fix_padding", 16, { min: 0, max: 512 }),
+    makeWidget("upscale_usdu_mask_blur", 8, { min: 0, max: 64 }),
+    makeWidget("upscale_usdu_tile_padding", 32, { min: 0, max: 512 }),
+    makeWidget("upscale_usdu_mode_type", "Linear", { values: ["Linear", "Chess", "None"] }),
+    makeWidget("upscale_usdu_auto_tile", true, {}),
   ];
   const { node, setSizeCalls } = makeFakeNode([460, 560], widgets);
   mountAllCards(node, refs);

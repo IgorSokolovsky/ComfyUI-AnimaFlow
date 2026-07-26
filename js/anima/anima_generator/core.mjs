@@ -5,7 +5,7 @@
  *
  * ## Why this exists
  *
- * `AnimaGenerator` (`nodes/anima/node_anima_generator.py`) declares 33 real,
+ * `AnimaGenerator` (`nodes/anima/node_anima_generator.py`) declares 42 real,
  * natively-serialized widgets (see that file's `INPUT_TYPES` — this list is
  * kept in sync BY HAND, same convention as `render.mjs`'s hardcoded `TOKENS`
  * mirror of `js/shared/theme.mjs`) plus two multiline STRING widgets
@@ -123,6 +123,20 @@ export const UPSCALE_BACKEND_FIELDS = Object.freeze({
     "upscale_usdu_scale_by",
     "upscale_usdu_tile_size",
     "upscale_usdu_denoise",
+    // Appended in the USDU seam-fix + tile-control port (docs/backlog.md
+    // §2.3) — these are declared LAST in the Python INPUT_TYPES (append
+    // -only, see node_anima_generator.py's own comment), but presented here
+    // right after the pre-existing usdu fields since this list is purely
+    // presentation order, independent of Python declaration order.
+    "upscale_usdu_auto_tile",
+    "upscale_usdu_mode_type",
+    "upscale_usdu_mask_blur",
+    "upscale_usdu_tile_padding",
+    "upscale_usdu_seam_fix_mode",
+    "upscale_usdu_seam_fix_denoise",
+    "upscale_usdu_seam_fix_width",
+    "upscale_usdu_seam_fix_mask_blur",
+    "upscale_usdu_seam_fix_padding",
   ]),
   resshift: Object.freeze([
     "upscale_resshift_scale",

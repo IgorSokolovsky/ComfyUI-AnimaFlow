@@ -35,8 +35,19 @@ from nodes.anima._anima_generator_helpers import (
     AURA_FLOW_SHIFT_SKIP_VALUE,
     DEFAULT_AURA_FLOW_SHIFT,
     DEFAULT_HEIGHT,
+    DEFAULT_USDU_AUTO_TILE,
+    DEFAULT_USDU_MASK_BLUR,
+    DEFAULT_USDU_MODE_TYPE,
+    DEFAULT_USDU_SEAM_FIX_DENOISE,
+    DEFAULT_USDU_SEAM_FIX_MASK_BLUR,
+    DEFAULT_USDU_SEAM_FIX_MODE,
+    DEFAULT_USDU_SEAM_FIX_PADDING,
+    DEFAULT_USDU_SEAM_FIX_WIDTH,
+    DEFAULT_USDU_TILE_PADDING,
     DEFAULT_WIDTH,
     MAX_SEED,
+    USDU_MODE_TYPES,
+    USDU_SEAM_FIX_MODES,
     apply_aura_flow_shift,
     build_metadata,
     get_scheduler_names,
@@ -400,10 +411,46 @@ def test_require_core_node_class_raises_actionable_error_outside_comfyui():
     assert raised
 
 
+# The ORIGINAL 35 required keys, in their ORIGINAL order - frozen here as a
+# regression guard for docs/backlog.md §5's append-only rule: `widgets_values`
+# is positional, so inserting a widget anywhere but the very end would
+# silently shift every later value in already-saved workflows. Every USDU
+# seam-fix/tile-control widget this build adds MUST land strictly after all
+# of these, in `required`, never among them.
+_ORIGINAL_35_REQUIRED_KEYS_IN_ORDER = (
+    "model", "vae", "shift", "seed", "steps", "cfg", "sampler_name", "scheduler",
+    "denoise", "width", "height", "highres_enabled", "highres_scale_by",
+    "highres_multiple", "highres_max_long_edge", "highres_denoise", "preview_channel",
+    "detailer_enabled", "detailer_guide_size", "detailer_max_size", "detailer_denoise",
+    "upscale_enabled", "upscale_backend", "upscale_usdu_model_name", "upscale_usdu_scale_by",
+    "upscale_usdu_tile_size", "upscale_usdu_denoise", "upscale_resshift_scale",
+    "upscale_resshift_chop", "upscale_resshift_overlap", "upscale_resshift_tile_batch",
+    "postprocess_resize_enabled", "postprocess_multiple", "save_output", "save_prefix",
+)
+
+
 def test_node_input_types_contract():
     schema = AnimaGenerator.INPUT_TYPES()
     required = schema["required"]
     optional = schema["optional"]
+
+    assert len(_ORIGINAL_35_REQUIRED_KEYS_IN_ORDER) == 35
+    required_keys = list(required.keys())
+    assert required_keys[:35] == list(_ORIGINAL_35_REQUIRED_KEYS_IN_ORDER), (
+        "the pre-existing 35 required widgets must stay unchanged and FIRST, in order - "
+        "docs/backlog.md §5's append-only rule"
+    )
+    assert required_keys[35:] == [
+        "upscale_usdu_seam_fix_mode",
+        "upscale_usdu_seam_fix_denoise",
+        "upscale_usdu_seam_fix_width",
+        "upscale_usdu_seam_fix_mask_blur",
+        "upscale_usdu_seam_fix_padding",
+        "upscale_usdu_mask_blur",
+        "upscale_usdu_tile_padding",
+        "upscale_usdu_mode_type",
+        "upscale_usdu_auto_tile",
+    ], "the new USDU seam-fix/tile-control widgets must be appended, in this exact order, after the original 35"
 
     assert required["model"][0] == "MODEL"
     assert required["vae"][0] == "VAE"
@@ -446,6 +493,25 @@ def test_node_input_types_contract():
 
     assert required["save_output"][1]["default"] is False
     assert required["save_prefix"][1]["default"] == "Anima"
+
+    # USDU seam-fix + tile-control port (docs/backlog.md §2.3) - defaults
+    # mirror upstream's own (`generation_defaults.py`'s `"usdu"` block).
+    assert required["upscale_usdu_seam_fix_mode"][0] == USDU_SEAM_FIX_MODES
+    assert required["upscale_usdu_seam_fix_mode"][1]["default"] == DEFAULT_USDU_SEAM_FIX_MODE == "None"
+    assert required["upscale_usdu_seam_fix_denoise"][0] == "FLOAT"
+    assert required["upscale_usdu_seam_fix_denoise"][1]["default"] == DEFAULT_USDU_SEAM_FIX_DENOISE == 1.0
+    assert required["upscale_usdu_seam_fix_width"][0] == "INT"
+    assert required["upscale_usdu_seam_fix_width"][1]["default"] == DEFAULT_USDU_SEAM_FIX_WIDTH == 64
+    assert required["upscale_usdu_seam_fix_mask_blur"][1]["default"] == DEFAULT_USDU_SEAM_FIX_MASK_BLUR == 8
+    assert required["upscale_usdu_seam_fix_padding"][1]["default"] == DEFAULT_USDU_SEAM_FIX_PADDING == 16
+    assert required["upscale_usdu_mask_blur"][0] == "INT"
+    assert required["upscale_usdu_mask_blur"][1]["default"] == DEFAULT_USDU_MASK_BLUR == 8
+    assert required["upscale_usdu_tile_padding"][1]["default"] == DEFAULT_USDU_TILE_PADDING == 32
+    assert required["upscale_usdu_mode_type"][0] == USDU_MODE_TYPES
+    assert required["upscale_usdu_mode_type"][1]["default"] == DEFAULT_USDU_MODE_TYPE == "Linear"
+    assert "Chess" in required["upscale_usdu_mode_type"][0] and "None" in required["upscale_usdu_mode_type"][0]
+    assert required["upscale_usdu_auto_tile"][0] == "BOOLEAN"
+    assert required["upscale_usdu_auto_tile"][1]["default"] is DEFAULT_USDU_AUTO_TILE is True
 
     assert optional["clip"][0] == "CLIP"
     assert optional["positive"][0] == "CONDITIONING"

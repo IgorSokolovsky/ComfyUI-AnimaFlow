@@ -46,6 +46,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+from math import ceil
 from typing import Any
 
 from ._anima_conditioning_helpers import resolve_conditioning
@@ -53,6 +54,7 @@ from ._comfy_core_bridge import find_core_node_class, require_core_node_class
 from ._optional_pack_bridge import require_optional_node_class
 from ._anima_image_scale_helpers import (
     DEFAULT_UPSCALE_METHOD,
+    align_nearest,
     compute_scale_by_multiple,
     normalize_upscale_method,
 )
@@ -722,6 +724,135 @@ def run_detailer_stage(
     }
 
 
+# USDU (Ultimate SD Upscale) traversal/seam-fix option lists + defaults -
+# ported verbatim from the reference pack's own `AIO_USDU_MODE_TYPES` /
+# `AIO_USDU_SEAM_FIX_MODES` and its `"usdu"` defaults dict
+# (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/generation_defaults.py:246-266,
+# 458-464`) - these are the EXACT option strings the reference pack's own
+# `usdu_cls().upscale()` call accepts (confirmed via
+# `easyuse_anima/aio/legacy_generation.py:467-508`, which passes every one of
+# them straight through as its own kwarg name).
+USDU_MODE_TYPES: tuple[str, ...] = ("Linear", "Chess", "None")
+USDU_SEAM_FIX_MODES: tuple[str, ...] = (
+    "None",
+    "Band Pass",
+    "Half Tile",
+    "Half Tile + Intersections",
+)
+DEFAULT_USDU_MODE_TYPE = "Linear"
+DEFAULT_USDU_MASK_BLUR = 8
+DEFAULT_USDU_TILE_PADDING = 32
+DEFAULT_USDU_SEAM_FIX_MODE = "None"
+DEFAULT_USDU_SEAM_FIX_DENOISE = 1.0
+DEFAULT_USDU_SEAM_FIX_WIDTH = 64
+DEFAULT_USDU_SEAM_FIX_MASK_BLUR = 8
+DEFAULT_USDU_SEAM_FIX_PADDING = 16
+# Upstream's own `auto_tile_size` default is `True` (generation_defaults.py:248)
+# - matched here so `upscale_usdu_auto_tile`'s widget default lands the
+# quality win (even tile division, 64-aligned, clamped) with no user config.
+DEFAULT_USDU_AUTO_TILE = True
+
+# Auto-tile planner bounds - upstream's own `auto_tile_target`/`auto_tile_min`/
+# `auto_tile_max` defaults (`generation_defaults.py:251-253`). Not exposed as
+# separate widgets (the plan's "minimal set of controls" scoping - only
+# `upscale_usdu_auto_tile` itself is a widget), so these are fixed constants
+# rather than reconstructed from the reference pack's own `usdu_settings`
+# dict lookups (which DO expose them, per-profile, in the bundled-context
+# system this pack deliberately doesn't take - see `docs/backlog.md` §3).
+USDU_AUTO_TILE_PREFERRED = 1024
+USDU_AUTO_TILE_MIN = 512
+USDU_AUTO_TILE_MAX = 2048
+
+
+def _plan_usdu_tile_dimension(
+    target_size: int,
+    preferred_size: int = USDU_AUTO_TILE_PREFERRED,
+    min_size: int = USDU_AUTO_TILE_MIN,
+    max_size: int = USDU_AUTO_TILE_MAX,
+) -> int:
+    """One-dimension tile-size planner, ported near-verbatim from the
+    reference pack's own `_aio_usdu_auto_tile_dimension`
+    (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/usdu.py:12-25`): picks the
+    smallest integer tile COUNT that keeps each tile roughly at
+    `preferred_size` (`ceil(target_size / preferred_size)`), divides
+    `target_size` evenly by that count (so tiles across this one dimension
+    always divide the expected output evenly, no partial/ragged last tile),
+    aligns the result to the nearest multiple of 64 (via this repo's own
+    `align_nearest`, reused rather than reimplemented - see `plan_usdu_tiles`'s
+    docstring for why that's safe here), then clamps into
+    `[min_size, max_size]` - upstream's own final safety clamp, since
+    64-alignment can push a borderline value just past either bound.
+
+    Pure int/math-module logic (no torch/comfy import) - degenerate
+    (zero/negative/absurd) inputs are clamped rather than allowed to raise or
+    divide by zero, matching every other widget-value sanitizer in this
+    module."""
+    target_size = max(1, int(target_size))
+    min_size = max(64, int(min_size))
+    max_size = max(min_size, int(max_size))
+    preferred = max(min_size, min(max_size, int(preferred_size)))
+    tile_count = max(1, ceil(target_size / preferred))
+    tile_size = ceil(target_size / tile_count)
+    tile_size = align_nearest(tile_size, 64)
+    return max(min_size, min(max_size, tile_size))
+
+
+def plan_usdu_tiles(
+    target_width: int,
+    target_height: int,
+    preferred_size: int = USDU_AUTO_TILE_PREFERRED,
+    min_size: int = USDU_AUTO_TILE_MIN,
+    max_size: int = USDU_AUTO_TILE_MAX,
+) -> tuple[int, int]:
+    """Pure, torch-free auto-tile planner backing the
+    `upscale_usdu_auto_tile` widget: mirrors the reference pack's own
+    `_aio_usdu_tile_plan`
+    (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/usdu.py:28-89`), minus the
+    torch-touching "read the input image's own size" half of that function
+    (the caller's job - see `run_usdu_upscale_stage`), so this half is fully
+    unit-testable without a ComfyUI environment, exactly like
+    `compute_scale_by_multiple` in `_anima_image_scale_helpers.py`.
+
+    `target_width`/`target_height` are the EXPECTED OUTPUT size (the input
+    image's current size already multiplied by `scale_by` - upstream does
+    this same multiply in `_aio_usdu_tile_plan` itself before calling its own
+    per-dimension planner; this port keeps that one multiply at the call
+    site instead, so this function stays a pure two-int-in/two-int-out
+    dimension planner), so tiles divide the OUTPUT evenly - not the input.
+
+    Width and height are planned independently (upstream does the same:
+    `_aio_usdu_auto_tile_dimension` called once per dimension), each 64
+    -aligned and clamped to `[min_size, max_size]`. Degenerate
+    (zero/negative) inputs never raise - see `_plan_usdu_tile_dimension`'s
+    own docstring.
+
+    Deliberate, documented deviation from a byte-for-byte port: the 64
+    -alignment step reuses this repo's own `align_nearest`
+    (`_anima_image_scale_helpers.py`, already ported from the SAME upstream
+    `_align_nearest` in `.../image/geometry.py` for `compute_scale_by_multiple`)
+    rather than reimplementing upstream's own slightly different floor
+    clamp (`max(alignment, ...)` vs this repo's `max(1, ...)`) - the two only
+    diverge for a `value` smaller than `alignment` (64), and the final
+    `[min_size, max_size]` clamp above (`min_size` defaults to 512) makes
+    that divergence unobservable in every call this stage ever makes."""
+    tile_width = _plan_usdu_tile_dimension(target_width, preferred_size, min_size, max_size)
+    tile_height = _plan_usdu_tile_dimension(target_height, preferred_size, min_size, max_size)
+    return tile_width, tile_height
+
+
+def _usdu_image_size(image, fallback: int = 512) -> tuple[int, int]:
+    """Best-effort `(width, height)` read off an IMAGE tensor's `.shape`
+    (`(batch, height, width, channels)`, ComfyUI's own layout) - mirrors the
+    reference pack's own `_image_tensor_size`
+    (`../ComfyUI-EasyUseAnima/easyuse_anima/image/geometry.py:41-45`) so a
+    non-tensor stand-in (as this repo's own tests pass for non-auto-tile
+    coverage) degrades to a documented fallback instead of raising."""
+    try:
+        return int(image.shape[2]), int(image.shape[1])
+    except Exception:
+        return fallback, fallback
+
+
 def get_upscale_model_names() -> tuple[str, ...]:
     """Dropdown options for `upscale_usdu_model_name` - the upscale-model
     filenames ComfyUI's own `folder_paths.get_filename_list("upscale_models")`
@@ -771,28 +902,65 @@ def run_usdu_upscale_stage(
     scale_by,
     tile_size,
     model_name,
+    mode_type: str = DEFAULT_USDU_MODE_TYPE,
+    mask_blur: int = DEFAULT_USDU_MASK_BLUR,
+    tile_padding: int = DEFAULT_USDU_TILE_PADDING,
+    seam_fix_mode: str = DEFAULT_USDU_SEAM_FIX_MODE,
+    seam_fix_denoise: float = DEFAULT_USDU_SEAM_FIX_DENOISE,
+    seam_fix_width: int = DEFAULT_USDU_SEAM_FIX_WIDTH,
+    seam_fix_mask_blur: int = DEFAULT_USDU_SEAM_FIX_MASK_BLUR,
+    seam_fix_padding: int = DEFAULT_USDU_SEAM_FIX_PADDING,
+    auto_tile: bool = DEFAULT_USDU_AUTO_TILE,
 ) -> tuple[Any, dict[str, Any]]:
     """USDU (Ultimate SD Upscale) backend of the upscale stage: tiled
     img2img upscale via the optional `ComfyUI_UltimateSDUpscale` pack's own
     `UltimateSDUpscale.upscale()`, called the same way the reference pack's
     `_run_aio_usdu_upscale_stage`
     (`../ComfyUI-EasyUseAnima/easyuse_anima/aio/legacy_generation.py` +
-    `.../aio/usdu.py`) does, with this build's non-widget fields fixed to
-    that reference's own defaults (`mode_type="Linear"`, `mask_blur=8`,
-    `tile_padding=32`, `seam_fix_mode="None"`, `seam_fix_denoise=1.0`,
-    `seam_fix_mask_blur=8`, `seam_fix_width=64`, `seam_fix_padding=16`,
-    `force_uniform_tiles=True`, `tiled_decode=False`, `batch_size=1`) rather
-    than exposed as widgets - the plan's "keep this minimal" scoping.
-    `seed`/`steps`/`cfg`/`sampler_name`/`scheduler` are reused from the main
-    generator widgets (only `denoise` is a separate per-stage widget),
-    matching the highres stage's own "no separate sampler-override widgets"
-    precedent.
+    `.../aio/usdu.py`) does. `force_uniform_tiles=True`, `tiled_decode=False`
+    (the VAE-decode tiling flag - NOT the `mode_type` traversal widget, see
+    `node_anima_generator.py`'s `upscale_usdu_mode_type` tooltip for that
+    distinction), and `batch_size=1` stay fixed, non-widget constants (rarely
+    -tuned, matching the reference's own defaults) per the plan's "keep this
+    minimal" scoping; every other USDU field the reference pack exposes
+    (`mode_type`, `mask_blur`, `tile_padding`, the five `seam_fix_*` fields,
+    and auto tile planning) is now a real widget, ported from
+    `docs/backlog.md` §2.3. `seed`/`steps`/`cfg`/`sampler_name`/`scheduler`
+    are reused from the main generator widgets (only `denoise` is a separate
+    per-stage widget), matching the highres stage's own "no separate
+    sampler-override widgets" precedent.
+
+    `auto_tile=True` (upstream's own default - see `DEFAULT_USDU_AUTO_TILE`)
+    computes `tile_width`/`tile_height` from the EXPECTED OUTPUT size
+    (`image`'s current size x `scale_by`) via `plan_usdu_tiles`, ignoring
+    `tile_size`; `auto_tile=False` uses `tile_size` for both dimensions
+    exactly like this stage always has (byte-identical to the pre-existing
+    behavior - the widget default change is the only behavioral difference
+    for existing workflows, and is deliberate, see this build's report).
     """
     usdu_cls = require_optional_node_class(
         "UltimateSDUpscale", "ComfyUI_UltimateSDUpscale (Ultimate SD Upscale)"
     )
     upscale_model = load_usdu_upscale_model(model_name)
-    tile_size = max(64, int(tile_size))
+
+    auto_tile = bool(auto_tile)
+    if auto_tile:
+        current_width, current_height = _usdu_image_size(image)
+        target_width = max(1, round(current_width * max(0.05, float(scale_by))))
+        target_height = max(1, round(current_height * max(0.05, float(scale_by))))
+        tile_width, tile_height = plan_usdu_tiles(target_width, target_height)
+    else:
+        tile_width = tile_height = max(64, int(tile_size))
+
+    mode_type = str(mode_type or DEFAULT_USDU_MODE_TYPE)
+    seam_fix_mode = str(seam_fix_mode or DEFAULT_USDU_SEAM_FIX_MODE)
+    mask_blur = max(0, int(mask_blur))
+    tile_padding = max(0, int(tile_padding))
+    seam_fix_denoise = float(seam_fix_denoise)
+    seam_fix_width = max(0, int(seam_fix_width))
+    seam_fix_mask_blur = max(0, int(seam_fix_mask_blur))
+    seam_fix_padding = max(0, int(seam_fix_padding))
+
     result = usdu_cls().upscale(
         image=image,
         model=model,
@@ -807,16 +975,16 @@ def run_usdu_upscale_stage(
         scheduler=str(scheduler),
         denoise=float(denoise),
         upscale_model=upscale_model,
-        mode_type="Linear",
-        tile_width=tile_size,
-        tile_height=tile_size,
-        mask_blur=8,
-        tile_padding=32,
-        seam_fix_mode="None",
-        seam_fix_denoise=1.0,
-        seam_fix_mask_blur=8,
-        seam_fix_width=64,
-        seam_fix_padding=16,
+        mode_type=mode_type,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        mask_blur=mask_blur,
+        tile_padding=tile_padding,
+        seam_fix_mode=seam_fix_mode,
+        seam_fix_denoise=seam_fix_denoise,
+        seam_fix_mask_blur=seam_fix_mask_blur,
+        seam_fix_width=seam_fix_width,
+        seam_fix_padding=seam_fix_padding,
         force_uniform_tiles=True,
         tiled_decode=False,
         batch_size=1,
@@ -827,8 +995,19 @@ def run_usdu_upscale_stage(
         "backend": "usdu",
         "scale_by": float(scale_by),
         "tile_size": tile_size,
+        "tile_width": tile_width,
+        "tile_height": tile_height,
+        "auto_tile": auto_tile,
         "denoise": float(denoise),
         "upscale_model_name": str(model_name),
+        "mode_type": mode_type,
+        "mask_blur": mask_blur,
+        "tile_padding": tile_padding,
+        "seam_fix_mode": seam_fix_mode,
+        "seam_fix_denoise": seam_fix_denoise,
+        "seam_fix_width": seam_fix_width,
+        "seam_fix_mask_blur": seam_fix_mask_blur,
+        "seam_fix_padding": seam_fix_padding,
     }
 
 
@@ -898,13 +1077,25 @@ def run_upscale_stage(
     resshift_chop,
     resshift_overlap,
     resshift_tile_batch,
+    usdu_mode_type: str = DEFAULT_USDU_MODE_TYPE,
+    usdu_mask_blur: int = DEFAULT_USDU_MASK_BLUR,
+    usdu_tile_padding: int = DEFAULT_USDU_TILE_PADDING,
+    usdu_seam_fix_mode: str = DEFAULT_USDU_SEAM_FIX_MODE,
+    usdu_seam_fix_denoise: float = DEFAULT_USDU_SEAM_FIX_DENOISE,
+    usdu_seam_fix_width: int = DEFAULT_USDU_SEAM_FIX_WIDTH,
+    usdu_seam_fix_mask_blur: int = DEFAULT_USDU_SEAM_FIX_MASK_BLUR,
+    usdu_seam_fix_padding: int = DEFAULT_USDU_SEAM_FIX_PADDING,
+    usdu_auto_tile: bool = DEFAULT_USDU_AUTO_TILE,
 ) -> tuple[Any, dict[str, Any]]:
     """The upscale stage: dispatches to whichever backend `backend` selects
     (`"usdu"` -> `run_usdu_upscale_stage`, `"resshift"` ->
     `run_resshift_upscale_stage`) - the user's choice of soft-dependency,
     exactly like the reference pack offers both. Broadcasts the result on
     `preview_channel` under the `"upscale"` stage label, same as the
-    detailer stage does under `"detailer"`."""
+    detailer stage does under `"detailer"`. The trailing `usdu_*` seam-fix /
+    tile-control kwargs (default upstream's own values) are only meaningful
+    for the `"usdu"` backend - ignored entirely when `backend == "resshift"`,
+    same as `usdu_denoise`/`usdu_scale_by`/etc. already were."""
     backend = str(backend or "usdu").strip().lower()
     if backend == "resshift":
         image_out, metadata = run_resshift_upscale_stage(
@@ -915,6 +1106,15 @@ def run_upscale_stage(
             image, model, positive, negative, vae,
             seed, steps, cfg, sampler_name, scheduler,
             usdu_denoise, usdu_scale_by, usdu_tile_size, usdu_model_name,
+            mode_type=usdu_mode_type,
+            mask_blur=usdu_mask_blur,
+            tile_padding=usdu_tile_padding,
+            seam_fix_mode=usdu_seam_fix_mode,
+            seam_fix_denoise=usdu_seam_fix_denoise,
+            seam_fix_width=usdu_seam_fix_width,
+            seam_fix_mask_blur=usdu_seam_fix_mask_blur,
+            seam_fix_padding=usdu_seam_fix_padding,
+            auto_tile=usdu_auto_tile,
         )
     broadcast_preview(preview_channel, image_out, "upscale")
     return image_out, metadata
@@ -996,8 +1196,22 @@ __all__ = (
     "AURA_FLOW_SHIFT_SKIP_VALUE",
     "DEFAULT_AURA_FLOW_SHIFT",
     "DEFAULT_HEIGHT",
+    "DEFAULT_USDU_AUTO_TILE",
+    "DEFAULT_USDU_MASK_BLUR",
+    "DEFAULT_USDU_MODE_TYPE",
+    "DEFAULT_USDU_SEAM_FIX_DENOISE",
+    "DEFAULT_USDU_SEAM_FIX_MASK_BLUR",
+    "DEFAULT_USDU_SEAM_FIX_MODE",
+    "DEFAULT_USDU_SEAM_FIX_PADDING",
+    "DEFAULT_USDU_SEAM_FIX_WIDTH",
+    "DEFAULT_USDU_TILE_PADDING",
     "DEFAULT_WIDTH",
     "MAX_SEED",
+    "USDU_AUTO_TILE_MAX",
+    "USDU_AUTO_TILE_MIN",
+    "USDU_AUTO_TILE_PREFERRED",
+    "USDU_MODE_TYPES",
+    "USDU_SEAM_FIX_MODES",
     "apply_aura_flow_shift",
     "apply_lora_stack",
     "build_empty_latent",
@@ -1010,6 +1224,7 @@ __all__ = (
     "load_usdu_upscale_model",
     "normalize_lora_stack",
     "pick_default",
+    "plan_usdu_tiles",
     "resolve_pane_conditioning",
     "run_detailer_stage",
     "run_highres_pass",
