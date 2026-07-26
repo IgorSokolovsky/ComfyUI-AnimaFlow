@@ -15,6 +15,7 @@ from .nodes.anima.node_anima_conditioning_encode import AnimaConditioningEncode
 from .nodes.anima.node_anima_detailer_hook import AnimaDetailerAlignHook
 from .nodes.anima.node_anima_generator import AnimaGenerator
 from .nodes.anima.node_anima_image_scale import AnimaImageScaleByMultiple
+from .nodes.anima.node_anima_loader import AnimaLoader
 from .nodes.anima.node_anima_preview import AnimaPreview
 from .nodes.anima.node_anima_region_mask_editor import AnimaRegionMaskEditor
 from .nodes.anima.node_anima_regional_conditioning import AnimaRegionalConditioning
@@ -50,6 +51,7 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,
     "AnimaImageScaleByMultiple": AnimaImageScaleByMultiple,
+    "AnimaLoader": AnimaLoader,
     "AnimaDetailerAlignHook": AnimaDetailerAlignHook,
     "AnimaPreview": AnimaPreview,
     "AnimaGenerator": AnimaGenerator,
@@ -68,6 +70,7 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptRulesClip": "Prompt Rules (CLIP)",
     "PromptRulesText": "Prompt Rules",
     "AnimaImageScaleByMultiple": "Anima Image Scale By Multiple",
+    "AnimaLoader": "Anima Loader",
     "AnimaDetailerAlignHook": "Anima Detailer Align Hook",
     "AnimaPreview": "Anima Preview",
     "AnimaGenerator": "Anima Generator",
