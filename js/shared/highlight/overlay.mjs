@@ -14,7 +14,7 @@
  * colored text drifts out from under the real caret.
  */
 
-import { SECTIONS, sectionTokenCss, sectionVarsCss } from "./colors.mjs";
+import { sectionTokenCss, sectionVarsCss } from "./colors.mjs";
 
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 const STYLE_ID = "wtn-hl-style";
@@ -105,6 +105,14 @@ function spanHtml(span) {
   if (span.weighted) {
     attrs.push('data-weighted="true"');
   }
+  // `known !== false` -- a DB-known tag paints at full opacity; anything
+  // else (incl. a token that never sent `known` at all) is left at the
+  // `.wtn-hl-tok` base 0.88 unless its section is `count` (see
+  // `colors.mjs`'s `sectionTokenCss` doc for the exact opacity rule, adopted
+  // from the reference's `tokenStyle()`).
+  if (span.known !== false) {
+    attrs.push('data-known="true"');
+  }
   const title = span.label || span.section;
   if (title) {
     attrs.push(`title="${escapeAttr(title)}"`);
@@ -186,10 +194,15 @@ ${sectionTokenCss()}
 }
 .wtn-hl-legend-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wtn-hl-legend-swatch {
-  width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto;
-  background: var(--wtn-hl-unknown, #e7ecf3);
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; height: 16px; padding: 0 3px; flex: 0 0 auto;
+  font-size: 9.5px; line-height: 1; overflow: hidden;
+  /* Color/background/weight/underline for each data-section come from the
+     SAME .wtn-hl-tok[data-section="..."] rules real tokens use (see the
+     legend's swatch markup in legend.mjs) -- one rule set, so the legend and
+     the highlighted text can never drift apart. This class only supplies
+     the box's SIZE/LAYOUT, which .wtn-hl-tok itself doesn't set. */
 }
-${SECTION_SWATCH_CSS}
 .wtn-hl-legend-label {
   font-size: 11.5px; color: var(--wtn-ink-dim, #93a0b1);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -197,13 +210,6 @@ ${SECTION_SWATCH_CSS}
 `;
   targetDoc.head.appendChild(style);
 }
-
-// Per-section swatch background rules -- colors.mjs's SECTIONS table stays
-// the single source of truth for hues; this just points each swatch at the
-// same `--wtn-hl-*` var (+ fallback) the token paint rules use.
-const SECTION_SWATCH_CSS = SECTIONS.map(
-  (section) => `.wtn-hl-legend-swatch[data-section="${section.id}"] { background: var(${section.varName}, ${section.hex}); }`,
-).join("\n");
 
 function ensureRelativePositioning(doc, parent) {
   const style = typeof window !== "undefined" && window.getComputedStyle

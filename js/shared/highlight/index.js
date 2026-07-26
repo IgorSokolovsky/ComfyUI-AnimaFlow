@@ -28,9 +28,46 @@
  *   treatment. Adapted with attribution from
  *   `../ComfyUI-EasyUseAnima/web/js/prompt_studio/highlight_overlay_core.js`
  *   (MIT © n0va39).
- * - `colors.mjs` — the 16-section color/label table shared by the overlay
- *   and the legend.
+ * - `colors.mjs` — the 16-section color/background/weight/label table shared
+ *   by the overlay and the legend.
  * - `legend.mjs` — the collapsible legend UI.
+ * - `name_cache.mjs` / `optimistic.mjs` — the two-tier paint's tier 1 (see
+ *   below): a module-level tag-name cache and the small client-side
+ *   approximate splitter that consults it.
+ *
+ * ## Two-tier paint (optimistic, then authoritative)
+ *
+ * Coloring a prompt requires the backend's `/wtn/classify` response, which
+ * is debounced and networked -- it cannot land on every keystroke. Painting
+ * with ZERO color while it's in flight (the old `paintPlain()` behavior)
+ * meant the user watched every keystroke drop all color, then have it flood
+ * back ~200ms after they stopped typing -- worse than not highlighting at
+ * all. Adopted from the reference pack's approach (its
+ * `highlight_core.js`'s `renderHighlightedText` keys tokens by normalized
+ * NAME via a `byBase` map, not by offset, so it can recolor instantly from
+ * whatever it already knows):
+ *
+ *  - **Tier 1 -- optimistic, synchronous, every keystroke.**
+ *    `paintOptimistic()` calls `optimistic.mjs`'s `buildOptimisticSpans()`,
+ *    which splits the text client-side (approximate: comma/newline/paren
+ *    aware, NOT the real classifier) and colors each piece from
+ *    `name_cache.mjs`'s persistent `normalizedTag -> {section, label}`
+ *    cache. A tag the user is re-typing (the common case when editing an
+ *    existing prompt) is very likely already in that cache, so it recolors
+ *    immediately with no visible flicker. An unfamiliar tag just renders
+ *    plain, same as before -- no regression, only improvement.
+ *  - **Tier 2 -- authoritative, debounced.** The existing `/wtn/classify`
+ *    round-trip still runs on the same debounce as before. When it
+ *    resolves, `paintColored()` repaints from the REAL offsets (not the
+ *    approximate split) and calls `name_cache.mjs`'s `rememberTokens()` to
+ *    teach the cache anything new -- this is what keeps tier 1's
+ *    predictions honest over time. Tier 2 remains the sole source of truth;
+ *    tier 1 is a prediction that's corrected within one debounce window.
+ *
+ * See the "paint kind" note on `paintedKind` below for how the repaint-churn
+ * guard tells an optimistic paint apart from an authoritative one, so the
+ * authoritative pass can still replace an optimistic paint of IDENTICAL
+ * text (the same trap `paintPlain -> paintColored` had to avoid before).
  *
  * ## Degradation
  *
@@ -63,10 +100,14 @@ import {
   syncBounds,
   copyTextMetrics,
 } from "./overlay.mjs";
+import { buildOptimisticSpans } from "./optimistic.mjs";
+import { rememberTokens } from "./name_cache.mjs";
 
 export { createLegend } from "./legend.mjs";
 export { SECTIONS, sectionInfo, sectionLabel } from "./colors.mjs";
 export { buildSpans } from "./classify.mjs";
+export { buildOptimisticSpans } from "./optimistic.mjs";
+export { rememberToken, rememberTokens, lookupTagName, clearNameCache, nameCacheSize, NAME_CACHEABLE_SECTIONS } from "./name_cache.mjs";
 
 const HANDLE_MARKER = "__wtnHighlighterHandle";
 
@@ -120,30 +161,39 @@ export function attachHighlighter(textarea, opts = {}) {
     clearTimeoutImpl,
   });
 
-  // Two-phase paint: `paintPlain()` renders `text` immediately with NO
-  // color (an empty token list, per `buildSpans(text, [])`'s documented
-  // "whole string is one gap span" fallback) so the mirror is NEVER empty
-  // or showing stale text between a keystroke and the debounced/networked
-  // `/wtn/classify` response. `paintColored()` -- called only from the
-  // classifier's resolve callback -- repaints the SAME text with real
-  // colors once that response lands. Color is a progressive enhancement
-  // layered on top of text that was already fully visible.
+  // Two-tier paint (see this file's docstring): `paintOptimistic()` renders
+  // `text` immediately from the client-side approximate split + name cache
+  // (colored where the cache already knows a tag, plain where it doesn't)
+  // so the mirror is NEVER empty/stale AND never drops color the user
+  // already had. `paintColored()` -- called only from the classifier's
+  // resolve callback -- repaints the SAME text with the REAL, offset-exact
+  // colors once that response lands, and teaches the cache anything new.
   //
-  // `paintedText`/`paintedTokenSig` is the repaint-churn guard, split into
-  // two parts on purpose:
-  //  - `paintedText` -- the text currently on screen, in EITHER phase.
-  //  - `paintedTokenSig` -- `null` while that text is only plain-painted;
-  //    a token signature (see `tokenSignature()`) once it's been colored.
-  // THE TRAP this avoids: if a single "last painted text" guard treated
-  // `paintPlain()` as fully satisfying "this text is painted", the
-  // subsequent `paintColored()` call for that identical text (the normal
-  // case -- classify almost always resolves for text the user has since
-  // stopped changing) would be skipped by that same guard, and nothing
-  // would ever get colored. Keying the guard on (text, phase) instead lets
-  // plain -> colored through for identical text while still suppressing a
-  // genuinely redundant repaint (e.g. the classifier's own "identical
-  // text" cache re-invoking the resolve callback with the same tokens).
+  // `paintedText`/`paintedKind`/`paintedTokenSig` is the repaint-churn
+  // guard, split into parts on purpose:
+  //  - `paintedText` -- the text currently on screen, in EITHER paint kind.
+  //  - `paintedKind` -- `null` (nothing painted yet), `"optimistic"`, or
+  //    `"authoritative"` -- WHICH kind of paint is currently on screen.
+  //  - `paintedTokenSig` -- only meaningful when `paintedKind ===
+  //    "authoritative"`: a token signature (see `tokenSignature()`) of the
+  //    exact classify result currently painted.
+  // THE TRAP this avoids (same shape as the old plain/colored one, now with
+  // a third kind in the mix): if a single "last painted text" guard treated
+  // an OPTIMISTIC paint as fully satisfying "this text is painted", the
+  // subsequent AUTHORITATIVE paint for that identical text (the normal
+  // case -- classify usually resolves for text the user has since stopped
+  // changing) would be skipped by that same guard, and the real, offset-
+  // exact colors would never replace the guess. Keying the guard on (text,
+  // kind[, sig]) instead lets optimistic -> authoritative through for
+  // identical text while still suppressing two kinds of genuinely
+  // redundant repaint: an optimistic repaint of text already on screen
+  // (in EITHER kind -- optimistic must never downgrade an already-
+  // authoritative paint back to a guess), and an authoritative repaint
+  // whose (text, tokens) exactly match what's already painted (e.g. the
+  // classifier's own "identical text" cache re-invoking the resolve
+  // callback with the same tokens).
   let paintedText = null;
+  let paintedKind = null; // null | "optimistic" | "authoritative"
   let paintedTokenSig = null;
 
   /** Cheap signature of a resolved token list, used only to tell "the
@@ -164,47 +214,53 @@ export function attachHighlighter(textarea, opts = {}) {
     return mirror.isConnected === false; // real DOM only; test stubs leave this `undefined`
   }
 
-  function renderMirror(text, tokens) {
-    const spans = buildSpans(text, tokens);
+  function renderMirrorFromSpans(text, spans) {
     mirror.innerHTML = renderMirrorHtml(text, spans);
     syncBounds(textarea, mirror);
   }
 
-  /** Paints `text` immediately, uncolored. Synchronous, no network --
-   * safe to call on every keystroke and at attach time. Skips the
-   * re-render (but still resyncs bounds) when `text` is already on
-   * screen, plain or colored, so a same-value `input` event is a no-op.
+  /** Tier 1 -- paints `text` immediately from the client-side approximate
+   * split + `name_cache.mjs`'s lookup (colored where the cache already
+   * recognizes a tag, plain elsewhere). Synchronous, no network -- safe to
+   * call on every keystroke and at attach time. Skips the re-render (but
+   * still resyncs bounds) when `text` is already on screen in EITHER paint
+   * kind, so a same-value `input` event is a no-op AND an optimistic guess
+   * never overwrites an already-authoritative render of the same text.
    */
-  function paintPlain(text) {
+  function paintOptimistic(text) {
     if (detachedMidFlight()) {
       return;
     }
-    if (paintedText === text) {
+    if (paintedText === text && paintedKind !== null) {
       syncBounds(textarea, mirror);
       return;
     }
-    renderMirror(text, []);
+    renderMirrorFromSpans(text, buildOptimisticSpans(text));
     paintedText = text;
+    paintedKind = "optimistic";
     paintedTokenSig = null;
   }
 
-  /** Paints `text` colored by the classifier's resolved `tokens` -- the
-   * only path that fires `onTokens`. See the guard note above for why
-   * this is allowed through even when `paintPlain()` already rendered the
-   * same `text` moments earlier, while a truly repeated (text, tokens)
-   * pair is still suppressed.
+  /** Tier 2 -- paints `text` colored by the classifier's resolved, offset-
+   * exact `tokens` -- the only path that fires `onTokens`, and the only
+   * path that teaches `name_cache.mjs` anything new (`rememberTokens()`).
+   * See the guard note above for why this is allowed through even when
+   * `paintOptimistic()` already rendered the same `text` moments earlier,
+   * while a truly repeated (text, tokens) pair is still suppressed.
    */
   function paintColored(tokens, text) {
     if (detachedMidFlight()) {
       return;
     }
+    rememberTokens(tokens);
     const sig = tokenSignature(tokens);
-    if (paintedText === text && paintedTokenSig === sig) {
+    if (paintedText === text && paintedKind === "authoritative" && paintedTokenSig === sig) {
       syncBounds(textarea, mirror);
       return;
     }
-    renderMirror(text, tokens);
+    renderMirrorFromSpans(text, buildSpans(text, tokens));
     paintedText = text;
+    paintedKind = "authoritative";
     paintedTokenSig = sig;
     onTokens?.(tokens, text);
   }
@@ -223,11 +279,12 @@ export function attachHighlighter(textarea, opts = {}) {
   }
 
   function onInput() {
-    // Plain-paint the CURRENT text synchronously first -- the user must
-    // never see invisible/stale text while the debounced classify request
-    // is still in flight. `requestClassification()` below repaints the
-    // same text with color once it resolves.
-    paintPlain(getText());
+    // Optimistically paint the CURRENT text synchronously first -- the
+    // user must never see invisible/stale/de-colored text while the
+    // debounced classify request is still in flight. `requestClassification()`
+    // below repaints the same text with the real, offset-exact colors once
+    // it resolves.
+    paintOptimistic(getText());
     requestClassification();
   }
 
@@ -257,12 +314,16 @@ export function attachHighlighter(textarea, opts = {}) {
     doc.fonts.ready.then(() => resyncMetrics()).catch(() => {});
   }
 
-  // Initial paint -- plain immediately, THEN classify. Without the plain
-  // phase, a workflow reload that restores a non-empty saved prompt would
-  // show nothing at all in the mirror (transparent real text over an
-  // empty/never-painted mirror) until the very first classify response
-  // lands -- the same bug, in its worst form.
-  paintPlain(getText());
+  // Initial paint -- optimistic immediately, THEN classify. Without that
+  // immediate paint, a workflow reload that restores a non-empty saved
+  // prompt would show nothing at all in the mirror (transparent real text
+  // over an empty/never-painted mirror) until the very first classify
+  // response lands -- the same bug, in its worst form. Optimistic (rather
+  // than plain) additionally means: if the name cache already knows any of
+  // these tags (e.g. this is the SECOND textarea attached this session, or
+  // a previous `attachHighlighter` on this same node already classified
+  // this text), it comes up colored immediately instead of waiting.
+  paintOptimistic(getText());
   requestClassification();
 
   const handle = {
@@ -272,12 +333,12 @@ export function attachHighlighter(textarea, opts = {}) {
      * after a host-driven font-size or width change the observers above
      * didn't catch, or a caller writing `textarea.value` directly --
      * see `js/anima_prompt/prompt_rules/highlight_wiring.mjs`'s
-     * `refreshHighlighters`). Same two-phase behaviour as `onInput()`:
-     * plain-paints the current text synchronously first, then
-     * reclassifies for color. */
+     * `refreshHighlighters`). Same two-tier behaviour as `onInput()`:
+     * paints the current text optimistically first, then reclassifies for
+     * the authoritative colors. */
     refresh() {
       resyncMetrics();
-      paintPlain(getText());
+      paintOptimistic(getText());
       requestClassification();
     },
     detach() {

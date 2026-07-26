@@ -22,19 +22,35 @@
  *      `ensureOverlay`/`syncBounds`/`removeOverlay` against the DOM stub
  *      (mirror is a SIBLING, never a reparent of the textarea; original
  *      styles restored on removal).
- *   D. `colors.mjs` — all 16 sections present with a color + label, CSS
- *      generation covers every section.
+ *   D. `colors.mjs` — all 16 sections present with a color + background +
+ *      weight + label, CSS generation covers every section (color,
+ *      font-weight, background chip, opacity cascade).
  *   E. `legend.mjs` — collapsed by default, one item per section, swatches
- *      addressed by `data-section`.
+ *      addressed by `data-section` and reusing the real `wtn-hl-tok` class.
  *   F. `index.js`'s `attachHighlighter`/`detach` — idempotent attach,
  *      initial + debounced-on-input classification with a fake
  *      timer/fetch, the "last painted text" repaint-churn guard, that
  *      `detach()` removes the mirror and restores the textarea's original
- *      inline styles, and the two-phase (plain-then-colored) paint path:
- *      text painted synchronously at attach and on every `input` (before
- *      any fetch resolves), the plain -> colored repaint for IDENTICAL
- *      text surviving the churn guard, a genuinely redundant repaint
- *      still being suppressed, and `refresh()` painting plain immediately.
+ *      inline styles, and the two-tier (optimistic-then-authoritative)
+ *      paint path: text painted synchronously at attach and on every
+ *      `input` (before any fetch resolves), the optimistic -> authoritative
+ *      repaint for IDENTICAL text surviving the churn guard, a genuinely
+ *      redundant repaint still being suppressed, and `refresh()` painting
+ *      optimistically immediately.
+ *   G. `name_cache.mjs` / `optimistic.mjs` — the two-tier paint's tier 1:
+ *      the name cache populates from a classify response and is reused by
+ *      `lookupTagName`, syntax-dependent sections are NOT name-cached,
+ *      cache bounding/eviction, the client-side approximate splitter
+ *      (paren-aware comma/newline split), and `attachHighlighter`
+ *      end-to-end: an optimistic paint colors a cached tag with NO fetch
+ *      in flight, an unknown tag renders plain optimistically, and the
+ *      authoritative paint still replaces an optimistic one for identical
+ *      text (the guard trap, now with a third paint kind in the mix).
+ *
+ * `name_cache.mjs`'s cache is a process-wide module singleton, so every
+ * test below runs through `test()`/`asyncTest()`, which clear it before
+ * each run -- otherwise an earlier test seeding "1girl" -> general would
+ * silently color later, unrelated tests that assume a cold cache.
  *
  * Run directly: `node js/shared/highlight/test_highlight.mjs`.
  */
@@ -55,6 +71,16 @@ import {
 import { SECTIONS, sectionInfo, sectionLabel, sectionVarsCss, sectionTokenCss } from "./colors.mjs";
 import { createLegend } from "./legend.mjs";
 import { attachHighlighter, detach } from "./index.js";
+import {
+  NAME_CACHEABLE_SECTIONS,
+  normalizeTagName,
+  rememberToken,
+  rememberTokens,
+  lookupTagName,
+  nameCacheSize,
+  clearNameCache,
+} from "./name_cache.mjs";
+import { splitApproxTagSpans, approxTagBase, buildOptimisticSpans } from "./optimistic.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 void __dirname; // kept for parity with sibling test files' convention
@@ -64,6 +90,7 @@ let count = 0;
 
 function test(name, fn) {
   count += 1;
+  clearNameCache(); // isolate from whatever an earlier test cached
   try {
     fn();
     console.log(`ok - ${name}`);
@@ -76,6 +103,7 @@ function test(name, fn) {
 
 async function asyncTest(name, fn) {
   count += 1;
+  clearNameCache(); // isolate from whatever an earlier test cached
   try {
     await fn();
     console.log(`ok - ${name}`);
@@ -609,8 +637,17 @@ test("renderMirrorHtml: paints a known token as a span with its section, weighte
   assert.match(html, /class="wtn-hl-tok"/);
   assert.match(html, /data-section="quality"/);
   assert.match(html, /data-weighted="true"/);
+  assert.match(html, /data-known="true"/);
   assert.match(html, /title="Quality"/);
   assert.match(html, />masterpiece</);
+});
+
+test("renderMirrorHtml: a token explicitly marked known:false does NOT get data-known (falls to the 0.88 opacity default)", () => {
+  const text = "some_new_tag";
+  const spans = buildSpans(text, [{ start: 0, end: text.length, section: "general", known: false }]);
+  const html = renderMirrorHtml(text, spans);
+  assert.match(html, /class="wtn-hl-tok"/);
+  assert.ok(!html.includes("data-known"), "known:false must not emit data-known");
 });
 
 test("renderMirrorHtml: a gap span is rendered as plain escaped text, no span wrapper", () => {
@@ -721,7 +758,7 @@ test("removeOverlay removes the mirror and restores the textarea's original inli
 // D. colors.mjs
 // =========================================================================
 
-test("SECTIONS defines exactly the 16 documented sections, each with a label + color", () => {
+test("SECTIONS defines exactly the 16 documented sections, each with a label + color + weight", () => {
   const expectedIds = [
     "quality",
     "safety",
@@ -741,13 +778,57 @@ test("SECTIONS defines exactly the 16 documented sections, each with a label + c
     "unknown",
   ];
   assert.deepEqual(SECTIONS.map((s) => s.id), expectedIds);
-  const seenHex = new Set();
+  const seenCombos = new Set();
   for (const section of SECTIONS) {
     assert.match(section.hex, /^#[0-9a-f]{6}$/i, `${section.id} needs a hex color`);
     assert.ok(section.label && section.label.length > 0, `${section.id} needs a label`);
-    seenHex.add(section.hex.toLowerCase());
+    assert.ok(
+      Number.isInteger(section.weight) && section.weight >= 100 && section.weight <= 900,
+      `${section.id} needs a numeric CSS font-weight`,
+    );
+    // Two sections deliberately REUSE a hue in the adopted reference table
+    // (`artist_unknown`/`syntax` both #f87171; `natural`/`unknown` both
+    // #cbd5e1) and are told apart by background/underline instead -- so the
+    // uniqueness check is on the full (hex, background, weight, underline)
+    // combination, not the hex alone.
+    const combo = `${section.hex}|${section.bg || "transparent"}|${section.weight}|${section.underline || ""}`;
+    seenCombos.add(combo);
   }
-  assert.equal(seenHex.size, expectedIds.length, "every section's color must be distinguishable (unique hex)");
+  assert.equal(seenCombos.size, expectedIds.length, "every section's FULL treatment must be distinguishable");
+});
+
+test("SECTIONS carries the exact color/background/weight table adopted from the reference pack", () => {
+  const expected = {
+    quality: { hex: "#facc15", bg: "rgba(202, 138, 4, 0.18)", weight: 700 },
+    safety: { hex: "#38bdf8", bg: "rgba(2, 132, 199, 0.18)", weight: 600 },
+    year: { hex: "#2dd4bf", bg: "rgba(13, 148, 136, 0.18)", weight: 600 },
+    count: { hex: "#60a5fa", bg: "rgba(37, 99, 235, 0.18)", weight: 700 },
+    character: { hex: "#f472b6", bg: "rgba(219, 39, 119, 0.18)", weight: 700 },
+    artist: { hex: "#a78bfa", bg: "rgba(124, 58, 237, 0.18)", weight: 700 },
+    artist_unknown: { hex: "#f87171", bg: null, weight: 400 },
+    copyright: { hex: "#fb923c", bg: "rgba(234, 88, 12, 0.18)", weight: 700 },
+    meta: { hex: "#94a3b8", bg: "rgba(100, 116, 139, 0.18)", weight: 600 },
+    general: { hex: "#4ade80", bg: "rgba(22, 163, 74, 0.16)", weight: 600 },
+    natural: { hex: "#cbd5e1", bg: "rgba(71, 85, 105, 0.16)", weight: 400 },
+    translation: { hex: "#22d3ee", bg: "rgba(8, 145, 178, 0.22)", weight: 700 },
+    wildcard: { hex: "#c084fc", bg: "rgba(126, 34, 206, 0.24)", weight: 700 },
+    comment: { hex: "#9ca3af", bg: "rgba(156, 163, 175, 0.14)", weight: 400 },
+    syntax: { hex: "#f87171", bg: null, weight: 400 },
+    unknown: { hex: "#cbd5e1", bg: null, weight: 400 },
+  };
+  for (const section of SECTIONS) {
+    const want = expected[section.id];
+    assert.equal(section.hex, want.hex, `${section.id} hex`);
+    assert.equal(section.bg || null, want.bg, `${section.id} background`);
+    assert.equal(section.weight, want.weight, `${section.id} weight`);
+  }
+  assert.equal(SECTIONS.find((s) => s.id === "comment").italic, true, "comment must stay italic");
+  assert.equal(SECTIONS.find((s) => s.id === "syntax").underline, "wavy", "syntax keeps its wavy underline");
+  assert.equal(
+    SECTIONS.find((s) => s.id === "syntax").underlineColor,
+    "#ef4444",
+    "syntax's underline color is the fixed #ef4444, independent of its text color",
+  );
 });
 
 test("sectionInfo/sectionLabel fall back to 'unknown' for an unrecognized section id", () => {
@@ -755,14 +836,42 @@ test("sectionInfo/sectionLabel fall back to 'unknown' for an unrecognized sectio
   assert.equal(sectionLabel("something-new-from-a-future-backend"), sectionLabel("unknown"));
 });
 
-test("sectionVarsCss/sectionTokenCss emit a rule for every section", () => {
+test("sectionVarsCss/sectionTokenCss emit a rule for every section, incl. background chips and weight", () => {
   const varsCss = sectionVarsCss();
   const tokenCss = sectionTokenCss();
   for (const section of SECTIONS) {
     assert.ok(varsCss.includes(section.varName), `missing var declaration for ${section.id}`);
     assert.ok(tokenCss.includes(`data-section="${section.id}"`), `missing token rule for ${section.id}`);
+    assert.ok(tokenCss.includes(`font-weight: ${section.weight};`), `missing font-weight for ${section.id}`);
+    if (section.bg) {
+      assert.ok(varsCss.includes(section.bgVarName), `missing bg var declaration for ${section.id}`);
+      assert.ok(varsCss.includes(section.bg), `missing bg fallback value for ${section.id}`);
+    }
   }
   assert.ok(tokenCss.includes('[data-weighted="true"]'));
+});
+
+test("sectionTokenCss emits the border-radius chip rule only for sections with a background", () => {
+  const tokenCss = sectionTokenCss();
+  const withBg = SECTIONS.filter((s) => s.bg);
+  const withoutBg = SECTIONS.filter((s) => !s.bg);
+  assert.ok(withBg.length > 0 && withoutBg.length > 0, "fixture sanity: need both kinds present");
+  for (const section of withBg) {
+    const ruleStart = tokenCss.indexOf(`[data-section="${section.id}"]`);
+    const ruleEnd = tokenCss.indexOf("}", ruleStart);
+    const rule = tokenCss.slice(ruleStart, ruleEnd);
+    assert.ok(rule.includes("border-radius: 3px;"), `${section.id} (has a bg) should get the chip radius`);
+  }
+});
+
+test("sectionTokenCss's opacity cascade: 0.88 base, 1 for known tokens, 1 for count regardless of known", () => {
+  const tokenCss = sectionTokenCss();
+  assert.ok(tokenCss.includes(".wtn-hl-tok {\n  opacity: 0.88;\n}"), "missing the 0.88 base rule");
+  assert.ok(tokenCss.includes('.wtn-hl-tok[data-known="true"] {\n  opacity: 1;\n}'), "missing the known->1 override");
+  assert.ok(
+    tokenCss.includes('.wtn-hl-tok[data-section="count"] {\n  opacity: 1;\n}'),
+    "missing the count->1 override",
+  );
 });
 
 // =========================================================================
@@ -791,6 +900,18 @@ test("createLegend renders one item per section, each swatch addressed by data-s
   assert.equal(grid.children.length, SECTIONS.length);
   const sectionIds = grid.children.map((item) => item.children[0].getAttribute("data-section"));
   assert.deepEqual(sectionIds, SECTIONS.map((s) => s.id));
+});
+
+test("createLegend's swatches reuse the real 'wtn-hl-tok' token class + data-known, so legend and text share one CSS rule", () => {
+  const doc = makeDocStub();
+  const legend = createLegend({ doc });
+  const body = legend.root.children.find((c) => c.tagName === "div");
+  const grid = body.children.find((c) => c.tagName === "div");
+  for (const item of grid.children) {
+    const swatch = item.children[0];
+    assert.match(swatch.className, /\bwtn-hl-tok\b/, "swatch must carry the token class, not a bespoke one");
+    assert.equal(swatch.getAttribute("data-known"), "true");
+  }
 });
 
 test("createLegend's setOpen toggles the open attribute", () => {
@@ -997,6 +1118,219 @@ test("attachHighlighter never touches keydown/keyup/click -- it only listens for
   assert.ok(!textarea._listeners.keydown);
   assert.ok(!textarea._listeners.keyup);
   assert.ok(!textarea._listeners.click);
+});
+
+// =========================================================================
+// G. name_cache.mjs / optimistic.mjs -- the two-tier paint's tier 1
+// =========================================================================
+
+test("normalizeTagName mirrors classify.py's _normalize: underscores -> spaces, casefold, collapse whitespace, trim", () => {
+  assert.equal(normalizeTagName("1girl"), "1girl");
+  assert.equal(normalizeTagName("blue_hair"), "blue hair");
+  assert.equal(normalizeTagName("Blue_Hair"), "blue hair");
+  assert.equal(normalizeTagName("  blue   hair  "), "blue hair");
+  assert.equal(normalizeTagName("BLUE_HAIR"), "blue hair");
+  assert.equal(normalizeTagName(""), "");
+  assert.equal(normalizeTagName(null), "");
+});
+
+test("NAME_CACHEABLE_SECTIONS contains exactly the 11 identity-stable sections, excluding the 5 syntax-dependent ones", () => {
+  const expected = new Set([
+    "quality",
+    "safety",
+    "year",
+    "count",
+    "character",
+    "artist",
+    "artist_unknown",
+    "copyright",
+    "meta",
+    "general",
+    "natural",
+  ]);
+  assert.deepEqual(NAME_CACHEABLE_SECTIONS, expected);
+  for (const excluded of ["comment", "syntax", "wildcard", "translation", "unknown"]) {
+    assert.ok(!NAME_CACHEABLE_SECTIONS.has(excluded), `${excluded} must NOT be name-cacheable`);
+  }
+});
+
+test("rememberToken populates the cache from a classify-response-shaped token, and lookupTagName reuses it", () => {
+  rememberToken({ start: 0, end: 5, base: "1girl", section: "general", label: "Trained tag" });
+  assert.deepEqual(lookupTagName("1girl"), { section: "general", label: "Trained tag" });
+  // Reused across a differently-spelled occurrence of the SAME tag --
+  // underscored, uppercased, padded -- exactly the "user re-typing a
+  // known tag" case the optimistic pass is built for.
+  assert.deepEqual(lookupTagName("  1GIRL  "), { section: "general", label: "Trained tag" });
+});
+
+test("rememberToken falls back to `text` when `base` is missing", () => {
+  rememberToken({ start: 0, end: 11, text: "masterpiece", section: "quality" });
+  assert.deepEqual(lookupTagName("masterpiece"), { section: "quality", label: "" });
+});
+
+test("rememberToken is a no-op for a token with no usable base/text, or a malformed token", () => {
+  rememberToken({ start: 0, end: 1, section: "general" }); // no base, no text
+  assert.equal(lookupTagName(""), null);
+  assert.doesNotThrow(() => rememberToken(null));
+  assert.doesNotThrow(() => rememberToken(undefined));
+  assert.doesNotThrow(() => rememberToken("not-an-object"));
+  assert.equal(nameCacheSize(), 0);
+});
+
+test("rememberToken does NOT cache a syntax-dependent section (comment/syntax/wildcard/translation/unknown)", () => {
+  for (const section of ["comment", "syntax", "wildcard", "translation", "unknown"]) {
+    rememberToken({ start: 0, end: 4, base: `tag_${section}`, section });
+  }
+  for (const section of ["comment", "syntax", "wildcard", "translation", "unknown"]) {
+    assert.equal(lookupTagName(`tag_${section}`), null, `${section} must not be name-cached`);
+  }
+  assert.equal(nameCacheSize(), 0);
+});
+
+test("rememberTokens populates from every token in a classify response array in one call", () => {
+  rememberTokens([
+    { start: 0, end: 5, base: "1girl", section: "general" },
+    { start: 7, end: 12, base: "smile", section: "general" },
+    { start: 14, end: 25, base: "masterpiece", section: "quality" },
+  ]);
+  assert.equal(nameCacheSize(), 3);
+  assert.equal(lookupTagName("smile").section, "general");
+  assert.equal(lookupTagName("masterpiece").section, "quality");
+});
+
+test("rememberTokens is a safe no-op for a non-array input", () => {
+  assert.doesNotThrow(() => rememberTokens(null));
+  assert.doesNotThrow(() => rememberTokens("not-an-array"));
+  assert.equal(nameCacheSize(), 0);
+});
+
+test("the name cache is bounded -- oldest entries are evicted once maxEntries is exceeded", () => {
+  for (let i = 0; i < 5; i += 1) {
+    rememberToken({ start: 0, end: 1, base: `tag_${i}`, section: "general" }, { maxEntries: 3 });
+  }
+  assert.equal(nameCacheSize(), 3);
+  assert.equal(lookupTagName("tag_0"), null, "oldest entries must have been evicted");
+  assert.equal(lookupTagName("tag_1"), null);
+  assert.ok(lookupTagName("tag_4"), "the most recently remembered entry must survive");
+});
+
+test("splitApproxTagSpans splits on comma/newline/full-width comma, marking delimiters", () => {
+  const spans = splitApproxTagSpans("1girl,solo\nsmile，masterpiece");
+  const nonDelims = spans.filter((s) => !s.delimiter).map((s) => s.text);
+  const delims = spans.filter((s) => s.delimiter).map((s) => s.text);
+  assert.deepEqual(nonDelims, ["1girl", "solo", "smile", "masterpiece"]);
+  assert.deepEqual(delims, [",", "\n", "，"]);
+});
+
+test("splitApproxTagSpans does NOT split a comma inside a weighted paren group, e.g. (a, b:1.2)", () => {
+  const spans = splitApproxTagSpans("1girl, (a, b:1.2), solo");
+  const nonDelims = spans.filter((s) => !s.delimiter).map((s) => s.text.trim());
+  assert.deepEqual(nonDelims, ["1girl", "(a, b:1.2)", "solo"]);
+});
+
+test("approxTagBase strips a (tag:1.2) weight wrapper and a trailing bare colon", () => {
+  assert.equal(approxTagBase("(masterpiece:1.3)"), "masterpiece");
+  assert.equal(approxTagBase("1girl:"), "1girl");
+  assert.equal(approxTagBase("  1girl  "), "1girl");
+  assert.equal(approxTagBase("solo"), "solo");
+});
+
+test("buildOptimisticSpans colors a tag body found in the name cache, in the SAME span shape buildSpans produces", () => {
+  rememberToken({ start: 0, end: 5, base: "1girl", section: "general", label: "Trained tag" });
+  const spans = buildOptimisticSpans("1girl, solo");
+  const tagSpan = spans.find((s) => s.text === "1girl");
+  assert.ok(tagSpan, "the cached tag must produce a real (non-gap) span");
+  assert.equal(tagSpan.gap, false);
+  assert.equal(tagSpan.section, "general");
+  assert.equal(tagSpan.label, "Trained tag");
+  // Same shape as classify.mjs's buildSpans output -- renderMirrorHtml/
+  // spanHtml don't need to know which builder produced a span.
+  for (const key of ["start", "end", "text", "section", "label", "known", "weighted", "count", "gap"]) {
+    assert.ok(Object.prototype.hasOwnProperty.call(tagSpan, key), `optimistic span missing '${key}'`);
+  }
+  const uncached = spans.find((s) => s.text === "solo");
+  assert.equal(uncached.gap, true, "a tag not in the cache renders as a plain gap span");
+});
+
+test("buildOptimisticSpans renders an unfamiliar (never-cached) prompt entirely plain -- no regression vs. the old paintPlain", () => {
+  const spans = buildOptimisticSpans("brand_new_tag, another_unknown_one");
+  assert.ok(spans.every((s) => s.gap === true || s.section === null));
+});
+
+test("buildOptimisticSpans handles a weighted cached tag: (masterpiece:1.3) still resolves via its unwrapped base", () => {
+  rememberToken({ start: 0, end: 11, base: "masterpiece", section: "quality" });
+  const spans = buildOptimisticSpans("(masterpiece:1.3), 1girl");
+  const weightedSpan = spans.find((s) => s.text.trim() === "(masterpiece:1.3)");
+  assert.ok(weightedSpan);
+  assert.equal(weightedSpan.section, "quality");
+});
+
+// ---- End-to-end via attachHighlighter -----------------------------------
+
+test("attachHighlighter's initial paint colors a cache-known tag OPTIMISTICALLY, with zero fetch calls made yet", () => {
+  rememberToken({ start: 0, end: 5, base: "1girl", section: "general", label: "Trained tag" });
+  const { handle, fetchCalls } = makeAttachedFixture({ initialValue: "1girl, brand_new_tag" });
+  // No timers.flush()/delay() -- the debounced classify hasn't fired, let
+  // alone resolved, so this MUST be true synchronously, right after attach.
+  assert.equal(fetchCalls.length, 0, "no network call has happened yet");
+  assert.ok(handle.mirror.innerHTML.includes("wtn-hl-tok"), "the cached tag must already be colored");
+  assert.match(handle.mirror.innerHTML, /data-section="general"/);
+});
+
+test("attachHighlighter's initial paint renders an uncached tag plain -- optimistic degrades gracefully, exactly like the old paintPlain", () => {
+  const { handle, fetchCalls } = makeAttachedFixture({ initialValue: "totally_unseen_tag, another_one" });
+  assert.equal(fetchCalls.length, 0);
+  assert.ok(!handle.mirror.innerHTML.includes("wtn-hl-tok"), "nothing in the cache -- must stay plain until classify resolves");
+});
+
+await asyncTest(
+  "the authoritative paint still REPLACES an optimistic one for identical text -- the guard trap, now with a third paint kind",
+  async () => {
+    // Seed the cache with a WRONG guess for this tag (as if it had been
+    // seen with a different classification once before), then let the
+    // backend's fake response return the CORRECT section for the same
+    // span -- the authoritative repaint must win, not the stale guess.
+    rememberToken({ start: 0, end: 6, base: "figure", section: "general" });
+    const { timers, handle } = makeAttachedFixture({
+      initialValue: "figure, solo",
+      fetchImpl: (url, init) => {
+        const { text } = JSON.parse(init.body);
+        return Promise.resolve(
+          jsonResponse({ tokens: [{ start: 0, end: 6, section: "character", label: "Character", base: "figure" }] }),
+        );
+      },
+    });
+
+    // Right after attach: optimistically painted from the (wrong) cached guess.
+    assert.ok(handle.mirror.innerHTML.includes("wtn-hl-tok"));
+    assert.match(handle.mirror.innerHTML, /data-section="general"/, "optimistic guess painted first");
+
+    timers.flush();
+    await delay(0);
+
+    // The authoritative response disagrees with the optimistic guess for
+    // the SAME text -- if the churn guard treated "optimistic" as fully
+    // satisfying "this text is painted", this repaint would have been
+    // (wrongly) skipped and the mirror would still show the stale guess.
+    assert.match(handle.mirror.innerHTML, /data-section="character"/, "authoritative classification must win");
+    assert.ok(!handle.mirror.innerHTML.includes('data-section="general"'), "the stale optimistic guess must be gone");
+
+    // And the authoritative response taught the cache the CORRECTED section.
+    assert.equal(lookupTagName("figure").section, "character");
+  },
+);
+
+test("a repeated optimistic paint for text already painted (in EITHER kind) is suppressed -- no downgrade of an authoritative paint back to a guess", () => {
+  rememberToken({ start: 0, end: 5, base: "1girl", section: "general" });
+  const { textarea, handle } = makeAttachedFixture({ initialValue: "1girl" });
+  const optimisticHtml = handle.mirror.innerHTML;
+  assert.ok(optimisticHtml.includes("wtn-hl-tok"));
+
+  // Re-firing 'input' with the SAME text must not force a fresh optimistic
+  // re-render (it would be a no-op even if it did, but this proves the
+  // guard actually short-circuits rather than silently re-computing).
+  fire(textarea, "input");
+  assert.equal(handle.mirror.innerHTML, optimisticHtml);
 });
 
 // =========================================================================

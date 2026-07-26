@@ -47,9 +47,17 @@ export function createLegend(options = {}) {
     const item = doc.createElement("div");
     item.className = "wtn-hl-legend-item";
 
+    // Reuses the real token class (`wtn-hl-tok`) + `data-section` so the
+    // swatch is styled by the EXACT SAME `colors.mjs`-generated CSS rule a
+    // live highlighted tag gets (color, background chip, weight, italic,
+    // underline) -- legend and text can never disagree, by construction,
+    // rather than by keeping two rule sets in sync by hand. `data-known`
+    // pins it to full opacity (a legend swatch isn't "guessing").
     const swatch = doc.createElement("span");
-    swatch.className = "wtn-hl-legend-swatch";
+    swatch.className = "wtn-hl-legend-swatch wtn-hl-tok";
     swatch.setAttribute("data-section", section.id);
+    swatch.setAttribute("data-known", "true");
+    swatch.textContent = "Aa";
     item.appendChild(swatch);
 
     const text = doc.createElement("span");
