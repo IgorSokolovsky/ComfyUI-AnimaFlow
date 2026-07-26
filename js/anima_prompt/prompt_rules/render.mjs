@@ -144,6 +144,15 @@ const CSS = `
 .wtn-pr-switch.wtn-pr-switch-on .wtn-pr-switch-knob { left: 15px; background: var(--wtn-accent, ${TOKENS.accent}); }
 
 .wtn-pr-actions { display: flex; gap: 8px; padding-top: 4px; border-top: 1px solid var(--wtn-line, ${TOKENS.line}); }
+
+/* Highlight color-legend slot (js/shared/highlight/legend.mjs's <details>
+   lands here, wired from js/anima_prompt/prompt_rules/highlight_wiring.mjs).
+   :empty means "no legend attached" (attach failed / no document) -- the
+   flex column's row gap only applies BETWEEN existing children, so a
+   display:none slot contributes nothing to layout, and measureMinHeight
+   below already skips it via the offsetParent===null check. */
+.wtn-pr-legend-slot:empty { display: none; }
+.wtn-pr-legend-slot .wtn-hl-legend { font-size: 11px; }
 `;
 
 export function injectStyles(doc) {
@@ -301,10 +310,20 @@ export function buildRoot(doc) {
   actions.appendChild(ruleBuilderBtn);
   actions.appendChild(pickBtn);
 
+  // ---- Highlight legend slot (below the action row) ----
+  // Empty at build time -- `highlight_wiring.mjs`'s `attachHighlighting`
+  // appends the shared module's `createLegend().root` (a collapsed
+  // `<details>`) into this exact container once it's wired, keeping legend
+  // placement a `render.mjs` concern while the highlighter itself stays
+  // dependency-injected (see `highlight_wiring.mjs`'s doc comment for why).
+  const legendSlot = d.createElement("div");
+  legendSlot.className = "wtn-pr-legend-slot";
+
   root.appendChild(topbar);
   root.appendChild(positivePane);
   root.appendChild(negativePane);
   root.appendChild(actions);
+  root.appendChild(legendSlot);
 
   return {
     doc: d,
@@ -318,6 +337,7 @@ export function buildRoot(doc) {
     traceLabel,
     ruleBuilderBtn,
     pickBtn,
+    legendSlot,
   };
 }
 

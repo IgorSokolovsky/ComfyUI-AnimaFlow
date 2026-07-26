@@ -54,6 +54,7 @@ import {
   DEFAULT_H,
 } from "./render.mjs";
 import { wireInteractions, refreshFromWidgets, findWidget } from "./interaction.mjs";
+import { attachHighlighting, teardownHighlighting } from "./highlight_wiring.mjs";
 
 // Both encode-node variants (`nodes/anima_prompt/prompt_rules.py`) get the same
 // themed UI -- they differ only in output type (CONDITIONING vs STRING) and
@@ -63,6 +64,20 @@ import { wireInteractions, refreshFromWidgets, findWidget } from "./interaction.
 const NODE_CLASS_NAMES = ["PromptRulesClip", "PromptRulesText"];
 
 const WIDGETS_TO_HIDE = ["profile", "sheets", "positive", "negative", "log_trace", "embedded_rules"];
+
+// The shared tag-highlighter's own doc comment (`js/shared/highlight/
+// index.js`) documents this exact absolute import path. Kept as a GUARDED
+// DYNAMIC import in `wireHighlighting` below (never a static top-level
+// import here) for two reasons: (1) `highlight_wiring.mjs`'s own doc
+// comment explains why a static absolute import breaks under this node's
+// headless `test_resize.mjs`; (2) unlike that concern, THIS file is never
+// itself executed by the headless test -- but a static import here would
+// still mean an absent/broken route (e.g. an older install missing
+// `autocomplete/api.py`'s `/wtn/classify` route) throws at EXTENSION LOAD
+// TIME and takes the whole node down with it. A dynamic `import()` inside a
+// `.catch()` degrades non-fatally instead, per this build's "never prevent
+// the node from mounting" requirement.
+const HIGHLIGHT_URL = "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.js";
 
 /** Hide a declared widget from rendering only — it keeps serializing
  * normally (per the skill's "hide a declared widget that must still
@@ -183,6 +198,37 @@ function addPickerButton(node, refs) {
 }
 
 /**
+ * Loads the shared tag-highlighter and wires it into both textareas + the
+ * legend slot (`highlight_wiring.mjs`'s `attachHighlighting`), then re-fits
+ * the node so the (collapsed) legend's small summary row is accounted for
+ * (via `scheduleInitialFit`, which is itself a no-op on a node restored from
+ * a saved workflow -- see its doc comment in `render.mjs` -- so this never
+ * fights the user's saved size). `import()` only ever runs inside a real
+ * browser `document`; under any other host (or if the route/module fails to
+ * load for any reason) this silently no-ops, per `highlight_wiring.mjs`'s
+ * "never throws, never prevents the node from mounting" contract.
+ */
+function wireHighlighting(node, refs) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  import(HIGHLIGHT_URL)
+    .then((mod) => {
+      attachHighlighting(node, refs, {
+        attachHighlighterImpl: mod.attachHighlighter,
+        createLegendImpl: mod.createLegend,
+        doc: refs.doc,
+      });
+      scheduleInitialFit(node, refs.root);
+    })
+    .catch(() => {
+      // No live ComfyUI server to serve the route (older install missing
+      // `/wtn/classify`, or any other load failure) -- non-fatal, the node
+      // works exactly as it does without highlighting.
+    });
+}
+
+/**
  * Build (or, if already built, return) the node's DOM UI refs. Mounts one
  * `addDOMWidget` containing the whole styled UI (top bar + POSITIVE/
  * NEGATIVE panes + action row).
@@ -209,6 +255,7 @@ function mountUI(node) {
 
   wireInteractions(node, refs);
   refreshFromWidgets(node, refs);
+  wireHighlighting(node, refs);
 
   const embeddedWidget = findWidget(node, "embedded_rules");
   addOpenRuleBuilderButton(node, refs, embeddedWidget);
@@ -306,6 +353,19 @@ app.registerExtension({
       const result = originalOnConfigure ? originalOnConfigure.apply(this, args) : undefined;
       restoreNode(this);
       return result;
+    };
+
+    const originalOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function (...args) {
+      // A deleted node must not leave a detached mirror div or a pending
+      // classify debounce timer behind -- see `highlight_wiring.mjs`'s
+      // `teardownHighlighting` doc comment. Safe even if highlighting never
+      // attached (module load failed/no document): both handles are just
+      // `null` and every step there already no-ops.
+      if (this._prRefs) {
+        teardownHighlighting(this._prRefs);
+      }
+      return originalOnRemoved ? originalOnRemoved.apply(this, args) : undefined;
     };
   },
 });

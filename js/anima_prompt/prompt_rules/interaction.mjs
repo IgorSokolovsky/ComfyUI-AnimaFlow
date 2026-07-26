@@ -21,7 +21,11 @@
  *     `negative` widgets via `getPositiveWidget`/`getNegativeWidget`,
  *     bypassing this module's own textarea, so the textarea needs an
  *     explicit resync or the inserted token would be invisible until the
- *     next full page reload).
+ *     next full page reload). Every such PROGRAMMATIC `textarea.value`
+ *     write also never fires the `input` event the highlighter repaints
+ *     on, so `refreshFromWidgets` finishes by forcing both highlight
+ *     handles to resync via `highlight_wiring.mjs`'s `refreshHighlighters`
+ *     — see that module's doc comment for the full trap.
  *
  * `embedded_rules` has no DOM mirror at all (no visible control renders its
  * JSON) — it stays hidden-only, exactly as the previous
@@ -36,6 +40,7 @@ import {
   setProfileOptions,
 } from "./render.mjs";
 import { readProfileValues, normalizeSheetsValue } from "./core.mjs";
+import { refreshHighlighters } from "./highlight_wiring.mjs";
 
 export function findWidget(node, name) {
   return (node.widgets || []).find((w) => w.name === name);
@@ -71,6 +76,12 @@ export function refreshFromWidgets(node, refs) {
   autoGrowTextarea(refs.positiveTextarea);
   autoGrowTextarea(refs.negativeTextarea);
   setLogTraceUI(refs, !!(w.logTrace && w.logTrace.value));
+
+  // The programmatic-update trap (see this module's doc comment): the
+  // textarea writes above never fire `input`, so force both highlight
+  // handles to resync now -- a no-op for either pane whose handle is
+  // `null` (highlighting unavailable/not yet wired).
+  refreshHighlighters(refs);
 }
 
 function toggleLogTrace(node, refs, widgets) {

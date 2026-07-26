@@ -36,6 +36,23 @@
  *      `parseEmbedded`, `onApply` writing `embedded_rules` +
  *      `setDirtyCanvas`, `getPositiveWidget`/`getNegativeWidget`, and the
  *      picker's `onClose` resyncing the DOM via `refreshFromWidgets`).
+ *   F. `highlight_wiring.mjs` — the shared tag-highlighter integration:
+ *      `attachHighlighting` attaches a (fake, injected) highlighter to BOTH
+ *      textareas and builds a REAL `js/shared/highlight/legend.mjs` legend
+ *      (collapsed by default) into the node's legend slot; toggling the
+ *      legend's native `<details>` `toggle` event schedules a refit that
+ *      grows the node; `refreshFromWidgets` (via `refreshHighlighters`)
+ *      forces both handles to resync EVERY time it runs — the
+ *      programmatic-`textarea.value`-write trap, asserted directly, not
+ *      eyeballed; `teardownHighlighting` detaches both handles and destroys
+ *      the legend; every entry point degrades to `null` handles (never
+ *      throws) when an impl is missing, throws, or itself returns `null`.
+ *   G. `index.js` source-level assertions for the highlighter wiring: the
+ *      `./highlight_wiring.mjs` import, the highlight module load being a
+ *      GUARDED `import()` (never a static top-level import — a broken/
+ *      missing route must not take the whole extension down), `mountUI`
+ *      wiring highlighting after `refreshFromWidgets`, and the `onRemoved`
+ *      hook calling `teardownHighlighting` before the original `onRemoved`.
  *
  * Run directly: `node js/anima_prompt/prompt_rules/test_resize.mjs` (plain script,
  * no test framework — matches the project's `python tests/test_x.py`
@@ -64,6 +81,12 @@
  *   [ ] Dragging the node wider sticks; typing a long prompt never jitters
  *       the node's own height (only the textarea grows, up to its own
  *       max-height, then scrolls internally).
+ *   [ ] Both textareas actually paint classifier colors while typing (real
+ *       `/wtn/classify` round-trip) and the legend expands/collapses with a
+ *       visibly correct node re-fit (this headless harness only proves the
+ *       WIRING, via injected fakes -- see `js/shared/highlight/
+ *       test_highlight.mjs` for the highlighter/legend internals, and this
+ *       file's section F for the wiring itself).
  */
 
 import assert from "node:assert/strict";
@@ -95,6 +118,19 @@ import {
   refreshFromWidgets,
   wireInteractions,
 } from "./interaction.mjs";
+
+import {
+  attachHighlighting,
+  refreshHighlighters,
+  teardownHighlighting,
+} from "./highlight_wiring.mjs";
+
+// A real, side-effect-free (no network/timers) shared module -- safe to
+// import directly under plain `node` via a RELATIVE path (only the
+// documented ABSOLUTE `/extensions/ComfyUI-AnimaFlow/...` import breaks
+// under node; see `highlight_wiring.mjs`'s doc comment). Used below to
+// exercise the REAL collapsed-by-default legend contract, not a fake.
+import { createLegend } from "../../shared/highlight/legend.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -610,7 +646,219 @@ test("wireInteractions is idempotent (a second call does not double-attach liste
 });
 
 // =========================================================================
-// E. index.js — source-level assertions
+// F. highlight_wiring.mjs — shared tag-highlighter integration
+// =========================================================================
+
+/** A fake `attachHighlighter` -- one spy handle per distinct textarea, so
+ * assertions can tell the positive and negative panes apart and count
+ * `refresh()`/`detach()` calls without touching the real network/timer-
+ * driven shared module (that's `js/shared/highlight/test_highlight.mjs`'s
+ * job). Mirrors the real handle's shape: `{ textarea, mirror, refresh(),
+ * detach() }`.
+ */
+function makeFakeAttachHighlighterImpl() {
+  const byTextarea = new Map();
+  function attachHighlighterImpl(textarea) {
+    if (byTextarea.has(textarea)) {
+      return byTextarea.get(textarea);
+    }
+    const handle = {
+      textarea,
+      mirror: {},
+      refreshCalls: 0,
+      detachCalls: 0,
+      refresh() {
+        handle.refreshCalls += 1;
+      },
+      detach() {
+        handle.detachCalls += 1;
+      },
+    };
+    byTextarea.set(textarea, handle);
+    return handle;
+  }
+  return attachHighlighterImpl;
+}
+
+test("attachHighlighting attaches a highlighter to BOTH the positive and negative textareas", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+  const attachHighlighterImpl = makeFakeAttachHighlighterImpl();
+
+  attachHighlighting(node, refs, { attachHighlighterImpl });
+
+  assert.ok(refs.positiveHighlight, "expected the positive pane to get a handle");
+  assert.equal(refs.positiveHighlight.textarea, refs.positiveTextarea);
+  assert.ok(refs.negativeHighlight, "expected the negative pane to get a handle");
+  assert.equal(refs.negativeHighlight.textarea, refs.negativeTextarea);
+  assert.notEqual(refs.positiveHighlight, refs.negativeHighlight, "each pane must get its own handle");
+});
+
+test("attachHighlighting builds a REAL legend (collapsed by default) into the node's legend slot", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+
+  attachHighlighting(node, refs, { createLegendImpl: createLegend, doc: refs.doc });
+
+  assert.ok(refs.legend, "expected a legend to attach");
+  assert.equal(refs.legend.root.parentNode, refs.legendSlot, "legend must mount into the legend slot below the actions row");
+  assert.ok(
+    !("open" in refs.legend.root.attributes),
+    "a freshly-built legend must be collapsed by default (no 'open' attribute)",
+  );
+});
+
+test("attachHighlighting is idempotent — a second call does not re-attach", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+  let calls = 0;
+  const attachHighlighterImpl = (ta) => {
+    calls += 1;
+    return { textarea: ta, refresh() {}, detach() {} };
+  };
+
+  attachHighlighting(node, refs, { attachHighlighterImpl });
+  attachHighlighting(node, refs, { attachHighlighterImpl });
+
+  assert.equal(calls, 2, "expected exactly one attach per textarea from the FIRST call only");
+});
+
+test("toggling the legend (native <details> `toggle` event) schedules a refit that grows the node", () => {
+  resetRAF();
+  const refs = makeMountedRefs();
+  const { node, setSizeCalls } = makeFakeNode([380, 380], {});
+
+  attachHighlighting(node, refs, { createLegendImpl: createLegend, doc: refs.doc });
+  assert.ok(refs.legend, "expected a real legend to attach");
+
+  // Give every root child a real (stubbed) height so measureMinHeight/
+  // refitNode see a determinate "legend expanded" content size that
+  // exceeds the node's current height (mirrors section C's manually-built
+  // roots -- the DOM stub has no real layout engine to derive these from).
+  for (const child of refs.root.children) {
+    child.offsetHeight = child === refs.legendSlot ? 900 : 10;
+    child.offsetParent = {};
+  }
+
+  assert.equal(rafQueue.length, 0);
+  fire(refs.legend.root, "toggle");
+  assert.equal(rafQueue.length, 1, "expected the toggle handler to schedule a refit via requestAnimationFrame");
+  assert.equal(setSizeCalls.length, 0, "a refit must be rAF-deferred, never synchronous");
+
+  flushRAF();
+
+  assert.equal(setSizeCalls.length, 1);
+  assert.ok(node.size[1] > 380, "expected the node to grow to fit the expanded legend");
+});
+
+test("refreshFromWidgets forces both highlight handles to resync EVERY time it runs (the programmatic-update trap)", () => {
+  resetRAF();
+  const { node, refs } = makeInteractionFixture({ positive: "original", negative: "original neg" });
+  const attachHighlighterImpl = makeFakeAttachHighlighterImpl();
+  attachHighlighting(node, refs, { attachHighlighterImpl });
+
+  assert.equal(refs.positiveHighlight.refreshCalls, 0);
+  assert.equal(refs.negativeHighlight.refreshCalls, 0);
+
+  // Simulate the picker inserting a token straight into the widget (bypasses
+  // this node's own textarea entirely, exactly like `./picker.mjs`'s
+  // `insertToken` -- see `interaction.mjs`'s doc comment).
+  findWidget(node, "positive").value = "original, inserted token";
+  refreshFromWidgets(node, refs);
+
+  assert.equal(refs.positiveTextarea.value, "original, inserted token");
+  assert.equal(refs.positiveHighlight.refreshCalls, 1, "expected refresh() after the programmatic textarea.value write");
+  assert.equal(refs.negativeHighlight.refreshCalls, 1, "both panes resync on every refreshFromWidgets call, not just the changed one");
+
+  // A second call (e.g. onConfigure restore) must resync again, not just once.
+  refreshFromWidgets(node, refs);
+  assert.equal(refs.positiveHighlight.refreshCalls, 2);
+  assert.equal(refs.negativeHighlight.refreshCalls, 2);
+});
+
+test("refreshHighlighters no-ops (never throws) when a handle is null or refs is missing", () => {
+  assert.doesNotThrow(() => refreshHighlighters(null));
+  assert.doesNotThrow(() => refreshHighlighters({}));
+  assert.doesNotThrow(() => refreshHighlighters({ positiveHighlight: null, negativeHighlight: null }));
+});
+
+test("teardownHighlighting detaches both highlighters and destroys the legend, then clears refs", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+  const attachHighlighterImpl = makeFakeAttachHighlighterImpl();
+
+  attachHighlighting(node, refs, { attachHighlighterImpl, createLegendImpl: createLegend, doc: refs.doc });
+  const positiveHandle = refs.positiveHighlight;
+  const negativeHandle = refs.negativeHighlight;
+  const legendDestroySpy = { calls: 0 };
+  const originalDestroy = refs.legend.destroy;
+  refs.legend.destroy = (...args) => {
+    legendDestroySpy.calls += 1;
+    return originalDestroy.apply(refs.legend, args);
+  };
+
+  teardownHighlighting(refs);
+
+  assert.equal(positiveHandle.detachCalls, 1);
+  assert.equal(negativeHandle.detachCalls, 1);
+  assert.equal(legendDestroySpy.calls, 1);
+  assert.equal(refs.positiveHighlight, null);
+  assert.equal(refs.negativeHighlight, null);
+  assert.equal(refs.legend, null);
+});
+
+test("teardownHighlighting is safe to call even when highlighting never attached", () => {
+  const refs = makeMountedRefs();
+  assert.doesNotThrow(() => teardownHighlighting(refs));
+  assert.doesNotThrow(() => teardownHighlighting(null));
+  assert.doesNotThrow(() => teardownHighlighting(undefined));
+});
+
+test("attachHighlighting degrades to null handles (never prevents the node from mounting) when no impls are provided", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], { positive: "", negative: "" });
+  wireInteractions(node, refs);
+
+  assert.doesNotThrow(() => attachHighlighting(node, refs, {}));
+  assert.equal(refs.positiveHighlight, null);
+  assert.equal(refs.negativeHighlight, null);
+  assert.equal(refs.legend, null);
+
+  // The rest of the node's contract must keep working exactly as it does
+  // without highlighting.
+  assert.doesNotThrow(() => refreshFromWidgets(node, refs));
+  assert.doesNotThrow(() => refreshHighlighters(refs));
+  assert.doesNotThrow(() => teardownHighlighting(refs));
+});
+
+test("attachHighlighting degrades to null handles when the injected impls THROW (simulated load/build failure)", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+  const throwing = () => {
+    throw new Error("boom");
+  };
+
+  assert.doesNotThrow(() =>
+    attachHighlighting(node, refs, { attachHighlighterImpl: throwing, createLegendImpl: throwing }),
+  );
+  assert.equal(refs.positiveHighlight, null);
+  assert.equal(refs.negativeHighlight, null);
+  assert.equal(refs.legend, null);
+});
+
+test("attachHighlighting degrades to null handles when createLegendImpl itself returns null (no document / failed load)", () => {
+  const refs = makeMountedRefs();
+  const { node } = makeFakeNode([380, 380], {});
+
+  attachHighlighting(node, refs, { attachHighlighterImpl: () => null, createLegendImpl: () => null });
+
+  assert.equal(refs.positiveHighlight, null);
+  assert.equal(refs.negativeHighlight, null);
+  assert.equal(refs.legend, null);
+});
+
+// =========================================================================
+// G. index.js — source-level assertions
 // =========================================================================
 
 const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
@@ -700,6 +948,51 @@ test("addPickerButton keeps getPositiveWidget/getNegativeWidget and resyncs the 
 
 test("index.js never hides or manages the clip socket as if it were a widget", () => {
   assert.ok(!/"clip"/.test(indexCode));
+});
+
+test("index.js imports attachHighlighting/teardownHighlighting from ./highlight_wiring.mjs", () => {
+  assert.match(indexSource, /from\s+"\.\/highlight_wiring\.mjs"/);
+  assert.match(indexCode, /attachHighlighting/);
+  assert.match(indexCode, /teardownHighlighting/);
+});
+
+test("index.js loads the shared highlighter via a GUARDED dynamic import, never a static top-level import", () => {
+  // A static top-level `import ... from ".../shared/highlight/index.js"`
+  // would throw at EXTENSION LOAD TIME if the route is missing/broken (an
+  // older install, a dropped route), taking the whole node down with it --
+  // must be a dynamic `import()` inside a `.catch()` instead.
+  const staticImportLines = indexSource
+    .split("\n")
+    .filter((line) => /^\s*import\b/.test(line));
+  assert.ok(
+    staticImportLines.every((line) => !/shared\/highlight/.test(line)),
+    "found a static top-level import of the highlight module",
+  );
+  assert.match(indexCode, /import\(HIGHLIGHT_URL\)/);
+  const wireIdx = indexCode.indexOf("function wireHighlighting");
+  const wireBody = indexCode.slice(wireIdx, indexCode.indexOf("\nfunction ", wireIdx + 10));
+  assert.match(wireBody, /\.catch\(/, "expected the dynamic import to be non-fatal via .catch()");
+  assert.match(wireBody, /attachHighlighting\(node,\s*refs/);
+});
+
+test("index.js's mountUI wires highlighting AFTER refreshFromWidgets", () => {
+  const idx = indexCode.indexOf("function mountUI");
+  const body = indexCode.slice(idx, indexCode.indexOf("\nfunction ", idx + 10));
+  const refreshIdx = body.indexOf("refreshFromWidgets(node, refs)");
+  const wireIdx = body.indexOf("wireHighlighting(node, refs)");
+  assert.ok(refreshIdx >= 0, "expected mountUI to call refreshFromWidgets");
+  assert.ok(wireIdx >= 0, "expected mountUI to call wireHighlighting");
+  assert.ok(wireIdx > refreshIdx, "wireHighlighting must run after the initial refreshFromWidgets");
+});
+
+test("index.js's onRemoved hook tears down highlighting via teardownHighlighting before the original onRemoved", () => {
+  const idx = indexCode.indexOf("nodeType.prototype.onRemoved = function");
+  assert.ok(idx >= 0, "expected an onRemoved hook wrapping the node type");
+  const body = indexCode.slice(idx, indexCode.indexOf("};", idx));
+  assert.match(body, /teardownHighlighting\(/);
+  const teardownIdx = body.indexOf("teardownHighlighting(");
+  const originalIdx = body.indexOf("originalOnRemoved");
+  assert.ok(originalIdx > teardownIdx, "teardown must run before falling through to the original onRemoved");
 });
 
 // =========================================================================
