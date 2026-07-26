@@ -2,8 +2,12 @@
  * render.mjs — DOM UI for the AnimaGenerator sectioned panel.
  *
  * Builds ONE DOM root (mounted as a single `addDOMWidget`) containing one
- * card per `core.mjs`'s `CARD_DEFS` entry: a header (collapse toggle, title,
- * optional Enabled checkbox) and a body of field rows. Every field row is
+ * card per `core.mjs`'s `CARD_DEFS` entry: a header (title, optional Enabled
+ * checkbox) and a body of field rows. There is no separate collapse
+ * control — for a card with an `enabledWidget`, that checkbox IS the
+ * open/closed control (unchecked collapses the body to just the header
+ * row); a card with `enabledWidget: null` (SAMPLER, PREVIEW) has no header
+ * control at all and its body is always visible. Every field row is
  * built directly from a REAL native widget object (`{value, options}`) — no
  * parallel state, no JSON blob (see `index.js`'s top doc comment for the
  * full "drive the existing widgets" rationale). This module itself never
@@ -16,13 +20,14 @@
  * ## Resize mechanism (ComfyUI-Pixaroma find_replace mechanism, matched
  * exactly — mirrors `js/anima_prompt/anima_prompt_studio/render.mjs`'s own copy 1:1)
  *
- * This node's dominant variable-height content is COLLAPSING CARDS and the
- * DYNAMIC upscale-backend field swap, not typing — so `index.js`/
- * `interaction.mjs` fire `scheduleRefit` on every STRUCTURAL change
- * (collapse/expand a card, toggle a stage's Enabled checkbox, switch
- * `upscale_backend`) and NEVER on a plain value edit (typing in a number
- * box, dragging a slider, picking a non-upscale-backend combo option) — see
- * `interaction.mjs`'s doc comment for the exact gating rule.
+ * This node's dominant variable-height content is CARDS OPENING/CLOSING
+ * (driven entirely by each stage's Enabled checkbox) and the DYNAMIC
+ * upscale-backend field swap, not typing — so `index.js`/`interaction.mjs`
+ * fire `scheduleRefit` on every STRUCTURAL change (toggle a stage's Enabled
+ * checkbox, switch `upscale_backend`) and NEVER on a plain value edit
+ * (typing in a number box, dragging a slider, picking a non-upscale-backend
+ * combo option) — see `interaction.mjs`'s doc comment for the exact gating
+ * rule.
  *
  * ## Why `injectStyles` is a GUARDED DYNAMIC theme import, not a static one
  *
@@ -79,16 +84,21 @@ const CSS = `
   border: 1px solid var(--wtn-line, ${TOKENS.line});
   border-radius: var(--wtn-radius, ${TOKENS.radius});
   overflow: hidden;
+  /* The root is a column flexbox (see .wtn-ag-root above) -- flex-shrink
+     defaults to 1, which lets every card compress proportionally whenever
+     the DOM-widget container is shorter than the content needs, and this
+     card's own overflow:hidden then silently slices the body mid-row (the
+     "cards clipped mid-row" bug). flex-shrink:0 makes a card's height
+     content-driven ONLY, never squeezed by its column-flex container, so
+     measureMinHeight (below) always reads each card's true, uncompressed
+     offsetHeight regardless of the node's current (possibly too-small)
+     size. */
+  flex-shrink: 0;
 }
 .wtn-ag-card-hd {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   background: var(--wtn-surface, ${TOKENS.surface});
   border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-}
-.wtn-ag-collapse-btn {
-  background: transparent; border: none; color: var(--wtn-accent, ${TOKENS.accent});
-  font-size: 10px; cursor: pointer; padding: 2px 4px; line-height: 1;
-  font-family: var(--wtn-font-mono, monospace);
 }
 .wtn-ag-card-title {
   font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
@@ -101,7 +111,6 @@ const CSS = `
 }
 .wtn-ag-card-bd { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .wtn-ag-card-bd[hidden] { display: none; }
-.wtn-ag-card-bd-dim { opacity: .45; }
 
 .wtn-ag-field { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .wtn-ag-field-label {
@@ -159,13 +168,14 @@ export function injectStyles(doc) {
 // Card shell (header + body container) — one per CARD_DEFS entry
 // ---------------------------------------------------------------------------
 
-const COLLAPSE_GLYPH_EXPANDED = "▾"; // ▾
-const COLLAPSE_GLYPH_COLLAPSED = "▸"; // ▸
-
-/** Build one card's static shell: header (collapse button, title, optional
- * Enabled checkbox) + an empty body container `renderCardFields` (below)
- * fills in. Returns the refs `interaction.mjs` wires listeners onto and
- * `index.js`/`interaction.mjs` read for collapse/enabled UI sync. */
+/** Build one card's static shell: header (title, optional Enabled
+ * checkbox) + an empty body container `renderCardFields` (below) fills in.
+ * There is no collapse button — for an optional card (`cardDef.enabledWidget`
+ * truthy) the Enabled checkbox IS the open/closed control; an always-on card
+ * (`enabledWidget: null` — SAMPLER, PREVIEW) gets no header control at all,
+ * per the plan: a chevron on a card with no Enabled widget would be
+ * meaningless since it always runs. Returns the refs `interaction.mjs` wires
+ * listeners onto and `index.js`/`interaction.mjs` read for enabled UI sync. */
 export function buildCardShell(doc, cardDef) {
   const root = doc.createElement("div");
   root.className = "wtn-ag-card";
@@ -176,13 +186,6 @@ export function buildCardShell(doc, cardDef) {
   const hd = doc.createElement("div");
   hd.className = "wtn-ag-card-hd";
 
-  const collapseBtn = doc.createElement("button");
-  collapseBtn.setAttribute("type", "button");
-  collapseBtn.className = "wtn-ag-collapse-btn";
-  collapseBtn.textContent = COLLAPSE_GLYPH_EXPANDED;
-  collapseBtn.title = "Expand/collapse this section.";
-  collapseBtn.setAttribute("aria-label", "Toggle " + cardDef.title + " section");
-
   const titleEl = doc.createElement("span");
   titleEl.className = "wtn-ag-card-title";
   titleEl.textContent = cardDef.title;
@@ -190,7 +193,6 @@ export function buildCardShell(doc, cardDef) {
   const spacer = doc.createElement("span");
   spacer.className = "wtn-ag-card-spacer";
 
-  hd.appendChild(collapseBtn);
   hd.appendChild(titleEl);
   hd.appendChild(spacer);
 
@@ -215,7 +217,7 @@ export function buildCardShell(doc, cardDef) {
   root.appendChild(hd);
   root.appendChild(bodyEl);
 
-  return { root, hd, collapseBtn, titleEl, enabledCheckbox, bodyEl };
+  return { root, hd, titleEl, enabledCheckbox, bodyEl };
 }
 
 /** Build the whole node UI: one card shell per `cardDefs` entry, in order.
@@ -237,24 +239,20 @@ export function buildRoot(doc, cardDefs) {
   return { doc: d, root, cards };
 }
 
-export function setCardCollapsedUI(shellRefs, collapsed) {
-  if (!shellRefs) {
-    return;
-  }
-  shellRefs.bodyEl.hidden = !!collapsed;
-  shellRefs.collapseBtn.textContent = collapsed ? COLLAPSE_GLYPH_COLLAPSED : COLLAPSE_GLYPH_EXPANDED;
-  if (shellRefs.collapseBtn.setAttribute) {
-    shellRefs.collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  }
-}
-
+/** The single open/closed control for an optional card: Enabled drives it
+ * directly (upstream's behavior, replacing this build's earlier "expanded
+ * but dimmed" judgement call) — unchecked HIDES the body (collapsed to just
+ * the header row), checked shows it. Also mirrors `enabled` into the
+ * checkbox itself, so this is the one function both `renderCard` (mount/
+ * `onConfigure`/upscale-backend rebuild) and the Enabled checkbox's own
+ * `change` handler need to call. Never called for an always-on card (no
+ * `enabledWidget`, no `enabledCheckbox` to mirror into) — its body has no
+ * `hidden` toggling at all and stays permanently visible. */
 export function setCardEnabledUI(shellRefs, enabled) {
   if (!shellRefs) {
     return;
   }
-  if (shellRefs.bodyEl.classList) {
-    shellRefs.bodyEl.classList.toggle("wtn-ag-card-bd-dim", !enabled);
-  }
+  shellRefs.bodyEl.hidden = !enabled;
   if (shellRefs.enabledCheckbox) {
     shellRefs.enabledCheckbox.checked = !!enabled;
   }
@@ -502,6 +500,166 @@ export function updateFieldRowValue(rowRefs, widget, activeEl) {
 export const CHROME = 60;
 export const DEFAULT_W = 460;
 export const DEFAULT_H = 560;
+
+/**
+ * The narrowest width at which a field row (`.wtn-ag-field` in this module's
+ * CSS) stays USABLE -- derived from the exact CSS pixel/percentage values
+ * above, not guessed:
+ *
+ *   row width R splits into `.wtn-ag-field-label` (flex-basis 36%) +
+ *   `.wtn-ag-field` gap (8px) + `.wtn-ag-field-control` (the remainder,
+ *   `0.64*R - 8`). The control itself is a number+slider pair
+ *   (`.wtn-ag-num-wrap`): a 66px fixed number box (`.wtn-ag-num`) + its 6px
+ *   gap + the range slider (`.wtn-ag-range`). A slider narrower than ~60px
+ *   stops being meaningfully draggable (not enough track either side of a
+ *   ~14px thumb) -- that's this floor's SLIDER_MIN.
+ *
+ *   CONTROL_MIN = 66 + 6 + 60 = 132px
+ *   0.64*R - 8 >= 132  =>  R >= 218.75  =>  R_MIN = 220px (row content width)
+ *
+ *   Add back what sits outside the row: `.wtn-ag-card-bd` padding (8px 10px
+ *   -> 20px horizontal), `.wtn-ag-card`'s 1px border (2px), and
+ *   `.wtn-ag-root`'s padding (4px 2px 2px -> 4px horizontal):
+ *   220 + 20 + 2 + 4 = 246px of DOM-widget content width.
+ *
+ *   Litegraph itself insets a DOM widget from the node's own left/right edge
+ *   (title-bar-width chrome, ~10px each side here, matching this module's
+ *   own CHROME-for-vertical-chrome convention above) -- add 20px:
+ *   246 + 20 = 266px node width, the true minimum.
+ *
+ *   WIDTH_MIN below is rounded up from that (280px) for headroom rather than
+ *   shipping the bare minimum -- and it stays well below DEFAULT_W (460,
+ *   ~61% of it), which is the point: DEFAULT_W is a comfortable initial
+ *   width, WIDTH_MIN is only the floor a user can never drag narrower than
+ *   without crushing the slider.
+ */
+export const WIDTH_MIN = 280;
+
+/**
+ * The live width+height floor for THIS node right now: `[WIDTH_MIN,
+ * measureMinHeight(root) + CHROME]` -- the same content-height-plus-chrome
+ * sum `refitNode` uses as its own auto-fit "want" (below), just without that
+ * function's extra `Math.max(..., DEFAULT_H)` -- a MANUAL drag floor must
+ * only ever forbid what actually clips content, never impose the "nice
+ * default" height as a floor too (that would defeat "with stages disabled,
+ * a size that was previously clamped is now allowed" -- the floor must
+ * legitimately shrink as cards collapse). Always recomputed from `root`
+ * fresh (never cached) so a stage's Enabled toggle changing the measured
+ * content immediately changes this floor on the very next resize.
+ */
+export function computeSizeFloor(root) {
+  return [WIDTH_MIN, root ? measureMinHeight(root) + CHROME : DEFAULT_H];
+}
+
+/**
+ * Raise `size` (litegraph's in-flight resize-target array, if present) AND
+ * `node.size` (if present) UP to the live floor from `computeSizeFloor` --
+ * NEVER down: every write here is `if (x < floor) x = floor`, so a node the
+ * user is growing is completely untouched (a floor, never a ceiling). Both
+ * are clamped independently (not "make node.size match size") because
+ * different litegraph forks are known to treat the `onResize(size)`
+ * parameter vs. `node.size` itself as the canonical value at different
+ * points in the drag (mirrors ComfyUI-Pixaroma find_replace's identical
+ * belt-and-braces double-write in its own `onResize` hook).
+ *
+ * Also (best-effort) writes `node.min_size` to the same floor: some
+ * litegraph forks clamp a manual resize against `node.min_size` themselves,
+ * possibly before ever calling `onResize` -- see `createResizeClampHandler`
+ * below for the primary, verified-in-this-pack mechanism (every other
+ * DOM-widget node in this repo's Pixaroma reference clamps via `onResize`;
+ * none of them use `min_size` at all, so it isn't confirmed to do anything
+ * in this ComfyUI version -- this is a harmless "if the host happens to
+ * read it" extra, not the thing being relied on). Never throws: a
+ * missing/malformed `node`/`size` degrades to a silent no-op, since this
+ * can run on every mouse-move of a resize drag.
+ */
+export function clampNodeSize(node, root, size) {
+  if (!node) {
+    return;
+  }
+  try {
+    const [minW, minH] = computeSizeFloor(root);
+    if (Array.isArray(size)) {
+      if (typeof size[0] === "number" && size[0] < minW) {
+        size[0] = minW;
+      }
+      if (typeof size[1] === "number" && size[1] < minH) {
+        size[1] = minH;
+      }
+    }
+    if (Array.isArray(node.size)) {
+      if (typeof node.size[0] === "number" && node.size[0] < minW) {
+        node.size[0] = minW;
+      }
+      if (typeof node.size[1] === "number" && node.size[1] < minH) {
+        node.size[1] = minH;
+      }
+    }
+    try {
+      node.min_size = [minW, minH];
+    } catch (err) {
+      // Some host may expose min_size as read-only -- this is a best-effort
+      // extra, never the thing that should break the clamp above.
+    }
+  } catch (err) {
+    // Never let a malformed node/root/size break a live resize drag.
+  }
+}
+
+/**
+ * Wrap `originalOnResize` (may be undefined) with the width+height floor
+ * above -- THE mechanism (see this build's report for why `onResize`, not
+ * `min_size`, is primary): legacy litegraph's manual-resize-handle drag
+ * calls `node.onResize(newSize)` on every mouse-move, which is the one place
+ * a user-driven resize is observable at all in this renderer (matches every
+ * existing DOM-widget node's own `onResize` wrap in the ComfyUI-Pixaroma
+ * reference this pack is modeled on -- `find_replace`, `seed`, `switch_wh`,
+ * `switch_source`, `xy_plot`, `image_info`, `load_image_mini` all wrap
+ * `onResize` for exactly this floor; none of them rely on `min_size`).
+ *
+ * Returns a plain function meant to be assigned to `nodeType.prototype
+ * .onResize` (called with `this` bound to the node instance by litegraph) --
+ * deliberately a plain function, not an arrow, and deliberately exported
+ * from this host-agnostic module rather than written inline in `index.js`,
+ * so the whole guard+clamp+call-through contract is unit-testable with a
+ * plain `.call(fakeNode, size)` (no real `nodeType`/`app` needed) — mirrors
+ * this node's own `resyncAllFromWidgets` precedent for "host-agnostic logic,
+ * host wiring kept separate."
+ *
+ * Anti-recursion guard: `node._agResizeClampGuard`. `clampNodeSize` itself
+ * never calls `setSize`/anything that could re-invoke `onResize` -- but IF
+ * some host's resize-drag code (or a future `originalOnResize`) did loop
+ * back into this SAME node's `onResize` synchronously, the guard covers the
+ * WHOLE handler body (clamp AND the call-through to `originalOnResize`, not
+ * just the clamp step) so a reentrant call is a same-tick no-op: it neither
+ * re-clamps nor calls `originalOnResize` again, which is what actually
+ * stops a clamp→resize→clamp chain rather than merely bounding it. Reset in
+ * a `finally` so a throwing `clampNodeSize`/`originalOnResize` can never
+ * leave the guard stuck "true" and silently disable clamping for the rest
+ * of the node's life.
+ */
+export function createResizeClampHandler(originalOnResize) {
+  return function (size) {
+    if (this && this._agResizeClampGuard) {
+      // Reentrant call for this SAME node while a clamp pass is already on
+      // the stack -- never re-clamp, never call through again either: doing
+      // either here IS the resize feedback loop this guard exists to stop.
+      return undefined;
+    }
+    if (this) {
+      this._agResizeClampGuard = true;
+    }
+    try {
+      const refs = this && this._agRefs;
+      clampNodeSize(this, refs && refs.root, size);
+      return originalOnResize ? originalOnResize.apply(this, arguments) : undefined;
+    } finally {
+      if (this) {
+        this._agResizeClampGuard = false;
+      }
+    }
+  };
+}
 
 /** Post-layout content measurement — sums every visible child's
  * `offsetHeight` + row gaps + root padding, rounded to a 4px grid, floored

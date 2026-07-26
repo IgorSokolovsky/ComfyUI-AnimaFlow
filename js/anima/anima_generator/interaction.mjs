@@ -9,13 +9,11 @@
  * ## Structural-vs-value gating (the core requirement of this build)
  *
  *   STRUCTURAL (calls `scheduleRefit`):
- *     - Collapse/expand a card (`wireCollapse`'s click handler).
  *     - Toggle a stage's Enabled checkbox (`wireEnabledCheckbox`'s change
- *       handler) — dims the card body (see `render.mjs`'s
- *       `wtn-ag-card-bd-dim`) and, being a real DOM class change, is treated
- *       as structural per the plan's explicit list even though it doesn't
- *       itself change measured height (harmless: `refitNode` just no-ops if
- *       the measured height didn't move).
+ *       handler) — Enabled is the SINGLE source of truth for whether that
+ *       card's body is open or closed (`render.mjs`'s `setCardEnabledUI`
+ *       hides/shows `bodyEl` directly), so toggling it always changes
+ *       measured height and is always structural.
  *     - Switch the `upscale_backend` combo (`onFieldChange`'s special case
  *       below) — rebuilds the upscale card's body to show only the
  *       newly-selected backend's fields (the dynamic field-swap the plan
@@ -42,15 +40,9 @@
  * up front, via `hideLayoutWidgets`).
  */
 
-import {
-  CARD_DEFS,
-  getCardFieldNames,
-  isCardCollapsed,
-  setCardCollapsed,
-} from "./core.mjs";
+import { CARD_DEFS, getCardFieldNames } from "./core.mjs";
 import {
   renderCardFields,
-  setCardCollapsedUI,
   setCardEnabledUI,
   scheduleRefit,
   updateFieldRowValue,
@@ -159,9 +151,13 @@ export function repositionDomWidget(node, domWidget) {
 
 /** (Re)build ONE card's field rows from the node's CURRENT widget values —
  * used at initial mount, at `onConfigure` restore, and whenever the upscale
- * backend combo changes (see `onFieldChange` below). Also re-syncs the
- * card's Enabled-checkbox dim state from its `enabledWidget`'s live value,
- * so a restore never leaves that display stale. */
+ * backend combo changes (see `onFieldChange` below). Also re-derives the
+ * card's open/closed state from its `enabledWidget`'s live value (via
+ * `setCardEnabledUI`) for every card that has one — this is what makes
+ * initial mount AND `onConfigure` restore both correctly open/close a card
+ * from its restored Enabled value with no separate step. A card with no
+ * `enabledWidget` (SAMPLER, PREVIEW) is untouched here: its body has no
+ * `hidden` toggling at all, so it just stays permanently visible. */
 export function renderCard(node, refs, cardDef) {
   const shell = refs.cards[cardDef.id];
   if (!shell) {
@@ -208,17 +204,6 @@ function onFieldChange(node, refs, cardDef, name, widget, value) {
   }
 }
 
-function wireCollapse(node, refs, cardDef) {
-  const shell = refs.cards[cardDef.id];
-  shell.collapseBtn.addEventListener("click", () => {
-    node.properties = node.properties || {};
-    const collapsed = !isCardCollapsed(node.properties, cardDef.id);
-    setCardCollapsed(node.properties, cardDef.id, collapsed);
-    setCardCollapsedUI(shell, collapsed);
-    scheduleRefit(node, refs.root);
-  });
-}
-
 function wireEnabledCheckbox(node, refs, cardDef) {
   if (!cardDef.enabledWidget) {
     return;
@@ -247,31 +232,34 @@ function wireEnabledCheckbox(node, refs, cardDef) {
   });
 }
 
-/** Wire every card's collapse button + Enabled checkbox (once), render each
- * card's initial field rows, and apply the card's persisted collapse state
- * (from `node.properties`, defaulting to expanded). Idempotent guard lives
- * in `index.js` (`node._agRefs`), not here — this always (re)does the wiring
- * when called, matching `mountUI`'s single call site. */
+/** Wire every card's Enabled checkbox (once) and render each card's initial
+ * field rows. `renderCard` (called per card below) is what derives each
+ * optional card's initial open/closed state from its restored `enabledWidget`
+ * value -- there is no separate collapse-state step, unlike the property-
+ * backed collapse this build removes. Idempotent guard lives in `index.js`
+ * (`node._agRefs`), not here — this always (re)does the wiring when called,
+ * matching `mountUI`'s single call site. */
 export function mountAllCards(node, refs) {
   CARD_DEFS.forEach((cardDef) => {
-    wireCollapse(node, refs, cardDef);
     wireEnabledCheckbox(node, refs, cardDef);
     renderCard(node, refs, cardDef);
-    setCardCollapsedUI(refs.cards[cardDef.id], isCardCollapsed(node.properties, cardDef.id));
   });
 }
 
 /** Re-render every card's fields from the node's NOW-restored widget values
- * (after `onConfigure`) and re-apply each card's restored collapse state.
- * Does NOT re-wire listeners (already wired once by `mountAllCards`, and the
- * DOM elements those listeners are attached to are the same shell elements —
- * only each card's BODY is torn down/rebuilt by `renderCard`). Does NOT call
- * `scheduleRefit`/`scheduleInitialFit` -- trusts the `node.size` litegraph
- * already restored (mirrors `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`). */
+ * (after `onConfigure`). `renderCard` (called per card below) re-derives
+ * each optional card's open/closed state from its just-restored
+ * `enabledWidget` value -- the same mechanism `mountAllCards` uses, so a
+ * saved-workflow reload opens/closes every card exactly as it was saved with
+ * zero extra bookkeeping. Does NOT re-wire listeners (already wired once by
+ * `mountAllCards`, and the DOM elements those listeners are attached to are
+ * the same shell elements — only each card's BODY is torn down/rebuilt by
+ * `renderCard`). Does NOT call `scheduleRefit`/`scheduleInitialFit` -- trusts
+ * the `node.size` litegraph already restored (mirrors
+ * `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`). */
 export function refreshAllCards(node, refs) {
   CARD_DEFS.forEach((cardDef) => {
     renderCard(node, refs, cardDef);
-    setCardCollapsedUI(refs.cards[cardDef.id], isCardCollapsed(node.properties, cardDef.id));
   });
 }
 
@@ -282,17 +270,10 @@ export function refreshAllCards(node, refs) {
  * (randomize/increment/decrement) rewrites it post-queue, entirely outside
  * this panel. Unlike `refreshAllCards` (mount/`onConfigure` -- a full
  * teardown+rebuild via `renderCard`, correct there because a restored
- * workflow may also need a different upscale-backend field set or collapse
- * state applied), this NEVER calls `renderCard`/`renderCardFields`: it only
- * touches the exact DOM elements `shell.fieldRows` already points at (stashed
- * there the last time `renderCard` ran), via `render.mjs`'s
- * `updateFieldRowValue`. Two things follow directly from that:
- *
- *   - It never calls `scheduleRefit` -- a value-only change can't affect
- *     layout, and there is no rebuilt DOM to measure anyway.
- *   - It's cheap enough to call on every execution-finished event (see
- *     `resyncAllFromWidgets` below / `index.js`'s `handleExternalExecutionEvent`)
- *     without rebuilding a single row.
+ * workflow may also need a different upscale-backend field set applied),
+ * this NEVER calls `renderCard`/`renderCardFields`: it only touches the
+ * exact DOM elements `shell.fieldRows` already points at (stashed there the
+ * last time `renderCard` ran), via `render.mjs`'s `updateFieldRowValue`.
  *
  * `activeEl` (typically `refs.doc.activeElement`) is threaded through to
  * `updateFieldRowValue` so a resync firing while the user is mid-typing in a
@@ -300,6 +281,26 @@ export function refreshAllCards(node, refs) {
  * per-kind skip rule). The Enabled checkbox gets the same treatment here
  * (skipped if it's the focused element) even though it's wired outside
  * `renderCardFields` -- it's still a plain value mirror of its widget.
+ *
+ * ## Enabled-driven open/close IS a structural consequence -- handled, but
+ * gated so it can't fire a refit on every execution when nothing changed
+ *
+ * Because Enabled now directly controls whether a card's body is even
+ * rendered (`setCardEnabledUI` hides/shows `bodyEl`), an externally-mutated
+ * `*_enabled` widget (nothing in this panel does that today, but a future
+ * Python-side default change or another extension writing the widget
+ * directly is exactly the class of external mutation this whole resync path
+ * exists for) must open/close that card here too, not just refresh its
+ * checkbox's `.checked`. That said, this function is invoked on EVERY
+ * "queued prompt is over" event for EVERY mounted node (see
+ * `resyncAllFromWidgets` below) -- most of which change no `*_enabled`
+ * widget at all -- so a naive "always call `setCardEnabledUI` +
+ * `scheduleRefit`" would schedule a pointless refit almost every single
+ * time. Instead: compare the widget's CURRENT value against what the
+ * checkbox already shows; only call `setCardEnabledUI` (open/close the card)
+ * and flag a refit when they actually differ, and schedule AT MOST ONE
+ * `scheduleRefit` for the whole node no matter how many cards' Enabled
+ * states changed in this one resync pass.
  *
  * Deliberately does NOT re-derive the upscale card's backend-specific field
  * set (unlike `renderCard`) -- if `upscale_backend` itself were mutated
@@ -312,6 +313,7 @@ export function refreshFieldValues(node, refs) {
     return;
   }
   const activeEl = refs.doc ? refs.doc.activeElement : undefined;
+  let enabledStateChanged = false;
   CARD_DEFS.forEach((cardDef) => {
     const shell = refs.cards[cardDef.id];
     if (!shell || !shell.fieldRows) {
@@ -327,10 +329,21 @@ export function refreshFieldValues(node, refs) {
     if (cardDef.enabledWidget && shell.enabledCheckbox && shell.enabledCheckbox !== activeEl) {
       const enabledWidget = findWidget(node, cardDef.enabledWidget);
       if (enabledWidget) {
-        setCardEnabledUI(shell, !!enabledWidget.value);
+        const nowEnabled = !!enabledWidget.value;
+        const wasEnabled = !!shell.enabledCheckbox.checked;
+        if (nowEnabled !== wasEnabled) {
+          setCardEnabledUI(shell, nowEnabled);
+          enabledStateChanged = true;
+        }
       }
     }
   });
+  // Only a REAL open/closed change schedules a refit -- an unchanged Enabled
+  // widget (the overwhelming common case on every execution-finished event)
+  // must never trigger one.
+  if (enabledStateChanged) {
+    scheduleRefit(node, refs.root);
+  }
 }
 
 /**

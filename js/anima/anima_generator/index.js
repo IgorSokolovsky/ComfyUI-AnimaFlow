@@ -43,8 +43,9 @@
  * renderer) + Nodes 2.0 `computeLayoutSize` (`minWidth: 1`, forward-compat
  * only). Neither path itself resizes the node -- that's `scheduleRefit`/
  * `scheduleInitialFit`'s job (`render.mjs`), fired only at the explicit
- * structural triggers `interaction.mjs` defines (collapse/expand, Enabled
- * toggle, upscale-backend switch) -- never on a plain value edit.
+ * structural triggers `interaction.mjs` defines (a stage's Enabled toggle --
+ * which now directly opens/closes that card, replacing a separate collapse
+ * control -- and the upscale-backend switch) -- never on a plain value edit.
  *
  * ## External-mutation resync (the gap this build's follow-up fix closes)
  *
@@ -84,6 +85,7 @@ import {
   measureMinHeight,
   scheduleRefit,
   scheduleInitialFit,
+  createResizeClampHandler,
   DEFAULT_W,
   DEFAULT_H,
 } from "./render.mjs";
@@ -144,8 +146,6 @@ function mountUI(node) {
   const refs = buildRoot(doc, CARD_DEFS);
   node._agRefs = refs;
 
-  node.properties = node.properties || {};
-
   mountAllCards(node, refs);
 
   let widget;
@@ -194,17 +194,18 @@ function setupNode(node) {
 
 /**
  * Restore the DOM UI after `onConfigure` has restored every card-layout
- * widget's REAL saved value and `node.size`/`node.properties` (including the
- * UI-only collapse state, `node.properties.animaGeneratorCollapse`) from a
- * saved workflow: re-render every card's fields from those now-current
- * widget values and re-apply each card's restored collapse state
- * (`refreshAllCards`). Deliberately does NOT call `scheduleRefit`/
- * `scheduleInitialFit` -- trusts the `node.size` litegraph already restored
- * (mirrors `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`).
+ * widget's REAL saved value and `node.size` from a saved workflow:
+ * re-render every card's fields from those now-current widget values, which
+ * also re-derives each optional card's open/closed state from its
+ * just-restored `*_enabled` value (`refreshAllCards` -> `renderCard` ->
+ * `setCardEnabledUI`) -- Enabled is the only source of truth for that now,
+ * so there is no separate collapse-state property to restore. Deliberately
+ * does NOT call `scheduleRefit`/`scheduleInitialFit` -- trusts the
+ * `node.size` litegraph already restored (mirrors
+ * `js/anima_prompt/anima_prompt_studio/index.js`'s `restoreNode`).
  */
 function restoreNode(node) {
   const refs = mountUI(node);
-  node.properties = node.properties || {};
   refreshAllCards(node, refs);
 }
 
@@ -285,5 +286,13 @@ app.registerExtension({
       restoreNode(this);
       return result;
     };
+
+    // Manual-drag width+height FLOOR -- see render.mjs's createResizeClampHandler
+    // doc comment for the full mechanism/rationale (why onResize, the
+    // anti-recursion guard, the min_size belt-and-braces). This is on the
+    // PROTOTYPE (applies to every AnimaGenerator instance), so the handler
+    // itself must read this node's OWN `._agRefs` -- which is exactly what
+    // createResizeClampHandler's returned function does via `this`.
+    nodeType.prototype.onResize = createResizeClampHandler(nodeType.prototype.onResize);
   },
 });

@@ -19,9 +19,13 @@
  * and which DOM row to build for it; `render.mjs` never hardcodes a widget
  * name itself. This keeps the three modules honest about the "drive the
  * existing widget, don't invent new state" constraint — there is no
- * parallel state object for field values, only for UI-only collapse state
- * (see `isCardCollapsed`/`setCardCollapsed` below), which has no widget to
- * mirror onto at all.
+ * parallel state object for field values, and (as of this build) no
+ * UI-only collapse state either: `enabledWidget` (when non-null) is now the
+ * SINGLE source of truth for whether that card's body is open or closed —
+ * unchecked means collapsed-to-header, checked means expanded. A card with
+ * `enabledWidget: null` (SAMPLER, PREVIEW) has no open/closed state at all —
+ * its body is always visible and it carries no collapse control of any
+ * kind, matching upstream's plain always-expanded SAMPLER card.
  *
  * `control_after_generate` is listed in the SAMPLER card per the plan's
  * literal spec, but AnimaGenerator's `seed` INPUT_TYPES entry does NOT set
@@ -287,40 +291,3 @@ export function partitionFieldsByPresence(fieldNames, presentNames) {
   }
   return { present, missing };
 }
-
-// ---------------------------------------------------------------------------
-// Collapse state — UI-ONLY, persisted on node.properties (no widget backs
-// it; see index.js's doc comment for why node.properties is the right home)
-// ---------------------------------------------------------------------------
-
-const COLLAPSE_PROPERTY_KEY = "animaGeneratorCollapse";
-
-/** Whether `cardId` is collapsed, read from `properties[animaGeneratorCollapse]`.
- * Defaults to expanded (`false`) for: no `properties`, a non-object
- * `properties`, a missing entry, or any non-`true` garbage value (a stray
- * string/number/null from a corrupted save) — collapse state must never
- * blank the node or throw. */
-export function isCardCollapsed(properties, cardId) {
-  const store = properties && typeof properties === "object" ? properties[COLLAPSE_PROPERTY_KEY] : null;
-  if (!store || typeof store !== "object") {
-    return false;
-  }
-  return store[cardId] === true;
-}
-
-/** Persist `cardId`'s collapsed flag onto `properties[animaGeneratorCollapse]`,
- * creating the store object if it's missing or was garbage. No-op if
- * `properties` itself isn't a mutable object (defensive; shouldn't happen —
- * `index.js` always ensures `node.properties = node.properties || {}`
- * before calling this). */
-export function setCardCollapsed(properties, cardId, collapsed) {
-  if (!properties || typeof properties !== "object") {
-    return;
-  }
-  if (!properties[COLLAPSE_PROPERTY_KEY] || typeof properties[COLLAPSE_PROPERTY_KEY] !== "object") {
-    properties[COLLAPSE_PROPERTY_KEY] = {};
-  }
-  properties[COLLAPSE_PROPERTY_KEY][cardId] = !!collapsed;
-}
-
-export { COLLAPSE_PROPERTY_KEY };
