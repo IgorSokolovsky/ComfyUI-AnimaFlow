@@ -63,6 +63,13 @@ const PANEL_CONFIGS = {
     key: "control",
     stateProp: "controlPanelState",
     catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+    // The "+ Add control" menu's OWN order -- includes rows.mjs's `steps`/
+    // `cfg`/`denoise` presets (still real `int`/`float` rows under the hood;
+    // see `rows.mjs`'s `ROW_PRESETS` doc comment), placed BEFORE the bare
+    // `int`/`float` escape hatches they shortcut, since a preset is what a
+    // user wants most of the time. `catalog` above stays the plain KIND list
+    // (used for `resolveAutoOnConnect`'s allowedKinds, unrelated to the menu).
+    menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "latent"],
     allowAuto: true,
     reorder: true,
     addLabel: "+ Add control",
@@ -191,6 +198,14 @@ function confirmRemove(row) {
   return window.confirm(`"${row.name || row.kind}" is wired to something. Remove this row and its link?`);
 }
 
+// Wheel-zooms-the-canvas fix (js/shared/canvas_zoom.mjs): the real,
+// currently-live LiteGraph canvas element -- read fresh on every call
+// (never cached here either), since `installCanvasZoomPassthrough` itself
+// re-reads this on every wheel event and the canvas can be recreated.
+function getCanvasEl() {
+  return (app.canvas && app.canvas.canvas) || null;
+}
+
 function buildCtx(panelConfig, mods) {
   return {
     panelConfig,
@@ -198,6 +213,7 @@ function buildCtx(panelConfig, mods) {
     getKnownLists: () => readKnownLists(mods),
     describeLinkTarget,
     confirmRemove,
+    getCanvasEl,
   };
 }
 
@@ -377,6 +393,12 @@ app.registerExtension({
     nodeType.prototype.onRemoved = function (...args) {
       if (this._ctrlMods) {
         this._ctrlMods.interaction.closeActiveOverlay();
+        // Explicit wheel-zoom-passthrough teardown rather than relying on
+        // element garbage collection alone (js/shared/canvas_zoom.mjs's own
+        // doc comment says GC is enough, but interaction.mjs's row-removal
+        // teardown convention already does this explicitly for a rebuild,
+        // so outright node deletion gets the same treatment for consistency).
+        this._ctrlMods.interaction.teardownAllZoomPassthrough(this);
       }
       return _removed ? _removed.apply(this, args) : undefined;
     };

@@ -71,6 +71,7 @@ SOFTWARE.
 |---|---|
 | `nodes/controls/_type_helpers.py` | `nodes/_type_helpers.py`'s `AnyType`/`ANY` |
 | `nodes/controls/control_panel.py`, `nodes/controls/loader_panel.py` (fixed `MAX_ROWS`, `RETURN_TYPES`/`RETURN_NAMES` built from it, per-slot value resolution over a parsed JSON state) | `node_sliders.py`'s `PixaromaSliders` (`MAX_SLIDERS`, its `RETURN_TYPES`/`RETURN_NAMES` construction, and its `_value_of`-style non-finite-guarded numeric clamp, adapted in `nodes/controls/_rows_helpers.py`) |
+| `js/shared/canvas_zoom.mjs` (mouse-wheel-zooms-the-canvas-through-a-DOM-widget fix, wired into `js/controls/` and `js/prompt_rules/node/`) | `js/shared/canvas_zoom.mjs`'s `installCanvasZoomPassthrough`/`scrollRegionWantsWheel` — same rationale and the identical per-direction scroll-vs-zoom logic, adapted to read the live `app`/canvas via an injectable getter instead of a static `/scripts/app.js` import (so the ported file stays importable under this pack's plain-`node` test suite) |
 
 ```
 MIT License

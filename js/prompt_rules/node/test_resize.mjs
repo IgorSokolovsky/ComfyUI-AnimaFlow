@@ -130,6 +130,7 @@ import {
 // under node; see `highlight_wiring.mjs`'s doc comment). Used below to
 // exercise the REAL collapsed-by-default legend contract, not a fake.
 import { createLegend } from "../../shared/highlight/legend.mjs";
+import { installCanvasZoomPassthrough } from "../../shared/canvas_zoom.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -184,8 +185,18 @@ function makeDocStub() {
       title: "",
       disabled: false,
       parentNode: null,
+      scrollTop: 0,
+      scrollHeight: 0,
+      clientHeight: 0,
       get ownerDocument() {
         return doc;
+      },
+      // Only ever appended-to by other elements in this stub's usage (never a
+      // real Text/Comment container), so `parentElement` and `parentNode`
+      // are interchangeable here -- added for `canvas_zoom.mjs`'s
+      // `scrollRegionWantsWheel`, which walks a DOM tree via `parentElement`.
+      get parentElement() {
+        return el.parentNode;
       },
       classList: {
         _set: new Set(),
@@ -213,6 +224,16 @@ function makeDocStub() {
       },
       addEventListener(type, fn) {
         (el._listeners[type] = el._listeners[type] || []).push(fn);
+      },
+      removeEventListener(type, fn) {
+        const arr = el._listeners[type];
+        if (!arr) {
+          return;
+        }
+        const i = arr.indexOf(fn);
+        if (i >= 0) {
+          arr.splice(i, 1);
+        }
       },
       appendChild(child) {
         el.children.push(child);
@@ -992,6 +1013,121 @@ test("index.js's onRemoved hook tears down highlighting via teardownHighlighting
   const teardownIdx = body.indexOf("teardownHighlighting(");
   const originalIdx = body.indexOf("originalOnRemoved");
   assert.ok(originalIdx > teardownIdx, "teardown must run before falling through to the original onRemoved");
+});
+
+test("index.js imports installCanvasZoomPassthrough from the shared js/shared/canvas_zoom.mjs (relative, not guarded -- the module has no app/window at module scope)", () => {
+  assert.match(indexSource, /from\s+"\.\.\/\.\.\/shared\/canvas_zoom\.mjs"/);
+  assert.match(indexCode, /installCanvasZoomPassthrough/);
+});
+
+test("index.js's mountUI installs the zoom passthrough on refs.root and stashes the uninstall fn on refs", () => {
+  const idx = indexCode.indexOf("function mountUI");
+  const body = indexCode.slice(idx, indexCode.indexOf("\nfunction ", idx + 10));
+  assert.match(body, /refs\.uninstallZoom\s*=\s*installCanvasZoomPassthrough\(\s*refs\.root/);
+});
+
+test("index.js's onRemoved hook calls refs.uninstallZoom", () => {
+  const idx = indexCode.indexOf("nodeType.prototype.onRemoved = function");
+  const body = indexCode.slice(idx, indexCode.indexOf("};", idx));
+  assert.match(body, /_prRefs\.uninstallZoom/);
+});
+
+// =========================================================================
+// H. Wheel-zoom passthrough (js/shared/canvas_zoom.mjs) integration --
+// the generic per-direction scroll matrix is covered exhaustively in
+// js/shared/test_canvas_zoom.mjs; this section proves the helper is wired
+// onto the REAL root this node builds, and -- the part that matters most
+// here -- that a long PROMPT TEXTAREA (`.wtn-pr-textarea`, overflow-y:auto,
+// max-height:280px in render.mjs) keeps the wheel while it still has room to
+// scroll, and only passes it through (to zoom) once scrolled to its end.
+// =========================================================================
+
+// Minimal WheelEvent polyfill -- canvas_zoom.mjs's re-dispatch constructs a
+// real `new WheelEvent(...)`, which doesn't exist under plain `node`.
+if (typeof globalThis.WheelEvent === "undefined") {
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+}
+
+function fireWheelOn(root, target, deltaY) {
+  let prevented = false;
+  const e = {
+    type: "wheel",
+    target,
+    clientX: 0,
+    clientY: 0,
+    deltaX: 0,
+    deltaY,
+    deltaMode: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    preventDefault() {
+      prevented = true;
+    },
+    stopPropagation() {},
+  };
+  (root._listeners.wheel || []).forEach((fn) => fn(e));
+  return prevented;
+}
+
+test("a textarea WITH ROOM to scroll keeps the wheel (no preventDefault, canvas untouched)", () => {
+  const refs = makeMountedRefs();
+  const canvas = { dispatchEvent() {} };
+  installCanvasZoomPassthrough(refs.root, () => canvas);
+
+  refs.positiveTextarea.style.overflowY = "auto";
+  refs.positiveTextarea.scrollTop = 10;
+  refs.positiveTextarea.scrollHeight = 300; // exceeds max-height -- genuinely scrollable
+  refs.positiveTextarea.clientHeight = 100; // 10 + 100 = 110 < 299 -- not at the bottom yet
+
+  const prevented = fireWheelOn(refs.root, refs.positiveTextarea, 50); // wheel down
+  assert.equal(prevented, false, "expected the textarea to keep the wheel (scroll), not the canvas");
+});
+
+test("the SAME textarea scrolled to its bottom passes the wheel through (canvas zooms instead)", () => {
+  const refs = makeMountedRefs();
+  let dispatched = null;
+  const canvas = { dispatchEvent: (e) => { dispatched = e; } };
+  installCanvasZoomPassthrough(refs.root, () => canvas);
+
+  refs.positiveTextarea.style.overflowY = "auto";
+  refs.positiveTextarea.scrollHeight = 300;
+  refs.positiveTextarea.clientHeight = 100;
+  refs.positiveTextarea.scrollTop = 200; // 200 + 100 = 300 -- pinned at the bottom
+
+  const prevented = fireWheelOn(refs.root, refs.positiveTextarea, 50); // wheel down, past the end
+  assert.ok(prevented, "expected the wheel to pass through to the canvas once scrolled to the end");
+  assert.ok(dispatched, "expected a synthetic wheel dispatched at the canvas");
+});
+
+test("a textarea that fits its content entirely (no real scrollbar) never keeps the wheel", () => {
+  const refs = makeMountedRefs();
+  let dispatched = null;
+  const canvas = { dispatchEvent: (e) => { dispatched = e; } };
+  installCanvasZoomPassthrough(refs.root, () => canvas);
+
+  refs.positiveTextarea.style.overflowY = "auto";
+  refs.positiveTextarea.scrollHeight = 90; // <= clientHeight -- nothing to scroll
+  refs.positiveTextarea.clientHeight = 100;
+  refs.positiveTextarea.scrollTop = 0;
+
+  const prevented = fireWheelOn(refs.root, refs.positiveTextarea, 50);
+  assert.ok(prevented);
+  assert.ok(dispatched);
+});
+
+test("wheeling over the rest of the node body (not over either textarea) always reaches the canvas", () => {
+  const refs = makeMountedRefs();
+  let dispatched = null;
+  const canvas = { dispatchEvent: (e) => { dispatched = e; } };
+  installCanvasZoomPassthrough(refs.root, () => canvas);
+
+  const prevented = fireWheelOn(refs.root, refs.root, 50);
+  assert.ok(prevented);
+  assert.ok(dispatched);
 });
 
 // =========================================================================

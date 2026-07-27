@@ -42,6 +42,15 @@ import {
   formatNumericValue,
   numericPercent,
   getComboOptions,
+  ZW,
+  SLOT_LABEL_MODE,
+  stripZeroWidthEdges,
+  isBlankSlotLabel,
+  defaultSlotLabel,
+  ROW_PRESETS,
+  isPresetId,
+  menuMetaFor,
+  mkCatalogRow,
 } from "./rows.mjs";
 
 let failures = 0;
@@ -237,6 +246,82 @@ test("mkRow overrides merge into opts rather than replacing it wholesale", () =>
 test("mkRow defaults renamed to false", () => {
   assert.equal(mkRow("int").renamed, false);
   assert.equal(mkRow("auto").renamed, false);
+});
+
+// =========================================================================
+// Row presets -- steps/cfg/denoise (pre-configured int/float rows, NOT new
+// kinds -- see rows.mjs's ROW_PRESETS doc comment / nodes/controls/
+// _rows_helpers.py's value_for_row, which dispatches on `kind` alone)
+// =========================================================================
+
+test("ROW_PRESETS: steps/cfg/denoise are presets of int/float, with the exact ranges the design calls for", () => {
+  assert.equal(ROW_PRESETS.steps.kind, "int");
+  assert.deepEqual(ROW_PRESETS.steps.opts, { min: 1, max: 120, step: 1 });
+  assert.equal(ROW_PRESETS.steps.value, 30);
+
+  assert.equal(ROW_PRESETS.cfg.kind, "float");
+  assert.deepEqual(ROW_PRESETS.cfg.opts, { min: 0, max: 20, step: 0.1 });
+  assert.equal(ROW_PRESETS.cfg.value, 5.0);
+
+  assert.equal(ROW_PRESETS.denoise.kind, "float");
+  assert.deepEqual(ROW_PRESETS.denoise.opts, { min: 0, max: 1, step: 0.01 });
+  assert.equal(ROW_PRESETS.denoise.value, 1.0);
+});
+
+test("isPresetId distinguishes preset ids from real row kinds", () => {
+  assert.ok(isPresetId("steps"));
+  assert.ok(isPresetId("cfg"));
+  assert.ok(isPresetId("denoise"));
+  assert.equal(isPresetId("int"), false);
+  assert.equal(isPresetId("sampler"), false);
+});
+
+test("menuMetaFor: a preset id reports its OWN menu label but its base kind's outputType", () => {
+  assert.deepEqual(menuMetaFor("steps"), { menu: "Steps", outputType: "INT" });
+  assert.deepEqual(menuMetaFor("cfg"), { menu: "CFG", outputType: "FLOAT" });
+  assert.deepEqual(menuMetaFor("denoise"), { menu: "Denoise", outputType: "FLOAT" });
+});
+
+test("menuMetaFor: a real kind falls through to KIND_META unchanged", () => {
+  assert.equal(menuMetaFor("int"), KIND_META.int);
+  assert.equal(menuMetaFor("sampler"), KIND_META.sampler);
+});
+
+for (const [id, preset] of Object.entries(ROW_PRESETS)) {
+  test(`mkCatalogRow("${id}") builds a row with the preset's exact kind/name/value/opts, stamped renamed:true`, () => {
+    const row = mkCatalogRow(id);
+    assert.equal(row.kind, preset.kind);
+    assert.equal(row.name, preset.name);
+    assert.equal(row.value, preset.value);
+    assert.deepEqual(row.opts, preset.opts);
+    assert.equal(row.renamed, true, "a preset's name must be protected like a manual rename");
+  });
+}
+
+test('mkCatalogRow: a bare kind (not a preset id) behaves exactly like mkRow -- unaffected, not renamed', () => {
+  const row = mkCatalogRow("int");
+  assert.equal(row.kind, "int");
+  assert.equal(row.name, "int");
+  assert.equal(row.renamed, false);
+});
+
+test("addRow accepts a preset id the same way it accepts a bare kind, and assigns it a fresh slot", () => {
+  const state = defaultState("control");
+  const row = addRow(state, "cfg", "control");
+  assert.equal(row.kind, "float");
+  assert.equal(row.name, "cfg");
+  assert.equal(row.value, 5.0);
+  assert.equal(row.slot, 1);
+  assert.equal(row.renamed, true);
+});
+
+test("applyResolvedKind never overwrites a preset row's protected name on first connection, but still adopts range/step/value", () => {
+  const row = mkCatalogRow("denoise");
+  const resolved = { kind: "float", name: "some_target_widget", value: 0.75, opts: { min: 0, max: 2, step: 0.05 } };
+  applyResolvedKind(row, resolved);
+  assert.equal(row.name, "denoise"); // protected
+  assert.equal(row.value, 0.75); // still adopted
+  assert.equal(row.opts.max, 2); // still adopted
 });
 
 // =========================================================================
@@ -466,6 +551,49 @@ test("outputTypeForRow: plain types pass through, combo kinds go through resolve
   assert.equal(outputTypeForRow({ kind: "unet" }, {}), "MODEL");
   assert.equal(outputTypeForRow({ kind: "sampler" }, { sampler: ["euler"] }), "COMBO");
   assert.equal(outputTypeForRow({ kind: "auto" }, {}), "*");
+});
+
+// =========================================================================
+// Slot label -- cg-use-everywhere ("UE") interop (docs/control-panel-
+// design.md's UE-name-disambiguation fix)
+// =========================================================================
+
+test("SLOT_LABEL_MODE defaults to \"row-name\"", () => {
+  assert.equal(SLOT_LABEL_MODE, "row-name");
+});
+
+test("stripZeroWidthEdges strips a leading/trailing zero-width space or BOM, and is a no-op on plain text", () => {
+  assert.equal(stripZeroWidthEdges(`${ZW}sampler_name`), "sampler_name");
+  assert.equal(stripZeroWidthEdges(`sampler_name${ZW}`), "sampler_name");
+  assert.equal(stripZeroWidthEdges(`${ZW}sampler_name${ZW}`), "sampler_name");
+  assert.equal(stripZeroWidthEdges("﻿sampler_name"), "sampler_name"); // a leading BOM
+  assert.equal(stripZeroWidthEdges("sampler_name"), "sampler_name");
+  assert.equal(stripZeroWidthEdges(""), "");
+  assert.equal(stripZeroWidthEdges(undefined), "");
+  // never strips a zero-width char embedded in the MIDDLE of real text
+  assert.equal(stripZeroWidthEdges(`sam${ZW}pler`), `sam${ZW}pler`);
+});
+
+test("isBlankSlotLabel: undefined/null/empty/the bare ZW sentinel/pure zero-width junk all count as blank; real text never does", () => {
+  assert.ok(isBlankSlotLabel(undefined));
+  assert.ok(isBlankSlotLabel(null));
+  assert.ok(isBlankSlotLabel(""));
+  assert.ok(isBlankSlotLabel(ZW));
+  assert.ok(isBlankSlotLabel(`${ZW}${ZW}`)); // pure zero-width junk, no real text
+  assert.equal(isBlankSlotLabel("sampler"), false);
+  assert.equal(isBlankSlotLabel(`${ZW}sampler_name`), false); // has real text after the ZW
+});
+
+test('defaultSlotLabel: "row-name" mode (the default) uses the row\'s own name, trimmed, falling back to kind', () => {
+  assert.equal(defaultSlotLabel({ name: "sampler", kind: "sampler" }), "sampler");
+  assert.equal(defaultSlotLabel({ name: "  cfg  ", kind: "float" }), "cfg");
+  assert.equal(defaultSlotLabel({ name: "", kind: "int" }), "int"); // blank name falls back to kind
+  assert.equal(defaultSlotLabel({ name: undefined, kind: "seed" }), "seed");
+});
+
+test('defaultSlotLabel: "hidden" mode (test-only override -- see this function\'s doc comment) always returns the bare ZW sentinel, regardless of the row\'s name', () => {
+  assert.equal(defaultSlotLabel({ name: "sampler", kind: "sampler" }, "hidden"), ZW);
+  assert.equal(defaultSlotLabel({ name: "cfg", kind: "float" }, "hidden"), ZW);
 });
 
 // =========================================================================

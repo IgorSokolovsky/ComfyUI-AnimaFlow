@@ -65,6 +65,11 @@ import {
   assignSlot,
   isPickerKind,
   outputTypeForRow,
+  SLOT_LABEL_MODE,
+  stripZeroWidthEdges,
+  defaultSlotLabel,
+  ROW_PRESETS,
+  applyResolvedKind,
 } from "./rows.mjs";
 
 import {
@@ -98,6 +103,7 @@ import {
   removeRowAndSync,
   resolveAutoOnConnect,
   closeActiveOverlay,
+  teardownAllZoomPassthrough,
 } from "./interaction.mjs";
 
 let failures = 0;
@@ -313,8 +319,32 @@ function makeFakeNode(initialStateJSON) {
     widgets: [{ name: "panel_state", value: initialStateJSON ?? "{}" }],
     outputs: [],
     _dirty: 0,
+    // Mirrors the real ComfyUI/litegraph DOM-widget host: a live page mounts
+    // every `addDOMWidget` element into ITS OWN DOM tree, separate from
+    // `node.widgets` -- and the ONLY thing that ever detaches it again is
+    // that widget's own `.onRemove()` (see ComfyUI-Pixaroma's `js/sliders/
+    // ui.mjs` / `js/switch/vue_list.mjs`'s `w.onRemove?.()` convention).
+    // Splicing a widget out of `node.widgets` (bookkeeping only) does NOT
+    // shrink `_domHost` by itself -- exactly the gap that shipped the
+    // "orphaned row widget" bug this stub exists to catch.
+    _domHost: [],
     addDOMWidget(name, type, element) {
-      const w = { name, type, element, options: {}, serialize: true, y: undefined, margin: 10 };
+      node._domHost.push(element);
+      const w = {
+        name,
+        type,
+        element,
+        options: {},
+        serialize: true,
+        y: undefined,
+        margin: 10,
+        onRemove() {
+          const idx = node._domHost.indexOf(element);
+          if (idx >= 0) {
+            node._domHost.splice(idx, 1);
+          }
+        },
+      };
       node.widgets.push(w);
       return w;
     },
@@ -362,6 +392,9 @@ const CONTROL_PANEL_CONFIG = {
   key: "control",
   stateProp: "controlPanelState",
   catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+  // Mirrors index.js's PANEL_CONFIGS.control.menuCatalog -- presets before
+  // the bare int/float they shortcut.
+  menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "latent"],
   allowAuto: true,
   reorder: true,
   addLabel: "+ Add control",
@@ -772,7 +805,7 @@ test("syncOutputs narrows types per kind, and 'auto' stays '*'", () => {
   assert.equal(node.outputs[state.rows[2].slot - 1].type, "*");
 });
 
-test("syncOutputs: every OCCUPIED slot's name is exactly value_${slot} (matching Python's RETURN_NAMES), never the ZW, while label still carries the ZW so litegraph never paints the raw name over the row -- driven off whatever slot numbers the rows actually hold, including a non-contiguous gap, not hardcoded to slot 1", () => {
+test("syncOutputs: every OCCUPIED slot's name is exactly value_${slot} (matching Python's RETURN_NAMES), never the ZW, while a still-owned label defaults to the row's OWN name (SLOT_LABEL_MODE=\"row-name\") -- driven off whatever slot numbers the rows actually hold, including a non-contiguous gap, not hardcoded to slot 1", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
@@ -790,7 +823,8 @@ test("syncOutputs: every OCCUPIED slot's name is exactly value_${slot} (matching
     assert.ok(out, `no output object at slot ${row.slot}`);
     assert.equal(out.name, `value_${row.slot}`, `slot ${row.slot}: name must match RETURN_NAMES exactly`);
     assert.notEqual(out.name, ZW, `slot ${row.slot}: name must never be the ZW`);
-    assert.equal(out.label, ZW, `slot ${row.slot}: label must still carry the ZW`);
+    assert.equal(out.label, row.name, `slot ${row.slot}: a still-owned label must default to the row's own name`);
+    assert.notEqual(out.label, ZW, `slot ${row.slot}: label must not be the bare ZW sentinel in "row-name" mode`);
   });
 });
 
@@ -837,6 +871,126 @@ test("syncOutputs is diff-gated: a second call against UNCHANGED state writes to
   syncOutputs(node, ctx);
 
   assert.deepEqual(writes, { name: 0, label: 0, type: 0 }, "syncOutputs re-wrote an already-correct output field");
+});
+
+// ---------------------------------------------------------------------------
+// C1. Slot label ownership -- cg-use-everywhere ("UE") interop regression.
+// UE disambiguates same-typed broadcasting outputs (two COMBO rows: sampler
+// + scheduler) by NAME/LABEL. The original bug: `syncOutputs` unconditionally
+// stomped `out.label` back to the bare ZW sentinel on every sync, so (a) a
+// user's litegraph rename of the slot silently reverted, and (b) litegraph's
+// rename dialog pre-fills with the CURRENT (ZW) label, so the user's typed
+// text landed as `${ZW}typed`, which even a surviving rename couldn't match
+// by exact name. `SLOT_LABEL_MODE` defaults to `"row-name"` (assert that, so
+// a future default flip doesn't silently invalidate these tests' premise).
+// ---------------------------------------------------------------------------
+
+test("SLOT_LABEL_MODE defaults to \"row-name\"", () => {
+  assert.equal(SLOT_LABEL_MODE, "row-name");
+});
+
+test("a user-renamed slot label survives an arbitrary number of subsequent syncOutputs calls (add a row, remove a row, repaint)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+  assert.equal(out.label, "sampler"); // still-owned default
+
+  // Simulate litegraph's own rename-slot dialog writing directly onto the
+  // socket -- never through our code.
+  out.label = "sampler_name";
+
+  syncOutputs(node, ctx); // a bare repaint-equivalent call
+  assert.equal(out.label, "sampler_name");
+
+  const second = addRowAndSync(node, ctx, "int"); // add -- a full structural resync
+  assert.equal(out.label, "sampler_name");
+
+  removeRowAndSync(node, ctx, second.id); // remove -- another full resync
+  assert.equal(out.label, "sampler_name");
+
+  syncOutputs(node, ctx);
+  assert.equal(out.label, "sampler_name");
+});
+
+test("a zero-width-prefixed label (${ZW}sampler_name -- litegraph's rename dialog pre-filling with the old ZW label) is normalised to a clean value on the next sync", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+
+  out.label = `${ZW}sampler_name`; // exactly what a live dump confirmed
+  syncOutputs(node, ctx);
+  assert.equal(out.label, "sampler_name");
+  assert.equal(stripZeroWidthEdges(out.label), out.label); // idempotent
+
+  // And it stays healed/owned-by-the-user across a further sync.
+  syncOutputs(node, ctx);
+  assert.equal(out.label, "sampler_name");
+});
+
+test('SLOT_LABEL_MODE="row-name": a row named "sampler" yields label "sampler"; renaming the ROW updates the slot label too, as long as the user never set the socket label directly', () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+  assert.equal(out.label, "sampler");
+
+  // Rename the ROW via our own UI (never the socket) -- the label should
+  // track it, since nothing has claimed ownership of this label yet.
+  const entry = node._ctrlRows.find((e) => e.id === row.id);
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "denoise";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(node.outputs[row.slot - 1].label, "denoise");
+});
+
+test("a slot label the user set DIRECTLY ON THE SOCKET is never overridden by a later row rename", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+
+  out.label = "custom_socket_name"; // the user's own litegraph rename
+  syncOutputs(node, ctx); // acknowledge/adopt ownership of it
+
+  const entry = node._ctrlRows.find((e) => e.id === row.id);
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "denoise";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+
+  assert.equal(node._ctrlRows.find((e) => e.id === row.id).refs.row.name, "denoise"); // the ROW did rename
+  assert.equal(node.outputs[row.slot - 1].label, "custom_socket_name"); // the SOCKET label did not
+});
+
+test('a fresh output with no label at all defaults to defaultSlotLabel(row) (row-name mode: the row\'s own name)', () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "float");
+  assert.equal(node.outputs[row.slot - 1].label, defaultSlotLabel(row));
+  assert.equal(defaultSlotLabel(row), "float");
+});
+
+test("a slot number freed by one removed row and reused by a DIFFERENT new row gets that new row's own default label, never the vacated row's leftover text (label ownership must be keyed by slot, not row id)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const intRow = addRowAndSync(node, ctx, "int"); // slot 1, label "int"
+  addRowAndSync(node, ctx, "float"); // slot 2
+  addRowAndSync(node, ctx, "seed"); // slot 3
+  assert.equal(node.outputs[intRow.slot - 1].label, "int");
+
+  removeRowAndSync(node, ctx, intRow.id); // frees slot 1; its output's label is untouched leftover text
+  const samplerRow = addRowAndSync(node, ctx, "sampler"); // reuses slot 1 -- a BRAND NEW row id
+  assert.equal(samplerRow.slot, intRow.slot, "test setup expected the freed slot to be reused");
+  assert.equal(node.outputs[samplerRow.slot - 1].label, "sampler", "reused slot must adopt the NEW occupant's own label, not the old row's");
 });
 
 test("alignOutputsLegacy parks each row's dot at its OWN widget's Y, offset by margin + half a row", () => {
@@ -909,6 +1063,258 @@ test("removeRowAndSync asks ctx.confirmRemove before dropping a row with a live 
   assert.equal(result, false);
   assert.ok(asked);
   assert.equal(node._ctrlRows.length, 1); // still there
+});
+
+// ---------------------------------------------------------------------------
+// D0. Row presets -- steps/cfg/denoise (pre-configured int/float rows, NOT
+// new kinds; see rows.mjs's ROW_PRESETS doc comment).
+// ---------------------------------------------------------------------------
+
+test("each preset appears in the Control Panel's \"+ Add control\" menu (before the bare Int/Float entries), and NONE appear in the Loader Panel's \"+ Add loader\" menu", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx);
+  fire(node._ctrlAddWidget.element, "click");
+  const menu = doc.body.children[doc.body.children.length - 1].children[0];
+  const labels = menu.children.filter((c) => c.className.includes("wtn-ctl-opt")).map((c) => c.textContent);
+  assert.deepEqual(
+    labels,
+    ["Sampler", "Scheduler", "Seed", "Steps", "CFG", "Denoise", "Int", "Float", "Empty latent", "Auto"],
+    "presets must appear, and BEFORE the bare Int/Float entries",
+  );
+  closeActiveOverlay();
+
+  const loaderNode = makeFakeNode();
+  const loaderDoc = makeDocStub();
+  makeWindowStub(loaderDoc);
+  const loaderCtx = makeCtx(loaderDoc, LOADER_PANEL_CONFIG);
+  syncRows(loaderNode, loaderCtx);
+  fire(loaderNode._ctrlAddWidget.element, "click");
+  const loaderMenu = loaderDoc.body.children[loaderDoc.body.children.length - 1].children[0];
+  const loaderLabels = loaderMenu.children.filter((c) => c.className.includes("wtn-ctl-opt")).map((c) => c.textContent);
+  assert.deepEqual(loaderLabels, ["UNET loader", "VAE loader", "CLIP loader"]);
+  assert.ok(!loaderLabels.some((t) => t.startsWith("Steps") || t.startsWith("CFG") || t.startsWith("Denoise")));
+  closeActiveOverlay();
+});
+
+for (const [id, preset] of Object.entries(ROW_PRESETS)) {
+  test(`addRowAndSync("${id}") produces a row with exactly the preset's kind/name/value/min/max/step, and the RIGHT slot type`, () => {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+    const row = addRowAndSync(node, ctx, id);
+    assert.equal(row.kind, preset.kind);
+    assert.equal(row.name, preset.name);
+    assert.equal(row.value, preset.value);
+    assert.deepEqual(row.opts, preset.opts);
+
+    const out = node.outputs[row.slot - 1];
+    assert.equal(out.type, preset.kind === "int" ? "INT" : "FLOAT");
+
+    // The panel_state WIDGET (not just node.properties) reflects the new row.
+    const persisted = JSON.parse(getStateWidget(node).value).rows[0];
+    assert.equal(persisted.kind, preset.kind);
+    assert.equal(persisted.name, preset.name);
+    assert.equal(persisted.value, preset.value);
+    assert.deepEqual(persisted.opts, preset.opts);
+  });
+}
+
+test("a preset row's name survives the same name-adopt mechanism a first connection would use (applyResolvedKind), while min/max/step/value still adopt -- resolveAutoOnConnect itself never runs for an already-resolved row (only \"auto\" ones), so this exercises the protection at the level that actually provides it", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "denoise");
+  const liveRow = ensureState(node, ctx).rows.find((r) => r.id === row.id);
+  assert.equal(liveRow.renamed, true, "a preset row must already carry the same protection a manual rename sets");
+
+  applyResolvedKind(liveRow, { kind: "float", name: "some_widget", value: 0.75, opts: { min: 0, max: 2, step: 0.05 } });
+  persistState(node, ctx);
+  syncRows(node, ctx); // propagate to the DOM + panel_state widget, same as afterEdit would
+
+  assert.equal(liveRow.name, "denoise"); // protected -- never "some_widget"
+  assert.equal(liveRow.value, 0.75); // still adopted
+  assert.equal(liveRow.opts.max, 2); // still adopted
+
+  const entry = node._ctrlRows.find((e) => e.id === row.id);
+  assert.equal(entry.refs.name.textContent, "denoise"); // the rendered label agrees
+  const persisted = JSON.parse(getStateWidget(node).value).rows[0];
+  assert.equal(persisted.name, "denoise");
+  assert.equal(persisted.value, 0.75);
+});
+
+test("drag behaviour works on a preset row (denoise, step 0.01 -- the finest grid, most likely to expose a rounding bug)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "denoise");
+  const refs = node._ctrlRows[0].refs;
+  refs.root._rect = { left: 0, top: 0, right: 200, bottom: 30, width: 200, height: 30 };
+  fire(refs.root, "pointerdown", { clientX: 48, button: 0 }); // 24% of [0,1] -> 0.24, exactly on the 0.01 grid
+  assert.equal(refs.row.value, 0.24);
+  assert.equal(refs.row.value.toString(), "0.24"); // never float-drift like 0.24000000000000002
+  fire(refs.root, "pointerup");
+  assert.equal(JSON.parse(getStateWidget(node).value).rows[0].value, 0.24);
+});
+
+// ---------------------------------------------------------------------------
+// D1. Row-removal state-machine regression: an earlier build spliced a torn-
+// down row/add widget out of `node.widgets` (bookkeeping) but never called
+// its own `.onRemove()` (DOM teardown) -- since `rebuildRowWidgets` tears
+// down and recreates EVERY row widget on every structural change (not just
+// the removed one), that orphaned the WHOLE previous generation of row/add
+// elements on every add/remove/duplicate. A removal shrinks `bodyHeight`,
+// shifting every row below the removed one upward, so an orphan's frozen Y
+// lands on top of a CURRENT row further down the list -- and `.wtn-ctl-add`'s
+// `background: transparent` means an orphaned "+ Add control" strip frozen
+// over a live row shows THROUGH it rather than hiding it. `makeFakeNode`'s
+// `_domHost` (above) models the real DOM-widget host a live page mounts
+// `addDOMWidget` elements into, separate from `node.widgets` -- these tests
+// assert against THAT, which the widgets-array-only assertions elsewhere in
+// this file could not have caught (see the repro script this bug was
+// diagnosed with: `node.widgets`/`node._ctrlRows` were already correct).
+// ---------------------------------------------------------------------------
+
+/** Every currently-live widget (every entry in `node.widgets` except
+ * `panel_state`, which is a real litegraph STRING widget, never a DOM one)
+ * must have its `.element` mounted in `_domHost`, and `_domHost` must hold
+ * NOTHING ELSE -- no orphan from a torn-down generation. */
+function assertNoOrphanedDomWidgets(node) {
+  const liveElements = node.widgets.filter((w) => w.name !== "panel_state").map((w) => w.element);
+  assert.equal(node._domHost.length, liveElements.length, "orphaned DOM widget(s) left mounted in the host");
+  liveElements.forEach((el) => {
+    assert.ok(node._domHost.includes(el), "a live widget's element is missing from the DOM host");
+  });
+}
+
+/** Build the exact repro from the live bug report: sampler, seed, int, int. */
+function buildRepro4(node, ctx) {
+  const sampler = addRowAndSync(node, ctx, "sampler");
+  const seed = addRowAndSync(node, ctx, "seed");
+  const intA = addRowAndSync(node, ctx, "int");
+  const intB = addRowAndSync(node, ctx, "int");
+  return { sampler, seed, intA, intB };
+}
+
+test("removeRowAndSync: removing one of two identical 'int' rows from [sampler, seed, int, int] leaves node.widgets as exactly panel_state + remaining rows + one add widget, in order", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const { sampler, seed, intA, intB } = buildRepro4(node, ctx);
+
+  removeRowAndSync(node, ctx, intA.id);
+
+  assert.deepEqual(
+    node.widgets.map((w) => w.name),
+    ["panel_state", `ctrl_row_${sampler.id}`, `ctrl_row_${seed.id}`, `ctrl_row_${intB.id}`, "ctrl_add_row"],
+  );
+  assertNoOrphanedDomWidgets(node);
+
+  // The surviving int row's DOM shows ITS OWN kind's controls -- a numeric
+  // fill + value -- never the add button's text/markup.
+  const survivor = node._ctrlRows.find((e) => e.id === intB.id);
+  assert.ok(survivor.refs.fill && survivor.refs.val, "surviving int row lost its numeric controls");
+  assert.notEqual(survivor.refs.root.textContent, "+ Add control");
+  assert.notEqual(survivor.refs.val.textContent, "+ Add control");
+
+  // node.outputs matches the remaining rows' slots exactly.
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows.length, 3);
+  state.rows.forEach((row) => {
+    assert.ok(node.outputs[row.slot - 1], `no output at slot ${row.slot}`);
+  });
+
+  // panel_state WIDGET (not just node.properties) parses to exactly the
+  // remaining rows.
+  const persisted = JSON.parse(getStateWidget(node).value);
+  assert.deepEqual(persisted.rows.map((r) => r.id), [sampler.id, seed.id, intB.id]);
+});
+
+for (const which of ["first", "middle", "last"]) {
+  test(`removeRowAndSync: removing the ${which.toUpperCase()} row of four leaves no orphaned DOM widgets and a correctly-ordered widget list`, () => {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+    const rows = [
+      addRowAndSync(node, ctx, "sampler"),
+      addRowAndSync(node, ctx, "seed"),
+      addRowAndSync(node, ctx, "int"),
+      addRowAndSync(node, ctx, "float"),
+    ];
+    const idxToRemove = { first: 0, middle: 2, last: 3 }[which];
+    const removed = rows[idxToRemove];
+    const remaining = rows.filter((_, i) => i !== idxToRemove);
+
+    removeRowAndSync(node, ctx, removed.id);
+
+    assert.deepEqual(
+      node.widgets.map((w) => w.name),
+      ["panel_state", ...remaining.map((r) => `ctrl_row_${r.id}`), "ctrl_add_row"],
+    );
+    assertNoOrphanedDomWidgets(node);
+
+    const persisted = JSON.parse(getStateWidget(node).value);
+    assert.deepEqual(persisted.rows.map((r) => r.id), remaining.map((r) => r.id));
+
+    const state = ensureState(node, ctx);
+    state.rows.forEach((row) => {
+      assert.ok(node.outputs[row.slot - 1], `no output at slot ${row.slot}`);
+    });
+  });
+}
+
+test("removeRowAndSync: removing rows down to zero and adding back up never accumulates orphaned DOM widgets", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const rows = [
+    addRowAndSync(node, ctx, "int"),
+    addRowAndSync(node, ctx, "float"),
+    addRowAndSync(node, ctx, "seed"),
+  ];
+  rows.forEach((r) => {
+    removeRowAndSync(node, ctx, r.id);
+    assertNoOrphanedDomWidgets(node);
+  });
+
+  assert.equal(ensureState(node, ctx).rows.length, 0);
+  assert.deepEqual(JSON.parse(getStateWidget(node).value).rows, []);
+  assert.deepEqual(node.widgets.map((w) => w.name), ["panel_state", "ctrl_add_row"]);
+  assertNoOrphanedDomWidgets(node);
+
+  // Back up: add three more, and repaint-only edits in between (never a
+  // structural change on their own) must not disturb the host either.
+  const rebuilt = [addRowAndSync(node, ctx, "seed"), addRowAndSync(node, ctx, "int"), addRowAndSync(node, ctx, "float")];
+  assertNoOrphanedDomWidgets(node);
+  assert.deepEqual(
+    node.widgets.map((w) => w.name),
+    ["panel_state", ...rebuilt.map((r) => `ctrl_row_${r.id}`), "ctrl_add_row"],
+  );
+});
+
+test("removeRowAndSync: the panel_state WIDGET value parses to exactly the remaining rows after every removal in a multi-step sequence", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const rows = [
+    addRowAndSync(node, ctx, "sampler"),
+    addRowAndSync(node, ctx, "seed"),
+    addRowAndSync(node, ctx, "int"),
+    addRowAndSync(node, ctx, "int"),
+  ];
+  const remaining = rows.slice();
+
+  // Remove middle, then first, then what's left.
+  for (const idx of [2, 0, 0]) {
+    const [removed] = remaining.splice(idx, 1);
+    removeRowAndSync(node, ctx, removed.id);
+    const persisted = JSON.parse(getStateWidget(node).value);
+    assert.deepEqual(persisted.rows.map((r) => r.id), remaining.map((r) => r.id));
+    assertNoOrphanedDomWidgets(node);
+  }
 });
 
 test("resolveAutoOnConnect resolves an auto row via ctx.describeLinkTarget and rebuilds its DOM", () => {
@@ -1319,6 +1725,272 @@ test("scheduleFit skips fitting while _ctrlConfiguring is set (never resize duri
   scheduleFit(node, ctx);
   rafQueue.forEach((cb) => cb());
   assert.deepEqual(node.size, before);
+});
+
+// =========================================================================
+// G. Wheel-zoom passthrough (js/shared/canvas_zoom.mjs) integration -- the
+// generic per-direction scroll matrix is covered exhaustively in
+// js/shared/test_canvas_zoom.mjs; these just prove the helper is actually
+// WIRED into every DOM surface this node owns.
+// =========================================================================
+
+test("every row root and the add strip get a non-passive wheel listener installed", () => {
+  // (The non-passive REGISTRATION itself is exhaustively covered by
+  // js/shared/test_canvas_zoom.mjs; this doc stub's addEventListener
+  // doesn't retain the options object, so this test only proves WIRING --
+  // that a listener actually landed on each root -- not the passive flag.)
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const rowRoot = node._ctrlRows[0].refs.root;
+  assert.equal(rowRoot._listeners.wheel.length, 1);
+
+  const addRoot = node._ctrlAddWidget.element;
+  assert.equal(addRoot._listeners.wheel.length, 1);
+});
+
+test("removing a row tears down its own wheel listener (no leaked listener on the removed row's element)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "int");
+  const rowRoot = node._ctrlRows[0].refs.root;
+  removeRowAndSync(node, ctx, row.id);
+  assert.equal((rowRoot._listeners.wheel || []).length, 0);
+});
+
+test("teardownAllZoomPassthrough removes every live row/add-strip wheel listener without touching node.widgets/_ctrlRows", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  const roots = node._ctrlRows.map((e) => e.refs.root);
+  const addRoot = node._ctrlAddWidget.element;
+
+  teardownAllZoomPassthrough(node);
+
+  roots.forEach((root) => assert.equal((root._listeners.wheel || []).length, 0));
+  assert.equal((addRoot._listeners.wheel || []).length, 0);
+  assert.equal(node._ctrlRows.length, 2); // bookkeeping untouched
+});
+
+test("an opened overlay (option list) gets a non-passive wheel listener, torn down when it closes", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+  fire(refs.combo, "click");
+  const overlay = doc.body.children[doc.body.children.length - 1];
+  assert.ok(overlay.className.includes("wtn-ctl-overlay"));
+  assert.equal(overlay._listeners.wheel.length, 1);
+  closeActiveOverlay();
+  assert.equal((overlay._listeners.wheel || []).length, 0);
+});
+
+test("an opened ⚙ popover overlay also gets a non-passive wheel listener, torn down when it closes", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "latent");
+  const refs = node._ctrlRows[0].refs;
+  fire(refs.gear, "click");
+  const overlay = doc.body.children[doc.body.children.length - 1];
+  assert.equal(overlay._listeners.wheel.length, 1);
+  closeActiveOverlay();
+  assert.equal((overlay._listeners.wheel || []).length, 0);
+});
+
+// =========================================================================
+// H. Overlay toggle -- second click of the SAME field closes its own
+// overlay (option list / ⚙ popover / right-click menu) instead of silently
+// closing-then-reopening (the reported bug: visually "nothing happens").
+// The document-level outside-click/Escape dismiss listener (render.mjs's
+// `openOverlay`) already correctly ignores a pointerdown/click whose target
+// is inside the anchor row, so it was never the cause of the reopen race --
+// the toggle has to be decided by the OPENER itself (`ownerKey` /
+// `closeOverlayIfOwnedBy` in interaction.mjs).
+// =========================================================================
+
+function countOpenOverlays(doc) {
+  return doc.body.children.filter((c) => c.className && c.className.includes("wtn-ctl-overlay")).length;
+}
+
+test("option list: click the field -> opens; click the SAME field again -> closes (a true toggle, not close-then-reopen)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  assert.ok(refs.root.classList.contains("wtn-ctl-open"));
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 0, "a second click on the same field must CLOSE it");
+  assert.ok(!refs.root.classList.contains("wtn-ctl-open"));
+});
+
+test("option list: click field A -> opens A; click field B -> B opens and A closes, exactly one menu ever in the DOM", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, {
+    getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"], scheduler: ["normal", "karras"] }),
+  });
+  addRowAndSync(node, ctx, "sampler");
+  addRowAndSync(node, ctx, "scheduler");
+  const [rowA, rowB] = node._ctrlRows.map((e) => e.refs);
+
+  fire(rowA.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  assert.ok(rowA.root.classList.contains("wtn-ctl-open"));
+
+  fire(rowB.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1, "switching fields must never leave two menus open");
+  assert.ok(!rowA.root.classList.contains("wtn-ctl-open"), "row A's own overlay-open class must clear");
+  assert.ok(rowB.root.classList.contains("wtn-ctl-open"));
+});
+
+test("option list closed: clicking ◀/▶ steps the value and never opens the menu", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m", "ddim"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.stepRight, "click");
+  assert.equal(refs.row.value, "dpmpp_2m");
+  assert.equal(countOpenOverlays(doc), 0);
+  fire(refs.stepLeft, "click");
+  assert.equal(refs.row.value, "euler");
+  assert.equal(countOpenOverlays(doc), 0);
+});
+
+test("option list open: clicking an arrow steps the value AND closes the menu", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m", "ddim"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  fire(refs.stepRight, "click");
+  assert.equal(refs.row.value, "dpmpp_2m");
+  assert.equal(countOpenOverlays(doc), 0, "an arrow click while the menu is open must close it");
+});
+
+test("option list: Escape and an outside click still close it (regression)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  fireWin(win, "keydown", { key: "Escape" });
+  assert.equal(countOpenOverlays(doc), 0);
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  const outside = doc.createElement("div");
+  fireWin(win, "pointerdown", { target: outside });
+  assert.equal(countOpenOverlays(doc), 0);
+});
+
+test("⚙ popover: click the gear -> opens; click the SAME gear again -> closes", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "seed");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  assert.ok(refs.gear.classList.contains("wtn-ctl-active"));
+
+  fire(refs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 0, "a second click on the same gear must CLOSE its popover");
+  assert.ok(!refs.gear.classList.contains("wtn-ctl-active"));
+});
+
+test("⚙ popover: switching between two rows' gears leaves exactly one popover open", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "seed");
+  addRowAndSync(node, ctx, "latent");
+  const [rowA, rowB] = node._ctrlRows.map((e) => e.refs);
+
+  fire(rowA.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  fire(rowB.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1, "switching gears must never leave two popovers open");
+  assert.ok(!rowA.gear.classList.contains("wtn-ctl-active"));
+  assert.ok(rowB.gear.classList.contains("wtn-ctl-active"));
+});
+
+test("mixed overlay switching: opening a field's option list while a DIFFERENT row's ⚙ popover is open closes the popover, and vice versa -- only one overlay of ours open at a time", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "seed"); // has a gear
+  addRowAndSync(node, ctx, "sampler"); // has a picker, no gear
+  const [seedRefs, samplerRefs] = node._ctrlRows.map((e) => e.refs);
+
+  fire(seedRefs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  fire(samplerRefs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the option list must close the other row's gear popover");
+  assert.ok(!seedRefs.gear.classList.contains("wtn-ctl-active"));
+
+  fire(seedRefs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the gear must close the other row's option list");
+  assert.ok(!samplerRefs.root.classList.contains("wtn-ctl-open"), "the sampler row's overlay-open class must clear");
+  assert.ok(seedRefs.gear.classList.contains("wtn-ctl-active"));
+});
+
+test("right-click menu: a second right-click of the SAME row closes it (already shared the same close-then-reopen bug)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.root, "contextmenu");
+  assert.equal(countOpenOverlays(doc), 1);
+  fire(refs.root, "contextmenu");
+  assert.equal(countOpenOverlays(doc), 0, "a second right-click on the same row must CLOSE its context menu");
+});
+
+test("right-click menu: right-clicking a DIFFERENT row switches the open menu, exactly one ever open", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  const [rowA, rowB] = node._ctrlRows.map((e) => e.refs);
+
+  fire(rowA.root, "contextmenu");
+  assert.equal(countOpenOverlays(doc), 1);
+  fire(rowB.root, "contextmenu");
+  assert.equal(countOpenOverlays(doc), 1, "switching rows must never leave two context menus open");
 });
 
 // =========================================================================

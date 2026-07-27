@@ -84,6 +84,10 @@ import {
   resolveAutoKind,
   applyResolvedKind,
   commitRename,
+  defaultSlotLabel,
+  stripZeroWidthEdges,
+  isBlankSlotLabel,
+  menuMetaFor,
 } from "./rows.mjs";
 
 import {
@@ -99,6 +103,15 @@ import {
   MIN_W,
   DEFAULT_W,
 } from "./render.mjs";
+
+// Wheel-zooms-the-canvas-through-a-DOM-widget fix (Classic renderer only,
+// no-ops under Nodes 2.0) -- see js/shared/canvas_zoom.mjs's top doc
+// comment. A plain relative import, not a guarded dynamic one: unlike
+// `render.mjs`'s THEME_URL (an absolute `/extensions/...` server route),
+// this sibling module has zero `app`/`window`/`LiteGraph` reference at
+// module scope, so it's just as importable under plain `node` as
+// `rows.mjs`/`render.mjs` already are -- no 404 risk.
+import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 
 // ---------------------------------------------------------------------------
 // State <-> hidden widget handshake (per the dynamic-node-frontend skill:
@@ -264,6 +277,58 @@ export function closeActiveOverlay() {
   }
 }
 
+/**
+ * The toggle primitive every per-row overlay opener (option list / ⚙
+ * popover / right-click menu) uses: close the active overlay ONLY IF it's
+ * the one identified by `key` (each opener's own `${kind}:${row.id}` --
+ * see `openListMenuFor`/`openGearPopover`/`openContextMenuFor` below),
+ * returning whether it actually closed anything.
+ *
+ * THIS is the toggle -- not the document-level outside-click/Escape
+ * listener in `render.mjs`'s `openOverlay`. That listener already correctly
+ * ignores a pointerdown whose target is inside `anchorEl` (every opener
+ * here passes the ROW's own root as the anchor), so a second click on the
+ * SAME field was NEVER being closed by a stray outside-click race in the
+ * first place -- the actual bug was that every opener unconditionally
+ * called `closeActiveOverlay()` THEN immediately opened a brand-new overlay
+ * on every click, with no memory of "is this exact field's overlay already
+ * the one that's open". Two clicks on the same field: close (whatever's
+ * open, including itself) -> reopen fresh -- net visible effect "nothing
+ * happened" (still open), not an actual close. `ownerKey` is the fix: each
+ * opener checks it FIRST and, if it matches, closes and stops -- no reopen.
+ */
+function closeOverlayIfOwnedBy(key) {
+  if (_activeOverlay && _activeOverlay.ownerKey === key) {
+    closeActiveOverlay();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * `openOverlay` (render.mjs), plus wheel-zoom passthrough on the overlay
+ * element itself -- ONE choke point for every overlay this node ever opens
+ * (option list, ⚙ popover, row context menu, add-catalog menu), so wheeling
+ * over any of them zooms the canvas same as wheeling over a row, EXCEPT over
+ * a genuinely scrollable child that still has room (the option list's own
+ * `.wtn-ctl-menu`/the latent popover's `.wtn-ctl-reslist`, both
+ * `overflow-y: auto` -- `scrollRegionWantsWheel` finds them by walking up
+ * from the wheel's actual target, so they keep scrolling normally).
+ * `ctx.getCanvasEl` is `index.js`'s real `app.canvas.canvas` getter (or
+ * `undefined` under test, where `installCanvasZoomPassthrough` harmlessly
+ * falls back to never finding a canvas to dispatch to).
+ */
+function openOverlayWithZoom(ctx, doc, anchorEl, contentEl, placement, onClose) {
+  const handle = openOverlay(doc, anchorEl, contentEl, placement, onClose);
+  const uninstallZoom = installCanvasZoomPassthrough(handle.overlay, ctx.getCanvasEl);
+  const origClose = handle.close;
+  handle.close = () => {
+    uninstallZoom();
+    origClose();
+  };
+  return handle;
+}
+
 function optionListFor(ctx, kind) {
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
   return Array.isArray(lists[kind]) ? lists[kind] : [];
@@ -294,6 +359,11 @@ function wireComboRow(node, ctx, row, refs) {
     const idx = Math.max(0, list.indexOf(row.value));
     row.value = list[(idx + dir + list.length) % list.length];
     afterEdit(node, ctx);
+    // The ◀/▶ steppers must NEVER open the menu (that's `refs.combo`'s job
+    // alone), but if THIS row's own list menu happens to be open, stepping
+    // the value closes it too -- never leaves a now-stale selection
+    // highlighted in an overlay still open behind the click.
+    closeOverlayIfOwnedBy(`list:${row.id}`);
   };
   refs.stepLeft.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -309,8 +379,16 @@ function wireComboRow(node, ctx, row, refs) {
   });
 }
 
+/** Opens (or, on a second click of the SAME field, closes) this row's
+ * option-list menu -- see `closeOverlayIfOwnedBy`'s doc comment for why the
+ * toggle has to be decided HERE rather than left to the outside-click
+ * dismiss listener. */
 function openListMenuFor(node, ctx, row, refs) {
-  closeActiveOverlay();
+  const key = `list:${row.id}`;
+  if (closeOverlayIfOwnedBy(key)) {
+    return; // toggle: this field's own menu was open -- just close it
+  }
+  closeActiveOverlay(); // a DIFFERENT field's overlay was open -- switch to this one
   const doc = ctx.doc;
   const list = optionListFor(ctx, row.kind);
   const menu = el(doc, "div", "wtn-ctl-menu wtn");
@@ -330,12 +408,13 @@ function openListMenuFor(node, ctx, row, refs) {
     });
     menu.appendChild(optEl);
   });
-  const handle = openOverlay(doc, refs.root, menu, "below", () => {
+  const handle = openOverlayWithZoom(ctx, doc, refs.root, menu, "below", () => {
     refs.root.classList.remove("wtn-ctl-open");
     if (_activeOverlay === handle) {
       _activeOverlay = null;
     }
   });
+  handle.ownerKey = key;
   _activeOverlay = handle;
   refs.root.classList.add("wtn-ctl-open");
 }
@@ -711,8 +790,14 @@ function wireGear(node, ctx, row, refs) {
   });
 }
 
+/** Opens (or, on a second click of the SAME row's ⚙, closes) that row's
+ * settings popover -- same toggle contract as `openListMenuFor` above. */
 function openGearPopover(node, ctx, row, refs) {
-  closeActiveOverlay();
+  const key = `gear:${row.id}`;
+  if (closeOverlayIfOwnedBy(key)) {
+    return; // toggle: this row's own popover was open -- just close it
+  }
+  closeActiveOverlay(); // a DIFFERENT overlay was open -- switch to this one
   const doc = ctx.doc;
   const closeFn = () => closeActiveOverlay();
   let content = null;
@@ -728,13 +813,14 @@ function openGearPopover(node, ctx, row, refs) {
   if (!content) {
     return;
   }
-  const handle = openOverlay(doc, refs.root, content, "right", () => {
+  const handle = openOverlayWithZoom(ctx, doc, refs.root, content, "right", () => {
     refs.gear.classList.remove("wtn-ctl-active");
     refs.root.classList.remove("wtn-ctl-open");
     if (_activeOverlay === handle) {
       _activeOverlay = null;
     }
   });
+  handle.ownerKey = key;
   _activeOverlay = handle;
   refs.gear.classList.add("wtn-ctl-active");
   refs.root.classList.add("wtn-ctl-open");
@@ -852,8 +938,17 @@ function wireContextMenu(node, ctx, row, refs) {
   });
 }
 
+/** Opens (or, on a second right-click of the SAME row, closes) that row's
+ * right-click menu -- same toggle contract as `openListMenuFor`/
+ * `openGearPopover` above (this one WAS already sharing the same
+ * unconditional close-then-reopen bug, confirmed by inspection: nothing
+ * about `contextmenu` made it any different from `click`). */
 function openContextMenuFor(node, ctx, row, refs) {
-  closeActiveOverlay();
+  const key = `context:${row.id}`;
+  if (closeOverlayIfOwnedBy(key)) {
+    return; // toggle: this row's own context menu was open -- just close it
+  }
+  closeActiveOverlay(); // a DIFFERENT overlay was open -- switch to this one
   const doc = ctx.doc;
   const menu = el(doc, "div", "wtn-ctl-menu wtn");
   const head = el(doc, "div", "wtn-ctl-mhead");
@@ -890,12 +985,13 @@ function openContextMenuFor(node, ctx, row, refs) {
   });
   menu.appendChild(del);
 
-  const handle = openOverlay(doc, refs.root, menu, "below", () => {
+  const handle = openOverlayWithZoom(ctx, doc, refs.root, menu, "below", () => {
     refs.root.classList.remove("wtn-ctl-open");
     if (_activeOverlay === handle) {
       _activeOverlay = null;
     }
   });
+  handle.ownerKey = key;
   _activeOverlay = handle;
   refs.root.classList.add("wtn-ctl-open");
 }
@@ -1007,23 +1103,27 @@ function openAddMenu(node, ctx, addRefs) {
   head.textContent = "Add a control";
   menu.appendChild(head);
 
-  const kinds = [...ctx.panelConfig.catalog, ...(ctx.panelConfig.allowAuto ? ["auto"] : [])];
-  kinds.forEach((kind) => {
-    const meta = KIND_META[kind];
+  // `menuCatalog` (Control Panel: real kinds + preset ids like "steps"/"cfg"/
+  // "denoise", presets ordered before the bare "int"/"float" they shortcut)
+  // falls back to `catalog` (the plain kind list -- the Loader Panel, which
+  // has no presets of its own, never sets `menuCatalog` and lands here).
+  const entries = [...(ctx.panelConfig.menuCatalog || ctx.panelConfig.catalog), ...(ctx.panelConfig.allowAuto ? ["auto"] : [])];
+  entries.forEach((id) => {
+    const meta = id === "auto" ? KIND_META.auto : menuMetaFor(id);
     const opt = el(doc, "div", "wtn-ctl-opt");
     opt.textContent = meta.menu;
     const hint = el(doc, "span", "wtn-ctl-hint");
-    hint.textContent = kind === "auto" ? "decided by the first wire" : (meta.outputType === "combo" ? "COMBO" : meta.outputType);
+    hint.textContent = id === "auto" ? "decided by the first wire" : (meta.outputType === "combo" ? "COMBO" : meta.outputType);
     opt.appendChild(hint);
     opt.addEventListener("click", (e) => {
       e.stopPropagation();
       closeActiveOverlay();
-      addRowAndSync(node, ctx, kind);
+      addRowAndSync(node, ctx, id);
     });
     menu.appendChild(opt);
   });
 
-  const handle = openOverlay(doc, addRefs.root, menu, "below", () => {
+  const handle = openOverlayWithZoom(ctx, doc, addRefs.root, menu, "below", () => {
     if (_activeOverlay === handle) {
       _activeOverlay = null;
     }
@@ -1061,6 +1161,32 @@ function rowSignature(state) {
   return state.rows.map((r) => `${r.id}:${r.kind}`).join("|");
 }
 
+/**
+ * Tear down every row widget + the add widget: splice EACH out of
+ * `node.widgets` (bookkeeping) AND call its own `.onRemove()` (DOM teardown)
+ * -- mirrors ComfyUI-Pixaroma's identical two-step contract for a dynamic
+ * DOM-widget row (`js/sliders/ui.mjs`, `js/switch/vue_list.mjs`,
+ * `js/mute_switch/vue_list.mjs`'s `w.onRemove?.()` right after the splice).
+ *
+ * THIS WAS THE BUG: splicing a widget out of `node.widgets` only removes our
+ * OWN bookkeeping reference to it -- `addDOMWidget`'s returned widget mounts
+ * its `element` into ComfyUI's own DOM-widget host, and only that widget's
+ * `onRemove()` detaches it again. `rebuildRowWidgets` tears down and rebuilds
+ * EVERY row widget (not just the removed one) on every structural change, so
+ * skipping `onRemove()` here orphaned the ENTIRE previous generation of row +
+ * add widgets on every add/remove/duplicate/kind-resolve: their elements
+ * stayed mounted, frozen at whatever Y `arrange()` had last given them.
+ * Removing a row shrinks the body (`bodyHeight`), which shifts every row
+ * below the removed one upward -- so an orphaned widget's frozen Y then
+ * lands on top of a CURRENT row lower in the list. `.wtn-ctl-add`'s
+ * `background: transparent` (render.mjs) means an orphaned "+ Add control"
+ * strip frozen over a live int row doesn't hide it, it shows THROUGH it --
+ * exactly the "+ Add control ... 31" ghosting reported live. Never fires for
+ * `panel_state` (never in `node._ctrlRows`/`node._ctrlAddWidget`, so never
+ * touched by this loop) or for a widget lacking `onRemove` (defensive `?.()`
+ * -- a non-DOM fallback entry from `rebuildRowWidgets`'s doc-less branch has
+ * `widget: null`, and a real ComfyUI widget always provides `onRemove`).
+ */
 function removeRowWidgets(node) {
   const existing = node._ctrlRows || [];
   if (node.widgets) {
@@ -1069,16 +1195,33 @@ function removeRowWidgets(node) {
       if (idx >= 0) {
         node.widgets.splice(idx, 1);
       }
+      entry.widget?.onRemove?.();
+      entry.uninstallZoom?.(); // js/shared/canvas_zoom.mjs -- see rebuildRowWidgets's install site
     }
     if (node._ctrlAddWidget) {
       const addIdx = node.widgets.indexOf(node._ctrlAddWidget);
       if (addIdx >= 0) {
         node.widgets.splice(addIdx, 1);
       }
+      node._ctrlAddWidget.onRemove?.();
     }
   }
+  node._ctrlAddZoomUninstall?.();
+  node._ctrlAddZoomUninstall = null;
   node._ctrlRows = [];
   node._ctrlAddWidget = null;
+}
+
+/** Uninstall every currently-live zoom-passthrough listener (every row root
+ * + the add strip) WITHOUT touching `node.widgets`/`node._ctrlRows` --
+ * called from `index.js`'s `onRemoved` (outright node deletion, as opposed
+ * to `removeRowWidgets`'s "about to rebuild" teardown) so a listener is
+ * never left dangling on a detached element waiting on garbage collection
+ * alone. Safe to call on a node that was never built (empty arrays). */
+export function teardownAllZoomPassthrough(node) {
+  (node._ctrlRows || []).forEach((entry) => entry.uninstallZoom?.());
+  node._ctrlAddZoomUninstall?.();
+  node._ctrlAddZoomUninstall = null;
 }
 
 /** Repaint every existing row's DISPLAY (never its DOM structure) from the
@@ -1170,7 +1313,13 @@ function rebuildRowWidgets(node, ctx) {
       widget.computeSize = () => [node.size[0], ROW_H];
       widget.computeLayoutSize = () => ({ minHeight: ROW_H, minWidth: 1 });
       wireRow(node, ctx, row, refs);
-      entries.push({ id: row.id, kind: row.kind, widget, refs });
+      // Wheel-zooms-the-canvas fix (js/shared/canvas_zoom.mjs) -- installed
+      // on EVERY row's own root, since this node has no single wrapping body
+      // element (one addDOMWidget per row -- see render.mjs's top doc
+      // comment), so full coverage means one install per row. Torn down in
+      // removeRowWidgets/teardownAllZoomPassthrough above.
+      const uninstallZoom = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl);
+      entries.push({ id: row.id, kind: row.kind, widget, refs, uninstallZoom });
     } catch (err) {
       console.error(`[AnimaFlow Controls] failed to build/wire row (kind=${row.kind}, id=${row.id}):`, err);
     }
@@ -1192,6 +1341,7 @@ function rebuildRowWidgets(node, ctx) {
   addRefs.root.disabled = state.rows.length >= maxRows;
   wireAddRow(node, ctx, addRefs);
   node._ctrlAddWidget = addWidget;
+  node._ctrlAddZoomUninstall = installCanvasZoomPassthrough(addRefs.root, ctx.getCanvasEl);
 
   repaintRows(node, ctx);
 }
@@ -1235,6 +1385,89 @@ export function syncRows(node, ctx) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Write/preserve `out.label` for `row`'s slot -- the UE ("cg-use-everywhere")
+ * name-disambiguation fix. Tracking is keyed by SLOT NUMBER (`row.slot`), not
+ * row id -- a slot is the durable "wire identity" (`rows.mjs`'s module doc
+ * comment), and `out.label` is a property of the OUTPUT OBJECT at that slot
+ * index, which persists across `assignSlot` handing the same freed slot
+ * number to a completely different row later in the same session (see the
+ * "reassigned" branch below, and the regression test that caught this: two
+ * `int` rows sharing a slot across a remove+re-add produced a spurious
+ * "user-owned" label copied from the row that used to be there).
+ *
+ * Ownership rule (per `rows.mjs`'s `SLOT_LABEL_MODE` doc comment):
+ *
+ *  - This slot number was just handed to a DIFFERENT row than the one we
+ *    last processed it for, WITHIN THIS SESSION (`node._ctrlSlotRowId`
+ *    disagrees) -- a hard reset. Whatever text `out.label` currently
+ *    carries belongs to whichever row vacated the slot, never to this one,
+ *    so it is unconditionally overwritten with this row's own default,
+ *    regardless of what it happens to look like.
+ *  - Otherwise, `isBlankSlotLabel(out.label)` (a brand-new output with no
+ *    label at all, an empty string, the bare `ZW` sentinel, or pure
+ *    zero-width junk) OR exactly what we ourselves wrote on a PRIOR call
+ *    (tracked in `node._ctrlLastLabel`) -- still OURS to manage. Stamp
+ *    `defaultSlotLabel(row)`. This is the branch that makes a plain ROW
+ *    RENAME keep updating the slot label on every subsequent sync
+ *    (`defaultSlotLabel` re-derives from `row.name`, which just changed)
+ *    rather than freezing after the very first write.
+ *  - Anything else -- the user set this directly on the socket (litegraph's
+ *    own rename-slot dialog; confirmed live to pre-fill with the CURRENT
+ *    label, so renaming a ZW-sentinel'd or row-named slot lands as
+ *    `${ZW}typed text` / `${oldName}typed text`) -- hand it to
+ *    `node._ctrlOwnedLabels` PERMANENTLY for this session (a later row rename
+ *    must never silently revert a user's UE-disambiguating name -- that
+ *    reversion is the ORIGINAL bug report this function exists to fix). The
+ *    only thing still done to it is a ONE-TIME zero-width edge strip
+ *    (`stripZeroWidthEdges`), which is what heals the exact `${ZW}typed`
+ *    case into a clean value UE can match by name; a label with no such edge
+ *    is left byte-for-byte alone.
+ *
+ * `node._ctrlSlotRowId`/`_ctrlOwnedLabels`/`_ctrlLastLabel` are intentionally
+ * NOT persisted (plain node-instance fields, reset every fresh page load) --
+ * so on reload a slot with NO prior entry in `_ctrlSlotRowId` (the normal
+ * "first sync of a fresh session" case, not a same-session reassignment) is
+ * NOT hard-reset -- it falls through to the blank/last-written check above,
+ * same as ever: a label that survived the save/reload round trip and
+ * doesn't match a freshly-computed `defaultSlotLabel` is treated as the
+ * user's, even if it was actually only our own never-touched default from a
+ * prior session. That is the deliberately SAFE side to err on:
+ * mis-classifying an untouched default as "user-owned" only costs a future
+ * row-rename no longer propagating to a label nobody asked to keep in sync;
+ * the alternative (mis-classifying a real user rename as still-ours) would
+ * silently revert the user's UE-disambiguating name on the very next edit --
+ * exactly the bug this function replaces.
+ */
+function syncSlotLabel(node, row, out) {
+  const priorRowId = node._ctrlSlotRowId.get(row.slot);
+  const reassignedThisSession = priorRowId !== undefined && priorRowId !== row.id;
+  if (reassignedThisSession) {
+    node._ctrlOwnedLabels.delete(row.slot);
+    node._ctrlLastLabel.delete(row.slot);
+  }
+  node._ctrlSlotRowId.set(row.slot, row.id);
+
+  const raw = out.label;
+  const stillOurs =
+    reassignedThisSession ||
+    (!node._ctrlOwnedLabels.has(row.slot) && (isBlankSlotLabel(raw) || raw === node._ctrlLastLabel.get(row.slot)));
+
+  if (stillOurs) {
+    const want = defaultSlotLabel(row);
+    if (out.label !== want) {
+      out.label = want;
+    }
+    node._ctrlLastLabel.set(row.slot, want);
+    return;
+  }
+  node._ctrlOwnedLabels.add(row.slot);
+  const cleaned = stripZeroWidthEdges(raw);
+  if (cleaned !== raw) {
+    out.label = cleaned;
+  }
+}
+
+/**
  * Keep `node.outputs` sized to the HIGHEST slot currently in use (never to
  * `rows.length` — see `rows.mjs`'s module doc comment: slot is a durable
  * output-array INDEX, not a display position). A freed slot below the
@@ -1276,6 +1509,29 @@ export function syncOutputs(node, ctx) {
     }
   }
 
+  if (!node._ctrlSlotRowId) {
+    // slot number -> the row id we last processed THAT SLOT for -- lets
+    // `syncSlotLabel` detect "this slot number was just handed to a
+    // DIFFERENT row" (a freed slot reused by `assignSlot`) and hard-reset
+    // its label bookkeeping instead of misreading the vacated row's
+    // leftover text as this row's user-set label.
+    node._ctrlSlotRowId = new Map();
+  }
+  if (!node._ctrlOwnedLabels) {
+    // slot numbers whose label the USER set directly on the socket
+    // (litegraph's own rename-slot dialog) -- once a slot lands in here it
+    // stays forever for this session (until reassigned to a different row,
+    // see `syncSlotLabel` below).
+    node._ctrlOwnedLabels = new Set();
+  }
+  if (!node._ctrlLastLabel) {
+    // slot number -> the label WE ourselves last wrote -- lets
+    // `syncSlotLabel` tell "the user changed this since we last looked"
+    // from "still exactly what we stamped it with" without needing to
+    // persist anything.
+    node._ctrlLastLabel = new Map();
+  }
+
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
   state.rows.forEach((row) => {
     const idx = row.slot - 1;
@@ -1290,16 +1546,14 @@ export function syncOutputs(node, ctx) {
     // ComfyUI's node-def reconciliation treat the slot as unknown and
     // re-add a phantom output (see this module's top doc comment and
     // ComfyUI-Pixaroma's `js/sliders/core.mjs` `syncOutputs`, which
-    // documents the exact same contract). `label` is the ONLY field that
-    // carries the ZW -- that's what stops litegraph painting `name` on top
-    // of our own row DOM.
+    // documents the exact same contract). `label` is a SEPARATE concern,
+    // handled by `syncSlotLabel` below (rows.mjs's `SLOT_LABEL_MODE`/UE
+    // interop) -- never conflate the two the way this function used to.
     const wantName = `value_${row.slot}`;
     if (out.name !== wantName) {
       out.name = wantName;
     }
-    if (out.label !== ZW) {
-      out.label = ZW;
-    }
+    syncSlotLabel(node, row, out);
     const t = outputTypeForRow(row, lists);
     if (out.type !== t) {
       out.type = t;

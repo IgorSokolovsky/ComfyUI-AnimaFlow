@@ -59,6 +59,13 @@ import {
 } from "./render.mjs";
 import { wireInteractions, refreshFromWidgets, findWidget } from "./interaction.mjs";
 import { attachHighlighting, teardownHighlighting } from "./highlight_wiring.mjs";
+// Wheel-zooms-the-canvas-through-a-DOM-widget fix (Classic renderer only,
+// no-ops under Nodes 2.0) -- see js/shared/canvas_zoom.mjs's top doc
+// comment. A plain relative import (not guarded/dynamic): the module has
+// zero `app`/`window`/`LiteGraph` reference at its own module scope, so
+// it's exactly as safe to import statically as `render.mjs`/`interaction.mjs`
+// already are.
+import { installCanvasZoomPassthrough } from "../../shared/canvas_zoom.mjs";
 
 // Both encode-node variants (`nodes/prompt_rules/prompt_rules.py`) get the same
 // themed UI -- they differ only in output type (CONDITIONING vs STRING) and
@@ -288,6 +295,16 @@ function mountUI(node) {
   };
   refs.widget = widget;
 
+  // Wheel-zooms-the-canvas fix -- installed ONCE on the whole node's single
+  // root (unlike js/controls/, which has one addDOMWidget PER ROW, this node
+  // has exactly one, so one install gives full coverage). `scrollRegionWantsWheel`
+  // (js/shared/canvas_zoom.mjs) still lets the wheel scroll a genuinely
+  // scrollable descendant first -- the two POSITIVE/NEGATIVE `.wtn-pr-textarea`s
+  // (`overflow-y: auto`, `max-height: 280px` — render.mjs) keep scrolling a
+  // long prompt normally, and only pass the wheel through to zoom the canvas
+  // once scrolled to either end.
+  refs.uninstallZoom = installCanvasZoomPassthrough(refs.root, () => app.canvas && app.canvas.canvas);
+
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
   }
@@ -363,6 +380,7 @@ app.registerExtension({
       // `null` and every step there already no-ops.
       if (this._prRefs) {
         teardownHighlighting(this._prRefs);
+        this._prRefs.uninstallZoom?.();
       }
       return originalOnRemoved ? originalOnRemoved.apply(this, args) : undefined;
     };

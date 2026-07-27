@@ -323,6 +323,72 @@ export function mkRow(kind, overrides = {}) {
   return row;
 }
 
+// ---------------------------------------------------------------------------
+// Row presets — pre-configured `int`/`float` rows for a common control
+// (steps/cfg/denoise), NOT new kinds. `nodes/controls/_rows_helpers.py`'s
+// `value_for_row` dispatches on the row's `kind` STRING alone (verified by
+// reading it: `sampler`/`scheduler`/`seed`/`int`/`float`, anything else falls
+// through to `0`) — a genuinely new kind would need a matching Python change
+// or silently emit `0` while the UI still shows the real value, exactly the
+// failure class the UE label fix above already guards against once today. A
+// preset keeps `kind: "int"`/`kind: "float"` and only pre-fills
+// `name`/`value`/`opts`, so the existing backend path is already correct —
+// no Python change needed.
+// ---------------------------------------------------------------------------
+
+export const ROW_PRESETS = {
+  // Ranges below are the DRAGGABLE ranges, not KSampler's absolute limits
+  // (its `steps` allows up to 10000, `cfg` up to 100 — a slider spanning
+  // that is unusably fine-grained; same reasoning as `usefulRange` above).
+  steps: { kind: "int", menu: "Steps", name: "steps", value: 30, opts: { min: 1, max: 120, step: 1 } },
+  cfg: { kind: "float", menu: "CFG", name: "cfg", value: 5.0, opts: { min: 0, max: 20, step: 0.1 } },
+  denoise: { kind: "float", menu: "Denoise", name: "denoise", value: 1.0, opts: { min: 0, max: 1, step: 0.01 } },
+};
+
+/** Whether `id` is a preset id (`"steps"`/`"cfg"`/`"denoise"`) rather than a
+ * real row kind — the two id spaces never collide (no preset shares a name
+ * with a `KIND_META` key), but callers should use this rather than assuming. */
+export function isPresetId(id) {
+  return Object.prototype.hasOwnProperty.call(ROW_PRESETS, id);
+}
+
+/** The `{ menu, outputType }` a "+ Add" menu entry shows, whether `id` is a
+ * real row kind (straight from `KIND_META`) or a preset id (its OWN `menu`
+ * label, but the underlying kind's `outputType` — a preset has no socket
+ * type of its own, it borrows its base kind's). Returns `undefined` for
+ * neither (an unrecognized id), same as a bare `KIND_META[id]` lookup would. */
+export function menuMetaFor(id) {
+  if (isPresetId(id)) {
+    const preset = ROW_PRESETS[id];
+    const base = KIND_META[preset.kind];
+    return base && { menu: preset.menu, outputType: base.outputType };
+  }
+  return KIND_META[id];
+}
+
+/** Build a fresh row for `id` — either a bare kind (`mkRow(id)`, unchanged
+ * behaviour) or a preset id (`mkRow(preset.kind, {name, value, opts})`,
+ * additionally stamped `renamed: true`). That stamp is deliberate: without
+ * it, the FIRST wire this row's output gets would run through
+ * `applyResolvedKind` (below) exactly like any other row and silently adopt
+ * the connection target's name, relabeling a "cfg" row to whatever the
+ * target input happens to be called — defeating the entire point of a named
+ * preset. Reusing `renamed` (the same flag a manual rename sets) rather than
+ * inventing a parallel mechanism means every other renamed-row behavior
+ * (`applyResolvedKind` below, the row's own Rename menu item) already treats
+ * a preset identically to a user-renamed row for free. Range/step/value
+ * adoption on connect is UNAFFECTED — `applyResolvedKind` only gates the
+ * NAME half on `renamed`, never the opts/value half. */
+export function mkCatalogRow(id) {
+  if (isPresetId(id)) {
+    const preset = ROW_PRESETS[id];
+    const row = mkRow(preset.kind, { name: preset.name, value: preset.value, opts: preset.opts });
+    row.renamed = true;
+    return row;
+  }
+  return mkRow(id);
+}
+
 // Cap on a hand-typed row rename -- long enough for any real label, short
 // enough that a pasted essay can't blow out the row layout (the label
 // itself already ellipsizes past its own min-width, but the state file
@@ -495,15 +561,16 @@ export function normalizeState(raw, panelKind) {
   return { version: 1, rows };
 }
 
-/** Append a new `kind` row to `state` (display order: last), assigning it a
- * fresh slot. Returns the new row, or `null` if the panel is already at
- * `MAX_ROWS[panelKind]`. */
-export function addRow(state, kind, panelKind) {
+/** Append a new row to `state` for `kindOrPresetId` (a bare kind like
+ * `"int"`, or one of `ROW_PRESETS`'s ids like `"steps"` — `mkCatalogRow`
+ * resolves either) (display order: last), assigning it a fresh slot. Returns
+ * the new row, or `null` if the panel is already at `MAX_ROWS[panelKind]`. */
+export function addRow(state, kindOrPresetId, panelKind) {
   const maxRows = MAX_ROWS[panelKind] || MAX_ROWS.control;
   if (state.rows.length >= maxRows) {
     return null;
   }
-  const row = mkRow(kind);
+  const row = mkCatalogRow(kindOrPresetId);
   assignSlot(state.rows, row);
   state.rows.push(row);
   return row;
@@ -609,6 +676,90 @@ export function outputTypeForRow(row, listsByKind) {
     return resolveComboOutputType(list);
   }
   return meta.outputType;
+}
+
+// ---------------------------------------------------------------------------
+// Slot label — cg-use-everywhere ("UE") interop. UE can broadcast directly
+// FROM a node's own output slots (its right-click menu shows "Broadcasting
+// Outputs > sampler | scheduler"), no "Anything Everywhere" node needed —
+// but for REPEATED types (two COMBO rows: sampler + scheduler) it disambig-
+// uates by comparing the broadcasting output's NAME/LABEL against the
+// destination input's name, not just its type. Every slot previously carried
+// the bare `ZW` sentinel as its label (see `outputTypeForRow`'s sibling
+// concern, `out.name`, which must stay `value_${slot}` and is UNRELATED to
+// this), which worked by TYPE alone for a single COMBO row but left two rows
+// of the same type indistinguishable to UE.
+// ---------------------------------------------------------------------------
+
+/**
+ * `"row-name"` (default): a slot this module still owns (see
+ * `interaction.mjs`'s `syncOutputs`/`syncSlotLabel` ownership bookkeeping)
+ * gets labeled with the row's OWN display name (e.g. `"sampler"`), so UE's
+ * name-based disambiguation works with zero manual renaming. `"hidden"`: the
+ * pre-UE-interop behaviour — every still-owned slot's label stays the bare
+ * `ZW` sentinel (never painted, and useless to UE's name match, but
+ * guaranteed never to visibly bleed onto the canvas either).
+ *
+ * VERIFY-IN-COMFYUI: `ZW` exists ONLY to stop legacy litegraph painting the
+ * output's name/label text on the CANVAS on top of our own opaque DOM row —
+ * a real label should never visibly bleed through since our rows are DOM
+ * elements layered above the canvas, not painted BY it, but that has only
+ * been reasoned through here, not confirmed on a live page. If a real label
+ * DOES paint over a row, flip this back to `"hidden"` — same one-constant
+ * escape hatch as `COMBO_TYPE_STRATEGY` above.
+ */
+export const SLOT_LABEL_MODE = "row-name"; // "row-name" | "hidden"
+
+// Zero-width space (this module's `ZW`) and a leading BOM — both invisible,
+// both seen in the wild: litegraph's rename-slot dialog pre-fills with the
+// slot's CURRENT label, so renaming a ZW-sentinel'd slot produces
+// `${ZW}typed text` (confirmed against a live dump) — a UE exact-string name
+// match fails on that invisible leading character even though the visible
+// text reads identical to what the user typed.
+const ZW_EDGE_RE = /^[\u200b\ufeff]+|[\u200b\ufeff]+$/g;
+
+/** Strip a leading/trailing zero-width space or BOM from `label` — a no-op
+ * on a label that never had one. Exported so `interaction.mjs` can heal a
+ * `${ZW}typed` rename in place without re-deriving this regex. */
+export function stripZeroWidthEdges(label) {
+  return String(label ?? "").replace(ZW_EDGE_RE, "");
+}
+
+/** Whether `label` counts as "nothing meaningful has ever been written
+ * here" — a brand-new output with no `label` at all, an empty string, the
+ * bare `ZW` sentinel, or a label that's ONLY zero-width junk. This is the
+ * ONE condition `interaction.mjs`'s `syncSlotLabel` needs re-derived from
+ * scratch (a row that has never had a real label yet); it is NOT the whole
+ * ownership rule — a label matching what we ourselves last wrote is ALSO
+ * still ours, but that half needs `interaction.mjs`'s own per-node
+ * bookkeeping (this module never touches `node.*`), not this predicate. */
+export function isBlankSlotLabel(label) {
+  if (label === undefined || label === null || label === ZW) {
+    return true;
+  }
+  return stripZeroWidthEdges(label) === "";
+}
+
+/** The label a still-owned slot gets stamped with: the row's own (already
+ * sanitized, already length-capped — see `sanitizeRowName`/`MAX_ROW_NAME_LEN`
+ * above) display name in `"row-name"` mode, or the bare `ZW` sentinel in
+ * `"hidden"` mode. Never emits an empty string — falls back to the ZW
+ * sentinel rather than a label a user would see as a phantom blank rename,
+ * covering the (should-never-happen) case of a row with a blank name.
+ *
+ * `mode` defaults to the live `SLOT_LABEL_MODE` constant (every real caller
+ * — `interaction.mjs`'s `syncSlotLabel` — uses that default); the parameter
+ * exists ONLY so a test can exercise `"hidden"`'s behaviour without actually
+ * flipping the shipped default (unlike `COMBO_TYPE_STRATEGY`'s sibling
+ * `resolveComboOutputType`, which has no such override and is only verified
+ * by flipping the constant live — a real workflow can't safely mix per-row
+ * label modes, so this parameter is a test seam, not a per-row feature). */
+export function defaultSlotLabel(row, mode = SLOT_LABEL_MODE) {
+  if (mode === "hidden") {
+    return ZW;
+  }
+  const name = String((row && row.name) || (row && row.kind) || "").trim();
+  return name || ZW;
 }
 
 // ---------------------------------------------------------------------------
