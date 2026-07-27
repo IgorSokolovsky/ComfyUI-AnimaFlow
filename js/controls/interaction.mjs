@@ -1283,8 +1283,19 @@ export function syncOutputs(node, ctx) {
     if (!out) {
       return;
     }
-    if (out.name !== ZW) {
-      out.name = ZW;
+    // `name` must stay `value_${slot}` -- EXACTLY Python's `RETURN_NAMES`
+    // for that slot index (`nodes/controls/control_panel.py` /
+    // `loader_panel.py`: `f"value_{i + 1}"`). This is never the ZW, and
+    // never the row's own display name -- a mismatched `name` is what makes
+    // ComfyUI's node-def reconciliation treat the slot as unknown and
+    // re-add a phantom output (see this module's top doc comment and
+    // ComfyUI-Pixaroma's `js/sliders/core.mjs` `syncOutputs`, which
+    // documents the exact same contract). `label` is the ONLY field that
+    // carries the ZW -- that's what stops litegraph painting `name` on top
+    // of our own row DOM.
+    const wantName = `value_${row.slot}`;
+    if (out.name !== wantName) {
+      out.name = wantName;
     }
     if (out.label !== ZW) {
       out.label = ZW;

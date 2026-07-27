@@ -756,7 +756,7 @@ test("syncOutputs sizes node.outputs to the HIGHEST slot in use, not to rows.len
   assert.equal(node.outputs.length, 5);
   assert.equal(node.outputs[0].type, "INT"); // slot 1
   assert.equal(node.outputs[4].type, "FLOAT"); // slot 5
-  assert.equal(node.outputs[0].name, ZW);
+  assert.equal(node.outputs[0].name, "value_1"); // matches Python's RETURN_NAMES, never the ZW
 });
 
 test("syncOutputs narrows types per kind, and 'auto' stays '*'", () => {
@@ -770,6 +770,73 @@ test("syncOutputs narrows types per kind, and 'auto' stays '*'", () => {
   assert.equal(node.outputs[state.rows[0].slot - 1].type, "LATENT");
   assert.equal(node.outputs[state.rows[1].slot - 1].type, "COMBO");
   assert.equal(node.outputs[state.rows[2].slot - 1].type, "*");
+});
+
+test("syncOutputs: every OCCUPIED slot's name is exactly value_${slot} (matching Python's RETURN_NAMES), never the ZW, while label still carries the ZW so litegraph never paints the raw name over the row -- driven off whatever slot numbers the rows actually hold, including a non-contiguous gap, not hardcoded to slot 1", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int"); // slot 1
+  addRowAndSync(node, ctx, "float"); // slot 2
+  addRowAndSync(node, ctx, "seed"); // slot 3
+  removeRowAndSync(node, ctx, a.id); // frees slot 1 -- a real gap below the max
+  addRowAndSync(node, ctx, "sampler"); // reuses slot 1
+  addRowAndSync(node, ctx, "latent"); // slot 4 -- a real slot ABOVE 3, not the lowest
+
+  const state = ensureState(node, ctx);
+  assert.ok(state.rows.length >= 4, "test setup expected at least 4 live rows");
+  state.rows.forEach((row) => {
+    const out = node.outputs[row.slot - 1];
+    assert.ok(out, `no output object at slot ${row.slot}`);
+    assert.equal(out.name, `value_${row.slot}`, `slot ${row.slot}: name must match RETURN_NAMES exactly`);
+    assert.notEqual(out.name, ZW, `slot ${row.slot}: name must never be the ZW`);
+    assert.equal(out.label, ZW, `slot ${row.slot}: label must still carry the ZW`);
+  });
+});
+
+test("syncOutputs is diff-gated: a second call against UNCHANGED state writes to none of name/label/type on any occupied output -- protects the clean-workflow-modified behavior (docs/control-panel-design.md §7)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "sampler");
+  addRowAndSync(node, ctx, "latent");
+  const state = ensureState(node, ctx);
+
+  // Replace each occupied output with a write-counting shadow of itself --
+  // a real property (not a fresh object) so `syncOutputs`'s own `out.name`/
+  // `out.label`/`out.type` reads still see the exact current value; only
+  // ASSIGNMENT is what must not happen again.
+  const writes = { name: 0, label: 0, type: 0 };
+  state.rows.forEach((row) => {
+    const out = node.outputs[row.slot - 1];
+    let { name, label, type } = out;
+    Object.defineProperty(out, "name", {
+      get: () => name,
+      set: (v) => {
+        writes.name += 1;
+        name = v;
+      },
+    });
+    Object.defineProperty(out, "label", {
+      get: () => label,
+      set: (v) => {
+        writes.label += 1;
+        label = v;
+      },
+    });
+    Object.defineProperty(out, "type", {
+      get: () => type,
+      set: (v) => {
+        writes.type += 1;
+        type = v;
+      },
+    });
+  });
+
+  syncOutputs(node, ctx);
+
+  assert.deepEqual(writes, { name: 0, label: 0, type: 0 }, "syncOutputs re-wrote an already-correct output field");
 });
 
 test("alignOutputsLegacy parks each row's dot at its OWN widget's Y, offset by margin + half a row", () => {
