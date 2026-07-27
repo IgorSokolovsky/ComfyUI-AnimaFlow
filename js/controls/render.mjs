@@ -108,8 +108,11 @@ const CSS = `
    and inherit position:relative;display:flex, knocking the dot out of
    absolute flow and eating ~19px of row width. */
 .wtn-ctl-dot {
-  position: absolute; right: -18px; top: 50%; transform: translateY(-50%);
-  width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid #0b0e13;
+  /* width/height/right below are EYEBALLED against the real litegraph
+     output socket in a live ComfyUI (alignOutputsLegacy parks that socket
+     at node.size[0] on this row's Y) -- empirical, don't "round" them. */
+  position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
+  width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #0b0e13;
 }
 .wtn-ctl-dot.t-int { background: #7dd3fc; }
 .wtn-ctl-dot.t-float { background: #4ade80; }
