@@ -591,6 +591,9 @@ const state = {
   // Inline mode owns the latent too -- "inline" means every resource, and size
   // is one (design doc s3).
   latent: { w: 832, h: 1216, ratio: "2:3", batch: 1 },
+  // Per-stage inherit. It governs sampler_name + scheduler ONLY -- steps, cfg
+  // and denoise stay editable either way (design doc s6b).
+  inherit: { highres: true, upscale: true, detailer: true },
   preview: { on: true, a: "base", b: "final", x: 50 },
   // The Preview node saves too -- upstream's Save Options live in the generator,
   // but the node HOLDING the images is where "save this one" belongs, and it's
@@ -662,7 +665,7 @@ function resolverHtml() {
 // Generator node
 // ───────────────────────────────────────────────────────────────────────────
 const STAGES = [
-  { k: "highres", n: "Highres", s: () => `${1.5}x  denoise .25  ${state.stages.highres ? "20 steps" : ""}` },
+  { k: "highres", n: "Highres", s: () => `1.5x  denoise .25  20 steps${state.inherit.highres ? "" : "  own sampler"}` },
   { k: "detailer", n: "Detailer", s: () => {
       if (!state.have.impact) return "Impact Pack not installed";
       const live = state.blocks.filter((b) => b.on);
@@ -899,6 +902,28 @@ function f(label, value, opts) {
 }
 
 const SAMPLERS = ["er_sde", "euler", "euler_ancestral", "dpmpp_2m", "heun", "ddim"];
+
+/** The per-stage sampler block. `inherit_sampler_settings` hides sampler_name
+ * and scheduler ONLY -- steps/cfg/denoise are always this stage's own, because
+ * a low-denoise pass routinely wants fewer steps and a lower cfg than the base.
+ * (Upstream inherits cfg too, yet ships highres cfg 8.0 WITH inherit on, so its
+ * own 8.0 is unreachable by default. We diverge deliberately -- design doc s6b.) */
+function stageSampler(key, dflt) {
+  const on = state.inherit[key];
+  return `<div class="sublab">sampler &middot; this stage</div>
+    <div class="field"><span>inherit</span>
+      <span class="driven" data-act="inh" data-k="${key}"
+        style="${on ? "" : "color:var(--ink-dim);border-color:var(--line);background:none"}"
+        title="Inherit the first pass's sampler_name + scheduler">
+        ${on ? "on &middot; sampler + scheduler from the first pass" : "off &middot; this stage picks its own"}</span></div>
+    <div class="grid2" style="margin-top:7px">
+      ${f("steps", dflt.steps)}${f("cfg", dflt.cfg)}${f("denoise", dflt.denoise)}
+      ${on ? "" : f("sampler_name", dflt.sampler, SAMPLERS) + f("scheduler", dflt.sched, SCHEDS)}
+    </div>
+    ${on ? `<div class="dnote" style="margin:9px 0 0">Using
+      <b>${esc(state.sampler.name)}</b> / <b>${esc(state.sampler.sched)}</b> from the first pass.
+      Steps, cfg and denoise above are still this stage's own.</div>` : ""}`;
+}
 const SCHEDS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 
 function dlgBody(tab) {
@@ -995,11 +1020,8 @@ function dlgBody(tab) {
       <div class="grid2">
         ${f("scale_by", 1.5)}${f("upscale_method", "bicubic", ["bicubic", "bilinear", "nearest-exact", "area"])}
         ${f("multiple", 32)}${f("max_long_edge", 2560)}
-        ${f("denoise", 0.25)}${f("inherit_sampler_settings", "true", ["true", "false"])}
       </div>
-      <div class="sublab">overrides &middot; used only when inherit is off</div>
-      <div class="grid2">${f("steps", 20)}${f("cfg", 8.0)}
-        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "simple", SCHEDS)}</div>`;
+      ${stageSampler("highres", { steps: 20, cfg: 8.0, denoise: 0.25, sampler: "euler", sched: "simple" })}`;
   }
   if (tab === "detailer") {
     if (!state.have.impact) {
@@ -1040,7 +1062,7 @@ function dlgBody(tab) {
       </div>
       <div class="sublab">refine</div>
       <div class="grid2">
-        ${f("denoise", 0.33)}${f("feather", 5)}
+        ${f("feather", 5)}
         ${f("guide_size", 1024)}${f("max_size", 2048)}
         ${f("crop_factor", 4.0)}${f("cycle", 1)}
         ${f("noise_mask", "true", ["true", "false"])}${f("force_inpaint", "true", ["true", "false"])}
@@ -1055,9 +1077,7 @@ function dlgBody(tab) {
       not be <code>0</code> -- upstream never ships 0, and it's the main control against visible
       seams. Upstream ships <b>10 for face, 20 for eye</b>, which is why per-block settings are worth
       keeping. Both were wrong in the deleted port.</div>
-      <div class="sublab">overrides</div>
-      <div class="grid2">${f("inherit_sampler_settings", "true", ["true", "false"])}${f("steps", 20)}
-        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "sgm_uniform", SCHEDS)}</div>`;
+      ${stageSampler("detailer", { steps: 20, cfg: 8.0, denoise: 0.33, sampler: "euler", sched: "sgm_uniform" })}`;
   }
   if (tab === "upscale") {
     if (!state.have.usdu) {
@@ -1068,7 +1088,7 @@ function dlgBody(tab) {
     return `<div class="dnote">USDU only -- one backend, not two. Seam-fix is exposed here because
       the deleted port hardcoded it to <code>None</code>, making seam repair unreachable.</div>
       <div class="grid2">
-        ${f("scale_by", 2.0)}${f("denoise", 0.2)}
+        ${f("scale_by", 2.0)}
         ${f("upscale_model", "2x-AnimeSharpV4_Fast_RCAN_PU")}${f("mode_type", "Linear", ["Linear", "Chess", "None"])}
       </div>
       <div class="sublab">tiles</div>
@@ -1084,7 +1104,8 @@ function dlgBody(tab) {
       </div>
       <div class="dnote" style="margin:11px 0 0"><code>mode_type</code> is tile <b>order</b>
       (Linear/Chess/None). <code>tiled_decode</code> is an unrelated VAE flag -- they get conflated,
-      don't.</div>`;
+      don't.</div>
+      ${stageSampler("upscale", { steps: 20, cfg: 8.0, denoise: 0.2, sampler: "euler", sched: "simple" })}`;
   }
   if (tab === "postprocess") {
     return `<div class="dnote">The output size <b>cap</b>. The deleted port only ever rounded up,
@@ -1206,6 +1227,7 @@ document.addEventListener("click", (e) => {
   else if (act === "close") state.dlg = null;
   else if (act === "pvon") state.preview.on = !state.preview.on;
   else if (act === "pvsaveon") state.pvsave.on = !state.pvsave.on;
+  else if (act === "inh") state.inherit[t.dataset.k] = !state.inherit[t.dataset.k];
   else if (act === "pva") state.preview.a = t.dataset.v;
   else if (act === "pvb") state.preview.b = t.dataset.v;
   else if (act === "block") state.block = t.dataset.v;
