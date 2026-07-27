@@ -105,7 +105,17 @@ def _pydeps_has_content():
 DEFAULT_CONFIG = {
     "version": 1,
     "paths": {"gdrive_base": GDRIVE_BASE, "comfy_path": COMFY_PATH},
-    "settings": {"packs_update_mode": "pull", "env_force_reqs": False, "tail_lines": 40},
+    # comfy_ref_mode: "master" = track the branch tip · "pin" = check out comfy_ref
+    # (a tag/sha). Pin when master regresses; ComfyUI cuts patch tags (v0.28.1+) on a
+    # release branch, so a tag is NOT simply "master + fixes" — it diverges from it.
+    # frontend_override off → ComfyUI uses the comfyui-frontend-package pinned by the
+    # checked-out ref's requirements.txt. On → launch with --front-end-version, which
+    # downloads that build from GitHub releases instead. Independent of comfy_ref: the
+    # UI bugs live in the frontend, so this pins the UI without moving the repo.
+    "settings": {"packs_update_mode": "pull", "env_force_reqs": False, "tail_lines": 40,
+                 "comfy_ref_mode": "master", "comfy_ref": "v0.28.3",
+                 "frontend_override": False,
+                 "frontend_version": "Comfy-Org/ComfyUI_frontend@1.48.5"},
     "node_packs": [
         {"name": "ComfyUI-AnimaFlow",             "url": "https://github.com/IgorSokolovsky/ComfyUI-AnimaFlow.git",    "enabled": True},
         {"name": "ComfyUI_IPAdapter_plus",        "url": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",        "enabled": True},
@@ -229,13 +239,58 @@ def link_drive_folders(log):
         os.symlink(target, source)
     log(f"   · {len(SYMLINKS)} symlinks OK")
 
-def bootstrap_env(force, log):
+def _comfy_version(log):
+    """Log what we actually ended up on: the version string ComfyUI reports plus the
+    nearest tag. Master's comfyui_version.py lags its own patch tags (it still says
+    0.28.0 while v0.28.3 exists), so print both or the log is misleading."""
+    ver = "?"
+    try:
+        with open(os.path.join(COMFY_PATH, "comfyui_version.py")) as f:
+            for line in f:
+                if "__version__" in line:
+                    ver = line.split("=", 1)[1].strip().strip("\"'")
+                    break
+    except Exception:
+        pass
+    desc = subprocess.run(["git", "-C", COMFY_PATH, "describe", "--tags", "--always"],
+                          capture_output=True, text=True).stdout.strip()
+    log(f"   · ComfyUI {ver}  (git {desc or _git_head(COMFY_PATH)[:8]})")
+
+def checkout_comfy(ref, log):
+    """ref = "" → track master's tip · ref = "v0.28.3"/sha → detached checkout.
+
+    checkout needs -f because link_drive_folders() has replaced tracked dirs
+    (models/, input/, custom_nodes/, user/) with symlinks, so git sees them as
+    deleted and refuses a clean switch.
+
+    IMPORTANT: -f DROPS those symlinks — git deletes each one and restores the real
+    tracked dir (models/put_checkpoints_here, input/example.png …) in its place. The
+    Drive data is never touched (git replaces the link, it does not write through
+    it), but ComfyUI would then read local /content instead of Drive. That is why
+    bootstrap_env() must call link_drive_folders() AFTER this — do not reorder.
+
+    Only master gets a pull; a tag checkout is a detached HEAD, where `git pull`
+    fails."""
+    _run(["git", "-C", COMFY_PATH, "fetch", "--tags", "--force", "origin"], log)
+    target = ref or "master"
+    log(f"▸ checkout ComfyUI @ {target}")
+    if _run(["git", "-C", COMFY_PATH, "checkout", "-f", target], log) != 0:
+        log(f"   ✖ no such ref '{target}' — staying put. Check the tag name.")
+        return False
+    if not ref:
+        _run(["git", "-C", COMFY_PATH, "pull", "--ff-only"], log)
+    _comfy_version(log)
+    return True
+
+def bootstrap_env(force, log, ref=""):
     if not os.path.exists(COMFY_PATH):
         log("▸ cloning ComfyUI…")
-        _run(["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", COMFY_PATH], log)
+        # full clone (no --depth): a shallow one has no tags to check out
+        _run(["git", "clone", "https://github.com/Comfy-Org/ComfyUI.git", COMFY_PATH], log)
+        checkout_comfy(ref, log)
     else:
-        log("▸ git pull ComfyUI")
-        _run(["git", "-C", COMFY_PATH, "pull", "--ff-only"], log)
+        log("▸ git fetch ComfyUI")
+        checkout_comfy(ref, log)
 
     log("▸ pip install ComfyUI requirements" + ("  (--force-reinstall)" if force else ""))
     cmd = PIP + ["install", "--cache-dir", PIP_CACHE]
@@ -383,7 +438,7 @@ def _port_open(port=8188, host="127.0.0.1"):
         s.settimeout(1)
         return s.connect_ex((host, port)) == 0
 
-def launch_comfy(token, log, set_status, set_url):
+def launch_comfy(token, log, set_status, set_url, frontend=""):
     """Start ComfyUI and wait (SYNCHRONOUSLY) until :8188 answers, then open the
     tunnel. Synchronous on purpose: in Colab, log lines only stream to the browser
     during blocking main-thread execution — an asyncio/thread waiter would run
@@ -401,9 +456,16 @@ def launch_comfy(token, log, set_status, set_url):
     # No PYTHONPATH on purpose: ComfyUI picks up PY_DEPS via the .pth file, which
     # APPENDS it, so Colab's CUDA-matched base numpy/protobuf/torch win.
     logf = open(LOG_PATH, "w")
+    argv = [sys.executable, "-u", "main.py", "--listen", "0.0.0.0", "--port", "8188",
+            "--cuda-device", "0", "--enable-cors-header", "*"]
+    if frontend:
+        # owner/repo@version — ComfyUI fetches this build from GitHub releases at boot
+        # (needs network; it caches under ComfyUI/web_custom_versions afterwards). An
+        # unknown version makes ComfyUI exit early, which shows up as "exited early".
+        argv += ["--front-end-version", frontend]
+        log(f"   · frontend override: {frontend}")
     COMFY_PROC = subprocess.Popen(
-        [sys.executable, "-u", "main.py", "--listen", "0.0.0.0", "--port", "8188",
-         "--cuda-device", "0", "--enable-cors-header", "*"],
+        argv,
         cwd=COMFY_PATH, stdout=logf, stderr=subprocess.STDOUT,
         env=dict(os.environ, PYTHONUNBUFFERED="1"),
         start_new_session=True)   # own process group → Stop can kill it + any children cleanly
@@ -580,16 +642,41 @@ def bg(btn, busy_label, fn):
         btn.disabled, btn.description = False, old
 
 # ---------- 01 Environment ----------
+comfy_src = widgets.RadioButtons(
+    options=[("master — latest commits", "master"), ("pinned tag / sha", "pin")],
+    value=cfg["settings"].get("comfy_ref_mode", "master"), description="ComfyUI:",
+    style={"description_width": "initial"})
+comfy_ref = widgets.Text(value=cfg["settings"].get("comfy_ref", "v0.28.3"),
+                         placeholder="v0.28.3", description="ref:",
+                         layout={"width": "230px"},
+                         disabled=cfg["settings"].get("comfy_ref_mode", "master") != "pin")
 env_force = widgets.Checkbox(value=cfg["settings"]["env_force_reqs"],
                              description="Force-reinstall ComfyUI requirements", indent=False)
 env_btn   = widgets.Button(description="Bootstrap / Update", button_style="primary", icon="rocket")
 env_log   = LogBox()
+
+def _comfy_src_change(c):
+    cfg["settings"]["comfy_ref_mode"] = c["new"]
+    comfy_ref.disabled = c["new"] != "pin"
+    ui_save()
+def _comfy_ref_change(c): cfg["settings"]["comfy_ref"] = c["new"].strip(); ui_save()
+comfy_src.observe(_comfy_src_change, names="value")
+comfy_ref.observe(_comfy_ref_change, names="value")
+
+def _wanted_ref():
+    """"" = track master · otherwise the pinned tag/sha."""
+    return comfy_ref.value.strip() if comfy_src.value == "pin" else ""
+
 def _env_force_change(c): cfg["settings"]["env_force_reqs"] = c["new"]; ui_save()
 env_force.observe(_env_force_change, names="value")
 env_btn.on_click(lambda _: bg(env_btn, "Bootstrapping…",
-                              lambda: (env_log.clear(), bootstrap_env(env_force.value, env_log))))
+                              lambda: (env_log.clear(),
+                                       bootstrap_env(env_force.value, env_log, _wanted_ref()))))
 sec_env = widgets.VBox([
     widgets.HTML("<b>Clone/pull ComfyUI, install its requirements, symlink Drive, install Manager.</b>"),
+    widgets.HBox([comfy_src, comfy_ref]),
+    widgets.HTML("<small>Pin a tag when master regresses. Switching either way re-runs the "
+                 "requirements install, since <code>requirements.txt</code> differs per ref.</small>"),
     env_force, env_btn, env_log.w])
 
 # ---------- 02 Node packs ----------
@@ -814,21 +901,48 @@ def set_url(urls):
     else:
         url_html.value = "<i style='color:#888'>tunnel URL appears here once running…</i>"
 
+fe_on  = widgets.Checkbox(value=cfg["settings"].get("frontend_override", False),
+                          description="Override frontend version", indent=False,
+                          layout={"width": "260px"})
+fe_ver = widgets.Text(value=cfg["settings"].get("frontend_version",
+                                                "Comfy-Org/ComfyUI_frontend@1.48.5"),
+                      placeholder="Comfy-Org/ComfyUI_frontend@1.48.5",
+                      layout={"width": "330px"},
+                      disabled=not cfg["settings"].get("frontend_override", False))
+def _fe_on_change(c):
+    cfg["settings"]["frontend_override"] = c["new"]
+    fe_ver.disabled = not c["new"]
+    ui_save()
+def _fe_ver_change(c): cfg["settings"]["frontend_version"] = c["new"].strip(); ui_save()
+fe_on.observe(_fe_on_change, names="value")
+fe_ver.observe(_fe_ver_change, names="value")
+
+def _wanted_frontend():
+    """"" = use the ref's pinned comfyui-frontend-package · else owner/repo@version."""
+    return fe_ver.value.strip() if fe_on.value else ""
+
 # launch/restart are NOT wrapped in bg(): launch_comfy returns immediately (the wait
 # runs as an async task), and set_status drives the button enable/disable states.
 def _do_launch(_):
     launch_log.clear()
-    launch_comfy(pinggy_token.value.strip(), launch_log, set_status, set_url)
+    launch_comfy(pinggy_token.value.strip(), launch_log, set_status, set_url,
+                 _wanted_frontend())
 launch_btn.on_click(_do_launch)
 stop_btn.on_click(lambda _: stop_comfy(launch_log, set_status, set_url))
 def _restart(_):
     stop_comfy(launch_log, set_status, set_url)
     time.sleep(3)   # let port :8188 fully release before the new bind (blocking, like launch)
-    launch_comfy(pinggy_token.value.strip(), launch_log, set_status, set_url)
+    launch_comfy(pinggy_token.value.strip(), launch_log, set_status, set_url,
+                 _wanted_frontend())
 restart_btn.on_click(_restart)
 set_status("running" if comfy_running() else "stopped")
 sec_launch = widgets.VBox([
     pinggy_token, pinggy_remember,
+    widgets.HBox([fe_on, fe_ver]),
+    widgets.HTML("<small>Off = whatever <code>requirements.txt</code> pinned for the checked-out "
+                 "ref. On = boot that frontend build instead (Restart to apply). Handy for the "
+                 "Nodes 2.0 subgraph/resize regressions: <code>@1.45.21</code> predates them, "
+                 "<code>@1.48.5</code> fixes them, master pins <code>1.47.10</code> which has them."),
     widgets.HBox([launch_btn, restart_btn, stop_btn]),
     url_html, launch_log.w])
 
@@ -866,6 +980,10 @@ def _reset(_):
     # re-sync every control from fresh cfg
     packs_mode.value = cfg["settings"]["packs_update_mode"]
     env_force.value  = cfg["settings"]["env_force_reqs"]
+    comfy_src.value  = cfg["settings"]["comfy_ref_mode"]
+    comfy_ref.value  = cfg["settings"]["comfy_ref"]
+    fe_on.value      = cfg["settings"]["frontend_override"]
+    fe_ver.value     = cfg["settings"]["frontend_version"]
     pip_text.value   = cfg["extra_pip"]
     pinggy_remember.value = cfg["tunnel"]["remember_token"]
     pinggy_token.value    = cfg["tunnel"].get("pinggy_token", "")

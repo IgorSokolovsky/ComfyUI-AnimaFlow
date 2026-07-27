@@ -294,6 +294,17 @@
     <div class="card-bd">
       <p class="hint">Clones/updates ComfyUI, installs its <code>requirements.txt</code>, creates the Drive symlinks, and installs ComfyUI-Manager. Run once per session (or after a ComfyUI update).</p>
       <div class="row">
+        <label>ComfyUI ref
+          <select id="env-ref-mode">
+            <option value="master">master — latest commits</option>
+            <option value="pin">pinned tag / sha</option>
+          </select>
+        </label>
+        <input type="text" id="env-ref" placeholder="v0.28.3" style="width:140px" disabled>
+        <span class="spacer"></span>
+      </div>
+      <p class="hint">Pin a tag when master regresses — e.g. master's <code>requirements.txt</code> pulls a newer <code>comfyui-frontend-package</code> than a tag does.</p>
+      <div class="row">
         <label class="toggle-tail"><input type="checkbox" id="env-force"> Force-reinstall ComfyUI requirements</label>
       </div>
       <div class="row">
@@ -408,6 +419,12 @@
         <label class="toggle-tail"><input type="checkbox" id="pinggy-remember" checked> Remember token in config</label>
       </div>
       <div class="row">
+        <label class="toggle-tail"><input type="checkbox" id="fe-on"> Override frontend version</label>
+        <input class="text" id="fe-ver" type="text" style="width:330px"
+               placeholder="Comfy-Org/ComfyUI_frontend@1.48.5" disabled>
+      </div>
+      <p class="hint">Off = whatever <code>requirements.txt</code> pinned for the checked-out ref. On = boot that frontend build instead (Restart to apply). For the Nodes 2.0 subgraph/resize regressions: <code>@1.45.21</code> predates them, <code>@1.48.5</code> fixes them, master pins <code>1.47.10</code> which has them.</p>
+      <div class="row">
         <button class="btn" id="launch-run">Launch ComfyUI</button>
         <button class="btn ghost" id="launch-restart" disabled>Restart</button>
         <button class="btn danger" id="launch-stop" disabled>Stop</button>
@@ -507,7 +524,10 @@
   const DEFAULT_CFG = () => ({
     version: 1,
     paths: { gdrive_base: '/content/drive/MyDrive/ComfyUI', comfy_path: '/content/ComfyUI' },
-    settings: { packs_update_mode: 'pull', env_force_reqs: false },
+    settings: { packs_update_mode: 'pull', env_force_reqs: false,
+                comfy_ref_mode: 'master', comfy_ref: 'v0.28.3',
+                frontend_override: false,
+                frontend_version: 'Comfy-Org/ComfyUI_frontend@1.48.5' },
     node_packs: [
       { name: 'ComfyUI_IPAdapter_plus', url: 'https://github.com/cubiq/ComfyUI_IPAdapter_plus.git', enabled: true },
       { name: 'comfyui_controlnet_aux', url: 'https://github.com/Fannovel16/comfyui_controlnet_aux.git', enabled: true },
@@ -577,12 +597,23 @@
 
   /* ---------------- 01 Environment ---------------- */
   $('env-force').addEventListener('change', e => { cfg.settings.env_force_reqs = e.target.checked; save(); });
+  $('env-ref-mode').addEventListener('change', e => {
+    cfg.settings.comfy_ref_mode = e.target.value;
+    $('env-ref').disabled = e.target.value !== 'pin';
+    save();
+  });
+  $('env-ref').addEventListener('change', e => { cfg.settings.comfy_ref = e.target.value.trim(); save(); });
   $('env-run').addEventListener('click', async () => {
     const btn = $('env-run'), log = $('env-log'), prog = $('env-prog');
     busy(btn, true, 'Bootstrapping…'); log.innerHTML = ''; resetProg(prog);
     const force = $('env-force').checked;
     $('env-sub').textContent = 'running…';
-    await stream(log, [['▸ git pull ComfyUI', 'head']]);
+    const ref = $('env-ref-mode').value === 'pin' ? ($('env-ref').value.trim() || 'v0.28.3') : 'master';
+    await stream(log, [
+      ['▸ git fetch ComfyUI', 'head'],
+      [`▸ checkout ComfyUI @ ${ref}`, 'head'],
+      [`  · ComfyUI ${ref === 'master' ? '0.28.0  (git v0.28.0-45-gf796677)' : '0.28.3  (git v0.28.3)'}`, 'dim'],
+    ]);
     setProg(prog, 15);
     await stream(log, [
       ['  Already up to date.', 'dim'],
@@ -785,6 +816,12 @@
     cfg.tunnel.pinggy_token = e.target.checked ? $('pinggy-token').value : '';
     save();
   });
+  $('fe-on').addEventListener('change', e => {
+    cfg.settings.frontend_override = e.target.checked;
+    $('fe-ver').disabled = !e.target.checked;
+    save();
+  });
+  $('fe-ver').addEventListener('change', e => { cfg.settings.frontend_version = e.target.value.trim(); save(); });
   let serverUp = false;
   const pill = $('statuspill');
   function setState(s, label) { pill.dataset.state = s; pill.lastChild.textContent = ' ' + (label || s.toUpperCase()); $('launch-sub').textContent = label ? label.toLowerCase() : s; }
@@ -808,6 +845,9 @@
     busy(btn, true, 'Launching…'); log.innerHTML = ''; resetProg(prog);
     setState('starting', 'starting');
     setProg(prog, 20);
+    if ($('fe-on').checked) {
+      logline(log, '   · frontend override: ' + ($('fe-ver').value.trim() || 'Comfy-Org/ComfyUI_frontend@1.48.5'), 'accent');
+    }
     await stream(log, bootLog, { min: 120, max: 320 });
     setProg(prog, 70);
     logline(log, '▸ pinggy tunnel → localhost:8188', 'head');
@@ -874,6 +914,12 @@
     const modeRadio = document.querySelector(`input[name=pmode][value="${cfg.settings.packs_update_mode}"]`);
     if (modeRadio) modeRadio.checked = true;
     $('env-force').checked = !!cfg.settings.env_force_reqs;
+    $('env-ref-mode').value = cfg.settings.comfy_ref_mode || 'master';
+    $('env-ref').value = cfg.settings.comfy_ref || 'v0.28.3';
+    $('env-ref').disabled = (cfg.settings.comfy_ref_mode || 'master') !== 'pin';
+    $('fe-on').checked = !!cfg.settings.frontend_override;
+    $('fe-ver').value = cfg.settings.frontend_version || 'Comfy-Org/ComfyUI_frontend@1.48.5';
+    $('fe-ver').disabled = !cfg.settings.frontend_override;
     $('pip-text').value = cfg.extra_pip || '';
     $('pinggy-remember').checked = cfg.tunnel.remember_token !== false;
     $('pinggy-token').value = cfg.tunnel.remember_token !== false ? (cfg.tunnel.pinggy_token || '') : '';
