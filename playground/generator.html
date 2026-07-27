@@ -1,0 +1,939 @@
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #151a21;
+    --panel-2: #1b212a;
+    --line: #28303b;
+    --line-soft: #1f2731;
+    --ink: #e7ecf3;
+    --ink-dim: #93a0b1;
+    --ink-faint: #5f6c7d;
+    --accent: #2dd4bf;
+    --accent-strong: #34e5d2;
+    --accent-deep: #14b8a6;
+    --on-accent: #062420;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --info: #7dd3fc;
+    --tmp: #c4b5fd;
+    --console: #0a0d12;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); font-family: var(--ui);
+    background:
+      radial-gradient(900px 420px at 82% -160px, rgba(45,212,191,.10), transparent 70%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  /* ── page header ─────────────────────────────────────────────── */
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .glyph {
+    width: 30px; height: 30px; border-radius: 9px; flex: none;
+    background: radial-gradient(circle at 30% 30%, var(--accent), var(--accent-deep));
+    box-shadow: 0 0 18px rgba(45,212,191,.35);
+  }
+  h1 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+  .head .sub { font-size: 12.5px; color: var(--ink-dim); }
+  .note {
+    font-size: 12.5px; color: var(--ink-dim); line-height: 1.65; margin: 14px 0 10px;
+    padding: 11px 14px; background: var(--panel); border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--accent); border-radius: 0 10px 10px 0; max-width: 880px;
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+  .live {
+    font-size: 12.5px; color: var(--ink-dim); margin: 0 0 24px; padding: 9px 13px;
+    max-width: 880px; border-radius: 0 10px 10px 0; line-height: 1.6;
+    background: var(--panel); border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--warn);
+  }
+  .live b { color: var(--warn); font-weight: 600; }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+
+  .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-faint); margin: 26px 0 10px;
+  }
+
+  /* ── canvas stage ────────────────────────────────────────────── */
+  .stage {
+    position: relative; display: flex; gap: 44px; flex-wrap: wrap; align-items: flex-start;
+    padding: 30px 34px 40px; border-radius: 14px; border: 1px solid var(--line-soft);
+    background:
+      linear-gradient(rgba(255,255,255,.014) 1px, transparent 1px) 0 0 / 22px 22px,
+      linear-gradient(90deg, rgba(255,255,255,.014) 1px, transparent 1px) 0 0 / 22px 22px,
+      #0b0e13;
+  }
+
+  /* ── a node ──────────────────────────────────────────────────── */
+  .node {
+    width: 352px; border-radius: 11px; border: 1px solid var(--line);
+    background: var(--panel); box-shadow: 0 14px 34px rgba(0,0,0,.5);
+  }
+  .node.prev { width: 396px; }
+  .titlebar {
+    display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+    background: linear-gradient(180deg, var(--panel-2), #171d25);
+    border-bottom: 1px solid var(--line); border-radius: 10px 10px 0 0;
+  }
+  .titlebar .tdot {
+    width: 9px; height: 9px; border-radius: 50%; flex: none;
+    background: var(--accent); box-shadow: 0 0 8px rgba(45,212,191,.55);
+  }
+  .titlebar .ttl { font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; }
+  .titlebar .badge {
+    margin-left: auto; font-family: var(--mono); font-size: 8.5px; letter-spacing: .1em;
+    color: var(--tmp); border: 1px solid rgba(196,181,253,.4); border-radius: 4px;
+    padding: 1px 4px; text-transform: uppercase;
+  }
+  .body { padding: 9px 11px 12px; }
+
+  /* ── input / output socket lines ─────────────────────────────── */
+  .sock {
+    display: flex; align-items: center; gap: 8px; height: 21px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+  }
+  .sock .d {
+    width: 9px; height: 9px; border-radius: 50%; flex: none;
+    border: 1.5px solid var(--line); background: var(--console);
+  }
+  .sock.out { justify-content: flex-end; text-align: right; }
+  .sock.out .d { order: 2; }
+  .sock.wired .d { background: var(--accent); border-color: var(--accent); }
+  .sock.opt .d { border-style: dashed; }
+  .sock.ignored { opacity: .34; }
+  .sock .ty {
+    font-size: 8.5px; letter-spacing: .08em; color: var(--ink-faint);
+    border: 1px solid var(--line-soft); border-radius: 3px; padding: 0 3px;
+  }
+  .sock .same { color: var(--warn); font-size: 9px; }
+  .sockgrp { margin: 2px 0 8px; }
+
+  /* ── generic row inside the node body ────────────────────────── */
+  .row {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    height: 25px; margin-bottom: 4px; padding: 0 8px;
+    background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 6px;
+    font-size: 11.5px;
+  }
+  .row .nm { color: var(--ink-dim); white-space: nowrap; }
+  .row .val {
+    margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink);
+    white-space: nowrap;
+  }
+  .row.click { cursor: pointer; }
+  .row.click:hover { border-color: var(--accent-deep); }
+  .row.click:hover .val { color: var(--accent-strong); }
+
+  /* ── a stage row: toggle + name + summary + gear ─────────────── */
+  .stagerow {
+    display: flex; align-items: center; gap: 9px; height: 27px;
+    margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+  }
+  .stagerow.off { opacity: .5; }
+  .stagerow.dep { border-color: rgba(251,191,36,.3); }
+  .sw {
+    position: relative; width: 26px; height: 14px; flex: none; cursor: pointer;
+    background: var(--console); border: 1px solid var(--line); border-radius: 8px;
+    transition: background .12s, border-color .12s;
+  }
+  .sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint);
+    transition: transform .12s, background .12s;
+  }
+  .sw.on { background: rgba(45,212,191,.22); border-color: var(--accent-deep); }
+  .sw.on::after { transform: translateX(12px); background: var(--accent); }
+  .stagerow .sn { font-size: 11.5px; font-weight: 550; }
+  .stagerow .ss {
+    margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint);
+    white-space: nowrap;
+  }
+  .gear {
+    flex: none; font-size: 11px; color: var(--ink-faint); cursor: pointer;
+    line-height: 1; padding: 2px;
+  }
+  .gear:hover { color: var(--accent); }
+
+  /* ── section label inside a node ─────────────────────────────── */
+  .sec {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-faint);
+    margin: 11px 0 6px; display: flex; align-items: center; gap: 7px;
+  }
+  .sec::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
+  .sec:first-child { margin-top: 2px; }
+  .sec .cnt { color: var(--accent-deep); }
+
+  /* ── the wipe compare ────────────────────────────────────────── */
+  .wipe {
+    position: relative; width: 100%; aspect-ratio: 1 / 1; overflow: hidden;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--console);
+    --x: 50%; cursor: col-resize; touch-action: none;
+  }
+  .wipe .layer { position: absolute; inset: 0; }
+  /* BOTH panes contain to the SAME box -- stage images differ in resolution
+     (base 1024 -> upscaled 2048) and a naive overlay would misalign, so the
+     wipe would cross two different framings. */
+  .wipe .layer img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .wipe .layer.b { clip-path: inset(0 0 0 var(--x)); }
+  .wipe .divider {
+    position: absolute; top: 0; bottom: 0; left: var(--x); width: 1px;
+    background: var(--accent); box-shadow: 0 0 10px rgba(45,212,191,.8);
+    pointer-events: none;
+  }
+  .wipe .divider::after {
+    content: ""; position: absolute; top: 50%; left: 50%;
+    width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
+    background: rgba(14,17,22,.85); border: 1.5px solid var(--accent);
+  }
+  .wipe .plab {
+    position: absolute; top: 7px; font-family: var(--mono); font-size: 9px;
+    padding: 2px 6px; border-radius: 4px; background: rgba(10,13,18,.82);
+    border: 1px solid var(--line); color: var(--ink-dim); pointer-events: none;
+  }
+  .wipe .plab.l { left: 7px; }
+  .wipe .plab.r { right: 7px; }
+  .wipe .plab b { color: var(--accent); font-weight: 600; }
+  .wipe.single { cursor: default; }
+
+  .pvbar { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; }
+  .pvbar .seg { display: flex; gap: 0; }
+  .pvbar .seg button {
+    font-family: var(--mono); font-size: 9.5px; padding: 3px 7px; cursor: pointer;
+    background: var(--panel-2); color: var(--ink-dim);
+    border: 1px solid var(--line); border-right-width: 0;
+  }
+  .pvbar .seg button:first-child { border-radius: 5px 0 0 5px; }
+  .pvbar .seg button:last-child { border-radius: 0 5px 5px 0; border-right-width: 1px; }
+  .pvbar .seg button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .pvbar .sp { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); }
+
+  /* ── the resolver readout: what each output carries RIGHT NOW ── */
+  .resolver {
+    margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line-soft);
+  }
+  .resolver h3 {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 9px; font-weight: 500;
+  }
+  .rline {
+    display: flex; align-items: center; gap: 10px; padding: 5px 0;
+    font-family: var(--mono); font-size: 11px; border-top: 1px solid var(--line-soft);
+  }
+  .rline:first-of-type { border-top: 0; }
+  .rline .o { color: var(--accent); width: 108px; flex: none; }
+  .rline .arrow { color: var(--ink-faint); }
+  .rline .v { color: var(--ink); }
+  .rline .why { margin-left: auto; font-size: 9.5px; color: var(--ink-faint); text-align: right; }
+  .rline.pass .v { color: var(--warn); }
+
+  /* ── settings overlay ────────────────────────────────────────── */
+  .scrim {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: rgba(6,9,13,.72); backdrop-filter: blur(3px);
+    align-items: center; justify-content: center; padding: 30px;
+  }
+  .scrim.open { display: flex; }
+  .dlg {
+    width: 100%; max-width: 720px; max-height: 100%; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.7); overflow: hidden;
+  }
+  .dlg header {
+    display: flex; align-items: center; gap: 10px; padding: 12px 15px;
+    border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--panel-2), #171d25);
+  }
+  .dlg header h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .dlg header .x {
+    margin-left: auto; cursor: pointer; color: var(--ink-faint); font-size: 15px; line-height: 1;
+  }
+  .dlg header .x:hover { color: var(--bad); }
+  .tabs { display: flex; gap: 2px; padding: 9px 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .tabs button {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .05em; padding: 6px 10px;
+    background: none; border: 1px solid transparent; border-bottom: 0; cursor: pointer;
+    color: var(--ink-faint); border-radius: 6px 6px 0 0;
+  }
+  .tabs button:hover { color: var(--ink-dim); }
+  .tabs button.on {
+    color: var(--accent); background: var(--panel-2);
+    border-color: var(--line); margin-bottom: -1px; padding-bottom: 7px;
+  }
+  .tabs button .dt {
+    display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent); margin-left: 5px; vertical-align: 1px;
+  }
+  .dbody { padding: 15px; overflow: auto; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .field { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+  .field > span { color: var(--ink-dim); width: 116px; flex: none; }
+  .field input, .field select {
+    flex: 1; min-width: 0; font-family: var(--mono); font-size: 11px; color: var(--ink);
+    background: var(--console); border: 1px solid var(--line); border-radius: 5px;
+    padding: 4px 6px; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent-deep); }
+  .sublab {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 15px 0 8px; padding-top: 12px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  .dnote {
+    font-size: 11.5px; line-height: 1.6; color: var(--ink-dim); margin: 0 0 13px;
+    padding: 9px 11px; border-radius: 8px; background: var(--console);
+    border: 1px solid var(--line-soft); border-left: 2px solid var(--info);
+  }
+  .dnote.warn { border-left-color: var(--warn); }
+  .dnote b { color: var(--ink); }
+  .missing {
+    display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-dim);
+    padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;
+    background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28);
+  }
+  .missing .k { font-family: var(--mono); font-size: 10px; color: var(--warn); }
+  .missing button {
+    margin-left: auto; font-family: var(--mono); font-size: 9.5px; cursor: pointer;
+    padding: 3px 8px; border-radius: 5px; color: var(--ink-dim);
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .missing button:hover { color: var(--ink); border-color: var(--accent-deep); }
+  .passtabs { display: flex; gap: 5px; margin-bottom: 12px; }
+  .passtabs button {
+    font-family: var(--mono); font-size: 10px; padding: 4px 10px; cursor: pointer;
+    border-radius: 6px; color: var(--ink-dim);
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .passtabs button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+  .foot {
+    display: flex; align-items: center; gap: 8px; padding: 11px 15px;
+    border-top: 1px solid var(--line); background: var(--panel-2);
+  }
+  .foot .hint { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); }
+  .btn {
+    margin-left: auto; font-size: 11.5px; font-weight: 550; padding: 6px 14px;
+    border-radius: 7px; cursor: pointer; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--on-accent);
+  }
+  .btn.ghost { background: none; color: var(--ink-dim); border-color: var(--line); margin-left: 0; }
+  .btn.ghost:hover { color: var(--ink); border-color: var(--accent-deep); }
+
+  .qa { display: grid; gap: 9px; max-width: 880px; }
+  .qa .q {
+    padding: 11px 14px; border-radius: 10px; font-size: 12.5px; line-height: 1.65;
+    color: var(--ink-dim); background: var(--panel); border: 1px solid var(--line-soft);
+  }
+  .qa .q b { color: var(--ink); }
+  .qa .q .tag {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--warn); display: block; margin-bottom: 4px;
+  }
+  .qa .q.settled .tag { color: var(--ok); }
+</style>
+
+<div class="wrap">
+  <div class="head">
+    <div class="glyph"></div>
+    <div>
+      <h1>Anima Generator + Anima Preview</h1>
+      <div class="sub">playground mockup &middot; <code>docs/generator-design.md</code></div>
+    </div>
+  </div>
+
+  <div class="note">
+    Behavioural reference for the two nodes in <code>AnimaFlow/Anima</code>. Everything here is
+    <b>clickable</b> — toggle stages and watch the three image outputs re-resolve, flip
+    <code>use_internal_loaders</code> and watch the resource sockets go dead, hover the compare to
+    wipe. Same palette as <code>playground/theme.html</code>; nothing here fetches anything.
+  </div>
+  <div class="live">
+    <b>Mockup, not the node.</b> The images are procedural SVGs standing in for real stage output —
+    they differ in <i>resolution</i> on purpose (1024 → 2048), because that mismatch is the thing
+    the wipe has to survive. Litegraph resize, socket typing, and the settings-blob round trip are
+    all out of scope here.
+  </div>
+
+  <div class="label">On a graph</div>
+  <div class="stage">
+    <div class="node" id="gen"></div>
+    <div class="node prev" id="prev"></div>
+  </div>
+
+  <div class="resolver" id="resolver"></div>
+
+  <div class="label">Open questions this mockup exists to settle</div>
+  <div class="qa">
+    <div class="q">
+      <span class="tag">Open &middot; one tabbed overlay, or five dialogs</span>
+      Upstream ships <b>one dialog per stage</b> — five files, ~130k of JS
+      (<code>web/js/aio/*_settings_dialog.js</code>). This mockup implements the
+      <b>single tabbed overlay</b> alternative. Click any ⚙ to judge it. The tab strip carries a dot
+      per enabled stage, so "what's actually on" is readable without opening anything.
+    </div>
+    <div class="q">
+      <span class="tag">Open &middot; detailer, one pass or two</span>
+      Shown here as <b>two passes</b>, each with its own <code>SEGS</code> socket and its own
+      settings — see the Detailer tab. One pass is simpler; two keeps upstream's
+      face-vs-eye capability without us owning detection. Toggle
+      <code>segs_b</code> off in the Detailer tab to see the one-pass shape.
+    </div>
+    <div class="q settled">
+      <span class="tag">Settled &middot; pass-through on a disabled stage</span>
+      A disabled stage's output carries the previous stage's image. The resolver above spells out
+      which, and flags in amber when two outputs are carrying the same tensor — so
+      <code>image_mid == image_base</code> reads as a documented state, not a bug.
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"><div class="dlg" id="dlg"></div></div>
+
+<script>
+// ───────────────────────────────────────────────────────────────────────────
+// Procedural stand-in "renders". Data URIs only -- this file must never make
+// a network request (same rule as every other playground here). Each stage
+// gets a visibly different image AND a different pixel size, because the
+// resolution mismatch is exactly what the wipe's object-fit:contain has to
+// absorb (design doc s7).
+// ───────────────────────────────────────────────────────────────────────────
+function render(size, detail, hue) {
+  const blobs = [];
+  // Deterministic pseudo-random -- no Math.random, so the mockup looks the
+  // same on every reload and a screenshot diff means something.
+  let s = 7;
+  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let i = 0; i < detail; i++) {
+    const cx = rnd() * 100, cy = 40 + rnd() * 60, r = 2 + rnd() * (26 / Math.sqrt(detail));
+    blobs.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}"
+      fill="hsl(${(hue + rnd() * 50).toFixed(0)} 60% ${(30 + rnd() * 45).toFixed(0)}%)" opacity="0.5"/>`);
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="${size}" height="${size}">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="hsl(${hue} 55% 16%)"/>
+        <stop offset="1" stop-color="hsl(${hue + 30} 45% 34%)"/>
+      </linearGradient>
+      <radialGradient id="sun" cx="0.72" cy="0.24" r="0.3">
+        <stop offset="0" stop-color="hsl(${hue + 60} 85% 72%)"/>
+        <stop offset="1" stop-color="hsl(${hue + 60} 85% 72%)" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect width="100" height="100" fill="url(#sky)"/>
+    <rect width="100" height="100" fill="url(#sun)"/>
+    ${blobs.join("")}
+  </svg>`;
+  // Deliberately NO text baked into the image. An earlier pass labelled each
+  // render in-image, and the wipe then spliced two labels together into
+  // gibberish at the divider ("first" + "ailed") -- which reads as a rendering
+  // bug rather than as the wipe working. Naming the sides is the .plab
+  // overlays' job precisely because they sit OUTSIDE the clipped layers.
+  // encodeURIComponent, not a raw string: a bare '#' inside a data: URI
+  // truncates it and the image silently vanishes (the theme skill's warning
+  // about icon URIs, same failure mode).
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
+// Hue walks blue -> teal across the stages so the divider is visible on its
+// own; detail count climbs so the "more was added" reading is immediate.
+const IMG = {
+  base:    render(1024, 6,  216),
+  highres: render(1536, 14, 202),
+  mid:     render(1536, 24, 190),
+  upscale: render(2048, 40, 174),
+  final:   render(2048, 40, 174),
+};
+const PX = { base: 1024, highres: 1536, mid: 1536, upscale: 2048, final: 2048 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// State
+// ───────────────────────────────────────────────────────────────────────────
+const state = {
+  internal: false,            // use_internal_loaders
+  wired: { model: true, clip: true, vae: true, latent: true, segsA: true, segsB: false },
+  stages: { highres: true, detailer: true, upscale: true, postprocess: false },
+  have: { spectrum: true, usdu: true },   // soft-import presence
+  modGuidance: true,
+  sampler: { steps: 32, cfg: 5.0, name: "er_sde", sched: "simple", shift: 3.0, seed: -1 },
+  preview: { on: true, a: "base", b: "final", x: 50 },
+  dlg: null,                  // open settings tab
+  pass: "a",                  // detailer pass tab
+};
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ───────────────────────────────────────────────────────────────────────────
+// The output resolver -- the single most useful thing this mockup proves.
+// A disabled stage passes the PREVIOUS stage's image through, so which
+// tensor each socket carries depends on what's enabled. Keeping this as one
+// pure function is deliberate: the real node needs exactly this logic, and
+// it's the part that's easy to get subtly wrong.
+// ───────────────────────────────────────────────────────────────────────────
+function resolveOutputs() {
+  const st = state.stages;
+  const afterFirst = "base";
+  const afterHighres = st.highres ? "highres" : afterFirst;
+  const detailerLive = st.detailer && (state.wired.segsA || state.wired.segsB);
+  const afterDetailer = detailerLive ? "mid" : afterHighres;
+  const afterUpscale = st.upscale && state.have.usdu ? "upscale" : afterDetailer;
+  const afterPost = st.postprocess ? afterUpscale : afterUpscale;   // fit only resizes
+  return {
+    image_base: afterFirst,
+    image_mid: afterDetailer,
+    image: afterPost,
+    detailerLive,
+  };
+}
+
+function resolverHtml() {
+  const o = resolveOutputs();
+  const rows = [
+    ["image", o.image, "final, after every enabled stage"],
+    ["image_base", o.image_base, "first pass -- before highres too"],
+    ["image_mid", o.image_mid, "after detailer, before upscale"],
+  ];
+  const dupe = new Set();
+  const seen = {};
+  for (const [, v] of rows) { seen[v] = (seen[v] || 0) + 1; }
+  for (const k in seen) if (seen[k] > 1) dupe.add(k);
+
+  let why = "";
+  if (!state.stages.detailer) why = "detailer off -> passes through";
+  else if (!o.detailerLive) why = "no SEGS wired -> stage inert";
+
+  return `<h3>What each output carries right now</h3>` + rows.map(([name, v, note]) => {
+    const isDupe = dupe.has(v);
+    return `<div class="rline ${isDupe ? "pass" : ""}">
+      <span class="o">${name}</span><span class="arrow">&rarr;</span>
+      <span class="v">${v}${isDupe ? " (shared tensor)" : ""}</span>
+      <span class="why">${esc(name === "image_mid" && why ? why : note)}</span>
+    </div>`;
+  }).join("") + (dupe.size
+    ? `<div class="rline" style="border-top-color:transparent"><span class="why"
+        style="margin-left:0;text-align:left;color:var(--warn)">Two sockets carrying one tensor is a
+        documented state, not a bug -- the node's DESCRIPTION has to say so.</span></div>`
+    : "");
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Generator node
+// ───────────────────────────────────────────────────────────────────────────
+const STAGES = [
+  { k: "highres", n: "Highres", s: () => `${1.5}x  denoise .25  ${state.stages.highres ? "20 steps" : ""}` },
+  { k: "detailer", n: "Detailer", s: () => {
+      const n = (state.wired.segsA ? 1 : 0) + (state.wired.segsB ? 1 : 0);
+      return n ? `${n} pass${n > 1 ? "es" : ""}  denoise .33` : "no SEGS wired";
+    }, dep: () => !(state.wired.segsA || state.wired.segsB) },
+  { k: "upscale", n: "Upscale", s: () => state.have.usdu ? "USDU 2x  seam-fix" : "USDU not installed",
+    dep: () => !state.have.usdu },
+  { k: "postprocess", n: "Postprocess", s: () => "fit 2048 long edge" },
+];
+
+function genHtml() {
+  const int = state.internal;
+  const sock = (name, ty, opts = {}) => {
+    const cls = ["sock"];
+    if (opts.out) cls.push("out");
+    if (opts.optional) cls.push("opt");
+    if (opts.wired) cls.push("wired");
+    if (opts.ignored) cls.push("ignored");
+    return `<div class="${cls.join(" ")}" ${opts.title ? `title="${esc(opts.title)}"` : ""}>
+      <span class="d"></span><span>${name}</span><span class="ty">${ty}</span>
+      ${opts.same ? `<span class="same">= ${opts.same}</span>` : ""}
+    </div>`;
+  };
+
+  const o = resolveOutputs();
+  const dupeOf = (n) => {
+    if (n === "image_mid" && o.image_mid === o.image_base) return "image_base";
+    if (n === "image" && o.image === o.image_mid) return "image_mid";
+    return null;
+  };
+
+  return `
+  <div class="titlebar"><span class="tdot"></span><span class="ttl">Anima Generator</span>
+    <span class="badge">beta</span></div>
+  <div class="body">
+    <div class="sec">conditioning</div>
+    <div class="sockgrp">
+      ${sock("positive", "COND", { wired: true })}
+      ${sock("negative", "COND", { wired: true })}
+    </div>
+
+    <div class="sec">resources</div>
+    <div class="row click" data-act="internal" title="On -> the pickers below are used and the sockets are ignored. Off -> the sockets are used and the pickers hide.">
+      <span class="nm">use_internal_loaders</span>
+      <span class="val" style="color:${int ? "var(--accent)" : "var(--ink-faint)"}">${int ? "ON" : "off"}</span>
+    </div>
+    <div class="sockgrp">
+      ${sock("model", "MODEL", { optional: true, wired: state.wired.model && !int, ignored: int,
+        title: int ? "Ignored -- use_internal_loaders is on" : "" })}
+      ${sock("clip", "CLIP", { optional: true, wired: state.wired.clip && !int, ignored: int })}
+      ${sock("vae", "VAE", { optional: true, wired: state.wired.vae && !int, ignored: int })}
+    </div>
+    ${int ? `
+      <div class="row"><span class="nm">unet_name</span><span class="val">anima-base-v1.0</span></div>
+      <div class="row"><span class="nm">clip_name</span><span class="val">qwen_3_06b_base</span></div>
+      <div class="row"><span class="nm">clip_type</span><span class="val">qwen_image</span></div>
+      <div class="row"><span class="nm">vae_name</span><span class="val">qwen_image_vae</span></div>
+    ` : ""}
+
+    <div class="sec">sampler <span class="cnt">&middot; first pass</span>
+      <span class="gear" data-act="dlg" data-t="sampler">&#9881;</span></div>
+    <div class="row click" data-act="dlg" data-t="sampler">
+      <span class="nm">${state.sampler.name} / ${state.sampler.sched}</span>
+      <span class="val">${state.sampler.steps} steps &middot; cfg ${state.sampler.cfg.toFixed(1)}</span>
+    </div>
+    <div class="row click" data-act="dlg" data-t="sampler">
+      <span class="nm">seed</span>
+      <span class="val">${state.sampler.seed === -1 ? "-1" : state.sampler.seed}
+        <span style="color:var(--ink-faint)">random</span></span>
+    </div>
+    <div class="row click" data-act="dlg" data-t="mod">
+      <span class="nm">mod guidance</span>
+      <span class="val" style="color:${state.modGuidance && state.have.spectrum ? "var(--accent)" : "var(--ink-faint)"}">
+        ${!state.have.spectrum ? "unavailable" : state.modGuidance ? "step_i8_skip27" : "off"}</span>
+    </div>
+
+    <div class="sec">stages
+      <span class="cnt">&middot; ${STAGES.filter((s) => state.stages[s.k]).length}/${STAGES.length} on</span></div>
+    ${STAGES.map((s) => {
+      const on = state.stages[s.k];
+      const blocked = s.dep && s.dep();
+      return `<div class="stagerow ${on ? "" : "off"} ${on && blocked ? "dep" : ""}">
+        <span class="sw ${on ? "on" : ""}" data-act="stage" data-k="${s.k}"></span>
+        <span class="sn">${s.n}</span>
+        <span class="ss" style="${on && blocked ? "color:var(--warn)" : ""}">${esc(s.s())}</span>
+        <span class="gear" data-act="dlg" data-t="${s.k}">&#9881;</span>
+      </div>`;
+    }).join("")}
+
+    <div class="sec">detail targets</div>
+    <div class="sockgrp">
+      ${sock("segs_a", "SEGS", { optional: true, wired: state.wired.segsA })}
+      ${state.wired.segsB ? sock("segs_b", "SEGS", { optional: true, wired: true }) : ""}
+      ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent })}
+      ${sock("lora_stack", "LORA_STACK", { optional: true })}
+    </div>
+
+    <div class="sec">outputs</div>
+    <div class="sockgrp">
+      ${sock("image", "IMAGE", { out: true, wired: true, same: dupeOf("image"), title: `carries: ${o.image}` })}
+      ${sock("image_base", "IMAGE", { out: true, wired: true, title: `carries: ${o.image_base}` })}
+      ${sock("image_mid", "IMAGE", { out: true, wired: true, same: dupeOf("image_mid"), title: `carries: ${o.image_mid}` })}
+      ${sock("latent", "LATENT", { out: true })}
+      ${sock("metadata_json", "STRING", { out: true })}
+    </div>
+  </div>`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Preview node -- hover wipe. NOT drag: upstream attaches pointermove
+// without gating on button state, so the divider tracks the cursor
+// (generator_panel_runtime.js:811-816). stopPropagation on the handler is
+// load-bearing in the real node or litegraph steals the gesture.
+// ───────────────────────────────────────────────────────────────────────────
+const SLOTS = [["base", "image_base"], ["mid", "image_mid"], ["final", "image"]];
+
+function prevHtml() {
+  const o = resolveOutputs();
+  const key = (which) => o[{ base: "image_base", mid: "image_mid", final: "image" }[which]];
+  const a = key(state.preview.a), b = key(state.preview.b);
+  const on = state.preview.on;
+
+  return `
+  <div class="titlebar"><span class="tdot"></span><span class="ttl">Anima Preview</span>
+    <span class="badge">beta</span></div>
+  <div class="body">
+    <div class="sockgrp">
+      <div class="sock wired"><span class="d"></span><span>image_a</span><span class="ty">IMAGE</span></div>
+      <div class="sock wired"><span class="d"></span><span>image_b</span><span class="ty">IMAGE</span></div>
+      <div class="sock opt"><span class="d"></span><span>image_c</span><span class="ty">IMAGE</span></div>
+    </div>
+
+    <div class="wipe ${on ? "" : "single"}" id="wipe" style="--x:${state.preview.x}%">
+      <div class="layer a"><img src="${IMG[a]}" alt=""></div>
+      ${on ? `<div class="layer b"><img src="${IMG[b]}" alt=""></div>
+        <div class="divider"></div>
+        <div class="plab l"><b>${state.preview.a}</b> &middot; ${PX[a]}px</div>
+        <div class="plab r"><b>${state.preview.b}</b> &middot; ${PX[b]}px</div>`
+      : `<div class="plab l"><b>${state.preview.a}</b> &middot; ${PX[a]}px</div>`}
+    </div>
+
+    <div class="pvbar">
+      <span class="sw ${on ? "on" : ""}" data-act="pvon" title="Compare on/off -- off is a plain single-image view"></span>
+      <span style="font-size:10.5px;color:var(--ink-dim)">compare</span>
+      <span class="sp">${on ? "hover to wipe" : "single image"}</span>
+    </div>
+    ${on ? `<div class="pvbar">
+      <div class="seg">${SLOTS.map(([k]) =>
+        `<button class="${state.preview.a === k ? "on" : ""}" data-act="pva" data-v="${k}">${k}</button>`).join("")}</div>
+      <span style="font-size:10px;color:var(--ink-faint)">vs</span>
+      <div class="seg">${SLOTS.map(([k]) =>
+        `<button class="${state.preview.b === k ? "on" : ""}" data-act="pvb" data-v="${k}">${k}</button>`).join("")}</div>
+    </div>` : ""}
+    ${a === b && on ? `<div class="pvbar"><span class="sp" style="margin-left:0;color:var(--warn)">
+      both sides carry the same tensor -- nothing to compare</span></div>` : ""}
+  </div>`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Settings overlay -- ONE tabbed dialog, the alternative to upstream's five
+// separate dialog files. The tab strip doubles as an at-a-glance "what's on".
+// ───────────────────────────────────────────────────────────────────────────
+const TABS = [
+  ["sampler", "Sampler"], ["mod", "Mod guidance"], ["highres", "Highres"],
+  ["detailer", "Detailer"], ["upscale", "Upscale"], ["postprocess", "Postprocess"],
+  ["save", "Save"], ["preview", "Preview"],
+];
+
+function f(label, value, opts) {
+  if (opts) {
+    return `<div class="field"><span>${label}</span><select>${opts.map((o) =>
+      `<option ${o === value ? "selected" : ""}>${o}</option>`).join("")}</select></div>`;
+  }
+  return `<div class="field"><span>${label}</span><input value="${esc(value)}"></div>`;
+}
+
+const SAMPLERS = ["er_sde", "euler", "euler_ancestral", "dpmpp_2m", "heun", "ddim"];
+const SCHEDS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
+
+function dlgBody(tab) {
+  const s = state.sampler;
+  if (tab === "sampler") {
+    return `<div class="dnote">The first pass. Every later stage inherits these unless its own
+      <b>inherit_sampler_settings</b> is off. <code>shift 3.0</code> is Anima's recommended default
+      and is always applied.</div>
+      <div class="grid2">
+        ${f("steps", s.steps)}${f("cfg", s.cfg)}
+        ${f("sampler_name", s.name, SAMPLERS)}${f("scheduler", s.sched, SCHEDS)}
+        ${f("denoise", 1.0)}${f("shift", s.shift)}
+      </div>
+      <div class="sublab">seed</div>
+      <div class="grid2">${f("seed", "-1")}${f("after generate", "randomize",
+        ["fixed", "increment", "decrement", "randomize"])}</div>
+      <div class="dnote" style="margin:13px 0 0">Wire the Control Panel's seed row here instead and
+      this field is ignored -- that's the setup that gets you <code>-1</code> display and the
+      reuse-last-seed button.</div>`;
+  }
+  if (tab === "mod") {
+    if (!state.have.spectrum) {
+      return `<div class="missing"><span class="k">ComfyUI-Spectrum-KSampler</span>
+        <span>not installed -- Mod Guidance is unavailable and generation runs without it.</span>
+        <button data-act="have" data-k="spectrum">pretend it's installed</button></div>`;
+    }
+    return `<div class="dnote">The one dependency worth taking. A model patch that steers on quality
+      tags through transformer layers 8-27 without spending prompt tokens -- Anima-specific, and the
+      largest quality gap against upstream.</div>
+      <div class="grid2">
+        ${f("mode", "prompt_data", ["prompt_data", "enabled", "disabled"])}
+        ${f("profile", "step_i8_skip27", ["off", "step_i8_skip27", "step_i14", "uniform_w3"])}
+        ${f("mod_w", 3.0)}${f("mod_start_layer", 8)}
+        ${f("mod_end_layer", 27)}${f("mod_taper", 0)}
+      </div>
+      <div class="sublab">quality tags</div>
+      ${f("positive", "highres, best quality, score_7")}
+      <div style="height:8px"></div>
+      ${f("negative", "score_1, score_2, worst quality, lowres, bad hands")}
+      <div class="missing" style="margin:13px 0 0"><span class="k">verify</span>
+        <span>Upstream's code and its README disagree on which repo ships
+        <code>AnimaModGuidance</code> -- settle before writing an install hint.</span></div>`;
+  }
+  if (tab === "highres") {
+    return `<div class="dnote">Latent upscale, resample at low denoise. Runs before the detailer, so
+      faces get fixed at generation resolution rather than after an upscale.</div>
+      <div class="grid2">
+        ${f("scale_by", 1.5)}${f("upscale_method", "bicubic", ["bicubic", "bilinear", "nearest-exact", "area"])}
+        ${f("multiple", 32)}${f("max_long_edge", 2560)}
+        ${f("denoise", 0.25)}${f("inherit_sampler_settings", "true", ["true", "false"])}
+      </div>
+      <div class="sublab">overrides &middot; used only when inherit is off</div>
+      <div class="grid2">${f("steps", 20)}${f("cfg", 8.0)}
+        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "simple", SCHEDS)}</div>`;
+  }
+  if (tab === "detailer") {
+    const bOn = state.wired.segsB;
+    return `<div class="dnote">We do <b>not</b> detect. You wire <code>SEGS</code> from whatever
+      detector you like and this stage re-samples those crops -- so it works with any detector and we
+      never import Impact Pack.</div>
+      <div class="passtabs">
+        <button class="${state.pass === "a" ? "on" : ""}" data-act="pass" data-v="a">Pass A &middot; segs_a</button>
+        <button class="${state.pass === "b" ? "on" : ""}" data-act="pass" data-v="b"
+          ${bOn ? "" : 'style="opacity:.45"'}>Pass B &middot; segs_b</button>
+        <button data-act="segsb" style="margin-left:auto">${bOn ? "remove pass B" : "+ add pass B"}</button>
+      </div>
+      ${state.pass === "b" && !bOn ? `<div class="missing"><span class="k">pass B is off</span>
+        <span>One pass over one SEGS input. Add pass B to give a second detector chain its own
+        settings.</span></div>` : `
+      <div class="grid2">
+        ${f("denoise", 0.33)}${f("feather", 5)}
+        ${f("guide_size", 1024)}${f("max_size", 2048)}
+        ${f("crop_factor", 4.0)}${f("cycle", 1)}
+        ${f("noise_mask", "true", ["true", "false"])}${f("force_inpaint", "true", ["true", "false"])}
+      </div>
+      <div class="sublab">the two upstream defaults the old port got wrong</div>
+      <div class="grid2">
+        ${f("guide_size_for", "false", ["false", "true"])}
+        ${f("noise_mask_feather", 10)}
+      </div>
+      <div class="dnote warn" style="margin:11px 0 0"><b>Do not "fix" these.</b>
+      <code>guide_size_for</code> must be <code>false</code> and <code>noise_mask_feather</code> must
+      not be <code>0</code> -- upstream never ships 0, and it's the main control against visible
+      detailer seams. Both were wrong in the deleted port.</div>
+      <div class="sublab">overrides</div>
+      <div class="grid2">${f("inherit_sampler_settings", "true", ["true", "false"])}${f("steps", 20)}
+        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "sgm_uniform", SCHEDS)}</div>`}`;
+  }
+  if (tab === "upscale") {
+    if (!state.have.usdu) {
+      return `<div class="missing"><span class="k">ComfyUI_UltimateSDUpscale</span>
+        <span>not installed -- the upscale stage is disabled and the pipeline skips it.</span>
+        <button data-act="have" data-k="usdu">pretend it's installed</button></div>`;
+    }
+    return `<div class="dnote">USDU only -- one backend, not two. Seam-fix is exposed here because
+      the deleted port hardcoded it to <code>None</code>, making seam repair unreachable.</div>
+      <div class="grid2">
+        ${f("scale_by", 2.0)}${f("denoise", 0.2)}
+        ${f("upscale_model", "2x-AnimeSharpV4_Fast_RCAN_PU")}${f("mode_type", "Linear", ["Linear", "Chess", "None"])}
+      </div>
+      <div class="sublab">tiles</div>
+      <div class="grid2">
+        ${f("auto_tile", "true", ["true", "false"])}${f("tile_target", 1024)}
+        ${f("tile_min", 512)}${f("tile_max", 2048)}
+        ${f("tile_blur", 8)}${f("tile_padding", 32)}
+      </div>
+      <div class="sublab">seam fix</div>
+      <div class="grid2">
+        ${f("seam_fix_mode", "Band Pass", ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"])}
+        ${f("seam_fix_denoise", 0.2)}${f("seam_fix_width", 64)}${f("seam_fix_blur", 8)}
+      </div>
+      <div class="dnote" style="margin:11px 0 0"><code>mode_type</code> is tile <b>order</b>
+      (Linear/Chess/None). <code>tiled_decode</code> is an unrelated VAE flag -- they get conflated,
+      don't.</div>`;
+  }
+  if (tab === "postprocess") {
+    return `<div class="dnote">The output size <b>cap</b>. The deleted port only ever rounded up,
+      which left final size unbounded -- this is the fix.</div>
+      <div class="grid2">
+        ${f("mode", "max_long_edge", ["max_long_edge", "megapixels"])}
+        ${f("method", "bicubic", ["bicubic", "bilinear", "area"])}
+        ${f("max_long_edge", 2048)}${f("max_megapixels", 4.0)}
+      </div>`;
+  }
+  if (tab === "save") {
+    return `<div class="dnote">Stock <code>SaveImage</code>, not ComfyUI-Image-Saver. The thing that
+      pack is actually wanted for is workflow-reload-on-drag, and declaring the two hidden inputs
+      below gives that for free.</div>
+      <div class="grid2">
+        ${f("enabled", "true", ["true", "false"])}${f("extension", "png", ["png", "jpg", "webp"])}
+        ${f("path", "anima/%date:yyyy-MM-dd%")}${f("filename", "%seed%_%time%")}
+      </div>
+      <div class="sublab">metadata &middot; not optional</div>
+      <div class="dnote warn" style="margin:0">The node declares hidden <code>PROMPT</code> and
+      <code>EXTRA_PNGINFO</code> and passes them through. Without them, dragging a saved PNG back
+      into ComfyUI restores <b>nothing</b> -- which made the deleted port's saves worse than stock.
+      This was never fixed there. Fix it here.</div>`;
+  }
+  if (tab === "preview") {
+    return `<div class="dnote">Stage images leave as ordinary IMAGE outputs at the end of the run --
+      no websocket feed, no <code>unique_id</code> handshake. The trade is that you don't watch it
+      progress.</div>
+      <div class="grid2">
+        ${f("compare_enabled", "true", ["true", "false"])}
+        ${f("compare_a", "base", ["base", "mid", "final"])}
+        ${f("compare_b", "final", ["base", "mid", "final"])}
+      </div>
+      <div class="sublab">first-pass cache</div>
+      <div class="dnote" style="margin:0">Keyed on resources + file revisions + prompt + sampler +
+      size, so tweaking <i>only</i> highres/detailer/upscale skips re-sampling the base. That's the
+      loop these three outputs exist for -- and it was never built in the deleted port.</div>`;
+  }
+  return "";
+}
+
+function dlgHtml() {
+  const tab = state.dlg;
+  const title = (TABS.find(([k]) => k === tab) || [, "Settings"])[1];
+  return `
+  <header><h2>Generation settings &middot; ${title}</h2><span class="x" data-act="close">&#10005;</span></header>
+  <div class="tabs">${TABS.map(([k, n]) => {
+    const lit = state.stages[k] || (k === "mod" && state.modGuidance && state.have.spectrum)
+      || k === "sampler" || k === "save";
+    return `<button class="${k === tab ? "on" : ""}" data-act="tab" data-t="${k}">${n}${
+      lit ? '<span class="dt"></span>' : ""}</button>`;
+  }).join("")}</div>
+  <div class="dbody">${dlgBody(tab)}</div>
+  <div class="foot">
+    <span class="hint">one blob &middot; generation_settings (hidden STRING)</span>
+    <button class="btn" data-act="close">Done</button>
+  </div>`;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Paint + events
+// ───────────────────────────────────────────────────────────────────────────
+function paint() {
+  document.getElementById("gen").innerHTML = genHtml();
+  document.getElementById("prev").innerHTML = prevHtml();
+  document.getElementById("resolver").innerHTML = resolverHtml();
+  const scrim = document.getElementById("scrim");
+  scrim.classList.toggle("open", !!state.dlg);
+  if (state.dlg) document.getElementById("dlg").innerHTML = dlgHtml();
+  bindWipe();
+}
+
+// The wipe: pointermove with NO button gate -- that's what makes it hover
+// rather than drag. In the real node this handler also needs
+// event.stopPropagation() or litegraph consumes the gesture.
+function bindWipe() {
+  const w = document.getElementById("wipe");
+  if (!w || !state.preview.on) return;
+  const set = (e) => {
+    const r = w.getBoundingClientRect();
+    if (!r.width) return;
+    const pct = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
+    state.preview.x = pct;
+    w.style.setProperty("--x", pct.toFixed(2) + "%");
+  };
+  w.addEventListener("pointermove", (e) => { e.stopPropagation(); set(e); });
+  w.addEventListener("pointerdown", (e) => { e.stopPropagation(); set(e); });
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-act]");
+  if (!t) return;
+  const act = t.dataset.act;
+  if (act === "internal") state.internal = !state.internal;
+  else if (act === "stage") state.stages[t.dataset.k] = !state.stages[t.dataset.k];
+  else if (act === "dlg") { state.dlg = t.dataset.t; }
+  else if (act === "tab") state.dlg = t.dataset.t;
+  else if (act === "close") state.dlg = null;
+  else if (act === "pvon") state.preview.on = !state.preview.on;
+  else if (act === "pva") state.preview.a = t.dataset.v;
+  else if (act === "pvb") state.preview.b = t.dataset.v;
+  else if (act === "pass") state.pass = t.dataset.v;
+  else if (act === "segsb") {
+    state.wired.segsB = !state.wired.segsB;
+    if (!state.wired.segsB && state.pass === "b") state.pass = "a";
+  } else if (act === "have") state.have[t.dataset.k] = true;
+  else return;
+  paint();
+});
+
+document.getElementById("scrim").addEventListener("click", (e) => {
+  if (e.target.id === "scrim") { state.dlg = null; paint(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.dlg) { state.dlg = null; paint(); }
+});
+
+paint();
+</script>

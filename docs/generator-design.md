@@ -1,7 +1,9 @@
 # Generator + Preview — design
 
-**Status: specified, not built** (design decisions taken 2026-07-27). No code exists yet.
-Opens the third track, after the Rule Builder line and the Controls line. Read alongside
+**Status: specified, awaiting mockup sign-off** (design decisions taken 2026-07-27). No node code
+exists yet. Interactive mockup: [`playground/generator.html`](../playground/generator.html) — it
+is the behavioural reference and the approval gate. Opens the third track, after the Rule Builder
+line and the Controls line. Read alongside
 [`control-panel-design.md`](control-panel-design.md) — this doc reuses its conventions
 (house theme, DOM-widget sizing, hidden-serialized-STRING state) rather than restating them.
 
@@ -163,10 +165,15 @@ quality argument.
 
 ## 5. The Generator node
 
-**Category `AnimaFlow/Generate`** (Title Case, per the convention decided 2026-07-27), folder
-`nodes/generator/` + `js/generator/` (lowercase — Python packages must be importable). **Not**
-`AnimaFlow/Panel`: reserved for the deleted webtoon panel pipeline, which would collide on its
-rebuild.
+**Category `AnimaFlow/Anima`**, folder `nodes/anima/` + `js/anima/` (Title Case in the picker,
+lowercase snake_case on disk — Python packages must be importable, so the two agree
+case-insensitively).
+
+`Anima` is the topic `.claude/skills/animaflow-node-theme/SKILL.md` already reserves for "the
+Anima model pipeline/encoding, not yet rebuilt" — which is precisely this pair. A fifth topic
+would be an invention; **`Generate` was considered and rejected** for that reason. **Not**
+`AnimaFlow/Panel` either: that's reserved for the deleted webtoon panel pipeline and would
+collide on its rebuild.
 
 ### Inputs
 
@@ -179,7 +186,7 @@ rebuild.
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
 | optional | `latent` | `LATENT` | wire the Control Panel's empty-latent row; else size comes from settings |
-| optional | `segs` | `SEGS` | detailer targets; stage is inert without it (§6) |
+| optional | `segs_a` / `segs_b` | `SEGS` | detailer targets, one pass each; stage is inert with neither (§6a) |
 | optional | `lora_stack` | `LORA_STACK` | |
 | hidden | `prompt` / `extra_pnginfo` / `unique_id` | `PROMPT`/`EXTRA_PNGINFO`/`UNIQUE_ID` | §9 — non-negotiable |
 
@@ -222,12 +229,32 @@ Order is upstream's (`aio/generation_pipeline.py:10-17`), each stage independent
    decode. Size from the `latent` socket if wired, else `settings.latent`.
 2. **Highres** — latent upscale by `scale_by` (default 1.5), resample, re-sample at
    `denoise` 0.25. Inherits the first-pass sampler unless `inherit_sampler_settings` is off.
-3. **Detailer** — **inert unless `segs` is wired.** We call Impact's `DetailerForEach` with the
+3. **Detailer** — **inert unless a `SEGS` is wired.** We call Impact's `DetailerForEach` with the
    incoming `SEGS` (`nodes/impact_detailer_nodes.py:48,228`) — the user's own detector node
-   produces them, so we never import Impact and never care which detector it was. Upstream's
-   face/eye tab split does not survive the port: with a generic SEGS socket there is one pass
-   over whatever was detected. Take upstream's **face** defaults for it, being the conservative
-   pair (`generation_defaults.py:292-357`).
+   produces them, so we never import Impact and never care which detector it was. Defaults from
+   upstream's **face** block, the conservative of its pair (`generation_defaults.py:292-357`).
+   See §6a for why this is where upstream's face/eye tabs go.
+
+### 6a. Detailer — why upstream's face/eye tabs can't come across as-is
+
+Upstream **owns detection**: it runs SAM3 with a text prompt, so it knows a region is a *face*
+because it asked for faces. That knowledge is what lets it ship two tabs with genuinely different
+settings — face at `denoise 0.33` / `noise_mask_feather 10` (`:292-357`), eye at its own values /
+`noise_mask_feather 20` (`:358-424`) — and an execution order between them (`detailer.order`).
+
+**A `SEGS` carries regions, not labels.** Once we take detection as an input we cannot tell a face
+crop from an eye crop, so one SEGS socket can only mean one settings block applied to everything
+in it. That is a real capability loss against upstream, not just a simplification — faces and eyes
+genuinely want different feather and denoise, which is why upstream ships different numbers.
+
+The fix keeps detector-agnosticism and gets the capability back: **two SEGS sockets, `segs_a` and
+`segs_b`, each with its own settings block and its own pass.** You wire your face detector to one
+and your eye detector to the other, and the semantics come from *which socket you chose* rather
+than from us inspecting the regions. `segs_b` absent ⇒ one pass, which is the simple case for free.
+
+The mockup implements two passes (Detailer tab). **Open**: whether to ship both from the start or
+ship one and append `segs_b` later — appending is safe under the append-only rule, so this is a
+question about scope, not about painting ourselves into a corner.
 4. **Upscale** — USDU only, with seam-fix and tile controls exposed (upstream's `seam_fix_mode`
    was hardcoded to `"None"` in the old port, making seam repair unreachable; `29ac56d` fixed
    that and the work is recoverable from git). `mode_type` (Linear/Chess/None) is tile **order**;
@@ -249,7 +276,7 @@ design makes it more valuable than it was upstream.
 
 ## 7. The Preview node
 
-Terminal node, `AnimaFlow/Generate`, one DOM widget.
+Terminal node, `AnimaFlow/Anima`, one DOM widget.
 
 - **Two IMAGE inputs** (`image_a`, `image_b`), both `optional`, plus an optional third so all
   three generator outputs can be wired at once and any two chosen.
@@ -331,14 +358,16 @@ From `BACKLOG.md` §1a. All three were in files that no longer exist; recover th
 
 ## 10. Repo rules this touches
 
-- **The JS budget goes 4 → 5.** One `js/generator/index.js` registers *both* node classes and
+- **The JS budget goes 4 → 5.** One `js/anima/index.js` registers *both* node classes and
   lazily imports their per-node `.mjs`, so two nodes cost one auto-loaded file — the same trick
   `js/controls/index.js` uses. Update the count and the reason in `.claude/CLAUDE.md` when built.
-- **`THIRD_PARTY_NOTICES.md`** already credits EasyUseAnima (MIT © n0va39). Confirm it covers
-  this port explicitly when the first file lands.
-- **Picker category** `AnimaFlow/Generate` — add it to
-  `.claude/skills/animaflow-node-theme/SKILL.md`, which still fixes the list at three
-  snake_case topics and already needs updating for `AnimaFlow/Controls`.
+- **`THIRD_PARTY_NOTICES.md`** already credits EasyUseAnima (MIT © n0va39) at §1. Confirm the
+  entry covers the generator port specifically when the first file lands — the existing text was
+  written for the deleted line.
+- **`EXPERIMENTAL = True`** on both node classes while the pack is Beta, per the theme skill.
+- **Picker category** — no skill update needed: `Anima` is already one of the theme skill's four
+  topics. (That skill does still need its `Controls` entry corrected and its stale
+  `js/anima_prompt/...` paths fixed — unrelated, tracked in `BACKLOG.md` §3.)
 - **`../ComfyUI-MyOriginalWaifu` is GPL-3.0** — concept only, clean-room, never copy. That
   boundary is what keeps this pack MIT.
 
@@ -361,7 +390,7 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   unchanged. Test with the pack genuinely absent, and in a **subprocess** — a repo-root-on-
   `sys.path` shim masks exactly this class of bug (see the `comfyui-pack-import-structure` skill).
 - **Postprocess fit maths** and **USDU tile planning** are pure functions; test them directly.
-- Frontend: `node js/generator/test_*.mjs` for the wipe geometry and settings round-trip. Mark
+- Frontend: `node js/anima/test_*.mjs` for the wipe geometry and settings round-trip. Mark
   what only a browser can confirm with `VERIFY-IN-COMFYUI:`.
 
 ---
@@ -373,8 +402,10 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - Which Spectrum repo actually ships `AnimaModGuidance` (§4).
 - Whether the popup settings dialogs are one tabbed overlay or one per stage. Upstream ships
   one dialog per stage (`web/js/aio/{sampler,detailer,save,postprocess,stage}_settings_dialog.js`)
-  — ~130k of JS across them, which is a lot to lazily import. A single tabbed overlay is
-  probably right; the mockup should settle it.
+  — ~130k of JS across them, which is a lot to lazily import. **The mockup implements the single
+  tabbed overlay**, with a lit dot per enabled stage on the tab strip so "what's on" is readable
+  without opening anything. Confirm from the mockup.
+- Whether the detailer ships one SEGS pass or two (§6a). Appendable either way.
 
 **Deferred, deliberately:**
 
@@ -388,4 +419,4 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 
 **Next step:** an interactive mockup at `playground/generator.html`, the way
 `playground/control-panel.html` preceded the Controls build. The mockup is the approval gate —
-no `nodes/generator/` or `js/generator/` code before it is signed off.
+no `nodes/anima/` or `js/anima/` code before it is signed off.
