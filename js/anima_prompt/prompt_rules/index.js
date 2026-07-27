@@ -2,9 +2,9 @@
  * index.js — registers the Prompt Rules nodes' (`PromptRulesText` /
  * `PromptRulesClip`, `nodes/anima_prompt/prompt_rules.py`) themed frontend: a
  * single `addDOMWidget` root (`render.mjs`'s `buildRoot`) replacing the
- * stock canvas widgets/buttons, matching the house theme used by
- * `js/anima_prompt/anima_prompt_studio` (the reference implementation this build was
- * asked to mirror).
+ * stock canvas widgets/buttons, matching this pack's house theme (the same
+ * hidden-widget-mirrored-by-DOM-control + two-renderer resize pattern every
+ * DOM-widget node in this pack follows).
  *
  * Absolute `/scripts/app.js` import (this file is nested in
  * `js/anima_prompt/prompt_rules/` — the frontend skill's gotcha #1: a relative
@@ -40,6 +40,10 @@
  * own `getPositiveWidget`/`getNegativeWidget` contract, bypassing this
  * node's textareas entirely, so those need an explicit resync or the
  * inserted token would stay invisible until the next full reload).
+ *
+ * This file is the pack's reference implementation for the "hidden widget
+ * mirrored by a themed DOM control" pattern -- any future DOM-widget node in
+ * this pack should mirror ITS shape, not the other way around.
  */
 import { app } from "/scripts/app.js";
 import { openRuleBuilder } from "/extensions/ComfyUI-AnimaFlow/anima_prompt/rule_builder/index.js";
@@ -84,11 +88,10 @@ const HIGHLIGHT_URL = "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.js";
  * serialize" pattern). Works for widgets with an `inputEl` (the STRING
  * ones: `positive`/`negative`/`sheets`/`embedded_rules`) and ones without
  * (the canvas-drawn `profile` combo and `log_trace` boolean). Named
- * `targetWidget` (not `widget`) deliberately — this pack's own
- * `test_resize.mjs` convention (see `anima_prompt_studio/index.js`) greps
- * `index.js`'s source for a leftover `widget.computeSize =` assignment on
- * the DOM widget itself; reusing the name `widget` here would collide with
- * that check. */
+ * `targetWidget` (not `widget`) deliberately — this pack's `test_resize.mjs`
+ * convention greps `index.js`'s source for a leftover `widget.computeSize =`
+ * assignment on the DOM widget itself; reusing the name `widget` here would
+ * collide with that check. */
 function hideWidget(targetWidget) {
   if (!targetWidget) {
     return;
@@ -106,8 +109,7 @@ function hideNativeWidgets(node) {
 
 /** Floor a freshly-created node's size UP to `[DEFAULT_W, DEFAULT_H]`
  * (never down), guarded by `node._prConfigured` so a node being restored
- * from a saved workflow is never touched — mirrors
- * `js/anima_prompt/anima_prompt_studio/index.js`'s `ensureInitialFloor` exactly. */
+ * from a saved workflow is never touched. */
 function ensureInitialFloor(node) {
   if (node._prConfigured) {
     return;
@@ -319,8 +321,7 @@ function setupNode(node) {
  * `node.size` from a saved workflow: resync every DOM control from the
  * NOW-restored widgets (`refreshFromWidgets`). Deliberately does NOT call
  * `scheduleInitialFit`/`scheduleRefit` — trusts the `node.size` litegraph
- * already restored (mirrors `js/anima_prompt/anima_prompt_studio/index.js`'s
- * `restoreNode`).
+ * already restored.
  */
 function restoreNode(node) {
   const refs = mountUI(node);
@@ -345,10 +346,9 @@ app.registerExtension({
     const originalOnConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (...args) {
       // Mark this node as loaded-from-a-workflow FIRST, before anything
-      // else runs — see `js/anima_prompt/anima_prompt_studio/index.js`'s identical
-      // pattern for why the ordering matters (the still-pending initial-fit
+      // else runs — the ordering matters: the still-pending initial-fit
       // rAF queued back in onNodeCreated must see this flag by the time it
-      // fires).
+      // fires.
       this._prConfigured = true;
       const result = originalOnConfigure ? originalOnConfigure.apply(this, args) : undefined;
       restoreNode(this);

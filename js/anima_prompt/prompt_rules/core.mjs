@@ -4,7 +4,7 @@
  * Companion to `render.mjs` (DOM building/CSS/resize) and `interaction.mjs`
  * (event wiring + native-widget two-way sync); this module only ever
  * transforms plain values, so it's importable/testable under plain `node`
- * (mirrors `js/anima_prompt/anima_prompt_studio/core.mjs`'s split).
+ * (no DOM globals required, unlike the other two).
  */
 
 /**

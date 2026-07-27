@@ -4,38 +4,36 @@
  *
  * Builds ONE DOM root (mounted as a single `addDOMWidget`, per the
  * dynamic-node-frontend skill), styled with the shared house theme
- * (`injectTheme()` + `.wtn-*` classes from `js/shared/theme.{mjs,css}`) —
- * modeled closely on `js/anima_prompt/anima_prompt_studio/render.mjs` (the reference
- * implementation this build was asked to mirror): a top bar (PROFILE
- * selector + SHEETS field), two labeled panes (POSITIVE/NEGATIVE, each a
- * status-dot header over a themed textarea, with the `log_trace` switch in
- * the NEGATIVE header row), and an action row using the shared
- * `.wtn-btn`/`.wtn-btn--primary`/`.wtn-btn--ghost` classes for "Open Rule
- * Builder" / "Pick…" (`js/shared/theme.css` already defines these — no new
- * button styling is invented here).
+ * (`injectTheme()` + `.wtn-*` classes from `js/shared/theme.{mjs,css}`): a
+ * top bar (PROFILE selector + SHEETS field), two labeled panes (POSITIVE/
+ * NEGATIVE, each a status-dot header over a themed textarea, with the
+ * `log_trace` switch in the NEGATIVE header row), and an action row using
+ * the shared `.wtn-btn`/`.wtn-btn--primary`/`.wtn-btn--ghost` classes for
+ * "Open Rule Builder" / "Pick…" (`js/shared/theme.css` already defines
+ * these — no new button styling is invented here).
  *
- * This node has no dynamic/repeating rows (unlike Prompt Studio's block
- * list) — its layout is static, so there is no "structural mutation"
- * concept here at all: the only automatic node resize is the ONE guarded
- * initial fit at mount/placement (`scheduleInitialFit`, wired from
- * `index.js`), sized from `measureMinHeight` AFTER the two textareas have
- * already been given their real (possibly restored) content and
- * auto-grown once (see `interaction.mjs`'s `refreshFromWidgets`). Typing in
- * either textarea only grows THAT textarea, clamped
- * `[TEXTAREA_MIN_H, TEXTAREA_MAX_H]` (past the max it scrolls internally
- * instead) — a synchronous per-element adjustment, safe for the same
- * reason `anima_prompt_studio/render.mjs`'s own `autoGrowTextarea` doc
- * comment explains — and NEVER touches the node's own size, so there is no
- * keystroke jitter. `scheduleRefit`/`refitNode` are still exported (and
- * exercised the same way as every sibling DOM-widget node) purely so a
- * future structural addition to this node's UI has the mechanism ready
- * without reinventing it — nothing in `index.js`/`interaction.mjs`
- * currently calls `scheduleRefit` outside the guarded initial fit.
+ * This node has no dynamic/repeating rows — its layout is static, so there
+ * is no "structural mutation" concept here at all: the only automatic node
+ * resize is the ONE guarded initial fit at mount/placement
+ * (`scheduleInitialFit`, wired from `index.js`), sized from
+ * `measureMinHeight` AFTER the two textareas have already been given their
+ * real (possibly restored) content and auto-grown once (see
+ * `interaction.mjs`'s `refreshFromWidgets`). Typing in either textarea only
+ * grows THAT textarea, clamped `[TEXTAREA_MIN_H, TEXTAREA_MAX_H]` (past the
+ * max it scrolls internally instead) — a synchronous per-element
+ * adjustment, safe because it only ever reads/writes that one element's own
+ * `scrollHeight`/`style.height` (see `autoGrowTextarea` below), unlike the
+ * node-level `measureMinHeight` which walks the whole root — and NEVER
+ * touches the node's own size, so there is no keystroke jitter.
+ * `scheduleRefit`/`refitNode` are still exported (and exercised the same
+ * way as every sibling DOM-widget node) purely so a future structural
+ * addition to this node's UI has the mechanism ready without reinventing
+ * it — nothing in `index.js`/`interaction.mjs` currently calls
+ * `scheduleRefit` outside the guarded initial fit.
  *
  * ## Why `injectStyles` is a GUARDED DYNAMIC import, not a static one
  *
- * Same reasoning as `anima_prompt_studio/render.mjs`'s own doc comment:
- * this module needs to be importable by a headless `test_resize.mjs` under
+ * This module needs to be importable by a headless `test_resize.mjs` under
  * plain `node` (no global `document`, so ComfyUI's own static-file rewrite
  * of `/extensions/...` never applies) AND by a real ComfyUI page. A static
  * top-level `import ... from "/extensions/.../theme.mjs"` would make the
@@ -77,7 +75,7 @@ const CSS = `
   padding: 4px 2px 2px;
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   /* NO height:100% / min-height here (the ComfyUI-Pixaroma find_replace
-     pattern) -- see render.mjs's own doc comment + anima_prompt_studio's. */
+     pattern) -- see render.mjs's own doc comment. */
 }
 .wtn-pr-root, .wtn-pr-root * { box-sizing: border-box; }
 
@@ -191,8 +189,7 @@ export function injectStyles(doc) {
  * chip), POSITIVE pane, NEGATIVE pane (with the `log_trace` switch in its
  * header), action row. Returns a flat `refs` object every other function in
  * this module / `interaction.mjs` / `index.js` reads from — no re-querying
- * by class name at call time (same convention as
- * `anima_prompt_studio/render.mjs`'s `buildRoot`).
+ * by class name at call time.
  */
 export function buildRoot(doc) {
   const d = doc || document;
@@ -384,10 +381,10 @@ const TEXTAREA_MAX_H = 280;
 /** Grow (or shrink back down to) `ta`'s own height to fit its content,
  * clamped to `[TEXTAREA_MIN_H, TEXTAREA_MAX_H]` — past the max it scrolls
  * internally (`overflow-y: auto`, set in CSS) instead of growing further.
- * Mirrors `anima_prompt_studio/render.mjs`'s `autoGrowTextarea` exactly (see
- * that module's doc comment for why this synchronous per-element read is
- * safe, unlike the node-level `measureMinHeight`). Never calls
- * `scheduleRefit` — typing must never force a node resize. */
+ * A synchronous per-element read/write of just this one textarea's
+ * `scrollHeight`/`style.height`, unlike the node-level `measureMinHeight`
+ * which walks the whole root — safe to call on every keystroke. Never
+ * calls `scheduleRefit` — typing must never force a node resize. */
 export function autoGrowTextarea(ta) {
   if (!ta || !ta.style) {
     return;
@@ -400,8 +397,7 @@ export function autoGrowTextarea(ta) {
 
 // ---------------------------------------------------------------------------
 // Resize (ComfyUI-Pixaroma find_replace mechanism, matched exactly — see
-// anima_prompt_studio/render.mjs's own doc comment for the full two-renderer
-// rationale; summarized in this module's top doc comment)
+// this module's top doc comment for the full two-renderer rationale)
 // ---------------------------------------------------------------------------
 
 export const CHROME = 52;

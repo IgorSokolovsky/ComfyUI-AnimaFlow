@@ -6,8 +6,8 @@
  * `negative`, `log_trace`, `embedded_rules`) stay the SOLE source of truth
  * that actually serializes into `widgets_values` and reaches
  * `nodes/anima_prompt/prompt_rules.py`'s `process()` — this module never invents a
- * parallel state object the way `anima_prompt_studio`'s `blocks_state` does
- * (there's no dynamic/repeating data here to justify one). Every DOM
+ * parallel state object mirroring dynamic/repeating rows (there's no
+ * dynamic/repeating data here to justify one). Every DOM
  * control this module wires is a thin two-way mirror of exactly one native
  * widget's `.value`:
  *
@@ -98,8 +98,7 @@ function toggleLogTrace(node, refs, widgets) {
 /**
  * DOM -> widget: wire every control's own edit event straight into its
  * native widget's `.value`. Idempotent (a second call on the same `refs` is
- * a no-op — mirrors `anima_prompt_studio/interaction.mjs`'s `wireInteractions`
- * guard).
+ * a no-op, guarded by `refs.wired` below).
  */
 export function wireInteractions(node, refs) {
   if (refs.wired) {

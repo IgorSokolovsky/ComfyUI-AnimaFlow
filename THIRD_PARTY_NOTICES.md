@@ -9,25 +9,19 @@ the projects below, whose notices are reproduced here as their licenses require.
 
 - **Upstream:** https://github.com/n0va39/ComfyUI-EasyUseAnima
 - **License:** MIT
-- **Relationship:** AnimaFlow's `AnimaFlow/anima` node line is a **deliberately leaner
-  port** of this pack. Logic was directly copied and adapted under the MIT license.
+- **Relationship:** AnimaFlow's tag-autocomplete service derives from this pack's
+  booru-autocomplete approach. Logic was directly copied and adapted under the MIT
+  license. (An earlier `AnimaFlow/anima` node line — a leaner port of this pack's
+  generation/conditioning pipeline — has since been removed from this repo; it will be
+  re-derived node-by-node from this same upstream in a future build, at which point its
+  rows will return here.)
 
 **What is derived from it** (individual files carry their own more specific notes):
 
 | AnimaFlow | Derived from |
 |---|---|
-| `nodes/anima/node_anima_image_scale.py`, `_anima_image_scale_helpers.py` | its image-scaling utility, incl. the aspect-preserving nearest-valid-ratio search (`easyuse_anima/image/{scaling,geometry}.py`) |
-| `nodes/anima/node_anima_detailer_hook.py`, `_anima_detailer_hook_helpers.py` | its Impact-Pack-compatible detailer hook |
-| `nodes/anima/node_anima_generator.py`, `_anima_generator_helpers.py` | the staged AiO pipeline (first pass → highres → detailer → upscale → postprocess → save) and the AuraFlow model-sampling shift default |
-| `nodes/anima/node_anima_conditioning_encode.py`, `_anima_conditioning_helpers.py` | its artist-mix conditioning concept (reduced here to a single weighted-average blend mode) |
-| `nodes/anima/node_anima_regional_conditioning.py`, `node_anima_region_mask_editor.py` (+ helpers) | its regional-conditioning and mask-editor approach, incl. the `MASK` tensor convention |
 | `autocomplete/`, `js/autocomplete/` | its booru tag-autocomplete approach and the tag-name → prompt-text normalization intent (`anima_prompt/normalize.py`) |
 | `autocomplete/classify.py` | `/wtn/classify` tag-highlighting classifier, ported from `autocomplete_dataset.py`'s `classify_prompt_text()`/`_token_section()` and `anima_prompt/ordering.py`'s builtin ANIMA vocab (`QUALITY_TAGS` etc.) — re-labeled in English and rewritten to track exact character offsets into the original text instead of upstream's destructive pre-normalization |
-
-Not ported (deliberately): the bundled input-context node, the embedded live-preview
-widget, the JSON settings-profile system, the multi-mode artist-mix system, the
-SAM3-specific detector wrapper, the wildcard engine, NAIA integration, the
-translation layer, the seed-reservation service, and the global settings substrate.
 
 ```
 MIT License

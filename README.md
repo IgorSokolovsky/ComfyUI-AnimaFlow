@@ -10,9 +10,6 @@
 ## What's inside
 
 - **🎛️ Rule Builder** — a visual editor for **prompt-transform rules**. Define your character/outfit/scene logic as declarative rules; the engine rewrites your prompt before it's encoded. Works for **Anima labelled-prose** *and* **booru tags**. → [**docs/rule-builder.md**](docs/rule-builder.md)
-- **🧱 Prompt Studio** — a **block editor** for prompts: add/remove/reorder labelled blocks across positive/negative panes, **pin** a block to keep it verbatim (for LoRA triggers), optional rules correction. Outputs plain `STRING`.
-- **🌸 Anima helpers** — Anima Generator (six-stage pipeline), Conditioning Encode (artist mix), Detailer Align Hook, Image Scale, Preview.
-- **🗺️ Regional prompting** — draw rect/ellipse regions on a canvas → real `MASK` tensors, then apply a **per-region prompt** on top of a global one using ComfyUI-native conditioning masks. Up to 6 regions.
 - **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
 
 All node UIs share one **house theme** (dark slate + teal) so the pack feels like a single tool.
@@ -32,14 +29,13 @@ pip install -r requirements.txt
 > [!IMPORTANT]
 > The custom-node folder **must be named `ComfyUI-AnimaFlow`** — the frontend loads its assets from `/extensions/ComfyUI-AnimaFlow/…`. If you rename it, the Rule Builder overlay and pickers won't load. (Cloning as above gives the right name automatically.)
 
-Nodes appear in the node picker under a single **`AnimaFlow`** category, grouped into two:
+Nodes appear in the node picker under a single **`AnimaFlow`** category:
 
 | Group | Nodes |
 |---|---|
-| `AnimaFlow/anima` | Anima Loader, Anima Generator, Anima Conditioning Encode, Anima Region Mask Editor, Anima Regional Conditioning, Detailer Align Hook, Image Scale, Preview |
-| `AnimaFlow/anima_prompt` | Prompt Rules (+ CLIP), Anima Prompt Studio |
+| `AnimaFlow/anima_prompt` | Prompt Rules, Prompt Rules (CLIP) |
 
-Eleven nodes in total; every one is catalogued with its inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
+Two nodes in total; both are catalogued with their inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
 
 ---
 
@@ -111,7 +107,7 @@ The prompt tools serve **booru tags** (Illustrious/Pony), **labelled prose** (An
 
 AnimaFlow is **MIT** licensed — see [`LICENSE`](LICENSE). It stands on two other projects, in two very different ways:
 
-**[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — the `AnimaFlow/anima` node line is a **deliberately leaner port** of this pack, with logic copied and adapted under its MIT license. Thank you to n0va39: the generator pipeline, the highres scaling maths, the detailer hook, artist-mix conditioning, regional prompting and the tag-autocomplete approach all originate there. AnimaFlow trades breadth for decoupling — plain `MODEL`/`CLIP`/`VAE`/`CONDITIONING` sockets instead of a bundled context object, preview split into its own node, and one artist-mix blend mode instead of ten.
+**[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — this pack's tag-autocomplete and tag-highlighting/classify service derive from this project, with logic copied and adapted under its MIT license. Thank you to n0va39: the booru-autocomplete approach and the classify logic behind prompt highlighting both originate there. (AnimaFlow previously also carried a leaner port of this pack's generation/conditioning node line; that line has been removed for now and will be re-derived node-by-node from this same upstream in a future build.)
 
 **[ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu)** (GPL-3.0) — **concept inspiration only; no code was copied.** The Rule Builder idea comes from here, but AnimaFlow's engine (`core/`) is a **clean-room** implementation written against its own spec, [`prompt-rules/SCHEMA.md`](prompt-rules/SCHEMA.md), and is architecturally different (a Document tree with profiles and selectors, versus a flat weighted tag list). Since that project is copyleft, this boundary is what keeps AnimaFlow MIT — please don't copy code across it.
 

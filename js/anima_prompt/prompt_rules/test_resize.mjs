@@ -16,18 +16,17 @@
  *      `<select>` from live values and preserves an off-list current value;
  *      `setLogTraceUI`/`autoGrowTextarea` reflect state correctly.
  *   C. Resize mechanism (ComfyUI-Pixaroma find_replace mechanism, matched
- *      exactly — mirrors `js/anima_prompt/anima_prompt_studio/test_resize.mjs`):
- *      `measureMinHeight`/`setNodeHeight`/`refitNode`/`scheduleRefit`/
- *      `scheduleInitialFit`.
+ *      exactly): `measureMinHeight`/`setNodeHeight`/`refitNode`/
+ *      `scheduleRefit`/`scheduleInitialFit`.
  *   D. `interaction.mjs` two-way native-widget sync — THE core requirement
  *      of this build: DOM edits (topbar fields, both textareas, the trace
  *      switch) write straight into the matching native widget's `.value`;
  *      `refreshFromWidgets` reads every widget's CURRENT value back into
  *      the DOM (mount / restore / post-picker-insert); `wireInteractions`
  *      is idempotent.
- *   E. `index.js` source-level assertions (same reason as
- *      `js/anima_prompt/anima_prompt_studio/test_resize.mjs`: `app` resolves only
- *      inside a real ComfyUI/browser host) — the absolute `/scripts/app.js`
+ *   E. `index.js` source-level assertions (`app` resolves only inside a
+ *      real ComfyUI/browser host, so this file can't import `index.js`
+ *      directly) — the absolute `/scripts/app.js`
  *      import, ALL SIX native widgets hidden, the legacy `getMinHeight` +
  *      Nodes 2.0 `computeLayoutSize` widget sizing wiring, the guarded
  *      initial fit vs. unconditional refit split, the `_wtnPromptRulesSetup`
@@ -167,7 +166,7 @@ function resetRAF() {
 
 globalThis.getComputedStyle = (el) => (el && el.style) || {};
 
-// ---- Minimal DOM stub (mirrors anima_prompt_studio/test_resize.mjs's) ------
+// ---- Minimal DOM stub -------------------------------------------------
 
 function makeDocStub() {
   let doc;
@@ -408,7 +407,7 @@ test("autoGrowTextarea clamps between its min and max height", () => {
 });
 
 // =========================================================================
-// C. render.mjs — resize mechanism (matches anima_prompt_studio's exactly)
+// C. render.mjs — resize mechanism (ComfyUI-Pixaroma find_replace, matched exactly)
 // =========================================================================
 
 test("measureMinHeight returns the floor for a missing root", () => {

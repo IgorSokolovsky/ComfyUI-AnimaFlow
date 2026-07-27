@@ -29,8 +29,7 @@
  * drift out from under the real, transparent caret exactly the way an
  * incomplete metric copy does (see `overlay.mjs`'s docstring). This is safe
  * ONLY because every textarea this module has ever been wired to
- * (`js/anima_prompt/prompt_rules/render.mjs`'s `.wtn-pr-textarea`, and
- * `js/anima_prompt/anima_prompt_studio/render.mjs`'s equivalent) uses
+ * (`js/anima_prompt/prompt_rules/render.mjs`'s `.wtn-pr-textarea`) uses
  * `var(--wtn-font-mono, monospace)` -- a genuinely fixed-pitch font stack
  * (SF Mono/Menlo/Consolas/ui-monospace), where by definition bold and
  * regular share the same glyph advance width (that invariant is the whole

@@ -75,7 +75,7 @@ function test(name, fn) {
 
 test("isOwnedCategory is true for every AnimaFlow topic prefix", () => {
   assert.equal(OWNED_CATEGORY_PREFIX, "AnimaFlow/");
-  assert.equal(isOwnedCategory("AnimaFlow/anima"), true);
+  assert.equal(isOwnedCategory("AnimaFlow/gallery"), true);
   assert.equal(isOwnedCategory("AnimaFlow/anima_prompt"), true);
   // Prefix match, not a lookup against a fixed topic list -- any future
   // `AnimaFlow/<topic>` group is owned too.
@@ -106,13 +106,13 @@ test("isOwnedCategory does not match a foreign category that merely CONTAINS the
 // =========================================================================
 
 test("resolveOwnership is true via the PRIMARY signal: className present in ownedNames", () => {
-  const owned = new Set(["PromptRulesText", "AnimaGenerator"]);
+  const owned = new Set(["PromptRulesText", "GalleryPicker"]);
   assert.equal(resolveOwnership({ className: "PromptRulesText", category: "who knows" }, owned), true);
 });
 
 test("resolveOwnership is true via the FALLBACK signal when className isn't in the set but the category is ours", () => {
   const owned = new Set(); // simulates nodeData.category having been unreadable at registration
-  assert.equal(resolveOwnership({ className: "SomeNewNode", category: "AnimaFlow/anima" }, owned), true);
+  assert.equal(resolveOwnership({ className: "SomeNewNode", category: "AnimaFlow/gallery" }, owned), true);
 });
 
 test("resolveOwnership is false for a foreign node: name not in the set AND category not ours", () => {
@@ -206,7 +206,7 @@ test("simulated beforeRegisterNodeDef populates ownedNames from AnimaFlow-catego
   const ownedNames = new Set();
   const registry = [
     { name: "PromptRulesText", category: "AnimaFlow/anima_prompt" },
-    { name: "AnimaGenerator", category: "AnimaFlow/anima" },
+    { name: "GalleryPicker", category: "AnimaFlow/gallery" },
     { name: "PixaromaNote", category: "Pixaroma/Text" },
     { name: "CLIPTextEncode", category: "conditioning" },
   ];
@@ -218,7 +218,7 @@ test("simulated beforeRegisterNodeDef populates ownedNames from AnimaFlow-catego
   }
   assert.deepEqual(
     Array.from(ownedNames).sort(),
-    ["AnimaGenerator", "PromptRulesText"],
+    ["GalleryPicker", "PromptRulesText"],
   );
 });
 
@@ -243,12 +243,12 @@ test("a node whose category is AnimaFlow/anima_prompt IS attached to (DOM-widget
 
 // ---- Our own node: DOES get attached (native <textarea> widget) --------
 
-test("a node whose category is AnimaFlow/anima IS attached to (native textarea widget)", () => {
-  const ownedNames = new Set(["AnimaGenerator"]);
+test("a node whose category is AnimaFlow/gallery IS attached to (native textarea widget)", () => {
+  const ownedNames = new Set(["GalleryPicker"]);
   const inputEl = makeTextarea();
   const node = {
-    comfyClass: "AnimaGenerator",
-    constructor: { category: "AnimaFlow/anima" },
+    comfyClass: "GalleryPicker",
+    constructor: { category: "AnimaFlow/gallery" },
     widgets: [{ name: "positive", inputEl }],
   };
   const attached = [];
