@@ -903,26 +903,26 @@ function f(label, value, opts) {
 
 const SAMPLERS = ["er_sde", "euler", "euler_ancestral", "dpmpp_2m", "heun", "ddim"];
 
-/** The per-stage sampler block. `inherit_sampler_settings` hides sampler_name
- * and scheduler ONLY -- steps/cfg/denoise are always this stage's own, because
- * a low-denoise pass routinely wants fewer steps and a lower cfg than the base.
- * (Upstream inherits cfg too, yet ships highres cfg 8.0 WITH inherit on, so its
- * own 8.0 is unreachable by default. We diverge deliberately -- design doc s6b.) */
+/** The per-stage sampler block. `inherit_sampler_settings` hides -- and takes
+ * from the first pass -- `cfg`, `sampler_name` and `scheduler`. `steps` and
+ * `denoise` are ALWAYS this stage's own; upstream never inherits either
+ * (aio/sampling.py:404, :434), and they're the two a low-denoise pass always
+ * needs to set for itself. Matches upstream exactly -- design doc s6b. */
 function stageSampler(key, dflt) {
   const on = state.inherit[key];
   return `<div class="sublab">sampler &middot; this stage</div>
     <div class="field"><span>inherit</span>
       <span class="driven" data-act="inh" data-k="${key}"
         style="${on ? "" : "color:var(--ink-dim);border-color:var(--line);background:none"}"
-        title="Inherit the first pass's sampler_name + scheduler">
-        ${on ? "on &middot; sampler + scheduler from the first pass" : "off &middot; this stage picks its own"}</span></div>
+        title="Take cfg + sampler_name + scheduler from the first pass">
+        ${on ? "on &middot; cfg, sampler, scheduler from the first pass" : "off &middot; this stage picks its own"}</span></div>
     <div class="grid2" style="margin-top:7px">
-      ${f("steps", dflt.steps)}${f("cfg", dflt.cfg)}${f("denoise", dflt.denoise)}
-      ${on ? "" : f("sampler_name", dflt.sampler, SAMPLERS) + f("scheduler", dflt.sched, SCHEDS)}
+      ${f("steps", dflt.steps)}${f("denoise", dflt.denoise)}
+      ${on ? "" : f("cfg", dflt.cfg) + f("sampler_name", dflt.sampler, SAMPLERS) + f("scheduler", dflt.sched, SCHEDS)}
     </div>
-    ${on ? `<div class="dnote" style="margin:9px 0 0">Using
+    ${on ? `<div class="dnote" style="margin:9px 0 0">Using cfg <b>${state.sampler.cfg.toFixed(1)}</b>,
       <b>${esc(state.sampler.name)}</b> / <b>${esc(state.sampler.sched)}</b> from the first pass.
-      Steps, cfg and denoise above are still this stage's own.</div>` : ""}`;
+      Steps and denoise above are still this stage's own.</div>` : ""}`;
 }
 const SCHEDS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 

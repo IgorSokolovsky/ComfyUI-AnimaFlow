@@ -34,8 +34,8 @@ BACKLOG should be updated.
   dialogs editing it. ~250 settings cannot be widgets; this is the only workable shape, and it
   is the same pattern the Controls line already uses for `panel_state`.
 - **Per-stage sampler overrides** with an `inherit_sampler_settings` flag
-  (`aio/generation_defaults.py:163-168`, `:207-212`) — but with a narrower meaning for the flag than
-  upstream gives it. See §6b.
+  (`aio/generation_defaults.py:163-168`, `:207-212`), semantics unchanged from upstream. See §6b for
+  exactly which fields it covers — it is not all of them.
 - **The upstream stage defaults**, verbatim where we ship the stage at all — they are tuned and
   we have no better numbers. See §9 for the three the old port got wrong.
 - **The hover-wipe compare** (`web/js/aio/generator_panel_runtime.js:788-829`) — two absolutely
@@ -433,29 +433,30 @@ machinery is needed at all.
    unbounded. This is the fix.
 **No save stage.** Saving is the Preview node's job (§2, §7).
 
-### 6b. `inherit_sampler_settings` governs the sampler and scheduler only
+### 6b. `inherit_sampler_settings` — what it covers, and what the UI does about it
 
-Upstream's flag covers **`cfg` as well** (`aio/sampling.py:408-436`). Ours does not. Exactly what each
-field does, in both:
+**Matches upstream exactly** (`aio/sampling.py:400-436`). The flag covers three fields; two are always
+the stage's own:
 
-| field | upstream, inherit on | ours, inherit on |
+| field | inherit on | inherit off |
 |---|---|---|
-| `steps` | stage's own | stage's own |
-| `denoise` | stage's own (never inherited) | stage's own |
-| **`cfg`** | **inherited from the first pass** | **stage's own** |
-| `sampler_name` | inherited | inherited |
-| `scheduler` | inherited | inherited |
+| `steps` | **stage's own** | stage's own |
+| `denoise` | **stage's own** | stage's own |
+| `cfg` | from the first pass | stage's own |
+| `sampler_name` | from the first pass | stage's own |
+| `scheduler` | from the first pass | stage's own |
 
-**So when inherit is on, the UI hides `sampler_name` and `scheduler` and keeps
-`steps` / `cfg` / `denoise` editable.** Hiding a field that is genuinely being ignored is the point —
-an editable control whose value has no effect is the same trap as §5a's wired-field badge.
+`steps` and `denoise` are never inherited in either implementation (`:404`, `:434`) — and rightly so:
+they are precisely the two a low-denoise refinement pass has to set for itself.
 
-Why diverge on `cfg`: a low-denoise pass routinely wants a lower cfg than the base, so tying cfg to
-the sampler choice couples two unrelated decisions. **Upstream's own defaults betray the problem** —
-highres ships `cfg: 8.0` *together with* `inherit_sampler_settings: True`
-(`generation_defaults.py:163-168`), so that `8.0` is unreachable unless you first turn inherit off. A
-shipped default that its own default flag ignores is a sign the flag is drawn around the wrong set of
-fields.
+**The UI contribution is to hide the three inherited fields while the flag is on**, and to name the
+values actually in force instead. An editable control whose value is silently ignored is the same trap
+as §5a's wired-field badge — the fix is the same, show where the value is really coming from.
+
+That also cleans up a real snag in upstream's UI: it ships highres `cfg: 8.0` *together with*
+`inherit_sampler_settings: True` (`generation_defaults.py:163-168`), so that `8.0` sits in the dialog
+looking editable while being unreachable until you turn inherit off. Same data, no confusion, purely
+by not drawing it.
 
 Applies to all three sampling stages — highres, upscale, detailer — each with its own flag.
 
@@ -524,9 +525,9 @@ we ship:
   latent:       { width, height, batch },
   loras:        [ { name, strength_model, strength_clip } ],   // inline mode only; order = apply order
   highres:      { enabled: false, scale_by: 1.5, upscale_method, multiple, max_long_edge,
-                  steps: 20, cfg: 8.0, denoise: 0.25,          // always this stage's own
-                  inherit_sampler_settings: true,               // governs the two below only
-                  sampler_name, scheduler },
+                  steps: 20, denoise: 0.25,                     // always this stage's own
+                  inherit_sampler_settings: true,               // governs the three below
+                  cfg: 8.0, sampler_name, scheduler },
   detailer:     { enabled: false, ...upstream face defaults },
   upscale:      { enabled: false, scale_by: 2.0, steps: 20, inherit_sampler_settings: true,
                   cfg, sampler_name, scheduler, denoise: 0.2, usdu: {...} },
@@ -611,10 +612,10 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   unchanged. Test with the pack genuinely absent, and in a **subprocess** — a repo-root-on-
   `sys.path` shim masks exactly this class of bug (see the `comfyui-pack-import-structure` skill).
 - **Postprocess fit maths** and **USDU tile planning** are pure functions; test them directly.
-- **`inherit_sampler_settings` resolution** (§6b): with the flag on, a stage's `sampler_name` and
-  `scheduler` come from the first pass while its `steps`, `cfg` and `denoise` do not. Assert both
-  directions for all three stages — this is a deliberate divergence from upstream, so a future reader
-  "fixing" it to match `aio/sampling.py` is a realistic regression.
+- **`inherit_sampler_settings` resolution** (§6b): with the flag on, a stage's `cfg`, `sampler_name`
+  and `scheduler` come from the first pass while its `steps` and `denoise` never do. Assert both
+  directions for all three stages, and assert the two *un*inherited fields explicitly — "inherit
+  everything" is the intuitive reading and the wrong one.
 - Frontend: `node js/anima/test_*.mjs` for the wipe geometry and settings round-trip. Mark
   what only a browser can confirm with `VERIFY-IN-COMFYUI:`.
 
