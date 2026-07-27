@@ -940,13 +940,16 @@ sec_launch = widgets.VBox([
     pinggy_token, pinggy_remember,
     widgets.HBox([fe_on, fe_ver]),
     widgets.HTML("<small>Off = whatever <code>requirements.txt</code> pinned for the checked-out "
-                 "ref. On = boot that frontend build instead (Restart to apply). "
-                 "<code>@1.45.21</code> is the known-good for subgraph rendering; 1.47.10 also "
-                 "started filtering <code>canvasOnly</code> widgets (e.g. seed's "
-                 "<code>control_after_generate</code>) out of the subgraph promotion list and the "
-                 "Parameters panel — frontend PRs #12957/#13870/#13868, still true in 1.48.5. "
-                 "NOTE: a custom DOM widget with no backing input slot (Pixaroma Resolution) can "
-                 "never be promoted onto a subgraph in ANY version — that one is not a pin issue."),
+                 "ref. On = boot that frontend build instead (Restart to apply). <b>Use this to go "
+                 "UP only.</b> ComfyUI reports <code>required_frontend_version</code> from the "
+                 "ref's own <code>requirements.txt</code>, so a LOWER frontend always trips "
+                 "\"Frontend version X is outdated\" — to run an older UI, pin the ref above "
+                 "instead (<code>v0.28.3</code> ⇒ 1.45.21) and leave this off, so core and frontend "
+                 "move together. FYI 1.47.10 filters <code>canvasOnly</code> widgets (seed's "
+                 "<code>control_after_generate</code>) out of subgraph promotion and the Parameters "
+                 "panel — PRs #12957/#13870/#13868, still true in 1.48.5. Unrelated: a custom DOM "
+                 "widget with no backing input slot (Pixaroma Resolution) can never be promoted "
+                 "onto a subgraph in ANY version — not a pin issue."),
     widgets.HBox([launch_btn, restart_btn, stop_btn]),
     url_html, launch_log.w])
 
