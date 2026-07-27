@@ -1,14 +1,14 @@
-"""Plain-script tests for the prompt-rules engine (`core/`).
+"""Plain-script tests for the prompt-rules engine (`src/prompt_rules/core/`).
 
 Run directly: `python tests/test_rules.py` (no pytest, per project convention).
 
 IMPORTANT: the `# Output:` comments in the example YAML files
-(`prompt-rules/examples/*.yaml`) are ILLUSTRATIVE -- they assume anchor
-insertion (inserting a new tag exactly where a removed/matched one used to
-be) that v1 does not implement (adds always append at the end of the
-target block; see `core/__init__.py`'s v1-simplifications docstring). These
-tests assert on SEMANTIC PROPERTIES (substrings/contains, section
-contents), not exact rendered strings.
+(`src/prompt_rules/schema/examples/*.yaml`) are ILLUSTRATIVE -- they assume
+anchor insertion (inserting a new tag exactly where a removed/matched one
+used to be) that v1 does not implement (adds always append at the end of
+the target block; see `src/prompt_rules/core/__init__.py`'s
+v1-simplifications docstring). These tests assert on SEMANTIC PROPERTIES
+(substrings/contains, section contents), not exact rendered strings.
 """
 from __future__ import annotations
 
@@ -20,13 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 
-import core
-from core import profiles as core_profiles
-from core.document import find_by_label
-from nodes.anima_prompt import _rules_helpers as rh
+from src.prompt_rules import core
+from src.prompt_rules.core import profiles as core_profiles
+from src.prompt_rules.core.document import find_by_label
+from nodes.prompt_rules import _rules_helpers as rh
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXAMPLES_DIR = os.path.join(REPO_ROOT, "prompt-rules", "examples")
+EXAMPLES_DIR = os.path.join(REPO_ROOT, "src", "prompt_rules", "schema", "examples")
 RULES_DIR = os.path.join(REPO_ROOT, "rules")
 
 
@@ -1037,7 +1037,7 @@ def test_validation_invalid_regex_raises():
 # to be silently ignored -- a typo'd condition key like `anyof` for `any_of`
 # compiled away to nothing, turning a conditional rule into an unconditional
 # one with no warning at all). The `Auditor` now rejects any key outside the
-# per-rule-type set mirrored from `prompt-rules/ruleset.schema.json`, plus the
+# per-rule-type set mirrored from `src/prompt_rules/schema/ruleset.schema.json`, plus the
 # ruleset top level and `options`, with a near-miss suggestion.
 # ---------------------------------------------------------------------------
 
@@ -1202,7 +1202,7 @@ def test_setop_unknown_key_rejected():
 
 def test_every_shipped_sheet_validates_cleanly():
     """Every sheet actually shipped with the repo (`rules/*.yaml` plus
-    everything under `prompt-rules/examples/`) must still validate with zero
+    everything under `src/prompt_rules/schema/examples/`) must still validate with zero
     errors under the new closed-key-set checks. Globs the directories so a
     newly added file is covered automatically.
     """

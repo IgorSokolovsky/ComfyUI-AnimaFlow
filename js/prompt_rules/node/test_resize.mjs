@@ -7,7 +7,7 @@
  *      the profile list), `parseEmbedded` tolerantly parses the
  *      `embedded_rules` widget's JSON (never throws), `normalizeSheetsValue`
  *      mirrors the `sheets` widget's `"*"`-default / explicit-empty-string
- *      contract from `nodes/anima_prompt/_rules_helpers.py`.
+ *      contract from `nodes/prompt_rules/_rules_helpers.py`.
  *   B. `render.mjs` DOM building — `buildRoot` lays out the topbar
  *      (PROFILE/SHEETS/BETA), POSITIVE/NEGATIVE panes (status dots, the
  *      `log_trace` switch in the NEGATIVE header), and the action row using
@@ -53,7 +53,7 @@
  *      wiring highlighting after `refreshFromWidgets`, and the `onRemoved`
  *      hook calling `teardownHighlighting` before the original `onRemoved`.
  *
- * Run directly: `node js/anima_prompt/prompt_rules/test_resize.mjs` (plain script,
+ * Run directly: `node js/prompt_rules/node/test_resize.mjs` (plain script,
  * no test framework — matches the project's `python tests/test_x.py`
  * convention).
  *
@@ -874,7 +874,7 @@ test("index.js imports app from the absolute /scripts/app.js path", () => {
 test("index.js imports openRuleBuilder from the absolute rule_builder path (unchanged, not owned by this build)", () => {
   assert.match(
     indexSource,
-    /from\s+"\/extensions\/ComfyUI-AnimaFlow\/anima_prompt\/rule_builder\/index\.js"/,
+    /from\s+"\/extensions\/ComfyUI-AnimaFlow\/prompt_rules\/rule_builder\/index\.js"/,
   );
 });
 
@@ -956,7 +956,7 @@ test("index.js imports attachHighlighting/teardownHighlighting from ./highlight_
 });
 
 test("index.js loads the shared highlighter via a GUARDED dynamic import, never a static top-level import", () => {
-  // A static top-level `import ... from ".../shared/highlight/index.js"`
+  // A static top-level `import ... from ".../shared/highlight/index.mjs"`
   // would throw at EXTENSION LOAD TIME if the route is missing/broken (an
   // older install, a dropped route), taking the whole node down with it --
   // must be a dynamic `import()` inside a `.catch()` instead.

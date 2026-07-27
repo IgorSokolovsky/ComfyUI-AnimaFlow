@@ -95,7 +95,7 @@ Character sheets live as `rules/*.yaml` files (reusable) and/or embedded per-wor
 | [**docs/rule-builder.md**](docs/rule-builder.md) | The Rule Builder + prompt-rules engine — concepts, the overlay, the picker, character sheets, worked examples. |
 | [**docs/rules-reference.md**](docs/rules-reference.md) | Complete rule reference — every rule type, condition, target, and profile. |
 | [**docs/nodes.md**](docs/nodes.md) | Catalog of every node: inputs, outputs, and what it's for. |
-| [`prompt-rules/SCHEMA.md`](prompt-rules/SCHEMA.md) | Deep spec of the ruleset format + Document model (for tinkerers). |
+| [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md) | Deep spec of the ruleset format + Document model (for tinkerers). |
 
 ---
 
@@ -109,6 +109,6 @@ AnimaFlow is **MIT** licensed — see [`LICENSE`](LICENSE). It stands on two oth
 
 **[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — this pack's tag-autocomplete and tag-highlighting/classify service derive from this project, with logic copied and adapted under its MIT license. Thank you to n0va39: the booru-autocomplete approach and the classify logic behind prompt highlighting both originate there. (AnimaFlow previously also carried a leaner port of this pack's generation/conditioning node line; that line has been removed for now and will be re-derived node-by-node from this same upstream in a future build.)
 
-**[ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu)** (GPL-3.0) — **concept inspiration only; no code was copied.** The Rule Builder idea comes from here, but AnimaFlow's engine (`core/`) is a **clean-room** implementation written against its own spec, [`prompt-rules/SCHEMA.md`](prompt-rules/SCHEMA.md), and is architecturally different (a Document tree with profiles and selectors, versus a flat weighted tag list). Since that project is copyleft, this boundary is what keeps AnimaFlow MIT — please don't copy code across it.
+**[ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu)** (GPL-3.0) — **concept inspiration only; no code was copied.** The Rule Builder idea comes from here, but AnimaFlow's engine (`src/prompt_rules/core/`) is a **clean-room** implementation written against its own spec, [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md), and is architecturally different (a Document tree with profiles and selectors, versus a flat weighted tag list). Since that project is copyleft, this boundary is what keeps AnimaFlow MIT — please don't copy code across it.
 
 Full notices, and a per-file breakdown of what derives from where: [**THIRD_PARTY_NOTICES.md**](THIRD_PARTY_NOTICES.md).

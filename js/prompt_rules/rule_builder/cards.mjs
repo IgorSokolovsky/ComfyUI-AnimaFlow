@@ -10,18 +10,18 @@
  * `--rb-tone` below is one of the existing `--wtn-*` tokens).
  *
  * This module owns the UI's internal rule representation (a plain object
- * tree, NOT the wire-format Ruleset from `prompt-rules/SCHEMA.md`) plus:
+ * tree, NOT the wire-format Ruleset from `src/prompt_rules/schema/SCHEMA.md`) plus:
  *   - `mkRule` / `seedRuleset` — build/seed rows for the builder pane.
  *   - `renderRuleList` — the recursive card renderer.
  *   - `toRuleset` — serializes the internal model to the REAL schema shape
- *     (`prompt-rules/SCHEMA.md` §3 / `ruleset.schema.json`) for
+ *     (`src/prompt_rules/schema/SCHEMA.md` §3 / `ruleset.schema.json`) for
  *     `POST /wtn/rules/{preview,validate,sheet}`.
  *   - `fromRuleset` — the (best-effort) inverse, for `GET /wtn/rules/sheet`
  *     and an encode node's existing `embedded_rules`: loads the SUBSET of the
  *     schema this card UI can represent (sugar `any_of`/`all_of`/`none_of`
  *     conditions, `section`-based `set`, plain/`{value}`-form mutations,
  *     `switch` + `default:true` children) — exactly what `toRuleset` itself
- *     emits, and what both worked examples in `prompt-rules/examples/` use.
+ *     emits, and what both worked examples in `src/prompt_rules/schema/examples/` use.
  *     A richer hand-authored ruleset (explicit `target` selectors, nested
  *     boolean condition trees, `after`/`before` anchors) has no card
  *     representation; those rules load with their condition dropped to
@@ -54,11 +54,11 @@ export function nextRuleId() {
 // heuristic used by (a) the `into`/`section` datalist suggestions below and
 // (b) `preview.mjs`'s OFFLINE fallback engine, which has to parse/render text
 // itself when `/wtn/rules/preview` is unreachable. It is intentionally
-// approximate; the server (once Track A's `api/rules_api.py` lands) is the
+// approximate; the server (once Track A's `src/prompt_rules/api/rules_api.py` lands) is the
 // source of truth. The four ids below match BOTH `docs/nodes-and-api.md` §2's
 // `/wtn/rules/profiles` example AND Track A's already-shipped
 // `nodes/_rules_helpers.PROFILE_CHOICES` — the curated node-facing subset of
-// `core/profiles.py`'s six engine profiles (which also has `pony`/`wan`;
+// `src/prompt_rules/core/profiles.py`'s six engine profiles (which also has `pony`/`wan`;
 // those aren't node-selectable, so they're omitted here too). `pony`/`wan`
 // are still handled gracefully (fall back to their nearest family) in case
 // the server ever exposes them.
@@ -417,7 +417,7 @@ function appendField(existing, entry) {
  * emitted as the PLAIN string form (never the `{value, into|from}` object
  * form) — this UI has no per-mutation target override, so the mutation
  * simply targets the rule's own (already-serialized) `into`, exactly like
- * the worked examples in `prompt-rules/examples/` (their scalar
+ * the worked examples in `src/prompt_rules/schema/examples/` (their scalar
  * `add_negative: "..."` rules carry no `into` of their own at all). `set`
  * always needs an explicit target: `{section, to}` if a section was given,
  * else `{target: resolvedInto, to}` — SCHEMA.md §3.2's `SetOp` has no bare
@@ -469,7 +469,7 @@ function serializeRule(rule, intoInherit) {
 }
 
 /** Converts the builder's internal rule tree into a real Ruleset object
- * (`prompt-rules/SCHEMA.md` §3 / `ruleset.schema.json`) — this is what gets
+ * (`src/prompt_rules/schema/SCHEMA.md` §3 / `ruleset.schema.json`) — this is what gets
  * sent as `embedded`/`ruleset` to `/wtn/rules/{preview,validate,sheet}`. */
 export function toRuleset(rules, profile) {
   return {

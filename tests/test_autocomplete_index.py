@@ -13,12 +13,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from autocomplete.dataset import AutocompleteEntry
-from autocomplete.index import search
+from src.autocomplete.dataset import AutocompleteEntry
+from src.autocomplete.index import search
 
 
 def entry(tag, category="general", count=0, source="gelbooru"):
-    from autocomplete.dataset import normalize_tag_key
+    from src.autocomplete.dataset import normalize_tag_key
 
     return AutocompleteEntry(tag=tag, tag_key=normalize_tag_key(tag), category=category, count=count, source=source)
 

@@ -112,7 +112,7 @@ function escapeLiteralParens(text) {
 }
 
 /**
- * Converts a canonical booru tag NAME (as stored in `autocomplete/data/
+ * Converts a canonical booru tag NAME (as stored in `src/autocomplete/data/
  * {gelbooru,danbooru}.csv`, e.g. `looking_at_viewer`, `fate_(series)`) into
  * safe, insertable PROMPT TEXT: underscores become spaces (booru tag names
  * use `_` as a word-joiner; trained models -- Anima included -- see the

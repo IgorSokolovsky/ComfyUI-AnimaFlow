@@ -34,7 +34,7 @@ import { runPreview, renderTrace, renderErrors, createDebounced } from "./previe
 // Used only until `GET /wtn/rules/profiles` answers (see `renderProfileSeg`
 // below) — matches `docs/nodes-and-api.md` §2's example AND Track A's
 // already-shipped `nodes/_rules_helpers.PROFILE_CHOICES` (the node-facing
-// subset of `core/profiles.py`'s six engine profiles).
+// subset of `src/prompt_rules/core/profiles.py`'s six engine profiles).
 const DEFAULT_PROFILES = ["anima", "illustrious", "flux", "raw"];
 const PROFILE_LABEL = {
   anima: "anima · prose",

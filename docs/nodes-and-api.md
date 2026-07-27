@@ -1,6 +1,6 @@
 # Rule Builder — ComfyUI integration contract
 
-How the clean-room engine (`core/`) surfaces in ComfyUI: the encode **nodes**, the
+How the clean-room engine (`src/prompt_rules/core/`) surfaces in ComfyUI: the encode **nodes**, the
 **API routes** the frontend calls, and the **frontend** surfaces (Rule Builder overlay
 + picker popovers). This is the shared interface — nodes (Python) and frontend (JS) are
 built against it in parallel; they touch disjoint files.
@@ -23,7 +23,7 @@ Both apply rulesets, then diverge only on output type.
 | `clip` | `CLIP` | CLIP node only |
 | `positive` | `STRING` multiline, dynamicPrompts | |
 | `negative` | `STRING` multiline, dynamicPrompts | |
-| `profile` | combo | from `core.profiles` — `anima`, `illustrious`, `flux`, `raw` |
+| `profile` | combo | from `core.profiles` (`src/prompt_rules/core/profiles.py`) — `anima`, `illustrious`, `flux`, `raw` |
 | `sheets` | `STRING` | which `rules/*.yaml` sheets to apply; `*` = all enabled, or comma list; default `*` |
 
 **Hidden / widget state:**
@@ -46,7 +46,7 @@ ruleset; the engine applies them sequentially to the same document bundle.
 **`IS_CHANGED`** = `sha256(positive + negative + profile + selected-sheet digests + embedded_rules)`
 → re-encode only on real change + free hot-reload of edited sheets (mirrors the original).
 
-Thin nodes: all resolution/loading logic in `nodes/anima_prompt/_rules_helpers.py`; engine stays in `core/`.
+Thin nodes: all resolution/loading logic in `nodes/prompt_rules/_rules_helpers.py`; engine stays in `src/prompt_rules/core/`.
 
 ---
 
@@ -71,13 +71,13 @@ offline fallback).
 `trace` shape (matches SCHEMA.md §8): `[{depth:int, kind:"group\|tag\|cond\|add\|remove\|set\|tmp\|skip\|anchor", text:str}]`.
 Validation `errors`: `[{path:"celica.yaml -> rules[0](celica).type", message:"…"}]`.
 
-Route handlers live in `api/rules_api.py`, importing `core` + `_rules_helpers`.
+Route handlers live in `src/prompt_rules/api/rules_api.py`, importing `core` + `_rules_helpers`.
 
 ---
 
 ## 3. Frontend surfaces (house theme, shared classes)
 
-### Rule Builder overlay — `js/anima_prompt/rule_builder/`
+### Rule Builder overlay — `js/prompt_rules/rule_builder/`
 Port of `playground/rule-builder.html`, but styled with the shared `.wtn-*` classes
 (drop the playground's inline palette; keep only overlay-specific layout). Full-screen
 modal over the canvas.
@@ -97,7 +97,7 @@ Suggested modules: `index.js` (registerExtension, menu command, `openRuleBuilder
 (preview + trace render). Shared: `js/shared/api.mjs` (fetch wrappers for the routes),
 `js/shared/theme.mjs` (`injectTheme`).
 
-### Picker popover — `js/anima_prompt/prompt_rules/`
+### Picker popover — `js/prompt_rules/node/`
 Lighter overlay opened by **Pick…** on an encode node. Loads `GET /characters`, groups by
 kind, click inserts the `token(s)` into the node's `positive` (or `negative`) text widget.
 Modules: `index.js` (adds the two buttons to the node), `picker.mjs` (the popover).
@@ -112,15 +112,16 @@ Modules: `index.js` (adds the two buttons to the node), `picker.mjs` (the popove
 ## 4. File layout
 
 ```
-core/                      # engine (built)
-nodes/anima_prompt/prompt_rules.py      # 2 node classes (thin)
-nodes/anima_prompt/_rules_helpers.py    # resolve sheets+embedded, call core, digests for IS_CHANGED
-api/rules_api.py           # aiohttp routes
+src/prompt_rules/core/                  # engine (built)
+nodes/prompt_rules/prompt_rules.py      # 2 node classes (thin)
+nodes/prompt_rules/_rules_helpers.py    # resolve sheets+embedded, call core, digests for IS_CHANGED
+src/prompt_rules/api/rules_api.py       # aiohttp routes
+src/prompt_rules/schema/                # ruleset spec + JSON Schema + worked examples
 rules/                     # character-sheet files (*.yaml)
 js/shared/theme.{css,mjs}  # house theme (built)
 js/shared/api.mjs          # fetch wrappers
-js/anima_prompt/rule_builder/{index.js,overlay.mjs,cards.mjs,preview.mjs}
-js/anima_prompt/prompt_rules/{index.js,picker.mjs}
+js/prompt_rules/rule_builder/{index.js,overlay.mjs,cards.mjs,preview.mjs}
+js/prompt_rules/node/{index.js,picker.mjs}
 __init__.py                # register nodes + WEB_DIRECTORY="./js"
 ```
 
@@ -128,9 +129,9 @@ __init__.py                # register nodes + WEB_DIRECTORY="./js"
 
 ## 5. Parallelization (disjoint files → safe concurrency)
 
-- **Track A · Python** (after engine verified): `nodes/`, `api/`, `rules/`, `__init__.py`.
+- **Track A · Python** (after engine verified): `nodes/`, `src/prompt_rules/api/`, `rules/`, `__init__.py`.
   Imports `core`.
-- **Track B · JS** (can start now): `js/anima_prompt/rule_builder/`, `js/anima_prompt/prompt_rules/`, `js/shared/api.mjs`.
+- **Track B · JS** (can start now): `js/prompt_rules/rule_builder/`, `js/prompt_rules/node/`, `js/shared/api.mjs`.
   Builds against §2/§3; uses the ported JS engine as offline fallback so the overlay is
   demo-able before Track A lands.
 

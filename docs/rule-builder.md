@@ -143,7 +143,7 @@ behave correctly per model family:
 
 Prompt `… celica, jacket …` → celica's appearance filled in, the jacket branch chosen, her
 name stripped, quality guards added to negative. The same logic in **booru** mode uses plain
-`add`/`into: "*"` instead of sections — see `prompt-rules/examples/celica.booru.yaml`.
+`add`/`into: "*"` instead of sections — see `src/prompt_rules/schema/examples/celica.booru.yaml`.
 
 ---
 
@@ -157,5 +157,5 @@ name stripped, quality guards added to negative. The same logic in **booru** mod
 
 These are planned enhancements. The full format spec — including the parts the card UI doesn't
 surface (regex conditions, raw selectors, nested boolean trees) — is in
-[`prompt-rules/SCHEMA.md`](../prompt-rules/SCHEMA.md); a compact reference is
+[`src/prompt_rules/schema/SCHEMA.md`](../src/prompt_rules/schema/SCHEMA.md); a compact reference is
 [rules-reference.md](rules-reference.md).

@@ -1,4 +1,4 @@
-"""Resolution logic for the Prompt Rules encode nodes (`nodes/prompt_rules.py`).
+"""Resolution logic for the Prompt Rules encode nodes (`nodes/prompt_rules/prompt_rules.py`).
 
 Pure(ish) logic split out per the project's node + `_helpers.py` convention so
 it stays testable without ComfyUI (see `test_prompt_rules.py`). Everything
@@ -30,16 +30,18 @@ import yaml
 
 try:  # pragma: no cover - exercised implicitly by whichever context imports us
     # Real ComfyUI context: this module lives two package levels below this
-    # custom-node pack's top-level package (`nodes/anima_prompt/` -> pack
-    # root), so a relative import up to the pack's own `core` is correct
-    # here (a bare `import core` would only resolve if the pack's parent
-    # dir -- not the pack root -- were on `sys.path`, which it isn't).
-    from ... import core  # type: ignore
+    # custom-node pack's top-level package (`nodes/prompt_rules/` -> pack
+    # root), so a relative import up to the pack's own `src.prompt_rules.core`
+    # is correct here (a bare `import core` would only resolve if the pack's
+    # parent dir -- not the pack root -- were on `sys.path`, which it isn't).
+    from ...src.prompt_rules import core  # type: ignore
 except ImportError:
     # Standalone context (plain-script tests, run from the repo root with the
     # repo root on `sys.path`): no parent package to relate to, so fall back
-    # to the bare import the project's other `test_*.py` scripts rely on.
-    import core
+    # to the bare import the project's other `test_*.py` scripts rely on --
+    # `core` now lives under `src/prompt_rules/core`, so the bare form is
+    # `src.prompt_rules.core`, bound to the same local name `core` used below.
+    from src.prompt_rules import core
 
 # ---------------------------------------------------------------------------
 # Sheets directory

@@ -4,7 +4,7 @@ plus PURE selector-lookup helpers (SCHEMA.md SS2).
 This module only knows how to *find* blocks (by id/label/glob/path) -- it
 has no opinion on Profiles or on what to do when a selector doesn't resolve
 (that's `core/engine.py`'s job, since creating a missing block needs a
-Profile's defaults). Clean-room from prompt-rules/SCHEMA.md; no code copied
+Profile's defaults). Clean-room from src/prompt_rules/schema/SCHEMA.md; no code copied
 from any other rule engine.
 """
 from __future__ import annotations

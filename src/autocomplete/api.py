@@ -19,7 +19,7 @@ docstring for the full explanation.
 
 Route REGISTRATION needs a live ComfyUI `server.PromptServer` instance, so
 the `from server import PromptServer` import (and the aiohttp import it
-implies) is guarded exactly like `api/rules_api.py`: importing this module
+implies) is guarded exactly like `src/prompt_rules/api/rules_api.py`: importing this module
 OUTSIDE ComfyUI (e.g. from a plain-script test, or from this pack's own
 root `__init__.py` running standalone) must not crash — it just skips
 registering the route.

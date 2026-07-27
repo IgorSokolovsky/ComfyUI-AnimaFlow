@@ -11,10 +11,11 @@ keywords = ["comfyui", "anima", "prompt", "webtoon", "scene", "rules"]
 dependencies = ["pyyaml>=6.0"]
 
 # Keep in sync with requirements-dev.txt. Test-only: `jsonschema` is used by
-# tests/test_ruleset_schema.py to cross-check prompt-rules/ruleset.schema.json
-# against a real JSON Schema implementation; it is never imported by shipped
-# code and must never be installed for a plain ComfyUI user (hence it lives
-# here, not in `dependencies` above). Install with `pip install -e .[dev]`.
+# tests/test_ruleset_schema.py to cross-check
+# src/prompt_rules/schema/ruleset.schema.json against a real JSON Schema
+# implementation; it is never imported by shipped code and must never be
+# installed for a plain ComfyUI user (hence it lives here, not in
+# `dependencies` above). Install with `pip install -e .[dev]`.
 [project.optional-dependencies]
 dev = ["jsonschema>=4.18", "pyyaml>=6.0"]
 

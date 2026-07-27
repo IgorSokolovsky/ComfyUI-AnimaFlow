@@ -1,12 +1,12 @@
 /**
  * Rule Builder API — thin fetch wrappers for the `/wtn/rules/*` routes
  * described in `docs/nodes-and-api.md` §2. These power the Rule Builder
- * overlay (`js/anima_prompt/rule_builder/`) and (later) the picker popover
- * (`js/anima_prompt/prompt_rules/`).
+ * overlay (`js/prompt_rules/rule_builder/`) and (later) the picker popover
+ * (`js/prompt_rules/node/`).
  *
  * Every export returns **parsed JSON** on a 2xx response and **throws** on
  * anything else (non-2xx status, a network failure, or a route that simply
- * doesn't exist yet because Track A / `api/rules_api.py` hasn't landed) —
+ * doesn't exist yet because Track A / `src/prompt_rules/api/rules_api.py` hasn't landed) —
  * callers are expected to `try/catch` and fall back (e.g. the Rule Builder's
  * ported offline JS engine, or a disabled Sheets panel) rather than crash.
  * This file makes no assumption about whether the backend exists yet.

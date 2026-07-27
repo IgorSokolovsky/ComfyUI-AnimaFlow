@@ -119,11 +119,10 @@ test("empty string, null, and undefined all return an empty string without throw
 // =========================================================================
 // interaction.mjs — source-level assertion that the commit path actually
 // routes through tagToPromptText. This is a source-grep, not a live DOM
-// exercise, because `interaction.mjs` (like `index.js` in
-// js/anima_prompt/anima_prompt_studio/test_resize.mjs) touches real
-// textarea/document APIs (`el.value`, `setSelectionRange`,
-// `dispatchEvent`) that only resolve inside a real browser/ComfyUI host,
-// not this headless `node` runner.
+// exercise, because `interaction.mjs` (like the node `index.js` files
+// elsewhere in this pack) touches real textarea/document APIs (`el.value`,
+// `setSelectionRange`, `dispatchEvent`) that only resolve inside a real
+// browser/ComfyUI host, not this headless `node` runner.
 // =========================================================================
 
 const interactionSource = readFileSync(path.join(__dirname, "interaction.mjs"), "utf8");

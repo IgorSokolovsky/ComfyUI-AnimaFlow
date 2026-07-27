@@ -1,5 +1,5 @@
-"""Plain-script tests cross-checking `prompt-rules/ruleset.schema.json`
-(JSON Schema, draft 2020-12) against the Python `Auditor` (`core/rules.py`).
+"""Plain-script tests cross-checking `src/prompt_rules/schema/ruleset.schema.json`
+(JSON Schema, draft 2020-12) against the Python `Auditor` (`src/prompt_rules/core/rules.py`).
 
 Run directly: `python tests/test_ruleset_schema.py` (no pytest, per project
 convention).
@@ -16,8 +16,9 @@ keeping `for f in tests/test_*.py` green on a machine without dev deps.
 
 The Python `Auditor` remains the RUNTIME validation authority (imported by
 nodes at runtime); the JSON Schema is an editor/CI surface only (autocomplete,
-`ajv`/`jsonschema`-based pre-commit checks, etc.) -- see `prompt-rules/
-SCHEMA.md` SS10. The two must not drift, hence the parity corpus below.
+`ajv`/`jsonschema`-based pre-commit checks, etc.) -- see
+`src/prompt_rules/schema/SCHEMA.md` SS10. The two must not drift, hence the
+parity corpus below.
 """
 from __future__ import annotations
 
@@ -36,11 +37,11 @@ except ImportError:
 
 import yaml
 
-import core
+from src.prompt_rules import core
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCHEMA_PATH = os.path.join(REPO_ROOT, "prompt-rules", "ruleset.schema.json")
-EXAMPLES_DIR = os.path.join(REPO_ROOT, "prompt-rules", "examples")
+SCHEMA_PATH = os.path.join(REPO_ROOT, "src", "prompt_rules", "schema", "ruleset.schema.json")
+EXAMPLES_DIR = os.path.join(REPO_ROOT, "src", "prompt_rules", "schema", "examples")
 RULES_DIR = os.path.join(REPO_ROOT, "rules")
 
 _VALIDATOR = None  # lazily built by `_validator()`, only ever called when HAVE_JSONSCHEMA
@@ -128,7 +129,7 @@ def test_default_true_accepted_on_direct_switch_child():
 def test_default_true_rejected_on_top_level_rule():
     """The naive fix (adding `default` to every variant's own `properties`)
     would make this incorrectly pass -- `default` must stay illegal outside
-    a switch's direct children, matching `core/rules.py`'s
+    a switch's direct children, matching `src/prompt_rules/core/rules.py`'s
     `SWITCH_CHILD_EXTRA_KEYS` carve-out.
     """
     bad = {"version": 1, "rules": [{"default": True, "add": "x"}]}
@@ -156,7 +157,7 @@ def test_unknown_key_rejected_on_each_rule_type():
 
 
 def test_anyof_typo_real_world_repro_is_rejected():
-    """Exact repro from `core/rules.py`'s docstring/tests: `anyof` (not
+    """Exact repro from `src/prompt_rules/core/rules.py`'s docstring/tests: `anyof` (not
     `any_of`) used to silently compile away in the Python engine; the schema
     must reject it as an unknown property on a `tagRule` too.
     """
@@ -374,7 +375,7 @@ if __name__ == "__main__":
         print(
             "SKIP  test_ruleset_schema: jsonschema is not installed "
             "(pip install -r requirements-dev.txt, or `pip install -e .[dev]`) "
-            "-- schema cross-check tests skipped; core/rules.py's Auditor "
+            "-- schema cross-check tests skipped; src/prompt_rules/core/rules.py's Auditor "
             "remains the runtime validation authority regardless"
         )
         raise SystemExit(0)

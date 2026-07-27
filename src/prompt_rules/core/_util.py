@@ -1,4 +1,4 @@
-"""Small shared helpers used across the prompt-rules engine (`core/`).
+"""Small shared helpers used across the prompt-rules engine (`src/prompt_rules/core/`).
 
 Kept tiny and dependency-free on purpose: every other module in `core/`
 imports from here rather than duplicating text-splitting/normalisation

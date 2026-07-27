@@ -6,18 +6,18 @@
  *
  * ## Why this is its own DEPENDENCY-INJECTED module, not a direct import
  *
- * `js/shared/highlight/index.js`'s own doc comment says every consumer
+ * `js/shared/highlight/index.mjs`'s own doc comment says every consumer
  * should `import { attachHighlighter, createLegend } from
- * "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.js"` — an absolute
+ * "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.mjs"` — an absolute
  * path. Per the `comfyui-dynamic-node-frontend` skill's `theme.mjs`
  * precedent, that exact shape of import FAILS to resolve under plain
  * `node` (no live ComfyUI asset server to rewrite `/extensions/...`), which
  * is fatal for any module this node's headless `test_resize.mjs` actually
- * imports and exercises (unlike `index.js` itself, which the test only
+ * imports and exercises (unlike `index.mjs` itself, which the test only
  * source-inspects via `readFileSync`, never executes).
  *
  * So the real `attachHighlighter`/`createLegend` are imported ONLY from
- * `index.js` (via a guarded `import()`, so a missing route or any other
+ * `index.mjs` (via a guarded `import()`, so a missing route or any other
  * load failure degrades non-fatally instead of throwing at extension-load
  * time) and handed to this module's `attachHighlighting` as
  * `attachHighlighterImpl`/`createLegendImpl`. `test_resize.mjs` injects

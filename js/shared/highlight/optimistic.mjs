@@ -1,6 +1,6 @@
 /**
  * optimistic.mjs — the client-side "tier 1" paint: an approximate,
- * synchronous tag split (never re-implementing `autocomplete/classify.py`'s
+ * synchronous tag split (never re-implementing `src/autocomplete/classify.py`'s
  * real classifier — see the module docstring below for why that's fine)
  * consulted against `name_cache.mjs`'s cache so a returning tag recolors
  * INSTANTLY, on every keystroke, with no network round-trip.

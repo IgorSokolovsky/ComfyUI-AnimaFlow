@@ -1,13 +1,13 @@
 /**
  * index.js — registers the Prompt Rules nodes' (`PromptRulesText` /
- * `PromptRulesClip`, `nodes/anima_prompt/prompt_rules.py`) themed frontend: a
+ * `PromptRulesClip`, `nodes/prompt_rules/prompt_rules.py`) themed frontend: a
  * single `addDOMWidget` root (`render.mjs`'s `buildRoot`) replacing the
  * stock canvas widgets/buttons, matching this pack's house theme (the same
  * hidden-widget-mirrored-by-DOM-control + two-renderer resize pattern every
  * DOM-widget node in this pack follows).
  *
  * Absolute `/scripts/app.js` import (this file is nested in
- * `js/anima_prompt/prompt_rules/` — the frontend skill's gotcha #1: a relative
+ * `js/prompt_rules/node/` — the frontend skill's gotcha #1: a relative
  * `../../scripts/app.js` resolves wrong from a subfolder and silently kills
  * the whole extension). Same absolute-import reasoning applies to the
  * cross-folder `rule_builder` import below (kept byte-for-byte identical to
@@ -46,7 +46,7 @@
  * this pack should mirror ITS shape, not the other way around.
  */
 import { app } from "/scripts/app.js";
-import { openRuleBuilder } from "/extensions/ComfyUI-AnimaFlow/anima_prompt/rule_builder/index.js";
+import { openRuleBuilder } from "/extensions/ComfyUI-AnimaFlow/prompt_rules/rule_builder/index.js";
 import { openPicker } from "./picker.mjs";
 import { parseEmbedded } from "./core.mjs";
 import {
@@ -60,7 +60,7 @@ import {
 import { wireInteractions, refreshFromWidgets, findWidget } from "./interaction.mjs";
 import { attachHighlighting, teardownHighlighting } from "./highlight_wiring.mjs";
 
-// Both encode-node variants (`nodes/anima_prompt/prompt_rules.py`) get the same
+// Both encode-node variants (`nodes/prompt_rules/prompt_rules.py`) get the same
 // themed UI -- they differ only in output type (CONDITIONING vs STRING) and
 // the CLIP variant's extra `clip` socket, not in how their
 // `positive`/`negative`/`profile`/`sheets`/`log_trace`/`embedded_rules`
@@ -70,18 +70,18 @@ const NODE_CLASS_NAMES = ["PromptRulesClip", "PromptRulesText"];
 const WIDGETS_TO_HIDE = ["profile", "sheets", "positive", "negative", "log_trace", "embedded_rules"];
 
 // The shared tag-highlighter's own doc comment (`js/shared/highlight/
-// index.js`) documents this exact absolute import path. Kept as a GUARDED
+// index.mjs`) documents this exact absolute import path. Kept as a GUARDED
 // DYNAMIC import in `wireHighlighting` below (never a static top-level
 // import here) for two reasons: (1) `highlight_wiring.mjs`'s own doc
 // comment explains why a static absolute import breaks under this node's
 // headless `test_resize.mjs`; (2) unlike that concern, THIS file is never
 // itself executed by the headless test -- but a static import here would
 // still mean an absent/broken route (e.g. an older install missing
-// `autocomplete/api.py`'s `/wtn/classify` route) throws at EXTENSION LOAD
+// `src/autocomplete/api.py`'s `/wtn/classify` route) throws at EXTENSION LOAD
 // TIME and takes the whole node down with it. A dynamic `import()` inside a
 // `.catch()` degrades non-fatally instead, per this build's "never prevent
 // the node from mounting" requirement.
-const HIGHLIGHT_URL = "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.js";
+const HIGHLIGHT_URL = "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.mjs";
 
 /** Hide a declared widget from rendering only — it keeps serializing
  * normally (per the skill's "hide a declared widget that must still
@@ -131,7 +131,7 @@ function ensureInitialFloor(node) {
 
 /**
  * "Open Rule Builder" -- opens the full-screen Rule Builder overlay
- * (`js/anima_prompt/rule_builder/overlay.mjs`, via its `index.js`'s re-exported
+ * (`js/prompt_rules/rule_builder/overlay.mjs`, via its `index.js`'s re-exported
  * `openRuleBuilder(ctx)`) pointed at THIS node's `embedded_rules` widget:
  * reads its current value as the initial ruleset via `parseEmbedded`, and
  * writes `ctx.onApply`'s result back into it (JSON-stringified) so "Apply
@@ -165,7 +165,7 @@ function addOpenRuleBuilderButton(node, refs, embeddedWidget) {
       negative: negativeWidget ? negativeWidget.value : "",
       // Round-trips "Apply to node" (overlay.mjs's `apply-embedded` button)
       // back into this exact widget -- the only place this node reads its
-      // embedded ruleset from (`nodes/anima_prompt/_rules_helpers.py`'s
+      // embedded ruleset from (`nodes/prompt_rules/_rules_helpers.py`'s
       // resolution order: file sheets, THEN `embedded_rules`).
       onApply(ruleset) {
         if (!embeddedWidget) {
@@ -296,11 +296,10 @@ function mountUI(node) {
 }
 
 function setupNode(node) {
-  // Guards against a hypothetical double `onNodeCreated` re-entry (this
-  // pack's other nodes use the same `_wtn*Setup`-style guard, e.g.
-  // `js/anima_prompt/prompt_combiner/index.js`'s `_promptCombinerRefs` existence
-  // check) -- kept as the exact same flag name the previous version of this
-  // file used.
+  // Guards against a hypothetical double `onNodeCreated` re-entry: this
+  // pack's nodes each stamp a `_wtn*Setup`-style flag on the node instance
+  // the first time setup runs, and bail out early if it's already set --
+  // kept as the exact same flag name the previous version of this file used.
   if (node._wtnPromptRulesSetup) {
     return;
   }

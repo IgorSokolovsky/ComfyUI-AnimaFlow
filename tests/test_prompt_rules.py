@@ -1,6 +1,7 @@
 """Plain-script tests for the Prompt Rules encode nodes' resolution logic
-(`nodes/_rules_helpers.py`) and the `/wtn/rules/*` API's pure handlers
-(`api/rules_api.py`) -- all WITHOUT a live ComfyUI process.
+(`nodes/prompt_rules/_rules_helpers.py`) and the `/wtn/rules/*` API's pure
+handlers (`src/prompt_rules/api/rules_api.py`) -- all WITHOUT a live ComfyUI
+process.
 
 Run directly: `python tests/test_prompt_rules.py` (no pytest, per project convention).
 """
@@ -13,8 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
 
-from nodes.anima_prompt import _rules_helpers as rh
-from nodes.anima_prompt.prompt_rules import PromptRulesClip, PromptRulesText
+from nodes.prompt_rules import _rules_helpers as rh
+from nodes.prompt_rules.prompt_rules import PromptRulesClip, PromptRulesText
 
 # ---------------------------------------------------------------------------
 # `_rules_helpers` resolution over the real `rules/celica.yaml` sample --
@@ -141,7 +142,7 @@ def test_apply_rulesets_embedded_applies_after_file_sheets():
 
 
 # ---------------------------------------------------------------------------
-# The node classes themselves (`nodes/prompt_rules.py`) -- thin wiring only,
+# The node classes themselves (`nodes/prompt_rules/prompt_rules.py`) -- thin wiring only,
 # but still exercised directly (a fake CLIP stub stands in for the real
 # ComfyUI CLIP object the CONDITIONING variant needs).
 # ---------------------------------------------------------------------------
@@ -209,17 +210,17 @@ def test_prompt_rules_input_types_contract_shapes():
 
 
 # ---------------------------------------------------------------------------
-# `api/rules_api.py` -- must import cleanly with no ComfyUI installed, and
+# `src/prompt_rules/api/rules_api.py` -- must import cleanly with no ComfyUI installed, and
 # its pure handler functions must work directly.
 # ---------------------------------------------------------------------------
 
 def test_rules_api_imports_without_comfyui():
-    from api import rules_api  # noqa: F401 - import itself is the assertion
+    from src.prompt_rules.api import rules_api  # noqa: F401 - import itself is the assertion
     assert True
 
 
 def test_rules_api_profiles_and_sheets():
-    from api import rules_api
+    from src.prompt_rules.api import rules_api
 
     profiles = rules_api.profiles_impl()
     assert "anima" in profiles, profiles
@@ -233,7 +234,7 @@ def test_rules_api_profiles_and_sheets():
 
 
 def test_rules_api_validate_impl_ok_and_error():
-    from api import rules_api
+    from src.prompt_rules.api import rules_api
 
     ruleset = rh.load_sheet_file("celica")
     ok_result = rules_api.validate_impl({"ruleset": ruleset})
@@ -250,7 +251,7 @@ def test_rules_api_validate_impl_ok_and_error():
 
 
 def test_rules_api_preview_impl_shape_and_content():
-    from api import rules_api
+    from src.prompt_rules.api import rules_api
 
     payload = {
         "positive": ANIMA_POS,
@@ -269,7 +270,7 @@ def test_rules_api_preview_impl_shape_and_content():
 
 
 def test_rules_api_preview_impl_empty_sheets_means_none():
-    from api import rules_api
+    from src.prompt_rules.api import rules_api
 
     result = rules_api.preview_impl({
         "positive": ANIMA_POS,
@@ -282,7 +283,7 @@ def test_rules_api_preview_impl_empty_sheets_means_none():
 
 
 def test_rules_api_characters_impl_best_effort():
-    from api import rules_api
+    from src.prompt_rules.api import rules_api
 
     chars = rules_api.characters_impl()
     tokens = [c["token"] for c in chars]

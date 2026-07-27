@@ -10,7 +10,7 @@
 /**
  * Read a combo widget's CURRENT option list at runtime — deliberately never
  * hardcodes `PROFILE_CHOICES` here (the actual source of truth is
- * `nodes/anima_prompt/_rules_helpers.py`; this file must not import it, or even
+ * `nodes/prompt_rules/_rules_helpers.py`; this file must not import it, or even
  * know its name, so the selector can never drift out of sync with whatever
  * list the backend combo widget was actually built with). Tolerant of every
  * shape a ComfyUI combo widget's `options.values` shows up in: a plain
@@ -35,7 +35,7 @@ export function readProfileValues(widget) {
 /**
  * Parse the `embedded_rules` widget's current STRING value into a Ruleset
  * object for `openRuleBuilder`'s `ctx.embedded` — mirrors the previous
- * `js/anima_prompt/prompt_rules/index.js`'s inline `parseEmbedded(widget)` exactly,
+ * `js/prompt_rules/node/index.js`'s inline `parseEmbedded(widget)` exactly,
  * just taking the raw string directly (so it's testable without a fake
  * widget object). `{}` (nothing embedded yet) on an empty value or any
  * parse failure — a corrupt/hand-edited widget value must never crash the
@@ -55,7 +55,7 @@ export function parseEmbedded(raw) {
 
 /**
  * Normalize a possibly-missing/null `sheets` widget value to a string for
- * the DOM field — mirrors `nodes/anima_prompt/prompt_rules.py`'s
+ * the DOM field — mirrors `nodes/prompt_rules/prompt_rules.py`'s
  * `_shared_required()`'s `"sheets": ("STRING", {"default": "*"})`. An
  * explicit empty string is preserved verbatim (per `_rules_helpers.py`'s
  * `resolve_sheet_selection` doc comment: `""` means "no file sheets",

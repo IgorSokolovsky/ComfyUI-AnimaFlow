@@ -476,7 +476,7 @@ editor autocomplete. Worked examples: `examples/celica.anima.yaml` (prose) and
 `examples/celica.booru.yaml` (tags) — **same logic, two profiles**.
 
 **`ruleset.schema.json` is an editor/CI surface, not the runtime authority.**
-The Python `Auditor` (`core/rules.py`) is what actually gates a sheet at
+The Python `Auditor` (`src/prompt_rules/core/rules.py`) is what actually gates a sheet at
 runtime (via `validate`/`parse_ruleset`, SS1); `ruleset.schema.json` exists
 for editor autocomplete and for a standalone JSON-Schema-based check (e.g.
 `ajv`, or Python's `jsonschema`) that a sheet is well-formed without needing

@@ -27,7 +27,7 @@
  *      font-weight, background chip, opacity cascade).
  *   E. `legend.mjs` — collapsed by default, one item per section, swatches
  *      addressed by `data-section` and reusing the real `wtn-hl-tok` class.
- *   F. `index.js`'s `attachHighlighter`/`detach` — idempotent attach,
+ *   F. `index.mjs`'s `attachHighlighter`/`detach` — idempotent attach,
  *      initial + debounced-on-input classification with a fake
  *      timer/fetch, the "last painted text" repaint-churn guard, that
  *      `detach()` removes the mirror and restores the textarea's original
@@ -70,7 +70,7 @@ import {
 } from "./overlay.mjs";
 import { SECTIONS, sectionInfo, sectionLabel, sectionVarsCss, sectionTokenCss } from "./colors.mjs";
 import { createLegend } from "./legend.mjs";
-import { attachHighlighter, detach } from "./index.js";
+import { attachHighlighter, detach } from "./index.mjs";
 import {
   NAME_CACHEABLE_SECTIONS,
   normalizeTagName,
@@ -938,7 +938,7 @@ test("createLegend returns null with no document available", () => {
 });
 
 // =========================================================================
-// F. index.js -- attachHighlighter / detach
+// F. index.mjs -- attachHighlighter / detach
 // =========================================================================
 
 function makeAttachedFixture(extra = {}) {

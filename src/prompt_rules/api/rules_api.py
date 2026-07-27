@@ -20,24 +20,31 @@ from typing import Optional
 import yaml
 
 try:  # pragma: no cover - exercised implicitly by whichever context imports us
-    # Real ComfyUI context: this module is a subpackage of this custom-node
-    # pack's top-level package (`api/` -> pack root), so a relative import
-    # up to the pack's own `core` is correct here (a bare `import core` would
-    # only resolve if the pack's parent dir -- not the pack root -- were on
-    # `sys.path`, which it isn't).
+    # Real ComfyUI context: this module lives at `src/prompt_rules/api/
+    # rules_api.py`, so its own package is `src.prompt_rules.api`. `core` is
+    # now a SIBLING subpackage under `src.prompt_rules` (`src/prompt_rules/
+    # core/`), which is exactly ONE level up from `api` -- so TWO dots (not
+    # three: the file moved two levels deeper, but `core` moved right along
+    # with it into the same `src/prompt_rules/` parent, so the dot count from
+    # `api/` to its sibling `core/` is unchanged from before the move).
     from .. import core  # type: ignore
 except ImportError:
     # Standalone context (plain-script tests, run from the repo root with the
     # repo root on `sys.path`): no parent package to relate to, so fall back
-    # to the bare import the project's other `test_*.py` scripts rely on.
-    import core
+    # to the bare import the project's other `test_*.py` scripts rely on --
+    # `core` now lives under `src/prompt_rules/core`, bound to the same local
+    # name `core` used below.
+    from src.prompt_rules import core
 
 try:  # pragma: no cover - exercised implicitly by whichever context imports us
-    # Real ComfyUI context: `api` and `nodes` are both subpackages of this
-    # custom-node pack's top-level package, so a relative cross-package
-    # import is correct here (and avoids ever doing a bare `import nodes`,
-    # which would collide with ComfyUI's OWN top-level `nodes.py`).
-    from ..nodes.anima_prompt._rules_helpers import (  # type: ignore
+    # Real ComfyUI context: `nodes/` is no longer a sibling of this module's
+    # package -- reaching it now means climbing all the way from
+    # `src.prompt_rules.api` up past `src.prompt_rules`, then `src`, to the
+    # pack root itself: FOUR dots (own package + 3 ascents), then back down
+    # into `nodes.prompt_rules._rules_helpers`. (Avoids ever doing a bare
+    # `import nodes`, which would collide with ComfyUI's OWN top-level
+    # `nodes.py`.)
+    from ....nodes.prompt_rules._rules_helpers import (  # type: ignore
         PROFILE_CHOICES,
         RULES_DIR,
         apply_rulesets,
@@ -49,8 +56,9 @@ try:  # pragma: no cover - exercised implicitly by whichever context imports us
 except ImportError:
     # Standalone context (plain-script tests, run from the repo root with the
     # repo root on `sys.path`): no parent package to relate to, so fall back
-    # to the same bare import the project's other `test_*.py` scripts use.
-    from nodes.anima_prompt._rules_helpers import (  # type: ignore
+    # to the same bare import the project's other `test_*.py` scripts use --
+    # `_rules_helpers` now lives under `nodes/prompt_rules/`.
+    from nodes.prompt_rules._rules_helpers import (  # type: ignore
         PROFILE_CHOICES,
         RULES_DIR,
         apply_rulesets,

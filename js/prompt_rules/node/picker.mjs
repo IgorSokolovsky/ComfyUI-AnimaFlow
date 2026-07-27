@@ -4,7 +4,7 @@
  *
  * A compact modal (house theme, `.wtn` + a scoped `.wtn-pk-*` layout built
  * purely from the existing `--wtn-*` tokens -- no new colors, matching
- * `js/anima_prompt/rule_builder/overlay.mjs`'s own "layout-only additions" rule) that:
+ * `js/prompt_rules/rule_builder/overlay.mjs`'s own "layout-only additions" rule) that:
  *   - fetches `GET /wtn/rules/characters` (`js/shared/api.mjs`'s
  *     `getCharacters()`),
  *   - groups entries by `kind` (`character` / `outfit` / `background` /
@@ -34,7 +34,7 @@ const KIND_LABEL = {
   pose: "Poses",
 };
 
-// Only one picker instance at a time (mirrors `js/anima_prompt/rule_builder/overlay.mjs`'s
+// Only one picker instance at a time (mirrors `js/prompt_rules/rule_builder/overlay.mjs`'s
 // `activeOverlay` singleton).
 let activePicker = null;
 
@@ -82,7 +82,7 @@ function el(tag, className) {
 }
 
 /** Groups `entries` by `kind` (defaulting an entry with no/unknown `kind` to
- * `"character"`, the one kind `api/rules_api.py`'s `characters_impl` emits
+ * `"character"`, the one kind `src/prompt_rules/api/rules_api.py`'s `characters_impl` emits
  * today), keyed in `KIND_ORDER` order first, then any other kinds a future
  * server addition might introduce. */
 function groupEntries(entries) {

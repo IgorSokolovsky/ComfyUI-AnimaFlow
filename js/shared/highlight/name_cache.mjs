@@ -56,7 +56,7 @@ const INLINE_SPACE_RE = /[ \t]+/g;
 const ESCAPE_RE = /\\(.)/g;
 
 /**
- * Mirrors `autocomplete/classify.py`'s `_normalize` (NFKC normalize, unescape
+ * Mirrors `src/autocomplete/classify.py`'s `_normalize` (NFKC normalize, unescape
  * a backslash-escaped character, underscores -> spaces, casefold, collapse
  * inline whitespace, trim) -- the SAME key space, so a name learned from one
  * response reliably matches the next occurrence of that tag however it's

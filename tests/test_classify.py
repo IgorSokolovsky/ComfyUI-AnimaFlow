@@ -1,5 +1,5 @@
-"""Plain-script tests for `autocomplete/classify.py` (`/wtn/classify`'s pure
-classification core) + the `autocomplete/api.py` route wiring around it.
+"""Plain-script tests for `src/autocomplete/classify.py` (`/wtn/classify`'s
+pure classification core) + the `src/autocomplete/api.py` route wiring around it.
 
 Run directly: `python tests/test_classify.py` (no pytest, per project
 convention).
@@ -19,14 +19,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from autocomplete.classify import (
+from src.autocomplete.classify import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
     MIN_LIMIT,
     SECTION_LABELS,
     classify_text,
 )
-from autocomplete.dataset import AutocompleteEntry, normalize_tag_key
+from src.autocomplete.dataset import AutocompleteEntry, normalize_tag_key
 
 
 def _entry(tag, category="general", count=0, source="gelbooru"):
@@ -373,7 +373,7 @@ def test_none_input_does_not_crash():
 
 
 def test_classify_impl_matches_classify_text_shape():
-    from autocomplete.api import classify_impl
+    from src.autocomplete.api import classify_impl
 
     payload = classify_impl("masterpiece, 1girl", limit=10)
     assert "tokens" in payload
@@ -384,7 +384,7 @@ def test_classify_impl_matches_classify_text_shape():
 def test_classify_impl_uses_real_bundled_db_by_default():
     # Sanity check against the actual bundled CSVs (no fixture injection) --
     # a couple of extremely common tags must resolve as "known".
-    from autocomplete.api import classify_impl
+    from src.autocomplete.api import classify_impl
 
     payload = classify_impl("1girl, solo")
     tokens = {t["text"]: t for t in payload["tokens"]}
@@ -396,7 +396,7 @@ def _install_fake_aiohttp_and_server():
     import importlib
     import types
 
-    previous = {name: sys.modules.get(name) for name in ("aiohttp", "server", "autocomplete.api")}
+    previous = {name: sys.modules.get(name) for name in ("aiohttp", "server", "src.autocomplete.api")}
 
     class _FakeJsonResponse:
         def __init__(self, payload):
@@ -429,8 +429,8 @@ def _install_fake_aiohttp_and_server():
     fake_server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=fake_routes))
     sys.modules["server"] = fake_server
 
-    sys.modules.pop("autocomplete.api", None)
-    module = importlib.import_module("autocomplete.api")
+    sys.modules.pop("src.autocomplete.api", None)
+    module = importlib.import_module("src.autocomplete.api")
     return module, fake_routes, _FakeJsonResponse, previous
 
 

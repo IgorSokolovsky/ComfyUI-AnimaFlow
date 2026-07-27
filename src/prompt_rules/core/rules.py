@@ -3,7 +3,7 @@ via an `Auditor` that raises path-precise errors (SCHEMA.md SS8):
 
     Error at celica.yaml -> rules[0](celica).children[1].when.any[0], 'mentons' is not a valid condition
 
-Clean-room from prompt-rules/SCHEMA.md + ruleset.schema.json; no code copied
+Clean-room from src/prompt_rules/schema/SCHEMA.md + ruleset.schema.json; no code copied
 from any other rule engine.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ VALID_RULE_TYPES = {"tag", "group", "switch", "swap"}
 CONDITION_KEYS = {"mentions", "matches", "flags", "in", "all", "any", "none", "not"}
 VALID_CHARACTER_LABEL_STYLES = {"generic", "name", "none"}
 
-# Closed property sets -- mirrors `prompt-rules/ruleset.schema.json`'s
+# Closed property sets -- mirrors `src/prompt_rules/schema/ruleset.schema.json`'s
 # per-rule-type `additionalProperties: false` blocks exactly. An unknown key
 # here is NOT ignored (that's the silent-failure hole this closes): a typo'd
 # condition key (e.g. `anyof` for `any_of`) used to compile away to nothing,
@@ -399,7 +399,7 @@ class Auditor:
                     self.error(p, "a mutation cannot have both 'after' and 'before'")
                 out = {"value": v["value"]}
                 # `section` isn't in the Mutation schema (only SetOp's), but
-                # the worked examples (prompt-rules/examples/*.yaml) use it as
+                # the worked examples (src/prompt_rules/schema/examples/*.yaml) use it as
                 # section-shorthand on `add`/`tmp` too -- honour it the same
                 # way as SetOp's `section`.
                 for k in ("into", "at", "after", "before", "weight", "section"):

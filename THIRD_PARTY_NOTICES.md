@@ -20,8 +20,8 @@ the projects below, whose notices are reproduced here as their licenses require.
 
 | AnimaFlow | Derived from |
 |---|---|
-| `autocomplete/`, `js/autocomplete/` | its booru tag-autocomplete approach and the tag-name → prompt-text normalization intent (`anima_prompt/normalize.py`) |
-| `autocomplete/classify.py` | `/wtn/classify` tag-highlighting classifier, ported from `autocomplete_dataset.py`'s `classify_prompt_text()`/`_token_section()` and `anima_prompt/ordering.py`'s builtin ANIMA vocab (`QUALITY_TAGS` etc.) — re-labeled in English and rewritten to track exact character offsets into the original text instead of upstream's destructive pre-normalization |
+| `src/autocomplete/`, `js/autocomplete/` | its booru tag-autocomplete approach and the tag-name → prompt-text normalization intent (`anima_prompt/normalize.py`) |
+| `src/autocomplete/classify.py` | `/wtn/classify` tag-highlighting classifier, ported from `autocomplete_dataset.py`'s `classify_prompt_text()`/`_token_section()` and `anima_prompt/ordering.py`'s builtin ANIMA vocab (`QUALITY_TAGS` etc.) — re-labeled in English and rewritten to track exact character offsets into the original text instead of upstream's destructive pre-normalization |
 
 ```
 MIT License
@@ -54,8 +54,8 @@ SOFTWARE.
 - **Upstream:** https://github.com/Deathspike/ComfyUI-MyOriginalWaifu
 - **License:** GPL-3.0
 - **Relationship:** **concept inspiration only — no code was copied.** AnimaFlow's
-  prompt-rules engine (`core/`) is a clean-room implementation written against its own
-  spec, [`prompt-rules/SCHEMA.md`](prompt-rules/SCHEMA.md), and is architecturally
+  prompt-rules engine (`src/prompt_rules/core/`) is a clean-room implementation written
+  against its own spec, [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md), and is architecturally
   distinct (a `Document`/`Block`/`Item` tree with profiles and selectors, versus a flat
   weighted tag list). The rule *vocabulary* is kept broadly compatible
   (`any_of`/`all_of`/`none_of`, `tag`/`group`/`switch`/`swap`) so authors familiar with

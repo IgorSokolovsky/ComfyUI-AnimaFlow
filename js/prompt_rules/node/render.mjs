@@ -1,6 +1,6 @@
 /**
  * render.mjs — themed DOM UI for the Prompt Rules nodes (`PromptRulesText`
- * / `PromptRulesClip`, `nodes/anima_prompt/prompt_rules.py`).
+ * / `PromptRulesClip`, `nodes/prompt_rules/prompt_rules.py`).
  *
  * Builds ONE DOM root (mounted as a single `addDOMWidget`, per the
  * dynamic-node-frontend skill), styled with the shared house theme
@@ -144,7 +144,7 @@ const CSS = `
 .wtn-pr-actions { display: flex; gap: 8px; padding-top: 4px; border-top: 1px solid var(--wtn-line, ${TOKENS.line}); }
 
 /* Highlight color-legend slot (js/shared/highlight/legend.mjs's <details>
-   lands here, wired from js/anima_prompt/prompt_rules/highlight_wiring.mjs).
+   lands here, wired from js/prompt_rules/node/highlight_wiring.mjs).
    :empty means "no legend attached" (attach failed / no document) -- the
    flex column's row gap only applies BETWEEN existing children, so a
    display:none slot contributes nothing to layout, and measureMinHeight

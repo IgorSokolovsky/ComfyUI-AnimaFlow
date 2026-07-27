@@ -1,6 +1,6 @@
 """Prompt Rules — clean-room engine (pure Python, no ComfyUI, no UI).
 
-Implements `prompt-rules/SCHEMA.md` (v1) from scratch: Document IR, Ruleset,
+Implements `src/prompt_rules/schema/SCHEMA.md` (v1) from scratch: Document IR, Ruleset,
 conditions, rule types (tag/group/switch/swap), evaluation semantics,
 profiles, and an execution trace. No code was copied from any other rule
 engine; `playground/rule-builder.html`'s JS was read for SEMANTICS only
@@ -75,7 +75,7 @@ PARSING (anima-style / labelled profiles)
 
 Everything else (Document/Block/Item shape, selectors, group/switch/swap
 semantics, dedup-on-add, remove/tmp visibility to later rules, and the
-`{depth, kind, text}` trace shape) follows `prompt-rules/SCHEMA.md` directly.
+`{depth, kind, text}` trace shape) follows `src/prompt_rules/schema/SCHEMA.md` directly.
 """
 from __future__ import annotations
 

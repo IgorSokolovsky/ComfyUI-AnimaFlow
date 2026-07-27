@@ -1,8 +1,8 @@
 # `rules/` — character-sheet files
 
-Each `*.yaml` in this directory is a **Ruleset** (`prompt-rules/SCHEMA.md`) --
+Each `*.yaml` in this directory is a **Ruleset** (`src/prompt_rules/schema/SCHEMA.md`) --
 a "sheet" the Prompt Rules encode nodes can apply to a prompt. They're
-authored/edited via the Rule Builder overlay (`js/anima_prompt/rule_builder/`, `POST/GET
+authored/edited via the Rule Builder overlay (`js/prompt_rules/rule_builder/`, `POST/GET
 /wtn/rules/sheet`) or by hand.
 
 - File name (sans `.yaml`) is the sheet's `name`, e.g. `rules/celica.yaml` ->
@@ -17,5 +17,5 @@ authored/edited via the Rule Builder overlay (`js/anima_prompt/rule_builder/`, `
 - `celica.yaml` is a working sample (anima/labelled-prose profile): groups an
   activation word (`celica`) into a `character:celica` block, sets
   appearance/clothes, and adds a negative quality guard. See
-  `prompt-rules/examples/celica.anima.yaml` for the annotated original this
+  `src/prompt_rules/schema/examples/celica.anima.yaml` for the annotated original this
   was adapted from, and `test_prompt_rules.py` for how it's exercised.

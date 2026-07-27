@@ -2,7 +2,7 @@
 
 Compact reference for writing character-sheet YAML by hand. For the full data model
 (Document IR, selectors, evaluation semantics), see
-[`prompt-rules/SCHEMA.md`](../prompt-rules/SCHEMA.md).
+[`src/prompt_rules/schema/SCHEMA.md`](../src/prompt_rules/schema/SCHEMA.md).
 
 A sheet is a **list of rules**, evaluated top → bottom:
 

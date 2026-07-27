@@ -12,7 +12,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from autocomplete.dataset import (
+from src.autocomplete.dataset import (
     CATEGORY_NAMES,
     DANBOORU_CSV,
     GELBOORU_CSV,

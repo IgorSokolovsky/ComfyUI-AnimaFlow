@@ -1,5 +1,5 @@
 /**
- * js/shared/highlight/index.js — node-agnostic prompt tag-highlighting.
+ * js/shared/highlight/index.mjs — node-agnostic prompt tag-highlighting.
  * Paints classifier-driven category colors onto ANY `<textarea>` (one call
  * per element) via a mirror overlay, with an optional color legend a node
  * can place anywhere. Every node in this pack that wants highlighting opts
@@ -7,11 +7,17 @@
  * node is wired to it yet (that's a separate step, done after this API is
  * reviewed).
  *
+ * Deliberately `.mjs`, not `.js`: ComfyUI auto-loads every `.js` file under
+ * `WEB_DIRECTORY` on page load, but this module never calls
+ * `app.registerExtension` — it's a plain library of exports — so shipping it
+ * as `.js` would get it fetched for every user regardless of whether any
+ * node actually wires it in. `.mjs` opts it out of that auto-load.
+ *
  * Usage (from a node's `render.mjs`/`interaction.mjs`, after the textarea
  * exists in the DOM):
  *
  *   import { attachHighlighter, createLegend } from
- *     "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.js";
+ *     "/extensions/ComfyUI-AnimaFlow/shared/highlight/index.mjs";
  *
  *   const highlighter = attachHighlighter(textarea);   // paints as the user types
  *   root.appendChild(createLegend().el);                // optional, collapsed by default
@@ -332,7 +338,7 @@ export function attachHighlighter(textarea, opts = {}) {
     /** Forces an immediate metric/bounds resync and reclassification (e.g.
      * after a host-driven font-size or width change the observers above
      * didn't catch, or a caller writing `textarea.value` directly --
-     * see `js/anima_prompt/prompt_rules/highlight_wiring.mjs`'s
+     * see `js/prompt_rules/node/highlight_wiring.mjs`'s
      * `refreshHighlighters`). Same two-tier behaviour as `onInput()`:
      * paints the current text optimistically first, then reclassifies for
      * the authoritative colors. */

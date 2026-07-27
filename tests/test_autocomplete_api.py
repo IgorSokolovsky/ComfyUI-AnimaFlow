@@ -1,4 +1,4 @@
-"""Plain-script tests for `autocomplete/api.py` — the aiohttp route layer.
+"""Plain-script tests for `src/autocomplete/api.py` — the aiohttp route layer.
 
 Run directly: `python tests/test_autocomplete_api.py` (no pytest, per
 project convention).
@@ -11,10 +11,10 @@ event loop thread, so a slow/cold search never stalls ComfyUI's entire
 HTTP/websocket server for its duration.
 
 This dev environment has neither `aiohttp` nor ComfyUI's own `server`
-module installed (see `autocomplete/api.py`'s own guarded try/except), so
+module installed (see `src/autocomplete/api.py`'s own guarded try/except), so
 route REGISTRATION itself never actually runs here in the other test files.
 This file instead injects minimal FAKE `aiohttp`/`server` modules into
-`sys.modules` before importing `autocomplete.api` fresh, so the module's
+`sys.modules` before importing `src.autocomplete.api` fresh, so the module's
 own try block succeeds and the real decorated handler function can be
 captured and called directly with `asyncio.run` - no real aiohttp/ComfyUI
 install needed, and nothing here touches the real network/websocket stack.
@@ -29,7 +29,7 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODULE_NAME = "autocomplete.api"
+MODULE_NAME = "src.autocomplete.api"
 
 
 class _FakeRoutes:
@@ -62,9 +62,9 @@ class _FakeJsonResponse:
 
 
 def _install_fake_aiohttp_and_server():
-    """Inject fake `aiohttp`/`server` modules so `autocomplete/api.py`'s own
+    """Inject fake `aiohttp`/`server` modules so `src/autocomplete/api.py`'s own
     guarded `try: from aiohttp import web; from server import PromptServer`
-    block succeeds, then import (or re-import) `autocomplete.api` fresh so
+    block succeeds, then import (or re-import) `src.autocomplete.api` fresh so
     its route-registration code actually runs against these fakes. Returns
     `(module, fake_routes, previous_sys_modules)` - `previous_sys_modules`
     is a dict of whatever `sys.modules` entries this replaced (for

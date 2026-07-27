@@ -7,7 +7,7 @@ other can't see.
 > ## ⚠️ Scope reset — 2026-07-27
 >
 > The pack was deliberately stripped to the **Rule Builder line only**: two nodes
-> (`Prompt Rules`, `Prompt Rules (CLIP)`), the `core/` engine, `rules/*.yaml`, the Rule
+> (`Prompt Rules`, `Prompt Rules (CLIP)`), the `src/prompt_rules/core/` engine, `rules/*.yaml`, the Rule
 > Builder overlay, and the tag autocomplete + highlighting services.
 >
 > The entire `AnimaFlow/anima` node line and `AnimaPromptStudio` were **deleted**, to be
@@ -82,9 +82,9 @@ unchanged behaviour, never a hard dependency). **Top quality item when the line 
 
 ## 2. Prompt tag highlighting — live
 
-Wired into both Prompt Rules panes via `js/anima_prompt/prompt_rules/highlight_wiring.mjs`.
+Wired into both Prompt Rules panes via `js/prompt_rules/node/highlight_wiring.mjs`.
 
-- Backend: `POST /wtn/classify` (`autocomplete/classify.py` + `autocomplete/api.py`) — 16
+- Backend: `POST /wtn/classify` (`src/autocomplete/classify.py` + `src/autocomplete/api.py`) — 16
   sections, reusing the ~1M-tag autocomplete dataset.
 - Frontend: `js/shared/highlight/` — mirror-overlay painter, two-tier optimistic/authoritative
   paint, collapsible legend.

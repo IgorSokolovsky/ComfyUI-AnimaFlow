@@ -1,4 +1,4 @@
-"""Prompt Rules — ComfyUI encode nodes for the clean-room rules engine (`core/`).
+"""Prompt Rules — ComfyUI encode nodes for the clean-room rules engine (`src/prompt_rules/core/`).
 
 Two thin variants (contract: docs/nodes-and-api.md §1), differing only in
 output type:
@@ -32,7 +32,7 @@ def _shared_optional() -> dict:
         # real widget the JS hides and writes to directly, rather than
         # ComfyUI's reserved `hidden` INPUT_TYPES section (which only
         # auto-populates a fixed set of special names). Empty = no embedded
-        # ruleset. Authored via the Rule Builder overlay (`js/anima_prompt/rule_builder/`).
+        # ruleset. Authored via the Rule Builder overlay (`js/prompt_rules/rule_builder/`).
         "embedded_rules": ("STRING", {"default": "", "multiline": True}),
         "log_trace": ("BOOLEAN", {"default": True}),
     }

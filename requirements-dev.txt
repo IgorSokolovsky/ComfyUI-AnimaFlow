@@ -2,9 +2,9 @@
 #
 # NONE of these are needed at runtime by a ComfyUI user -- they are only
 # imported by tests/test_*.py to check things a plain script can't check on
-# its own (e.g. validating prompt-rules/ruleset.schema.json against a real
-# JSON Schema implementation). No shipped module (nodes/, core/, llm/, js/)
-# imports anything listed here. Install with `pip install -r
+# its own (e.g. validating src/prompt_rules/schema/ruleset.schema.json
+# against a real JSON Schema implementation). No shipped module (nodes/,
+# src/, llm/, js/) imports anything listed here. Install with `pip install -r
 # requirements-dev.txt` before running the full test suite; without it, the
 # tests that need it SKIP-print and exit 0 rather than fail.
 #
@@ -12,14 +12,15 @@
 # extra (mirrors the runtime requirements.txt <-> pyproject.toml `dependencies`
 # relationship).
 
-# Validates prompt-rules/ruleset.schema.json (Draft 2020-12) against the
-# shipped rule sheets in tests/test_ruleset_schema.py. The Python `Auditor`
-# (core/rules.py) remains the runtime validation authority; this is an
-# editor/CI cross-check only.
+# Validates src/prompt_rules/schema/ruleset.schema.json (Draft 2020-12)
+# against the shipped rule sheets in tests/test_ruleset_schema.py. The Python
+# `Auditor` (src/prompt_rules/core/rules.py) remains the runtime validation
+# authority; this is an editor/CI cross-check only.
 jsonschema>=4.18
 
-# Loads the YAML rule sheets under test (rules/*.yaml, prompt-rules/examples/
-# *.yaml). Already a runtime dependency (see requirements.txt) -- listed here
-# too so `pip install -r requirements-dev.txt` alone is sufficient to run the
-# tests on a bare interpreter that isn't already inside a ComfyUI env.
+# Loads the YAML rule sheets under test (rules/*.yaml,
+# src/prompt_rules/schema/examples/*.yaml). Already a runtime dependency (see
+# requirements.txt) -- listed here too so `pip install -r
+# requirements-dev.txt` alone is sufficient to run the tests on a bare
+# interpreter that isn't already inside a ComfyUI env.
 pyyaml>=6.0

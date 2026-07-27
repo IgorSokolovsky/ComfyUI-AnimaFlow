@@ -2,7 +2,7 @@
 (positive + negative Document) and returns the mutated bundle plus an
 execution trace (SCHEMA.md SS5 evaluation semantics, SS8 trace shape).
 
-Clean-room implementation from prompt-rules/SCHEMA.md. `playground/rule-
+Clean-room implementation from src/prompt_rules/schema/SCHEMA.md. `playground/rule-
 builder.html`'s JS was read for SEMANTICS only (as instructed) and
 reimplemented here independently, with some deliberate structural
 differences -- see `core/__init__.py` for the full list of documented v1

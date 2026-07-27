@@ -2,9 +2,9 @@
  * Rule Builder — live preview + trace.
  *
  * Primary path: `POST /wtn/rules/preview` (see `docs/nodes-and-api.md` §2 /
- * `api/rules_api.py`, Track A). Offline fallback: a faithful port of the
+ * `src/prompt_rules/api/rules_api.py`, Track A). Offline fallback: a faithful port of the
  * simplified engine embedded in `playground/rule-builder.html`'s
- * `<script>` — it is NOT the real clean-room engine (`core/`), just enough
+ * `<script>` — it is NOT the real clean-room engine (`src/prompt_rules/core/`), just enough
  * to make the builder demo-able / usable before Track A lands. Whichever
  * path ran, the caller can tell from the returned `engine` field
  * (`"server"` | `"offline"`).
@@ -176,7 +176,7 @@ function runRule(rule, pos, neg, intoInherit, T) {
 /** Runs the offline (approximate) engine over `rules`, returning the same
  * shape the server route would: `{positive, negative, trace, errors}` plus
  * `engine:"offline"`. `trace` entries are `{depth, kind, text}` — see
- * `prompt-rules/SCHEMA.md` §8 for the kind vocabulary this maps onto
+ * `src/prompt_rules/schema/SCHEMA.md` §8 for the kind vocabulary this maps onto
  * (`group|tag|cond|add|remove|set|tmp|skip|anchor`); a few offline-only
  * markers (e.g. a fired switch-default) are approximated onto the nearest
  * kind since they don't have a dedicated one. */
@@ -212,7 +212,7 @@ export async function runPreview({ rules, profile, positive, negative, sheets, e
   // up saved as a file sheet or applied as an encode node's `embedded_rules`
   // -- never the already-saved file sheets on disk. Sending an explicit
   // empty `sheets` list tells the server "skip file sheets entirely" (see
-  // `api/rules_api.py`'s `_sheets_payload_to_selector`: `None`/absent instead
+  // `src/prompt_rules/api/rules_api.py`'s `_sheets_payload_to_selector`: `None`/absent instead
   // defaults to "all enabled file sheets", which would stack every saved
   // sheet on top of the ruleset under edit and produce a misleading preview
   // -- e.g. editing a brand-new sheet would still show OTHER characters'
@@ -239,7 +239,7 @@ const KIND_CLASS = {
 const KIND_MARK = {
   group: ">", tag: "$", cond: "?", add: "+", remove: "-", set: "=", tmp: "~", skip: "x", anchor: "=",
 };
-// `core/engine.py`'s real `emit(depth, kind, text)` calls (Track A, verified
+// `src/prompt_rules/core/engine.py`'s real `emit(depth, kind, text)` calls (Track A, verified
 // via `grep emit(` there) use a slightly different -- and larger -- kind
 // vocabulary than the ORIGINAL offline-engine port above and the guide's
 // legend in `overlay.mjs` (`condition`/`switch`/`swap` where the offline

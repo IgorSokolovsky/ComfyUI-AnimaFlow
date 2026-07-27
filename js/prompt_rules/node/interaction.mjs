@@ -5,7 +5,7 @@
  * The native, Python-declared widgets (`profile`, `sheets`, `positive`,
  * `negative`, `log_trace`, `embedded_rules`) stay the SOLE source of truth
  * that actually serializes into `widgets_values` and reaches
- * `nodes/anima_prompt/prompt_rules.py`'s `process()` — this module never invents a
+ * `nodes/prompt_rules/prompt_rules.py`'s `process()` — this module never invents a
  * parallel state object mirroring dynamic/repeating rows (there's no
  * dynamic/repeating data here to justify one). Every DOM
  * control this module wires is a thin two-way mirror of exactly one native
@@ -29,7 +29,7 @@
  *
  * `embedded_rules` has no DOM mirror at all (no visible control renders its
  * JSON) — it stays hidden-only, exactly as the previous
- * `js/anima_prompt/prompt_rules/index.js` already did; only the "Open Rule Builder"
+ * `js/prompt_rules/node/index.js` already did; only the "Open Rule Builder"
  * button (wired directly in `index.js`, which owns the cross-folder
  * `openRuleBuilder` import) ever writes to it.
  */

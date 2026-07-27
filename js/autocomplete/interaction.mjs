@@ -1,6 +1,6 @@
 /**
  * interaction.mjs — event wiring for one attached text control. Debounced
- * fetch from the `/wtn/autocomplete` API route (see `autocomplete/api.py`),
+ * fetch from the `/wtn/autocomplete` API route (see `src/autocomplete/api.py`),
  * ArrowUp/Down navigation, Enter/Tab to commit, Escape/blur/outside-click
  * to hide. No element creation lives here — that's `render.mjs`'s job.
  */
