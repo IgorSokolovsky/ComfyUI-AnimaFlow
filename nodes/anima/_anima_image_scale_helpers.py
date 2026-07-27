@@ -7,15 +7,15 @@ there) is applied to the source size, and the result is rounded to a size
 that is a multiple of `multiple` in both dimensions, optionally capped back
 down by `max_long_edge`.
 
-REGRESSION FIXED (see `.claude/CLAUDE.md`'s R1 report and the delegating
-plan): before `scale_by` existed, this function only ever rounded a size UP
-to the nearest already-covering multiple-aligned size, so every standard
-SDXL/Anima resolution (already 64-aligned) round-tripped unchanged with
-scale_factor == 1.0 — used as `AnimaGenerator`'s ONLY highres-stage sizing
-input, that made `highres_enabled=True` silently perform a second full
-img2img pass at the SAME resolution, burning the cost of a highres fix
-while delivering none of the resolution. `scale_by` (threaded through as
-`AnimaGenerator`'s new `highres_scale_by` widget, default `1.5`) fixes that.
+REGRESSION FIXED: before `scale_by` existed, this function only ever
+rounded a size UP to the nearest already-covering multiple-aligned size, so
+every standard SDXL/Anima resolution (already 64-aligned) round-tripped
+unchanged with scale_factor == 1.0 — used as `AnimaGenerator`'s ONLY
+highres-stage sizing input, that made `highres_enabled=True` silently
+perform a second full img2img pass at the SAME resolution, burning the cost
+of a highres fix while delivering none of the resolution. `scale_by`
+(threaded through as `AnimaGenerator`'s new `highres_scale_by` widget,
+default `1.5`) fixes that.
 
 REGRESSION #2 FIXED (R1 follow-up — see the delegating plan's "practical
 impact is severe" report): the FIRST fix kept a strict "exact source aspect

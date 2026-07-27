@@ -9,7 +9,7 @@
 // Tokens are separated by comma or newline -- deliberately NOT space, so a
 // booru tag's own underscores (`long_hair`) and a prose field's multi-word
 // phrase both stay one token. This mirrors the repo's separator-agnostic
-// rule (CLAUDE.md) at the single-tag granularity: joining multiple
+// rule at the single-tag granularity: joining multiple
 // tags/fields is configurable elsewhere, but a comma/newline is universally
 // "the next thing" in both a tag list and a prose sentence list.
 const DELIMITERS = /[\n,]/;

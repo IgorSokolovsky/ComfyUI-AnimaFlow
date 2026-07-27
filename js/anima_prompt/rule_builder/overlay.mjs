@@ -11,7 +11,6 @@
  * existing `--wtn-*` tokens (no new colors).
  *
  * Absolute imports for cross-folder modules — see
- * `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` and
  * `docs/nodes-and-api.md` §3 ("State & imports").
  * VERIFY-IN-COMFYUI: assumes this pack is installed as
  * `custom_nodes/ComfyUI-AnimaFlow` (this repo's own folder name) — ComfyUI

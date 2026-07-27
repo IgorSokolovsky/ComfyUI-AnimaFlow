@@ -37,7 +37,7 @@ import { attachAutocomplete } from "./interaction.mjs";
 // `nodeCreated` fires for any node, this set is already fully populated.
 // Deliberately not a hardcoded list of our node class names: new nodes added
 // to this pack are picked up automatically as long as they declare the
-// `AnimaFlow/...` category (see CLAUDE.md's node-pack conventions), with no
+// `AnimaFlow/...` category (this pack's node-pack convention), with no
 // need to remember to update this file. The actual ownership decision
 // (Set-membership + category fallback) is pure logic and lives in
 // `core.mjs` (`resolveOwnership`) so it can be unit-tested without a DOM.

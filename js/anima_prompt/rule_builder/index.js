@@ -11,8 +11,8 @@
  * `app.registerExtension({ commands, keybindings })` is the same
  * cross-renderer mechanism ComfyUI-Pixaroma uses for its own keybound
  * actions (see `js/node_colors/index.js`'s "\\" shortcut) — it works in
- * BOTH the legacy litegraph canvas (this pack's target renderer, per
- * `.claude/CLAUDE.md`) and the newer Vue frontend, surfacing in the command
+ * BOTH the legacy litegraph canvas (this pack's target renderer) and the
+ * newer Vue frontend, surfacing in the command
  * palette / Settings → Keybindings regardless of which renderer is active.
  *
  * VERIFY-IN-COMFYUI: confirm `commands` actually appears somewhere a user

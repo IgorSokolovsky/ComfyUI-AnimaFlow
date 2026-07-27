@@ -1,8 +1,8 @@
 # Backlog — known gaps and planned work
 
-Cross-session coordination doc. Two Claude Code sessions work this repo in parallel, so
-anything one session finds but doesn't fix lands here rather than in a session-local task
-list the other can't see.
+Cross-session coordination doc. Two sessions work this repo in parallel, so anything one
+session finds but doesn't fix lands here rather than in a session-local task list the
+other can't see.
 
 Every claim below was verified by reading both sources at the cited lines — line numbers
 were correct as of commit `0ad756b`. Re-check before trusting them; the files move.

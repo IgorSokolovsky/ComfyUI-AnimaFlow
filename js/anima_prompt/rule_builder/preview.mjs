@@ -10,7 +10,6 @@
  * (`"server"` | `"offline"`).
  *
  * Absolute import for the cross-folder shared module — see
- * `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` and
  * `docs/nodes-and-api.md` §3 ("State & imports").
  * VERIFY-IN-COMFYUI: this assumes the custom-node package is installed under
  * `custom_nodes/ComfyUI-AnimaFlow` (this repo's own folder name), since

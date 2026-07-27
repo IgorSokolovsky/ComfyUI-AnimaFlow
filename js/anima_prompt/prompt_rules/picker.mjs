@@ -15,7 +15,7 @@
  *     encode node's `positive` or `negative` text widget.
  *
  * Absolute imports for cross-folder modules -- see `./index.js`'s doc
- * comment and `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md`.
+ * comment.
  * VERIFY-IN-COMFYUI: assumes this pack is installed as
  * `custom_nodes/ComfyUI-AnimaFlow` -- see `./index.js`'s matching note.
  */
@@ -160,10 +160,10 @@ export function openPicker({ node, getPositiveWidget, getNegativeWidget, onClose
     if (!widget || !token) return;
     const current = String(widget.value || "");
     const trimmedEnd = current.replace(/\s+$/, "");
-    // Lightweight insert heuristic (NOT a formal join -- see
-    // `.claude/CLAUDE.md`'s prompt-format-agnostic rule, which governs
-    // composing-node OUTPUT joins, not this quick single-token convenience
-    // insert): append on a fresh line if the text already ends with one
+    // Lightweight insert heuristic (NOT a formal join -- the pack's
+    // prompt-format-agnostic rule governs composing-node OUTPUT joins, not
+    // this quick single-token convenience insert): append on a fresh line
+    // if the text already ends with one
     // (prose profiles' section-per-line convention), otherwise with a
     // comma -- matching Anima/tag-style prompts, and harmless for prose,
     // where a trailing comma-separated activation word still parses fine.

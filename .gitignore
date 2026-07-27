@@ -34,6 +34,3 @@ ms-playwright/
 # Runtime logs
 logs/
 *.log
-
-# Dev tooling (not part of the pack)
-.claude/
