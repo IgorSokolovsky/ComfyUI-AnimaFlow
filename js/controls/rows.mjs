@@ -12,11 +12,18 @@
  *
  * ## State shape (mirrors docs/control-panel-design.md §4 exactly)
  *
- *   { version: 1, rows: [ { id, slot, kind, name, value, opts } ] }
+ *   { version: 1, rows: [ { id, slot, kind, name, value, opts, renamed } ] }
  *
  * `id` is a frontend-only bookkeeping key (never serialized by
  * Python — see `nodes/controls/_rows_helpers.py`'s contract); `slot` is the
  * durable output-index label described below. `rows` is DISPLAY order.
+ * `renamed` is a top-level row key (never nested in `opts`) rather than a
+ * Python-side concern: `_rows_helpers.py`'s `parse_state` passes each row
+ * dict through untouched (it only ever reads specific known keys off it —
+ * `kind`/`opts`/`value`/`slot` — never rejects or strips an unrecognized
+ * one), so this flag round-trips through a save/load with zero Python
+ * changes. See `commitRename`/`applyResolvedKind` below for what sets/reads
+ * it.
  *
  * ## Slot vs. display order — the mechanism drag-to-reorder depends on
  *
@@ -284,7 +291,7 @@ export function nextUid() {
  * (never wholesale-replaces it), so a caller can override e.g. just
  * `{opts: {min: 1}}` without having to restate every other option. */
 export function mkRow(kind, overrides = {}) {
-  const row = { id: nextUid(), kind, name: kind, value: undefined, opts: {} };
+  const row = { id: nextUid(), kind, name: kind, value: undefined, opts: {}, renamed: false };
 
   if (kind === "seed") {
     row.value = "0";
@@ -314,6 +321,34 @@ export function mkRow(kind, overrides = {}) {
     row.opts = { ...row.opts, ...overrides.opts };
   }
   return row;
+}
+
+// Cap on a hand-typed row rename -- long enough for any real label, short
+// enough that a pasted essay can't blow out the row layout (the label
+// itself already ellipsizes past its own min-width, but the state file
+// staying sane doesn't depend on the CSS).
+export const MAX_ROW_NAME_LEN = 40;
+
+/** Sanitize a hand-typed (or hand-edited-payload) row name: trim, cap at
+ * `MAX_ROW_NAME_LEN`, and fall back to `kind` (the same default `mkRow`/
+ * `normalizeRow` already use for a missing name) if the trimmed result is
+ * empty -- a row can never end up with a blank label. */
+export function sanitizeRowName(raw, kind) {
+  const trimmed = String(raw ?? "").trim().slice(0, MAX_ROW_NAME_LEN);
+  return trimmed || kind;
+}
+
+/** Commit a user-typed rename onto `row` IN PLACE (mirrors
+ * `applyResolvedKind`'s in-place-mutation contract, so every existing DOM
+ * ref/closure holding this row object sees the change immediately): sets
+ * `row.name` via `sanitizeRowName` and stamps `row.renamed = true`. That flag
+ * is the entire point -- see `applyResolvedKind` below, which skips adopting
+ * a connection target's name for any row a user has renamed by hand, while
+ * still adopting its range/step/value. Returns the sanitized name. */
+export function commitRename(row, raw) {
+  row.name = sanitizeRowName(raw, row.kind);
+  row.renamed = true;
+  return row.name;
 }
 
 /** Hand `row` the lowest unused positive integer among every OTHER row's
@@ -353,9 +388,14 @@ function normalizeRow(raw, panelKind) {
     id: nextUid(),
     slot: Number.isFinite(raw.slot) && raw.slot > 0 ? Math.round(raw.slot) : undefined,
     kind,
-    name: typeof raw.name === "string" && raw.name ? raw.name : kind,
+    name: sanitizeRowName(raw.name, kind),
     value: raw.value,
     opts: raw.opts && typeof raw.opts === "object" ? { ...raw.opts } : {},
+    // Only a literal `true` counts -- a hand-edited/garbage payload can't
+    // spoof "user renamed this" with a truthy-but-not-boolean value, and a
+    // fresh/never-renamed row (no `renamed` key at all) correctly stays
+    // false so it keeps adopting a name on first auto-resolve connection.
+    renamed: raw.renamed === true,
   };
 
   if (kind === "seed") {
@@ -685,13 +725,22 @@ export function resolveAutoKind(target, opts = {}) {
 
 /** Apply a `resolveAutoKind` result to `row` in place. Returns `true` if
  * anything was applied (a truthy `resolved`), `false` otherwise (row stays
- * `"auto"`). */
+ * `"auto"`).
+ *
+ * `row.renamed` gates the NAME half of the adoption only: an untouched row
+ * (the common case -- a fresh "auto" row wired straight to an input) still
+ * adopts the target's name, same as ever. But a row the user has already
+ * renamed by hand (via the row's Rename menu item / double-click, even
+ * while it was still "auto" and unwired) must never have that name
+ * silently overwritten the moment it connects -- range/min/max/step/value
+ * are still adopted regardless, since those aren't something a user can
+ * set by hand at all before the row resolves. */
 export function applyResolvedKind(row, resolved) {
   if (!resolved) {
     return false;
   }
   row.kind = resolved.kind;
-  if (resolved.name !== undefined) {
+  if (resolved.name !== undefined && !row.renamed) {
     row.name = resolved.name;
   }
   if (resolved.value !== undefined) {

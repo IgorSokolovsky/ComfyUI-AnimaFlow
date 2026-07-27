@@ -96,6 +96,19 @@ const CSS = `
   font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 54px;
 }
+/* Rename edit box -- swapped in for .wtn-ctl-name while a row's label is
+   being renamed (double-click the label, or the row's right-click ->
+   Rename). Same box (flex/min-width/font-size) as the label it replaces so
+   the row layout doesn't jump, but themed as a real editable field (accent
+   border + surface fill) rather than the plain label -- it should read as
+   the label BECOMING editable, not as a foreign form field appearing. */
+.wtn-ctl-name-edit {
+  font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--wtn-ink, ${TOKENS.ink}); flex: 1 1 auto; min-width: 54px; width: 100%;
+  box-sizing: border-box; background: var(--wtn-surface-2, ${TOKENS.surface2});
+  border: 1px solid var(--wtn-accent, ${TOKENS.accent}); border-radius: 4px;
+  padding: 1px 5px; outline: none;
+}
 .wtn-ctl-val {
   font-family: var(--wtn-font-mono, monospace); font-size: 12px; font-weight: 640;
   color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
@@ -480,6 +493,17 @@ export function buildAddRow(doc, label) {
   btn.type = "button";
   btn.textContent = label;
   return { root: btn, btn };
+}
+
+/** Builds a rename `<input>` for swapping in place of a row's `.wtn-ctl-name`
+ * label, pre-filled with `value` -- pure DOM construction only, per this
+ * module's split; `interaction.mjs` owns the actual swap-in/swap-out and the
+ * commit/cancel/blur event wiring (`beginRename`). */
+export function buildNameInput(doc, value) {
+  const input = el(doc, "input", "wtn-ctl-name-edit wtn");
+  input.type = "text";
+  input.value = value;
+  return input;
 }
 
 // ---------------------------------------------------------------------------

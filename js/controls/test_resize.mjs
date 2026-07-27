@@ -59,6 +59,7 @@ import assert from "node:assert/strict";
 import {
   KIND_META,
   MAX_ROWS,
+  MAX_ROW_NAME_LEN,
   ZW,
   mkRow,
   assignSlot,
@@ -226,6 +227,7 @@ function makeDocStub() {
       },
       setPointerCapture() {},
       focus() {},
+      select() {},
     };
     Object.defineProperty(el, "className", {
       get() {
@@ -864,6 +866,48 @@ test("resolveAutoOnConnect is a no-op if the row isn't 'auto' or describeLinkTar
   assert.equal(resolveAutoOnConnect(node, ctx, row.slot - 1, {}), false);
 });
 
+test("resolveAutoOnConnect: an un-renamed 'auto' row still adopts the target's name (no regression)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, {
+    describeLinkTarget: () => ({ type: "FLOAT", name: "cfg", min: 0, max: 20, step2: 0.1, value: 7.5 }),
+  });
+  const row = addRowAndSync(node, ctx, "auto");
+  const ok = resolveAutoOnConnect(node, ctx, row.slot - 1, {});
+  assert.ok(ok);
+  assert.equal(ensureState(node, ctx).rows[0].name, "cfg");
+  assert.equal(ensureState(node, ctx).rows[0].value, 7.5);
+});
+
+test("resolveAutoOnConnect: a row renamed by hand WHILE STILL 'auto' keeps that name on first connection, but still adopts min/max/step/value", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const describeLinkTarget = () => ({ type: "FLOAT", name: "cfg", min: 0, max: 20, step2: 0.1, value: 7.5 });
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { describeLinkTarget });
+  addRowAndSync(node, ctx, "auto");
+
+  // Rename the still-unresolved "auto" row by hand before it's ever wired.
+  fire(node._ctrlRows[0].refs.name, "dblclick");
+  node._ctrlRows[0].refs.nameInput.value = "denoise";
+  fire(node._ctrlRows[0].refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(node._ctrlRows[0].refs.row.name, "denoise");
+  assert.equal(node._ctrlRows[0].refs.row.renamed, true);
+
+  const slot = node._ctrlRows[0].refs.row.slot;
+  const ok = resolveAutoOnConnect(node, ctx, slot - 1, {});
+  assert.ok(ok);
+  // Rename commits via the cheap repaint path (kind unchanged), but
+  // resolving "auto" -> "float" changes the id:kind signature, so syncRows
+  // rebuilds -- re-fetch node._ctrlRows[0] fresh rather than reusing the
+  // pre-resolve entry/refs.
+  const row = node._ctrlRows[0].refs.row;
+  assert.equal(row.kind, "float");
+  assert.equal(row.name, "denoise"); // kept -- NOT overwritten by the target's "cfg"
+  assert.equal(row.value, 7.5); // still adopted
+  assert.equal(row.opts.max, 20); // still adopted
+});
+
 // =========================================================================
 // E. End-to-end row interaction through real wired DOM
 // =========================================================================
@@ -1035,6 +1079,117 @@ test("context menu: Duplicate and Remove row both work from the row's right-clic
   const del = menu2.children.find((c) => c.textContent === "Remove row");
   fire(del, "click");
   assert.equal(node._ctrlRows.length, 1);
+});
+
+test("context menu offers Rename for every row kind, and it opens the same inline edit as a double-click", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "sampler"); // a picker kind, not int/float -- rename must not be int/float-only
+  const refs = node._ctrlRows[0].refs;
+  fire(refs.root, "contextmenu");
+  const menu = doc.body.children[doc.body.children.length - 1].children[0];
+  const rename = menu.children.find((c) => c.textContent === "Rename");
+  assert.ok(rename, "expected a Rename item in the row's context menu");
+  fire(rename, "click");
+  assert.ok(refs.nameInput, "expected the rename edit box to open");
+});
+
+test("rename: double-click the label opens an edit box; Enter commits, trims, and updates the panel_state WIDGET (not just node.properties)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const entry = node._ctrlRows[0];
+  fire(entry.refs.name, "dblclick");
+  assert.ok(entry.refs.nameInput, "expected a rename input to be swapped in for the label");
+  entry.refs.nameInput.value = "  steps  ";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+
+  assert.equal(entry.refs.row.name, "steps");
+  assert.equal(entry.refs.row.renamed, true);
+  assert.equal(entry.refs.nameInput, null); // edit box torn down
+  assert.equal(entry.refs.name.textContent, "steps"); // label swapped back in, repainted
+
+  const widgetState = JSON.parse(getStateWidget(node).value);
+  assert.equal(widgetState.rows[0].name, "steps");
+  assert.equal(widgetState.rows[0].renamed, true);
+});
+
+test("rename: blur commits, same as Enter", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const entry = node._ctrlRows[0];
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "steps";
+  fire(entry.refs.nameInput, "blur");
+  assert.equal(entry.refs.row.name, "steps");
+  assert.equal(entry.refs.row.renamed, true);
+});
+
+test("rename: committing an empty/whitespace-only name falls back to the row's default (kind) label, never leaves it blank", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "float");
+  const entry = node._ctrlRows[0];
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "   ";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(entry.refs.row.name, "float");
+  assert.equal(entry.refs.name.textContent, "float");
+});
+
+test("rename: a pasted essay is capped at MAX_ROW_NAME_LEN characters", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const entry = node._ctrlRows[0];
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "x".repeat(200);
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(entry.refs.row.name.length, MAX_ROW_NAME_LEN);
+  assert.equal(entry.refs.row.name, "x".repeat(MAX_ROW_NAME_LEN));
+});
+
+test("rename: Escape cancels without persisting -- name/renamed and the whole state stay untouched", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const entry = node._ctrlRows[0];
+  const before = JSON.stringify(ensureState(node, ctx));
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "should not stick";
+  fire(entry.refs.nameInput, "keydown", { key: "Escape" });
+
+  assert.equal(entry.refs.nameInput, null); // edit box torn down
+  assert.equal(entry.refs.name.textContent, "int"); // label reverted
+  assert.equal(entry.refs.row.name, "int");
+  assert.equal(entry.refs.row.renamed, false);
+  assert.equal(JSON.stringify(ensureState(node, ctx)), before);
+});
+
+test("rename: a second double-click while already editing is a no-op (doesn't stack a second input)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  const entry = node._ctrlRows[0];
+  fire(entry.refs.name, "dblclick");
+  const firstInput = entry.refs.nameInput;
+  fire(entry.refs.name, "dblclick"); // refs.name is detached now, but the row-level entry ref is the same object
+  assert.equal(entry.refs.nameInput, firstInput);
 });
 
 test("grip drag-reorder: a full pointer sequence reorders rows WITHOUT rebuilding the dragged row's DOM", () => {

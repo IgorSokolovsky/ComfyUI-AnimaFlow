@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   MAX_ROWS,
+  MAX_ROW_NAME_LEN,
   CONTROL_CATALOG,
   LOADER_CATALOG,
   KIND_META,
@@ -25,6 +26,8 @@ import {
   usefulRange,
   mkRow,
   assignSlot,
+  sanitizeRowName,
+  commitRename,
   defaultState,
   normalizeState,
   addRow,
@@ -231,6 +234,51 @@ test("mkRow overrides merge into opts rather than replacing it wholesale", () =>
   assert.equal(row.opts.max, 100); // untouched default preserved
 });
 
+test("mkRow defaults renamed to false", () => {
+  assert.equal(mkRow("int").renamed, false);
+  assert.equal(mkRow("auto").renamed, false);
+});
+
+// =========================================================================
+// Rename (docs/control-panel-design.md §3: int/float have no ⚙, so this is
+// the only way to relabel them -- and every other kind's label too)
+// =========================================================================
+
+test("sanitizeRowName trims whitespace and passes a short name through unchanged", () => {
+  assert.equal(sanitizeRowName("  steps  ", "int"), "steps");
+  assert.equal(sanitizeRowName("cfg", "float"), "cfg");
+});
+
+test("sanitizeRowName falls back to the row's kind for empty/whitespace-only/null/undefined input", () => {
+  assert.equal(sanitizeRowName("", "int"), "int");
+  assert.equal(sanitizeRowName("   ", "float"), "float");
+  assert.equal(sanitizeRowName(null, "seed"), "seed");
+  assert.equal(sanitizeRowName(undefined, "unet"), "unet");
+});
+
+test("sanitizeRowName caps a pasted essay at MAX_ROW_NAME_LEN characters", () => {
+  const long = "x".repeat(200);
+  const result = sanitizeRowName(long, "int");
+  assert.equal(result.length, MAX_ROW_NAME_LEN);
+  assert.equal(result, "x".repeat(MAX_ROW_NAME_LEN));
+});
+
+test("commitRename sets row.name via sanitizeRowName, stamps row.renamed = true, and returns the sanitized name", () => {
+  const row = mkRow("int");
+  assert.equal(row.renamed, false);
+  const result = commitRename(row, "  steps  ");
+  assert.equal(result, "steps");
+  assert.equal(row.name, "steps");
+  assert.equal(row.renamed, true);
+});
+
+test("commitRename falls back to the row's kind for an empty/whitespace-only name, but still marks it renamed", () => {
+  const row = mkRow("float");
+  commitRename(row, "   ");
+  assert.equal(row.name, "float");
+  assert.equal(row.renamed, true); // a deliberate rename action, even though the result equals the default
+});
+
 test("assignSlot hands out the LOWEST unused positive integer", () => {
   const rows = [{ slot: 1 }, { slot: 3 }];
   const fresh = {};
@@ -307,6 +355,32 @@ test("normalizeState tolerates non-object / missing rows entirely", () => {
   assert.deepEqual(normalizeState(null, "control").rows, []);
   assert.deepEqual(normalizeState({}, "control").rows, []);
   assert.deepEqual(normalizeState("garbage", "control").rows, []);
+});
+
+test("normalizeState round-trips an explicit renamed:true flag (and the name that came with it), defaulting to false when absent", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { kind: "int", slot: 1, name: "steps", renamed: true, value: 5, opts: {} },
+        { kind: "float", slot: 2, name: "cfg", value: 1, opts: {} }, // no renamed key at all
+      ],
+    },
+    "control",
+  );
+  assert.equal(state.rows[0].name, "steps");
+  assert.equal(state.rows[0].renamed, true);
+  assert.equal(state.rows[1].name, "cfg");
+  assert.equal(state.rows[1].renamed, false);
+});
+
+test("normalizeState never trusts a truthy-but-non-boolean renamed value from a hand-edited payload", () => {
+  const state = normalizeState({ rows: [{ kind: "int", slot: 1, renamed: "yes", value: 1, opts: {} }] }, "control");
+  assert.equal(state.rows[0].renamed, false);
+});
+
+test("normalizeState also trims/caps a hand-edited row's name via sanitizeRowName", () => {
+  const state = normalizeState({ rows: [{ kind: "int", slot: 1, name: "  padded  ", value: 1, opts: {} }] }, "control");
+  assert.equal(state.rows[0].name, "padded");
 });
 
 test("addRow appends in display order with a fresh slot, refuses past MAX_ROWS", () => {
@@ -484,6 +558,31 @@ test("applyResolvedKind is a no-op (returns false) for a null resolution", () =>
   const row = mkRow("auto");
   assert.equal(applyResolvedKind(row, null), false);
   assert.equal(row.kind, "auto");
+});
+
+test("applyResolvedKind still adopts the resolved NAME for an un-renamed row (no regression to the existing auto-resolve behaviour)", () => {
+  const row = mkRow("auto");
+  const resolved = resolveAutoKind(
+    { type: "FLOAT", name: "cfg", min: 0, max: 20, step2: 0.1, value: 7.5 },
+    { allowedKinds: CONTROL_ALLOWED },
+  );
+  assert.ok(applyResolvedKind(row, resolved));
+  assert.equal(row.name, "cfg");
+  assert.equal(row.value, 7.5);
+});
+
+test("applyResolvedKind skips adopting a resolved NAME for a row renamed by hand, but still adopts value/opts", () => {
+  const row = mkRow("auto");
+  commitRename(row, "denoise");
+  const resolved = resolveAutoKind(
+    { type: "FLOAT", name: "cfg", min: 0, max: 20, step2: 0.1, value: 7.5 },
+    { allowedKinds: CONTROL_ALLOWED },
+  );
+  assert.ok(applyResolvedKind(row, resolved));
+  assert.equal(row.kind, "float");
+  assert.equal(row.name, "denoise"); // kept -- NOT overwritten by resolved.name ("cfg")
+  assert.equal(row.value, 7.5); // still adopted
+  assert.equal(row.opts.max, 20); // still adopted
 });
 
 // =========================================================================

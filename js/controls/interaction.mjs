@@ -83,12 +83,14 @@ import {
   outputTypeForRow,
   resolveAutoKind,
   applyResolvedKind,
+  commitRename,
 } from "./rows.mjs";
 
 import {
   injectStyles,
   buildRowElement,
   buildAddRow,
+  buildNameInput,
   paintRow,
   openOverlay,
   bodyHeight,
@@ -379,7 +381,12 @@ function wireNumericRow(node, ctx, row, refs) {
     if (e.button !== 0) {
       return;
     }
-    if (typeof e.target.closest === "function" && e.target.closest(".wtn-ctl-gear")) {
+    // Also bail while the row's name is mid-rename-edit -- a pointerdown to
+    // position the caret/select text inside the edit box must never also
+    // start a whole-row value drag (the gear guard below is the same
+    // pattern for a gear-having kind, kept generic since int/float have
+    // neither gear nor -- until now -- an in-row input).
+    if (typeof e.target.closest === "function" && (e.target.closest(".wtn-ctl-gear") || e.target.closest(".wtn-ctl-name-edit"))) {
       return;
     }
     e.preventDefault();
@@ -734,8 +741,105 @@ function openGearPopover(node, ctx, row, refs) {
 }
 
 // ---------------------------------------------------------------------------
-// Right-click menu: Duplicate + Remove row -- the ONLY removal path for a
-// row with no ⚙ (int/float/sampler/scheduler/vae), so it isn't optional.
+// Rename -- inline edit of a row's .wtn-ctl-name label. Triggered from the
+// row's right-click menu (the discoverable path, wired in
+// openContextMenuFor below) or a double-click on the label itself (the fast
+// path, wireRename). Applies to EVERY row kind, not just int/float -- the
+// label is shown on all of them, and int/float are simply the two kinds
+// that otherwise have NO way to rename at all, since they deliberately have
+// no ⚙ (design doc §3: their range/step/value are adopted from the first
+// wire).
+// ---------------------------------------------------------------------------
+
+/** Swap `refs.name` for a themed `<input>` pre-filled with the row's current
+ * name, focused with its text selected. Enter/blur commit (trim, cap,
+ * empty-falls-back-to-the-kind's-default via `commitRename`, then
+ * `row.renamed = true` so a later auto-resolve connection never stomps it —
+ * see rows.mjs's `applyResolvedKind`); Escape reverts the label and persists
+ * nothing. A no-op if this row is already mid-edit. */
+function beginRename(node, ctx, row, refs) {
+  if (refs.nameInput) {
+    return;
+  }
+  closeActiveOverlay();
+  const doc = ctx.doc;
+  const parent = refs.name.parentNode;
+  if (!parent) {
+    return;
+  }
+  const input = buildNameInput(doc, row.name || row.kind);
+  parent.insertBefore(input, refs.name);
+  parent.removeChild(refs.name);
+  refs.nameInput = input;
+
+  // Order matters: null the ref BEFORE touching the DOM -- a real browser
+  // can fire `blur` reentrantly the moment `end()` itself removes the
+  // (still-focused) input, and that must never re-run commit()/cancel().
+  const end = () => {
+    if (!refs.nameInput) {
+      return;
+    }
+    refs.nameInput = null;
+    refs.name.textContent = row.name || row.kind;
+    const p = input.parentNode;
+    if (p) {
+      p.insertBefore(refs.name, input);
+      p.removeChild(input);
+    }
+  };
+  const commit = () => {
+    if (!refs.nameInput) {
+      return;
+    }
+    commitRename(row, input.value);
+    end();
+    afterEdit(node, ctx);
+  };
+  const cancel = () => {
+    end();
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.stopPropagation();
+      commit();
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      cancel();
+    }
+  });
+  input.addEventListener("blur", () => {
+    commit();
+  });
+  // Positioning the caret / selecting text inside the box must never bubble
+  // into the row's own click/pointerdown handling (numeric row's whole-row
+  // drag-to-set, in particular -- see wireNumericRow's own guard).
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("pointerdown", (e) => e.stopPropagation());
+  input.addEventListener("dblclick", (e) => e.stopPropagation());
+
+  if (typeof input.focus === "function") {
+    input.focus();
+  }
+  if (typeof input.select === "function") {
+    input.select();
+  }
+}
+
+/** The fast path: double-click the label itself (the menu item in
+ * openContextMenuFor is the discoverable path to the same `beginRename`). */
+function wireRename(node, ctx, row, refs) {
+  refs.name.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    beginRename(node, ctx, row, refs);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Right-click menu: Rename + Duplicate + Remove row -- Remove is the ONLY
+// removal path for a row with no ⚙ (int/float/sampler/scheduler/vae), so
+// it isn't optional; Rename is the discoverable path for every kind (see
+// the section above).
 // ---------------------------------------------------------------------------
 
 function wireContextMenu(node, ctx, row, refs) {
@@ -755,6 +859,15 @@ function openContextMenuFor(node, ctx, row, refs) {
   const head = el(doc, "div", "wtn-ctl-mhead");
   head.textContent = row.name || row.kind;
   menu.appendChild(head);
+
+  const rename = el(doc, "div", "wtn-ctl-opt");
+  rename.textContent = "Rename";
+  rename.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeActiveOverlay();
+    beginRename(node, ctx, row, refs);
+  });
+  menu.appendChild(rename);
 
   const dup = el(doc, "div", "wtn-ctl-opt");
   dup.textContent = "Duplicate";
@@ -925,6 +1038,7 @@ function openAddMenu(node, ctx, addRefs) {
 function wireRow(node, ctx, row, refs) {
   wireGrip(node, ctx, row, refs);
   wireContextMenu(node, ctx, row, refs);
+  wireRename(node, ctx, row, refs);
   wireGear(node, ctx, row, refs);
   const kindMeta = KIND_META[row.kind] || KIND_META.auto;
   if (row.kind === "auto") {
