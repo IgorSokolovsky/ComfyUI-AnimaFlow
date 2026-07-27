@@ -385,6 +385,16 @@ test("injectStyles is idempotent and safe against a doc with no head", () => {
   assert.equal(doc.head.children.filter((c) => c.id === "wtn-controls-style").length, 1);
 });
 
+test("injectStyles's injected CSS is a real, non-empty stylesheet -- guards against a stray backtick inside the CSS template literal silently truncating/breaking it (that bug passes `node --check` and only breaks on actual module load)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.id === "wtn-controls-style");
+  assert.ok(styleEl, "expected an injected <style> element");
+  assert.ok(styleEl.textContent.length > 500, "injected CSS looks truncated");
+  assert.ok(styleEl.textContent.includes(".wtn-ctl-stepper"), "expected selector missing from injected CSS");
+  assert.ok(styleEl.textContent.includes(".wtn-ctl-name"), "expected selector missing from injected CSS");
+});
+
 test("buildRowElement: a combo row (sampler) gets a stepper + combo + caret + gear? no gear + dot", () => {
   const doc = makeDocStub();
   const row = mkRow("sampler", { value: "euler" });

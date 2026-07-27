@@ -124,7 +124,15 @@ const CSS = `
 .wtn-ctl-dot.t-any { background: transparent; border: 1.5px dashed var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 
 /* ── list rows: ◀ [ value ▾ ] ▶ ── */
-.wtn-ctl-stepper { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; }
+/* Content-sized, shrink-only -- NOT flex-grow. .wtn-ctl-name is the only
+   row child with flex-grow, so it alone absorbs slack when the value is
+   short; these two only give up width (never gain it) once the label has
+   already hit its own min-width floor. Growing here reproduces the bug this
+   guards against: value+caret hug the LEFT of a stretched box, leaving a
+   dead gap before the trailing arrow at the row's right edge. min-width: 0
+   must stay so a long value can still ellipsize instead of blowing out the
+   row's width. */
+.wtn-ctl-stepper { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 0 1 auto; }
 /* DRAWN triangles, never text glyphs -- a glyph's side bearing means
    padding can't ever render as an exact px value, and sizes vary by
    platform font. A border triangle's box IS the triangle. */
@@ -134,7 +142,7 @@ const CSS = `
 .wtn-ctl-arrow.wtn-ctl-right { border-left: 8px solid var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-ctl-arrow:hover.wtn-ctl-left { border-right-color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-ctl-arrow:hover.wtn-ctl-right { border-left-color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
-.wtn-ctl-combo { position: relative; display: flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; flex: 1 1 auto; }
+.wtn-ctl-combo { position: relative; display: flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; flex: 0 1 auto; }
 .wtn-ctl-combo .wtn-ctl-val { overflow: hidden; text-overflow: ellipsis; }
 /* caret is grey in EVERY state -- teal is reserved for the steppers, which
    DO something on click; the caret is only an affordance. */
