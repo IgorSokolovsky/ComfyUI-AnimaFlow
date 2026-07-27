@@ -46,9 +46,15 @@
 import { humanize, getInputNames } from "./core.mjs";
 
 const STYLE_ID = "webtoon-prompt-combiner-css";
+const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 
-// Palette + section layout lifted from js/anima_prompt/prompt_builder/render.mjs so the
-// two nodes read as one family.
+// Palette + section layout originally lifted from js/anima_prompt/prompt_builder/render.mjs
+// so the two nodes read as one family; now on the shared house theme (`.wtn` +
+// `var(--wtn-*)`, matching js/anima_prompt/prompt_rules/render.mjs and
+// js/anima_prompt/anima_prompt_studio/render.mjs) -- every color below is a
+// `var(--wtn-x, <hardcoded fallback>)` pair, the fallback copied by hand from
+// js/shared/theme.mjs's TOKENS, so the node still looks right even if the
+// stylesheet hasn't loaded yet (see injectStyles below).
 const CSS = `
 .wpc-root {
   display: flex;
@@ -58,7 +64,7 @@ const CSS = `
   box-sizing: border-box;
   padding: 4px 2px 2px;
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #dddddd;
+  color: var(--wtn-ink, #e7ecf3);
   /* NO height:100% and NO min-height here - deliberate (the
      ComfyUI-Pixaroma find_replace pattern). In Nodes 2.0 the host wrapper
      gives this root flex:1, so it still fills the node body and the
@@ -80,16 +86,16 @@ const CSS = `
    grows to fill extra node height. */
 .wpc-section-preview { flex: 1 1 0; min-height: 100px; display: flex; flex-direction: column; }
 .wpc-sec-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
-.wpc-sec-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #8a8f98; font-weight: 700; }
-.wpc-sec-title.wpc-green { color: #7fd18f; }
-.wpc-sec-note { color: #666666; font-size: 9.5px; }
-.wpc-count { color: #f66744; background: rgba(246,103,68,.12); border-radius: 20px; padding: 1px 8px; font-size: 10px; font-weight: 600; margin-left: 6px; }
+.wpc-sec-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--wtn-ink-dim, #93a0b1); font-weight: 700; }
+.wpc-sec-title.wpc-green { color: var(--wtn-ok, #4ade80); }
+.wpc-sec-note { color: var(--wtn-ink-faint, #5f6c7d); font-size: 9.5px; }
+.wpc-count { color: var(--wtn-accent, #2dd4bf); background: rgba(45,212,191,.12); border-radius: 20px; padding: 1px 8px; font-size: 10px; font-weight: 600; margin-left: 6px; }
 
 .wpc-textarea, .wpc-add-name {
   width: 100%;
-  background: #1d1d1d;
-  color: #cfcfcf;
-  border: 1px solid #333333;
+  background: var(--wtn-surface, #151a21);
+  color: var(--wtn-ink, #e7ecf3);
+  border: 1px solid var(--wtn-line, #28303b);
   border-radius: 6px;
   padding: 7px 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -97,7 +103,7 @@ const CSS = `
   outline: none;
   transition: border-color .12s;
 }
-.wpc-textarea:focus, .wpc-add-name:focus { border-color: #f66744; }
+.wpc-textarea:focus, .wpc-add-name:focus { border-color: var(--wtn-accent, #2dd4bf); }
 .wpc-textarea::placeholder, .wpc-add-name::placeholder {
   color: rgba(255,255,255,.32); font-style: italic;
 }
@@ -105,75 +111,97 @@ const CSS = `
 
 .wpc-add-wrap { margin-top: 8px; }
 .wpc-btn-add {
-  background: transparent; border: 1px solid #f66744; color: #f66744;
+  background: transparent; border: 1px solid var(--wtn-accent, #2dd4bf); color: var(--wtn-accent, #2dd4bf);
   padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: 6px;
   cursor: pointer; transition: background .12s;
 }
-.wpc-btn-add:hover { background: rgba(246,103,68,.12); }
+.wpc-btn-add:hover { background: rgba(45,212,191,.12); }
 .wpc-add-row { display: none; gap: 8px; margin-top: 8px; }
 .wpc-add-row.wpc-show { display: flex; }
 .wpc-add-name { flex: 1 1 auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 .wpc-btn-primary {
-  background: #f66744; border: 1px solid #f66744; color: #fff; font-weight: 600;
+  background: var(--wtn-accent, #2dd4bf); border: 1px solid var(--wtn-accent, #2dd4bf); color: var(--wtn-on-accent, #062420); font-weight: 600;
   padding: 6px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
   transition: filter .12s;
 }
 .wpc-btn-primary:hover { filter: brightness(1.08); }
 .wpc-btn-ghost {
-  background: #23262d; border: 1px solid #333333; color: #dddddd;
+  background: var(--wtn-surface-2, #1b212a); border: 1px solid var(--wtn-line, #28303b); color: var(--wtn-ink, #e7ecf3);
   padding: 5px 10px; font-size: 11.5px; border-radius: 6px; cursor: pointer;
   transition: border-color .12s;
 }
-.wpc-btn-ghost:hover { border-color: #f66744; }
+.wpc-btn-ghost:hover { border-color: var(--wtn-accent, #2dd4bf); }
 
 .wpc-inputs { padding-right: 2px; }
-.wpc-inputs-empty { color: #8a8f98; font-size: 12px; font-style: italic; padding: 3px 0; }
+.wpc-inputs-empty { color: var(--wtn-ink-dim, #93a0b1); font-size: 12px; font-style: italic; padding: 3px 0; }
 .wpc-input-row {
   display: flex; align-items: center; gap: 8px;
   margin-bottom: 7px;
 }
 .wpc-dot {
   width: 8px; height: 8px; min-width: 8px; border-radius: 50%;
-  background: #666666; display: inline-block;
+  background: var(--wtn-ink-faint, #5f6c7d); display: inline-block;
 }
-.wpc-dot-on { background: #7fd18f; }
+.wpc-dot-on { background: var(--wtn-ok, #4ade80); }
 .wpc-input-name {
-  flex: 1 1 auto; color: #cfcfcf; font-size: 12px;
+  flex: 1 1 auto; color: var(--wtn-ink, #e7ecf3); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wpc-input-token {
-  color: #666666; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--wtn-ink-faint, #5f6c7d); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10.5px; margin-left: 6px;
 }
 .wpc-btn-remove {
-  background: transparent; border: 1px solid #333333; color: #8a8f98;
+  background: transparent; border: 1px solid var(--wtn-line, #28303b); color: var(--wtn-ink-dim, #93a0b1);
   width: 20px; height: 20px; line-height: 1; border-radius: 5px; cursor: pointer;
   font-size: 11px; padding: 0; transition: border-color .12s, color .12s;
 }
-.wpc-btn-remove:hover { border-color: #f66744; color: #f66744; }
+.wpc-btn-remove:hover { border-color: var(--wtn-accent, #2dd4bf); color: var(--wtn-accent, #2dd4bf); }
 
 .wpc-preview {
-  background: #161616; border: 1px solid #2c3a2c; border-radius: 5px;
+  background: var(--wtn-console, #0a0d12); border: 1px solid rgba(74,222,128,.25); border-radius: 5px;
   padding: 8px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px; line-height: 1.7; color: #cfcfcf;
+  font-size: 11.5px; line-height: 1.7; color: var(--wtn-ink, #e7ecf3);
   white-space: pre-wrap; word-break: break-word;
   flex: 1 1 0;
   min-height: 60px;
   overflow-y: auto;
 }
-.wpc-preview-empty { color: #8a8f98; font-style: italic; }
+.wpc-preview-empty { color: var(--wtn-ink-dim, #93a0b1); font-style: italic; }
 `;
 
 /**
  * Inject the Prompt Combiner stylesheet once, guarded by
- * `#webtoon-prompt-combiner-css`. Safe no-op if there's no `document` (e.g.
- * a headless test harness that doesn't stub one out).
+ * `#webtoon-prompt-combiner-css`, PLUS the shared house theme
+ * (`js/shared/theme.{mjs,css}`) via a GUARDED DYNAMIC import -- this module
+ * is imported directly by the headless `test_resize.mjs` (`node
+ * js/anima_prompt/prompt_combiner/test_resize.mjs`, no global `document`), and a static
+ * top-level import of the absolute `/extensions/ComfyUI-AnimaFlow/shared/theme.mjs`
+ * path (which only resolves inside a live ComfyUI/browser host) would make
+ * the whole module fail to load under plain `node` with
+ * `ERR_MODULE_NOT_FOUND`, killing the test suite before a single assertion
+ * runs. Mirrors `js/anima_prompt/anima_prompt_studio/render.mjs`'s `injectStyles` exactly.
+ * Safe no-op if there's no `document` (e.g. a headless test harness that
+ * doesn't stub one out).
  */
 export function injectStyles(doc) {
   const targetDoc = doc || (typeof document !== "undefined" ? document : null);
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
+  }
+  // Guarded dynamic import -- `typeof document !== "undefined"` is the real
+  // GLOBAL (not the possibly-stubbed `doc` param), true only inside an
+  // actual browser host, where the absolute `/extensions/...` path actually
+  // resolves; a headless test run never attempts it.
+  if (typeof document !== "undefined") {
+    import(THEME_URL)
+      .then((mod) => mod.injectTheme())
+      .catch(() => {
+        // No live ComfyUI server to serve this route (or some other load
+        // failure) -- non-fatal, this module's own CSS above already falls
+        // back to hardcoded hex values via `var(--wtn-x, #hex)`.
+      });
   }
   if (typeof targetDoc.getElementById === "function" && targetDoc.getElementById(STYLE_ID)) {
     return;
@@ -208,7 +236,7 @@ export function buildRoot(doc) {
   const d = doc || document;
 
   const root = d.createElement("div");
-  root.className = "wpc-root";
+  root.className = "wpc-root wtn";
 
   // ---- Template section ----
   const templateSection = d.createElement("div");

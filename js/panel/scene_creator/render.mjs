@@ -67,11 +67,18 @@ import {
 } from "./core.mjs";
 
 const STYLE_ID = "webtoon-scene-creator-css";
+const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 
-// Palette + section layout lifted from js/anima_prompt/prompt_builder & js/anima_prompt/prompt_combiner
-// so all three nodes read as one family; card/outfit styling lifted from
-// playground/scene_creator.html's `.card`/`.sock`/`.toggle`/`.cf`/`.outfits`/
-// `.outfit-row` rules.
+// Palette + section layout originally lifted from js/anima_prompt/prompt_builder &
+// js/anima_prompt/prompt_combiner so all three nodes read as one family; card/outfit
+// styling originally lifted from playground/scene_creator.html's
+// `.card`/`.sock`/`.toggle`/`.cf`/`.outfits`/`.outfit-row` rules. Now on the
+// shared house theme (`.wtn` + `var(--wtn-*)`, matching
+// js/anima_prompt/prompt_rules/render.mjs and js/anima_prompt/anima_prompt_studio/render.mjs) --
+// every color below is a `var(--wtn-x, <hardcoded fallback>)` pair, the
+// fallback copied by hand from js/shared/theme.mjs's TOKENS, so the node
+// still looks right even if the stylesheet hasn't loaded yet (see
+// injectStyles below).
 const CSS = `
 .wsc-root {
   display: flex;
@@ -81,7 +88,7 @@ const CSS = `
   box-sizing: border-box;
   padding: 4px 2px 2px;
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #dddddd;
+  color: var(--wtn-ink, #e7ecf3);
   /* NO height:100% and NO min-height here - deliberate (ComfyUI-Pixaroma
      find_replace pattern; see js/anima_prompt/prompt_builder/render.mjs's header for the
      full rationale). */
@@ -90,16 +97,16 @@ const CSS = `
 .wsc-section { display: flex; flex-direction: column; }
 .wsc-section-preview { flex: 1 1 0; min-height: 100px; display: flex; flex-direction: column; }
 .wsc-sec-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
-.wsc-sec-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: #8a8f98; font-weight: 700; }
-.wsc-sec-title.wsc-green { color: #7fd18f; }
-.wsc-sec-note { color: #666666; font-size: 9.5px; }
-.wsc-count { color: #f66744; background: rgba(246,103,68,.12); border-radius: 20px; padding: 1px 8px; font-size: 10px; font-weight: 600; margin-left: 6px; }
+.wsc-sec-title { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--wtn-ink-dim, #93a0b1); font-weight: 700; }
+.wsc-sec-title.wsc-green { color: var(--wtn-ok, #4ade80); }
+.wsc-sec-note { color: var(--wtn-ink-faint, #5f6c7d); font-size: 9.5px; }
+.wsc-count { color: var(--wtn-accent, #2dd4bf); background: rgba(45,212,191,.12); border-radius: 20px; padding: 1px 8px; font-size: 10px; font-weight: 600; margin-left: 6px; }
 
 .wsc-textarea, .wsc-field-input, .wsc-add-name {
   width: 100%;
-  background: #1d1d1d;
-  color: #cfcfcf;
-  border: 1px solid #333333;
+  background: var(--wtn-surface, #151a21);
+  color: var(--wtn-ink, #e7ecf3);
+  border: 1px solid var(--wtn-line, #28303b);
   border-radius: 6px;
   padding: 7px 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -107,7 +114,7 @@ const CSS = `
   outline: none;
   transition: border-color .12s;
 }
-.wsc-textarea:focus, .wsc-field-input:focus, .wsc-add-name:focus { border-color: #f66744; }
+.wsc-textarea:focus, .wsc-field-input:focus, .wsc-add-name:focus { border-color: var(--wtn-accent, #2dd4bf); }
 .wsc-textarea::placeholder, .wsc-field-input::placeholder, .wsc-add-name::placeholder {
   color: rgba(255,255,255,.32); font-style: italic;
 }
@@ -115,35 +122,35 @@ const CSS = `
 
 .wsc-add-wrap { margin-top: 8px; }
 .wsc-btn-add {
-  background: transparent; border: 1px solid #f66744; color: #f66744;
+  background: transparent; border: 1px solid var(--wtn-accent, #2dd4bf); color: var(--wtn-accent, #2dd4bf);
   padding: 6px 12px; font-size: 12px; font-weight: 600; border-radius: 6px;
   cursor: pointer; transition: background .12s;
 }
-.wsc-btn-add:hover { background: rgba(246,103,68,.12); }
+.wsc-btn-add:hover { background: rgba(45,212,191,.12); }
 .wsc-add-row { display: none; gap: 8px; margin-top: 8px; }
 .wsc-add-row.wsc-show { display: flex; }
 .wsc-add-name { flex: 1 1 auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 .wsc-btn-primary {
-  background: #f66744; border: 1px solid #f66744; color: #fff; font-weight: 600;
+  background: var(--wtn-accent, #2dd4bf); border: 1px solid var(--wtn-accent, #2dd4bf); color: var(--wtn-on-accent, #062420); font-weight: 600;
   padding: 6px 12px; font-size: 12px; border-radius: 6px; cursor: pointer;
   transition: filter .12s;
 }
 .wsc-btn-primary:hover { filter: brightness(1.08); }
 .wsc-btn-ghost {
-  background: #23262d; border: 1px solid #333333; color: #dddddd;
+  background: var(--wtn-surface-2, #1b212a); border: 1px solid var(--wtn-line, #28303b); color: var(--wtn-ink, #e7ecf3);
   padding: 5px 10px; font-size: 11.5px; border-radius: 6px; cursor: pointer;
   transition: border-color .12s;
 }
-.wsc-btn-ghost:hover { border-color: #f66744; }
+.wsc-btn-ghost:hover { border-color: var(--wtn-accent, #2dd4bf); }
 
 .wsc-fields { padding-right: 2px; }
-.wsc-fields-empty { color: #8a8f98; font-size: 12px; font-style: italic; padding: 3px 0; }
+.wsc-fields-empty { color: var(--wtn-ink-dim, #93a0b1); font-size: 12px; font-style: italic; padding: 3px 0; }
 .wsc-field-row {
   display: grid; grid-template-columns: 104px minmax(0,1fr); gap: 10px;
   align-items: center; margin-bottom: 7px;
 }
 .wsc-field-row label {
-  color: #8a8f98; font-size: 12px; text-align: right; overflow: hidden;
+  color: var(--wtn-ink-dim, #93a0b1); font-size: 12px; text-align: right; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
 .wsc-field-input { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -151,118 +158,140 @@ const CSS = `
 /* ---- Character / Background cards (playground/scene_creator.html's
    .card family) — shared look, .wsc-char/.wsc-bg are both cards ---- */
 .wsc-bgs, .wsc-chars { padding-right: 2px; }
-.wsc-bgs-empty, .wsc-chars-empty { color: #8a8f98; font-size: 12px; font-style: italic; padding: 3px 0; }
+.wsc-bgs-empty, .wsc-chars-empty { color: var(--wtn-ink-dim, #93a0b1); font-size: 12px; font-style: italic; padding: 3px 0; }
 .wsc-char, .wsc-bg {
-  border: 1px solid #30343c; border-radius: 8px; padding: 10px;
-  margin-bottom: 9px; background: #1a1d22; transition: opacity .12s;
+  border: 1px solid var(--wtn-line-soft, #1f2731); border-radius: 8px; padding: 10px;
+  margin-bottom: 9px; background: var(--wtn-surface, #151a21); transition: opacity .12s;
 }
 .wsc-char-off { opacity: .5; }
 .wsc-char-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
 .wsc-dot {
   width: 11px; height: 11px; min-width: 11px; border-radius: 50%;
-  border: 2px solid #3a3f48; background: #20242b; display: inline-block;
+  border: 2px solid var(--wtn-line, #28303b); background: var(--wtn-surface-2, #1b212a); display: inline-block;
 }
-.wsc-dot-on { background: #7fd18f; border-color: #7fd18f; box-shadow: 0 0 8px rgba(127,209,143,.55); }
+.wsc-dot-on { background: var(--wtn-ok, #4ade80); border-color: var(--wtn-ok, #4ade80); box-shadow: 0 0 8px rgba(74,222,128,.55); }
 .wsc-char-name {
-  font-weight: 600; font-size: 13px; flex: 1 1 auto; color: #dddddd;
+  font-weight: 600; font-size: 13px; flex: 1 1 auto; color: var(--wtn-ink, #e7ecf3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wsc-toggle {
   font-size: 10px; font-weight: 700; letter-spacing: .06em; padding: 3px 9px;
-  border-radius: 20px; border: 1px solid #333333; cursor: pointer;
-  user-select: none; background: #23262d; color: #8a8f98;
+  border-radius: 20px; border: 1px solid var(--wtn-line, #28303b); cursor: pointer;
+  user-select: none; background: var(--wtn-surface-2, #1b212a); color: var(--wtn-ink-dim, #93a0b1);
 }
-.wsc-char-on .wsc-toggle { color: #7fd18f; border-color: #2c3a2c; background: rgba(127,209,143,.1); }
+.wsc-char-on .wsc-toggle { color: var(--wtn-ok, #4ade80); border-color: rgba(74,222,128,.25); background: rgba(74,222,128,.1); }
 .wsc-btn-remove {
-  background: transparent; border: 1px solid transparent; color: #8a8f98;
+  background: transparent; border: 1px solid transparent; color: var(--wtn-ink-dim, #93a0b1);
   border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px;
 }
-.wsc-btn-remove:hover { color: #f66744; background: rgba(246,103,68,.12); }
+.wsc-btn-remove:hover { color: var(--wtn-accent, #2dd4bf); background: rgba(45,212,191,.12); }
 .wsc-cf { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 8px; align-items: center; margin-bottom: 6px; }
 .wsc-cf:last-child { margin-bottom: 0; }
-.wsc-cf label { color: #8a8f98; font-size: 11px; text-align: right; }
+.wsc-cf label { color: var(--wtn-ink-dim, #93a0b1); font-size: 11px; text-align: right; }
 .wsc-cf input {
-  width: 100%; background: #1d1d1d; color: #cfcfcf; border: 1px solid #333333;
+  width: 100%; background: var(--wtn-surface, #151a21); color: var(--wtn-ink, #e7ecf3); border: 1px solid var(--wtn-line, #28303b);
   border-radius: 6px; padding: 6px 8px; font-size: 11.5px; outline: none;
   transition: border-color .12s;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
-.wsc-cf input:focus { border-color: #f66744; }
+.wsc-cf input:focus { border-color: var(--wtn-accent, #2dd4bf); }
 .wsc-cf input::placeholder { color: rgba(255,255,255,.32); font-style: italic; }
 
 /* Resolved-value hint under a character/background's name, filled from the
    last onExecuted's slots map — hidden until there's something to show. */
 .wsc-hint {
-  color: #666666; font-size: 10.5px; font-style: italic;
+  color: var(--wtn-ink-faint, #5f6c7d); font-size: 10.5px; font-style: italic;
   margin: -4px 0 7px 20px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 /* ---- Outfits (playground's .outfits/.outfit-row family) ---- */
 .wsc-outfits {
-  margin: 6px 0 0; padding: 7px 8px; border: 1px dashed #333333;
-  border-radius: 6px; background: #15181d;
+  margin: 6px 0 0; padding: 7px 8px; border: 1px dashed var(--wtn-line, #28303b);
+  border-radius: 6px; background: var(--wtn-bg, #0e1116);
 }
 .wsc-oh {
   font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
-  color: #666666; margin-bottom: 6px; font-weight: 700;
+  color: var(--wtn-ink-faint, #5f6c7d); margin-bottom: 6px; font-weight: 700;
 }
 .wsc-outfit-row {
   display: grid; grid-template-columns: 14px minmax(0,1fr) 46px 22px;
   gap: 6px; align-items: center; margin-bottom: 6px;
 }
 .wsc-outfit-row:last-child { margin-bottom: 0; }
-.wsc-odot { width: 8px; height: 8px; border-radius: 50%; background: #3a5f43; }
+.wsc-odot { width: 8px; height: 8px; border-radius: 50%; background: rgba(74,222,128,.45); }
 .wsc-outfit-off { opacity: .45; }
 .wsc-outfit-field { position: relative; min-width: 0; }
 .wsc-outfit-input {
-  width: 100%; background: #1d1d1d; color: #cfcfcf; border: 1px solid #333333;
+  width: 100%; background: var(--wtn-surface, #151a21); color: var(--wtn-ink, #e7ecf3); border: 1px solid var(--wtn-line, #28303b);
   border-radius: 6px; padding: 5px 7px; font-size: 11px; outline: none;
   transition: border-color .12s;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
-.wsc-outfit-input:focus { border-color: #f66744; }
+.wsc-outfit-input:focus { border-color: var(--wtn-accent, #2dd4bf); }
 .wsc-outfit-input::placeholder { color: rgba(255,255,255,.32); font-style: italic; }
 .wsc-wired-chip {
   display: block; width: 100%; padding: 5px 7px; border-radius: 6px;
-  border: 1px dashed #3a5f43; background: rgba(127,209,143,.08);
-  color: #7fd18f; font-size: 11px; font-weight: 600;
+  border: 1px dashed rgba(74,222,128,.45); background: rgba(74,222,128,.08);
+  color: var(--wtn-ok, #4ade80); font-size: 11px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .wsc-otog {
   font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 20px;
-  border: 1px solid #333333; cursor: pointer; background: #23262d;
-  color: #8a8f98; text-align: center; user-select: none;
+  border: 1px solid var(--wtn-line, #28303b); cursor: pointer; background: var(--wtn-surface-2, #1b212a);
+  color: var(--wtn-ink-dim, #93a0b1); text-align: center; user-select: none;
 }
-.wsc-outfit-row.wsc-outfit-on .wsc-otog { color: #7fd18f; border-color: #2c3a2c; background: rgba(127,209,143,.1); }
+.wsc-outfit-row.wsc-outfit-on .wsc-otog { color: var(--wtn-ok, #4ade80); border-color: rgba(74,222,128,.25); background: rgba(74,222,128,.1); }
 .wsc-btn-mini {
-  background: transparent; border: 1px dashed #3a5f43; color: #7fd18f;
+  background: transparent; border: 1px dashed rgba(74,222,128,.45); color: var(--wtn-ok, #4ade80);
   padding: 3px 9px; font-size: 10.5px; font-weight: 600; border-radius: 6px;
   cursor: pointer; margin-top: 2px;
 }
-.wsc-btn-mini:hover { background: rgba(127,209,143,.08); }
+.wsc-btn-mini:hover { background: rgba(74,222,128,.08); }
 
 .wsc-preview {
-  background: #161616; border: 1px solid #2c3a2c; border-radius: 5px;
+  background: var(--wtn-console, #0a0d12); border: 1px solid rgba(74,222,128,.25); border-radius: 5px;
   padding: 8px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px; line-height: 1.55; color: #cfcfcf;
+  font-size: 11.5px; line-height: 1.55; color: var(--wtn-ink, #e7ecf3);
   white-space: pre-wrap; word-break: break-word;
   flex: 1 1 0;
   min-height: 60px;
   overflow-y: auto;
 }
-.wsc-preview-empty { color: #8a8f98; font-style: italic; }
+.wsc-preview-empty { color: var(--wtn-ink-dim, #93a0b1); font-style: italic; }
 `;
 
 /**
  * Inject the Scene Creator stylesheet once, guarded by
- * `#webtoon-scene-creator-css`. Safe no-op if there's no `document`.
+ * `#webtoon-scene-creator-css`, PLUS the shared house theme
+ * (`js/shared/theme.{mjs,css}`) via a GUARDED DYNAMIC import -- this module
+ * is imported directly by the headless `test_resize.mjs` (`node
+ * js/panel/scene_creator/test_resize.mjs`, no global `document`), and a static
+ * top-level import of the absolute `/extensions/ComfyUI-AnimaFlow/shared/theme.mjs`
+ * path (which only resolves inside a live ComfyUI/browser host) would make
+ * the whole module fail to load under plain `node` with
+ * `ERR_MODULE_NOT_FOUND`, killing the test suite before a single assertion
+ * runs. Mirrors `js/anima_prompt/anima_prompt_studio/render.mjs`'s `injectStyles` exactly.
+ * Safe no-op if there's no `document`.
  */
 export function injectStyles(doc) {
   const targetDoc = doc || (typeof document !== "undefined" ? document : null);
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
+  }
+  // Guarded dynamic import -- `typeof document !== "undefined"` is the real
+  // GLOBAL (not the possibly-stubbed `doc` param), true only inside an
+  // actual browser host, where the absolute `/extensions/...` path actually
+  // resolves; a headless test run never attempts it.
+  if (typeof document !== "undefined") {
+    import(THEME_URL)
+      .then((mod) => mod.injectTheme())
+      .catch(() => {
+        // No live ComfyUI server to serve this route (or some other load
+        // failure) -- non-fatal, this module's own CSS above already falls
+        // back to hardcoded hex values via `var(--wtn-x, #hex)`.
+      });
   }
   if (typeof targetDoc.getElementById === "function" && targetDoc.getElementById(STYLE_ID)) {
     return;
@@ -337,7 +366,7 @@ export function buildRoot(doc) {
   const d = doc || document;
 
   const root = d.createElement("div");
-  root.className = "wsc-root";
+  root.className = "wsc-root wtn";
 
   // ---- Template section ----
   const templateSection = d.createElement("div");
