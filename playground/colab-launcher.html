@@ -140,6 +140,15 @@
 
   .hint { font-size: 12.5px; color: var(--ink-dim); margin: 2px 0 14px; }
   .hint code { font-family: var(--mono); color: var(--brand); font-size: 12px; }
+  /* ⓘ click-to-open hint, so rows stay one line tall */
+  .help { position: relative; color: var(--brand); cursor: pointer; font-size: 15px;
+    user-select: none; }
+  .help .pop { display: none; }
+  .help.open .pop { display: block; position: absolute; z-index: 50; top: 22px; left: -8px;
+    width: 470px; padding: 10px 12px; background: #0a0d12; border: 1px solid var(--brand);
+    border-radius: 8px; color: #cbd5e1; font-size: 12px; line-height: 1.5; font-weight: 400;
+    cursor: auto; box-shadow: 0 8px 24px rgba(0,0,0,.55); }
+  .help .pop code { font-family: var(--mono); color: var(--brand); font-size: 11.5px; }
 
   /* ---------- controls ---------- */
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
@@ -420,10 +429,10 @@
       </div>
       <div class="row">
         <label class="toggle-tail"><input type="checkbox" id="fe-on"> Override frontend version</label>
+        <span class="help" onclick="this.classList.toggle('open')">&#9432;<span class="pop"><b>Off</b> &mdash; use the <code>comfyui-frontend-package</code> pinned by the checked-out ref's <code>requirements.txt</code>.<br><b>On</b> &mdash; boot this frontend build instead (Restart to apply).<br><br><b>Use this to go UP only.</b> ComfyUI reports <code>required_frontend_version</code> from the ref's own <code>requirements.txt</code>, so a LOWER frontend always trips &ldquo;Frontend version X is outdated&rdquo;. To run an older UI, pin the ref in <b>Environment</b> instead (<code>v0.28.3</code> &rArr; 1.45.21) and leave this off, so core and frontend move together.<br><br>1.47.10 filters <code>canvasOnly</code> widgets (seed's <code>control_after_generate</code>) out of subgraph promotion and the Parameters panel &mdash; PRs #12957/#13870/#13868, still true in 1.48.5.<br><br><i>Unrelated:</i> a custom DOM widget with no backing input slot (Pixaroma Resolution) can never be promoted onto a subgraph in ANY version &mdash; not a pin issue.</span></span>
         <input class="text" id="fe-ver" type="text" style="width:330px"
                placeholder="Comfy-Org/ComfyUI_frontend@1.48.5" disabled>
       </div>
-      <p class="hint">Off = whatever <code>requirements.txt</code> pinned for the checked-out ref. On = boot that frontend build instead (Restart to apply). <b>Use this to go UP only.</b> ComfyUI reports <code>required_frontend_version</code> from the ref's own <code>requirements.txt</code>, so a LOWER frontend always trips &ldquo;Frontend version X is outdated&rdquo; — to run an older UI, pin the ref above instead (<code>v0.28.3</code> &rArr; 1.45.21) and leave this off, so core and frontend move together. FYI 1.47.10 filters <code>canvasOnly</code> widgets (seed's <code>control_after_generate</code>) out of subgraph promotion and the Parameters panel — PRs #12957/#13870/#13868, still true in 1.48.5. Unrelated: a custom DOM widget with no backing input slot (Pixaroma Resolution) can never be promoted onto a subgraph in ANY version — not a pin issue.</p>
       <div class="row">
         <button class="btn" id="launch-run">Launch ComfyUI</button>
         <button class="btn ghost" id="launch-restart" disabled>Restart</button>

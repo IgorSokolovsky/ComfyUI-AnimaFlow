@@ -438,6 +438,60 @@ def _port_open(port=8188, host="127.0.0.1"):
         s.settimeout(1)
         return s.connect_ex((host, port)) == 0
 
+def _orphan_comfy_pids():
+    """PIDs of ComfyUI servers this runtime has lost its handle on.
+
+    Scans /proc directly — no psutil/lsof/fuser, none of which are guaranteed on a
+    Colab image. Matches `main.py` processes whose cwd is COMFY_PATH (precise) or
+    whose argv carries our port (covers a cwd we can't read). Skips our own PID."""
+    me, pids = os.getpid(), []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                cmd = f.read().decode("utf-8", "replace").replace("\x00", " ")
+        except Exception:
+            continue                     # process exited mid-scan, or not ours to read
+        if "main.py" not in cmd:
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{entry}/cwd")
+        except Exception:
+            cwd = ""
+        if cwd == COMFY_PATH or "8188" in cmd:
+            pids.append(int(entry))
+    return pids
+
+def _kill_orphan_comfy(log):
+    """Reap ComfyUI servers left holding :8188 by an earlier Launch.
+
+    Needed because comfy_running() only knows about COMFY_PROC in THIS runtime —
+    re-running the backend cell resets it to None while the server keeps running, so
+    Stop turns into a no-op and the next Launch dies on "Port 8188 is already in
+    use". Each server was started with start_new_session, so pgid == pid."""
+    pids = _orphan_comfy_pids()
+    if not pids:
+        log("   ⚠ :8188 is held by something that isn't a ComfyUI main.py — "
+            "use --port, or restart the runtime.")
+        return False
+    for pid in pids:
+        log(f"   · killing orphaned ComfyUI pid {pid}")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(os.getpgid(pid), sig)
+            except Exception:
+                try: os.kill(pid, sig)
+                except Exception: pass
+            for _ in range(20):          # up to 10s per signal for the port to free
+                if not _port_open():
+                    log("   · :8188 free")
+                    return True
+                time.sleep(0.5)
+    freed = not _port_open()
+    log("   · :8188 free" if freed else "   ⚠ :8188 still bound after SIGKILL")
+    return freed
+
 def launch_comfy(token, log, set_status, set_url, frontend=""):
     """Start ComfyUI and wait (SYNCHRONOUSLY) until :8188 answers, then open the
     tunnel. Synchronous on purpose: in Colab, log lines only stream to the browser
@@ -450,6 +504,14 @@ def launch_comfy(token, log, set_status, set_url, frontend=""):
     global COMFY_PROC, TUNNEL
     if comfy_running():
         log("Already running."); return
+    # Pre-flight: comfy_running() only sees OUR handle, so a server orphaned by a
+    # previous Launch (or by re-running the backend cell) is invisible to it and would
+    # make ComfyUI exit on "Port 8188 is already in use". Clear it before starting.
+    if _port_open():
+        log("▸ :8188 already bound — no process handle here, looking for an orphan…")
+        if not _kill_orphan_comfy(log):
+            log("✗ cannot start: :8188 is still in use.")
+            set_status("error"); return
     set_status("starting")
     log("▸ starting ComfyUI…")
     # -u + PYTHONUNBUFFERED so ComfyUI flushes to the log file promptly.
@@ -925,6 +987,31 @@ fe_ver = widgets.Text(value=cfg["settings"].get("frontend_version",
                       placeholder="Comfy-Org/ComfyUI_frontend@1.48.5",
                       layout={"width": "330px"},
                       disabled=not cfg["settings"].get("frontend_override", False))
+# ⓘ click-to-open popover, so the long explanation costs one line instead of a
+# paragraph. A native title= tooltip does NOT surface in Colab's output frame, so
+# this uses the same trick as the card headers: inline onclick toggling a CSS class
+# (browser-only, no kernel round-trip). Icon + popover live in ONE HTML widget —
+# ipywidgets wraps each widget in its own div, so cross-widget DOM lookups are
+# brittle. The popover is absolutely positioned to escape the 24px icon box; it
+# opens downward because .cc-card has overflow:hidden and would clip upward.
+fe_help = widgets.HTML(
+    "<span class='cc-help' onclick=\"this.classList.toggle('open')\">&#9432;"
+    "<span class='cc-pop'>"
+    "<b>Off</b> — use the <code>comfyui-frontend-package</code> pinned by the checked-out "
+    "ref's <code>requirements.txt</code>.<br>"
+    "<b>On</b> — boot this frontend build instead (Restart to apply).<br><br>"
+    "<b>Use this to go UP only.</b> ComfyUI reports <code>required_frontend_version</code> "
+    "from the ref's own <code>requirements.txt</code>, so a LOWER frontend always trips "
+    "&ldquo;Frontend version X is outdated&rdquo;. To run an older UI, pin the ref in "
+    "<b>Environment</b> instead (<code>v0.28.3</code> &rArr; 1.45.21) and leave this off, so "
+    "core and frontend move together.<br><br>"
+    "1.47.10 filters <code>canvasOnly</code> widgets (seed's "
+    "<code>control_after_generate</code>) out of subgraph promotion and the Parameters "
+    "panel — PRs #12957/#13870/#13868, still true in 1.48.5.<br><br>"
+    "<i>Unrelated:</i> a custom DOM widget with no backing input slot (Pixaroma Resolution) "
+    "can never be promoted onto a subgraph in ANY version — not a pin issue."
+    "</span></span>", layout={"width": "24px", "flex": "0 0 auto"})
+
 def _fe_on_change(c):
     cfg["settings"]["frontend_override"] = c["new"]
     fe_ver.disabled = not c["new"]
@@ -954,18 +1041,7 @@ restart_btn.on_click(_restart)
 set_status("running" if comfy_running() else "stopped")
 sec_launch = widgets.VBox([
     pinggy_token, pinggy_remember,
-    widgets.HBox([fe_on, fe_ver]),
-    widgets.HTML("<small>Off = whatever <code>requirements.txt</code> pinned for the checked-out "
-                 "ref. On = boot that frontend build instead (Restart to apply). <b>Use this to go "
-                 "UP only.</b> ComfyUI reports <code>required_frontend_version</code> from the "
-                 "ref's own <code>requirements.txt</code>, so a LOWER frontend always trips "
-                 "\"Frontend version X is outdated\" — to run an older UI, pin the ref above "
-                 "instead (<code>v0.28.3</code> ⇒ 1.45.21) and leave this off, so core and frontend "
-                 "move together. FYI 1.47.10 filters <code>canvasOnly</code> widgets (seed's "
-                 "<code>control_after_generate</code>) out of subgraph promotion and the Parameters "
-                 "panel — PRs #12957/#13870/#13868, still true in 1.48.5. Unrelated: a custom DOM "
-                 "widget with no backing input slot (Pixaroma Resolution) can never be promoted "
-                 "onto a subgraph in ANY version — not a pin issue."),
+    widgets.HBox([fe_on, fe_help, fe_ver]),
     widgets.HBox([launch_btn, restart_btn, stop_btn]),
     url_html, launch_log.w])
 
@@ -1064,6 +1140,18 @@ CSS = """
 .cc-panel .cc-row .widget-checkbox { margin: 0 !important; }
 .cc-panel .cc-row label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-panel input[type=checkbox], .cc-panel input[type=radio] { accent-color: #2dd4bf; }
+
+/* ⓘ click-to-open hint, so rows stay one line tall */
+.cc-panel .cc-help { position: relative; color: #2dd4bf; cursor: pointer;
+  font-size: 15px; margin: 0 8px 0 -6px; user-select: none; }
+.cc-panel .cc-help:hover { color: #34e5d2; }
+.cc-panel .cc-help .cc-pop { display: none; }
+.cc-panel .cc-help.open .cc-pop { display: block; position: absolute; z-index: 50;
+  top: 22px; left: -8px; width: 470px; padding: 10px 12px;
+  background: #0a0d12; border: 1px solid #2dd4bf; border-radius: 8px;
+  color: #cbd5e1; font-size: 12px; line-height: 1.5; font-weight: 400;
+  cursor: auto; box-shadow: 0 8px 24px rgba(0,0,0,.55); }
+.cc-panel .cc-help .cc-pop code { color: #2dd4bf; font-size: 11.5px; }
 
 /* primary buttons */
 .cc-panel .cc-btn { background: #2dd4bf !important; color: #062420 !important;
