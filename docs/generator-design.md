@@ -47,9 +47,10 @@ BACKLOG should be updated.
   prompt data + resource *names* into a custom dict socket, then loads MODEL/CLIP/VAE inside
   the generator. Plain `MODEL`/`CLIP`/`VAE` sockets are better: they compose with every other
   node in ComfyUI, including our own Loader Panel. See §3.
-- **SAM3-specific detection.** Upstream hardcodes a SAM3 → Impact `DetailerForEach` path
-  (`nodes/impact_detailer_nodes.py:48`). We take a generic `SEGS` socket, which is
-  detector-agnostic and means *we* never import Impact at all.
+- **SAM3-specific detection, and the per-block `detect_prompt` that depends on it.** Upstream
+  hardcodes a SAM3 → Impact `DetailerForEach` path (`nodes/impact_detailer_nodes.py:48`). We take
+  generic `SEGS` sockets instead, which is detector-agnostic and means *we* never import Impact at
+  all. Upstream's N-blocks UX survives this; see §6a for how.
 - **~150 of upstream's ~250 settings** — everything behind a dependency we're not taking. See §4.
 - **Their sampler-mode dispatch.** Three modes (`comfy_ksampler` /
   `spectrum_mod_guidance_advanced` / `spectrum_spd_speed`) is why `aio/sampling.py` is 15k of
@@ -186,7 +187,7 @@ collide on its rebuild.
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
 | optional | `latent` | `LATENT` | wire the Control Panel's empty-latent row; else size comes from settings |
-| optional | `segs_a` / `segs_b` | `SEGS` | detailer targets, one pass each; stage is inert with neither (§6a) |
+| optional | `segs_1` … `segs_N` | `SEGS` | one per detailer pass, revealed as blocks are added; stage is inert with none (§6a) |
 | optional | `lora_stack` | `LORA_STACK` | |
 | hidden | `prompt` / `extra_pnginfo` / `unique_id` | `PROMPT`/`EXTRA_PNGINFO`/`UNIQUE_ID` | §9 — non-negotiable |
 
@@ -229,32 +230,50 @@ Order is upstream's (`aio/generation_pipeline.py:10-17`), each stage independent
    decode. Size from the `latent` socket if wired, else `settings.latent`.
 2. **Highres** — latent upscale by `scale_by` (default 1.5), resample, re-sample at
    `denoise` 0.25. Inherits the first-pass sampler unless `inherit_sampler_settings` is off.
-3. **Detailer** — **inert unless a `SEGS` is wired.** We call Impact's `DetailerForEach` with the
-   incoming `SEGS` (`nodes/impact_detailer_nodes.py:48,228`) — the user's own detector node
-   produces them, so we never import Impact and never care which detector it was. Defaults from
-   upstream's **face** block, the conservative of its pair (`generation_defaults.py:292-357`).
-   See §6a for why this is where upstream's face/eye tabs go.
+3. **Detailer** — **N passes, one per wired `SEGS`.** Each pass calls Impact's `DetailerForEach`
+   with its own `SEGS` and its own settings block (`nodes/impact_detailer_nodes.py:48,228`). The
+   user's detector node produces the regions, so we never import Impact and never care which
+   detector it was. Defaults from upstream's **face** block, the conservative one
+   (`generation_defaults.py:292-357`). See §6a — this is a closer port than it first looks.
 
-### 6a. Detailer — why upstream's face/eye tabs can't come across as-is
+### 6a. Detailer — upstream is N user-addable blocks, and `detect_prompt` is the hinge
 
-Upstream **owns detection**: it runs SAM3 with a text prompt, so it knows a region is a *face*
-because it asked for faces. That knowledge is what lets it ship two tabs with genuinely different
-settings — face at `denoise 0.33` / `noise_mask_feather 10` (`:292-357`), eye at its own values /
-`noise_mask_feather 20` (`:358-424`) — and an execution order between them (`detailer.order`).
+**Upstream is not two tabs.** `face` and `eye` are two *built-in* blocks; beyond them the dialog's
+`+ Add block` creates unbounded `custom_1`, `custom_2`, … each inheriting the **face** defaults and
+enabled on creation (`web/js/aio/detailer_settings_dialog.js:357-368`,
+`easyuse_anima_aio.js:3331-3341` — the name generator loops to 1000, so there is no practical cap).
+Every tab is **renameable** and **reorderable** via `<` `>` buttons that mutate `detailer.order`
+(`:320-337`). Custom blocks can be removed; `face`/`eye` cannot (`removeTarget` refuses a
+non-custom name, `:342-344`). The backend mirrors this exactly: `_is_aio_detailer_target_name`
+accepts `face`, `eye`, or `^custom_\d+$` (`aio/generation_normalization.py:97-101`).
 
-**A `SEGS` carries regions, not labels.** Once we take detection as an input we cannot tell a face
-crop from an eye crop, so one SEGS socket can only mean one settings block applied to everything
-in it. That is a real capability loss against upstream, not just a simplification — faces and eyes
-genuinely want different feather and denoise, which is why upstream ships different numbers.
+So a **Face / Eye / Hands** tab strip is exactly what upstream looks like in use — "Hands" being an
+added block, renamed, with its `detect_prompt` set to `hands`.
 
-The fix keeps detector-agnosticism and gets the capability back: **two SEGS sockets, `segs_a` and
-`segs_b`, each with its own settings block and its own pass.** You wire your face detector to one
-and your eye detector to the other, and the semantics come from *which socket you chose* rather
-than from us inspecting the regions. `segs_b` absent ⇒ one pass, which is the simple case for free.
+**`detect_prompt` is the hinge.** Each block carries its own free-text `detect_prompt`
+(`generation_defaults.py:295`), so *the block is the detection request*. That is what makes N tabs
+coherent: a tab named Hands asks SAM3 for hands and then refines what came back, all inside one
+block. The tab count was never the mechanism.
 
-The mockup implements two passes (Detailer tab). **Open**: whether to ship both from the start or
-ship one and append `segs_b` later — appending is safe under the append-only rule, so this is a
-question about scope, not about painting ourselves into a corner.
+**What changes for us is where the request lives, not how many there are.** Taking `SEGS` as input
+moves `detect_prompt` out of the node and onto a wire — your detector decides what gets found. The
+faithful analogue of upstream's N blocks is therefore **N passes, each with its own `SEGS` socket
+and its own settings block**, where the semantics ("this pass is hands") come from which detector
+you wired rather than from a text field we own. One pass per socket, executed in block order.
+
+That maps 1:1 onto upstream's model and keeps every per-type setting that matters — the feather and
+denoise differences between face and eye are real, which is why upstream ships different numbers
+(`noise_mask_feather` 10 face / 20 eye, `:321`, `:387`).
+
+**We already have the machinery for the dynamic-socket part.** The Control Panel declares a fixed
+`MAX_ROWS` worth of slots and shows only as many as there are rows, narrowing each one's visible
+type (`control-panel-design.md` §1, §5). Detailer passes are the same pattern applied to *inputs*:
+declare `MAX_DETAILER_PASSES` optional `SEGS` inputs, reveal only as many as there are blocks. See
+the frontend skill's `ContainsAnyDict` note for the backend half.
+
+**Open (§12):** the value of `MAX_DETAILER_PASSES`. Upstream is effectively unbounded, but each
+pass is a full re-sample — 4 is already a lot of compute, and the constant can grow later, never
+shrink.
 4. **Upscale** — USDU only, with seam-fix and tile controls exposed (upstream's `seam_fix_mode`
    was hardcoded to `"None"` in the old port, making seam repair unreachable; `29ac56d` fixed
    that and the work is recoverable from git). `mode_type` (Linear/Chess/None) is tile **order**;
@@ -405,7 +424,8 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   — ~130k of JS across them, which is a lot to lazily import. **The mockup implements the single
   tabbed overlay**, with a lit dot per enabled stage on the tab strip so "what's on" is readable
   without opening anything. Confirm from the mockup.
-- Whether the detailer ships one SEGS pass or two (§6a). Appendable either way.
+- `MAX_DETAILER_PASSES` (§6a). Upstream is effectively unbounded; each pass is a full re-sample,
+  so 4 is already a lot of compute. The constant can grow later, never shrink.
 
 **Deferred, deliberately:**
 

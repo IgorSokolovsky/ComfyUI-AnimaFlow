@@ -352,8 +352,8 @@
   <div class="note">
     Behavioural reference for the two nodes in <code>AnimaFlow/Anima</code>. Everything here is
     <b>clickable</b> — toggle stages and watch the three image outputs re-resolve, flip
-    <code>use_internal_loaders</code> and watch the resource sockets go dead, hover the compare to
-    wipe. Same palette as <code>playground/theme.html</code>; nothing here fetches anything.
+    <code>use_internal_loaders</code> and watch the resource sockets go dead, add detailer blocks and
+    watch their <code>SEGS</code> sockets appear, hover the compare to wipe. Same palette as <code>playground/theme.html</code>; nothing here fetches anything.
   </div>
   <div class="live">
     <b>Mockup, not the node.</b> The images are procedural SVGs standing in for real stage output —
@@ -380,11 +380,12 @@
       per enabled stage, so "what's actually on" is readable without opening anything.
     </div>
     <div class="q">
-      <span class="tag">Open &middot; detailer, one pass or two</span>
-      Shown here as <b>two passes</b>, each with its own <code>SEGS</code> socket and its own
-      settings — see the Detailer tab. One pass is simpler; two keeps upstream's
-      face-vs-eye capability without us owning detection. Toggle
-      <code>segs_b</code> off in the Detailer tab to see the one-pass shape.
+      <span class="tag">Open &middot; MAX_DETAILER_PASSES</span>
+      Upstream is <b>N addable blocks</b>, not two — <code>face</code>/<code>eye</code> built in,
+      <code>custom_N</code> beyond them, all renameable and reorderable, effectively uncapped. The
+      Detailer tab mirrors that, with each block owning a <code>SEGS</code> socket in place of
+      upstream's per-block <code>detect_prompt</code>. Capped at <b>4</b> here because every pass is
+      a full re-sample — the number is the open question, and it can grow later, never shrink.
     </div>
     <div class="q settled">
       <span class="tag">Settled &middot; pass-through on a disabled stage</span>
@@ -458,7 +459,17 @@ const PX = { base: 1024, highres: 1536, mid: 1536, upscale: 2048, final: 2048 };
 // ───────────────────────────────────────────────────────────────────────────
 const state = {
   internal: false,            // use_internal_loaders
-  wired: { model: true, clip: true, vae: true, latent: true, segsA: true, segsB: false },
+  wired: { model: true, clip: true, vae: true, latent: true },
+  // Detailer BLOCKS, mirroring upstream: `face`/`eye` are built-in and cannot
+  // be removed, anything past them is an addable custom block. Each block owns
+  // one SEGS socket, so "which detector feeds this pass" replaces upstream's
+  // per-block detect_prompt (design doc s6a). MAX is ours, not upstream's --
+  // upstream's name generator loops to 1000.
+  blocks: [
+    { id: "face", label: "Face", builtin: true, on: true, wired: true, feather: 10 },
+    { id: "eye", label: "Eye", builtin: true, on: true, wired: true, feather: 20 },
+  ],
+  block: "face",
   stages: { highres: true, detailer: true, upscale: true, postprocess: false },
   have: { spectrum: true, usdu: true },   // soft-import presence
   modGuidance: true,
@@ -481,7 +492,7 @@ function resolveOutputs() {
   const st = state.stages;
   const afterFirst = "base";
   const afterHighres = st.highres ? "highres" : afterFirst;
-  const detailerLive = st.detailer && (state.wired.segsA || state.wired.segsB);
+  const detailerLive = st.detailer && state.blocks.some((b) => b.on && b.wired);
   const afterDetailer = detailerLive ? "mid" : afterHighres;
   const afterUpscale = st.upscale && state.have.usdu ? "upscale" : afterDetailer;
   const afterPost = st.postprocess ? afterUpscale : afterUpscale;   // fit only resizes
@@ -529,9 +540,10 @@ function resolverHtml() {
 const STAGES = [
   { k: "highres", n: "Highres", s: () => `${1.5}x  denoise .25  ${state.stages.highres ? "20 steps" : ""}` },
   { k: "detailer", n: "Detailer", s: () => {
-      const n = (state.wired.segsA ? 1 : 0) + (state.wired.segsB ? 1 : 0);
-      return n ? `${n} pass${n > 1 ? "es" : ""}  denoise .33` : "no SEGS wired";
-    }, dep: () => !(state.wired.segsA || state.wired.segsB) },
+      const live = state.blocks.filter((b) => b.on && b.wired);
+      if (!live.length) return state.blocks.some((b) => b.on) ? "no SEGS wired" : "no blocks on";
+      return `${live.map((b) => b.label).join(" > ")}`;
+    }, dep: () => !state.blocks.some((b) => b.on && b.wired) },
   { k: "upscale", n: "Upscale", s: () => state.have.usdu ? "USDU 2x  seam-fix" : "USDU not installed",
     dep: () => !state.have.usdu },
   { k: "postprocess", n: "Postprocess", s: () => "fit 2048 long edge" },
@@ -618,8 +630,10 @@ function genHtml() {
 
     <div class="sec">detail targets</div>
     <div class="sockgrp">
-      ${sock("segs_a", "SEGS", { optional: true, wired: state.wired.segsA })}
-      ${state.wired.segsB ? sock("segs_b", "SEGS", { optional: true, wired: true }) : ""}
+      ${state.blocks.map((b, i) => sock(`segs_${i + 1}`, "SEGS", {
+        optional: true, wired: b.wired,
+        title: `${b.label}${b.on ? "" : " (block off)"}`,
+      })).join("")}
       ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent })}
       ${sock("lora_stack", "LORA_STACK", { optional: true })}
     </div>
@@ -689,6 +703,10 @@ function prevHtml() {
 // Settings overlay -- ONE tabbed dialog, the alternative to upstream's five
 // separate dialog files. The tab strip doubles as an at-a-glance "what's on".
 // ───────────────────────────────────────────────────────────────────────────
+// Ours, not upstream's -- upstream is effectively unbounded (its name generator
+// loops to custom_1000). Each pass is a full re-sample, so a cap is a kindness.
+const MAX_BLOCKS = 4;
+
 const TABS = [
   ["sampler", "Sampler"], ["mod", "Mod guidance"], ["highres", "Highres"],
   ["detailer", "Detailer"], ["upscale", "Upscale"], ["postprocess", "Postprocess"],
@@ -760,19 +778,36 @@ function dlgBody(tab) {
         ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "simple", SCHEDS)}</div>`;
   }
   if (tab === "detailer") {
-    const bOn = state.wired.segsB;
-    return `<div class="dnote">We do <b>not</b> detect. You wire <code>SEGS</code> from whatever
-      detector you like and this stage re-samples those crops -- so it works with any detector and we
-      never import Impact Pack.</div>
+    const b = state.blocks.find((x) => x.id === state.block) || state.blocks[0];
+    const i = state.blocks.indexOf(b);
+    const atMax = state.blocks.length >= MAX_BLOCKS;
+    return `<div class="dnote">Upstream ships <b>N blocks</b>, not two: <code>face</code> and
+      <code>eye</code> are built in, <code>+ Add block</code> makes more, every tab renames and
+      reorders. We keep that shape -- but each block owns a <code>SEGS</code> socket instead of a
+      <code>detect_prompt</code>, so <i>your</i> detector decides what a block operates on.</div>
       <div class="passtabs">
-        <button class="${state.pass === "a" ? "on" : ""}" data-act="pass" data-v="a">Pass A &middot; segs_a</button>
-        <button class="${state.pass === "b" ? "on" : ""}" data-act="pass" data-v="b"
-          ${bOn ? "" : 'style="opacity:.45"'}>Pass B &middot; segs_b</button>
-        <button data-act="segsb" style="margin-left:auto">${bOn ? "remove pass B" : "+ add pass B"}</button>
+        ${state.blocks.map((x, ix) => `<button class="${x.id === b.id ? "on" : ""}"
+          data-act="block" data-v="${x.id}" title="segs_${ix + 1}${x.builtin ? " -- built in" : ""}">
+          ${esc(x.label)}${x.on ? "" : " (off)"}</button>`).join("")}
+        <button data-act="addblock" style="margin-left:auto" ${atMax ? 'disabled style="margin-left:auto;opacity:.4"' : ""}
+          title="${atMax ? "MAX_DETAILER_PASSES reached" : "Adds a block and reveals its SEGS socket"}">+ Add block</button>
       </div>
-      ${state.pass === "b" && !bOn ? `<div class="missing"><span class="k">pass B is off</span>
-        <span>One pass over one SEGS input. Add pass B to give a second detector chain its own
-        settings.</span></div>` : `
+      <div class="passtabs">
+        <button data-act="mvblock" data-v="-1" ${i === 0 ? 'style="opacity:.4"' : ""}
+          title="Execution order -- upstream's &lt; &gt; buttons mutate detailer.order">&lt;</button>
+        <button data-act="mvblock" data-v="1" ${i === state.blocks.length - 1 ? 'style="opacity:.4"' : ""}>&gt;</button>
+        <button data-act="onblock" title="Enable this block">${b.on ? "on" : "off"}</button>
+        <button data-act="wireblock" title="Pretend a SEGS is wired to this block's socket">
+          segs_${i + 1} ${b.wired ? "wired" : "unwired"}</button>
+        ${b.builtin
+          ? `<button disabled style="opacity:.4" title="face/eye are built in -- upstream's removeTarget refuses a non-custom name">can't remove</button>`
+          : `<button data-act="delblock">remove</button>`}
+      </div>
+      <div class="field" style="margin-bottom:12px"><span>label</span>
+        <input value="${esc(b.label)}" data-act="lbl" data-live="1"></div>
+      ${!b.wired ? `<div class="missing"><span class="k">segs_${i + 1} unwired</span>
+        <span>This block is inert until a detector feeds it. Upstream never has this state -- it
+        detects for itself.</span></div>` : ""}
       <div class="grid2">
         ${f("denoise", 0.33)}${f("feather", 5)}
         ${f("guide_size", 1024)}${f("max_size", 2048)}
@@ -782,15 +817,16 @@ function dlgBody(tab) {
       <div class="sublab">the two upstream defaults the old port got wrong</div>
       <div class="grid2">
         ${f("guide_size_for", "false", ["false", "true"])}
-        ${f("noise_mask_feather", 10)}
+        ${f("noise_mask_feather", b.feather)}
       </div>
       <div class="dnote warn" style="margin:11px 0 0"><b>Do not "fix" these.</b>
       <code>guide_size_for</code> must be <code>false</code> and <code>noise_mask_feather</code> must
       not be <code>0</code> -- upstream never ships 0, and it's the main control against visible
-      detailer seams. Both were wrong in the deleted port.</div>
+      detailer seams. Upstream ships <b>10 for face, 20 for eye</b>, which is exactly why per-block
+      settings are worth keeping. Both were wrong in the deleted port.</div>
       <div class="sublab">overrides</div>
       <div class="grid2">${f("inherit_sampler_settings", "true", ["true", "false"])}${f("steps", 20)}
-        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "sgm_uniform", SCHEDS)}</div>`}`;
+        ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "sgm_uniform", SCHEDS)}</div>`;
   }
   if (tab === "upscale") {
     if (!state.have.usdu) {
@@ -919,13 +955,46 @@ document.addEventListener("click", (e) => {
   else if (act === "pvon") state.preview.on = !state.preview.on;
   else if (act === "pva") state.preview.a = t.dataset.v;
   else if (act === "pvb") state.preview.b = t.dataset.v;
-  else if (act === "pass") state.pass = t.dataset.v;
-  else if (act === "segsb") {
-    state.wired.segsB = !state.wired.segsB;
-    if (!state.wired.segsB && state.pass === "b") state.pass = "a";
+  else if (act === "block") state.block = t.dataset.v;
+  else if (act === "addblock") {
+    if (state.blocks.length >= MAX_BLOCKS) return;
+    // Upstream names them custom_1, custom_2... and they inherit the FACE
+    // defaults, enabled on creation (detailer_settings_dialog.js:357-368).
+    let n = 1;
+    while (state.blocks.some((b) => b.id === "custom_" + n)) n++;
+    const b = { id: "custom_" + n, label: "Detailer Block " + n, builtin: false,
+                on: true, wired: false, feather: 10 };
+    state.blocks.push(b);
+    state.block = b.id;
+  } else if (act === "delblock") {
+    const i = state.blocks.findIndex((b) => b.id === state.block);
+    if (i < 0 || state.blocks[i].builtin) return;
+    state.blocks.splice(i, 1);
+    state.block = (state.blocks[Math.min(i, state.blocks.length - 1)] || {}).id || "face";
+  } else if (act === "mvblock") {
+    const d = +t.dataset.v;
+    const i = state.blocks.findIndex((b) => b.id === state.block);
+    const j = i + d;
+    if (i < 0 || j < 0 || j >= state.blocks.length) return;
+    [state.blocks[i], state.blocks[j]] = [state.blocks[j], state.blocks[i]];
+  } else if (act === "onblock" || act === "wireblock") {
+    const b = state.blocks.find((x) => x.id === state.block);
+    if (!b) return;
+    if (act === "onblock") b.on = !b.on; else b.wired = !b.wired;
   } else if (act === "have") state.have[t.dataset.k] = true;
   else return;
   paint();
+});
+
+// Renaming a block is UI metadata only -- runtime dispatch uses the stable id
+// plus block order, exactly as upstream's tab labels do.
+document.addEventListener("input", (e) => {
+  const t = e.target.closest('[data-act="lbl"]');
+  if (!t) return;
+  const b = state.blocks.find((x) => x.id === state.block);
+  if (!b) return;
+  b.label = t.value;
+  document.getElementById("gen").innerHTML = genHtml();   // repaint the node, keep focus in the input
 });
 
 document.getElementById("scrim").addEventListener("click", (e) => {
