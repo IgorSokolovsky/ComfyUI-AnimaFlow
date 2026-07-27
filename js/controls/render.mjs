@@ -260,6 +260,40 @@ const CSS = `
 .wtn-ctl-pbtn.wtn-ctl-danger:hover { color: var(--wtn-bad, ${TOKENS.bad}); border-color: var(--wtn-bad, ${TOKENS.bad}); }
 `;
 
+/**
+ * Paints the LEGACY LITEGRAPH NODE ITSELF (body + title-bar strip) in our
+ * theme, so the dark DOM rows sit on our own dark surface instead of
+ * ComfyUI's lighter default node chrome. Mirrors
+ * `../ComfyUI-Pixaroma/js/note/render.mjs`'s `renderContent` (see its top
+ * doc comment, lines ~66-113, for the exact reasoning this ports): litegraph
+ * SERIALIZES `node.color`/`node.bgcolor` into the saved workflow the moment
+ * either is set (by us, OR by the user's own right-click -> Colors pick), so
+ * this only ever fills in a still-null value -- it must NEVER overwrite one
+ * that's already set, or it would silently clobber a user's explicit choice
+ * every time it runs.
+ *
+ * `TOKENS.surface`/`TOKENS.surface2` (this module's single source of truth
+ * for the palette, mirroring `js/shared/theme.mjs`) are used directly rather
+ * than a third hardcoded pair of hexes.
+ *
+ * Called from `index.js`'s `setupNode` ONLY, and only when
+ * `!node._ctrlConfiguring` -- i.e. a genuinely fresh node, never one being
+ * restored from a saved workflow (see index.js's call site for why that
+ * flag reliably distinguishes the two, and why the restore path
+ * deliberately never touches colour at all).
+ */
+export function applyNodeChrome(node) {
+  if (!node) {
+    return;
+  }
+  if (node.bgcolor == null) {
+    node.bgcolor = TOKENS.surface;
+  }
+  if (node.color == null) {
+    node.color = TOKENS.surface2;
+  }
+}
+
 export function injectStyles(doc) {
   const targetDoc = doc || (typeof document !== "undefined" ? document : null);
   if (!targetDoc || typeof targetDoc.createElement !== "function") {

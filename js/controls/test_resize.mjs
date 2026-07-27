@@ -73,6 +73,7 @@ import {
   paintRow,
   openOverlay,
   bodyHeight,
+  applyNodeChrome,
   ROW_H,
   ROW_GAP,
   ADD_H,
@@ -498,6 +499,52 @@ test("buildAddRow builds a themed button with the given label", () => {
   const { root } = buildAddRow(doc, "+ Add control");
   assert.equal(root.textContent, "+ Add control");
   assert.ok(root.className.includes("wtn-ctl-add"));
+});
+
+// TOKENS.surface/TOKENS.surface2 aren't exported from render.mjs (single
+// source of truth stays internal to that module -- see its own doc
+// comment); mirrored here as literals, matching this pack's existing
+// convention of a hardcoded fallback pair (e.g. this same file's CSS
+// `var(--wtn-x, #fallback)` strings).
+const CHROME_BODY = "#151a21";
+const CHROME_HEADER = "#1b212a";
+
+test("applyNodeChrome paints bgcolor/color on a fresh node (both null)", () => {
+  const node = { bgcolor: null, color: null };
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_HEADER);
+});
+
+test("applyNodeChrome paints bgcolor/color on a fresh node (both undefined -- litegraph's actual default)", () => {
+  const node = {};
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_HEADER);
+});
+
+test("applyNodeChrome NEVER overwrites a node that already has an explicit bgcolor/color -- the stomp case", () => {
+  const node = { bgcolor: "#ff00ff", color: "#00ff00" };
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, "#ff00ff");
+  assert.equal(node.color, "#00ff00");
+});
+
+test("applyNodeChrome fills in only the ONE still-null field, leaving an explicitly-set sibling alone", () => {
+  const node = { bgcolor: "#ff00ff", color: null };
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, "#ff00ff"); // untouched
+  assert.equal(node.color, CHROME_HEADER); // filled in
+
+  const node2 = { bgcolor: null, color: "#00ff00" };
+  applyNodeChrome(node2);
+  assert.equal(node2.bgcolor, CHROME_BODY); // filled in
+  assert.equal(node2.color, "#00ff00"); // untouched
+});
+
+test("applyNodeChrome is a no-op (never throws) against a null/undefined node", () => {
+  assert.doesNotThrow(() => applyNodeChrome(null));
+  assert.doesNotThrow(() => applyNodeChrome(undefined));
 });
 
 test("bodyHeight is pure arithmetic on row count (no DOM needed)", () => {

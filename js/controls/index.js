@@ -221,6 +221,32 @@ function setupNode(node, panelConfig, mods) {
   hideStateWidget(node, mods);
   mods.interaction.ensureState(node, ctx);
 
+  // Paint the node's own litegraph chrome (body/title strip) in our theme --
+  // ONLY for a genuinely fresh node, never one being restored from a saved
+  // workflow. `setupNode` runs from `onNodeCreated`, which fires for BOTH a
+  // brand-new node AND a restored one (this file's top doc comment); the
+  // reliable way to tell them apart at this point is `node._ctrlConfiguring`
+  // -- `onConfigure`'s wrapper below sets that flag SYNCHRONOUSLY, before
+  // queuing its own `loadMods().then(restoreNode)`, and litegraph's own
+  // node-deserialize loop (construct -> configure, for every node) runs
+  // fully synchronously with no `await` in between. So for a node being
+  // loaded from a workflow, `onConfigure` has already set the flag by the
+  // time this microtask-deferred `setupNode` call actually runs, even though
+  // `onNodeCreated` fired first. A truly fresh, user-placed node never has
+  // `onConfigure` invoked at all, so the flag stays unset here.
+  //
+  // This is the conservative pick between the two options the task called
+  // out: colour is applied on node CREATION only, never on the restore
+  // path, matching this file's existing "never resize/rewrite on load" rule
+  // for `restoreNode` (see its own doc comment) -- deliberately avoided
+  // relying on any assumption about whether a plain `node.bgcolor =`
+  // mutation during `onConfigure` would flag a clean loaded workflow as
+  // modified, since that can only be confirmed in a live ComfyUI browser
+  // session, not from this headless repo.
+  if (!node._ctrlConfiguring) {
+    mods.render.applyNodeChrome(node);
+  }
+
   // Without this, widget Y depends on slot bounds which depend on widget Y
   // -- the node walks taller every frame (ComfyUI-Pixaroma's
   // `js/sliders/index.js` doc comment; same trap here since our outputs are
