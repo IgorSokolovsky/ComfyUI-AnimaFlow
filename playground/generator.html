@@ -281,6 +281,13 @@
     padding: 4px 6px; outline: none;
   }
   .field input:focus, .field select:focus { border-color: var(--accent-deep); }
+  .driven {
+    flex: 1; min-width: 0; font-family: var(--mono); font-size: 10.5px; cursor: pointer;
+    color: var(--accent); background: rgba(45,212,191,.07); padding: 4px 6px; border-radius: 5px;
+    border: 1px solid var(--accent-deep); border-style: dashed;
+  }
+  .driven b { color: var(--ink); font-weight: 600; }
+  .driven:hover { background: rgba(45,212,191,.14); }
   .sublab {
     font-family: var(--mono); font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
     color: var(--ink-faint); margin: 15px 0 8px; padding-top: 12px;
@@ -352,8 +359,10 @@
   <div class="note">
     Behavioural reference for the two nodes in <code>AnimaFlow/Anima</code>. Everything here is
     <b>clickable</b> — toggle stages and watch the three image outputs re-resolve, flip
-    <code>use_internal_loaders</code> and watch the resource sockets go dead, add detailer blocks and
-    watch their <code>SEGS</code> sockets appear, hover the compare to wipe. Same palette as <code>playground/theme.html</code>; nothing here fetches anything.
+    <code>use_internal_loaders</code> and watch the resource sockets go dead, wire a sampler field and
+    watch its overlay row flip to <b>driven by wire</b>, add detailer blocks and watch their
+    <code>SEGS</code> <i>override</i> sockets appear, hover the compare to wipe. Same palette as
+    <code>playground/theme.html</code>; nothing here fetches anything.
   </div>
   <div class="live">
     <b>Mockup, not the node.</b> The images are procedural SVGs standing in for real stage output —
@@ -379,13 +388,38 @@
       <b>single tabbed overlay</b> alternative. Click any ⚙ to judge it. The tab strip carries a dot
       per enabled stage, so "what's actually on" is readable without opening anything.
     </div>
+    <div class="q settled">
+      <span class="tag">Settled &middot; sampler values, wired wins per field</span>
+      No <code>use_internal_sampler</code> flag. Each of <code>seed</code> / <code>steps</code> /
+      <code>cfg</code> / <code>sampler_name</code> / <code>scheduler</code> is its own socket; wired
+      drives, unwired falls back to the overlay. Toggle wires in the Sampler tab and watch the fields
+      flip to <b>driven by wire</b> — the badge exists because an editable number that's silently
+      ignored is the one real risk of this pattern.
+    </div>
+    <div class="q settled">
+      <span class="tag">Settled &middot; the detailer detects for itself</span>
+      An earlier draft had this node take <code>SEGS</code> as its <i>only</i> way in. That was wrong
+      twice: <code>DetailerForEach</code> is an Impact node, so the stage needs Impact <b>either
+      way</b> — and <code>SAM3_Detect</code> is a ComfyUI <b>built-in</b>, so owning detection costs
+      no dependency at all. Pushing it out bought nothing and cost you a hand-wired detector chain
+      per block, in the one node whose point is not wiring a pipeline by hand. Now:
+      <code>detect_prompt</code> per block, with <code>segs_N</code> as an optional <b>override</b>.
+    </div>
     <div class="q">
-      <span class="tag">Open &middot; MAX_DETAILER_PASSES</span>
+      <span class="tag">Open &middot; the LORA_STACK producer</span>
+      <b>Nothing in AnimaFlow emits one.</b> The Loader Panel is unet/vae/clip only, and upstream's
+      producer was in the deleted line. Decided: a <code>lora</code> row kind in the Loader Panel,
+      all lora rows combining into one shared <code>LORA_STACK</code> — which is the one row kind
+      that breaks that panel's one-row-one-slot rule. Specified in
+      <code>control-panel-design.md §3b</code>; the Control Panel mockup has no lora row yet.
+    </div>
+    <div class="q settled">
+      <span class="tag">Settled &middot; MAX_DETAILER_PASSES = 4</span>
       Upstream is <b>N addable blocks</b>, not two — <code>face</code>/<code>eye</code> built in,
       <code>custom_N</code> beyond them, all renameable and reorderable, effectively uncapped. The
       Detailer tab mirrors that, with each block owning a <code>SEGS</code> socket in place of
-      upstream's per-block <code>detect_prompt</code>. Capped at <b>4</b> here because every pass is
-      a full re-sample — the number is the open question, and it can grow later, never shrink.
+      upstream's per-block <code>detect_prompt</code>. Capped at <b>4</b> — every pass is a full
+      re-sample. The cap may grow later, never shrink.
     </div>
     <div class="q settled">
       <span class="tag">Settled &middot; pass-through on a disabled stage</span>
@@ -459,19 +493,23 @@ const PX = { base: 1024, highres: 1536, mid: 1536, upscale: 2048, final: 2048 };
 // ───────────────────────────────────────────────────────────────────────────
 const state = {
   internal: false,            // use_internal_loaders
-  wired: { model: true, clip: true, vae: true, latent: true },
+  wired: { model: true, clip: true, vae: true, latent: true, lora_stack: false },
+  // Per-field, wired wins (design doc s3a). No use_internal_sampler flag: the
+  // five are independent, and the realistic setup wires only the seed.
+  sampWired: { seed: true, steps: false, cfg: false, sampler_name: false, scheduler: false },
   // Detailer BLOCKS, mirroring upstream: `face`/`eye` are built-in and cannot
-  // be removed, anything past them is an addable custom block. Each block owns
-  // one SEGS socket, so "which detector feeds this pass" replaces upstream's
-  // per-block detect_prompt (design doc s6a). MAX is ours, not upstream's --
-  // upstream's name generator loops to 1000.
+  // be removed, anything past them is an addable custom block. Each block
+  // DETECTS FOR ITSELF from its own detect_prompt (SAM3_Detect is a ComfyUI
+  // built-in, so this is free) -- `wired` here means an optional SEGS OVERRIDE
+  // is connected, replacing that block's detection. Design doc s6a. MAX is
+  // ours, not upstream's -- upstream's name generator loops to 1000.
   blocks: [
-    { id: "face", label: "Face", builtin: true, on: true, wired: true, feather: 10 },
-    { id: "eye", label: "Eye", builtin: true, on: true, wired: true, feather: 20 },
+    { id: "face", label: "Face", builtin: true, on: true, wired: false, prompt: "face", feather: 10 },
+    { id: "eye", label: "Eye", builtin: true, on: true, wired: false, prompt: "eye", feather: 20 },
   ],
   block: "face",
   stages: { highres: true, detailer: true, upscale: true, postprocess: false },
-  have: { spectrum: true, usdu: true },   // soft-import presence
+  have: { spectrum: true, usdu: true, impact: true },   // soft-import presence
   modGuidance: true,
   sampler: { steps: 32, cfg: 5.0, name: "er_sde", sched: "simple", shift: 3.0, seed: -1 },
   preview: { on: true, a: "base", b: "final", x: 50 },
@@ -492,7 +530,7 @@ function resolveOutputs() {
   const st = state.stages;
   const afterFirst = "base";
   const afterHighres = st.highres ? "highres" : afterFirst;
-  const detailerLive = st.detailer && state.blocks.some((b) => b.on && b.wired);
+  const detailerLive = st.detailer && state.have.impact && state.blocks.some((b) => b.on);
   const afterDetailer = detailerLive ? "mid" : afterHighres;
   const afterUpscale = st.upscale && state.have.usdu ? "upscale" : afterDetailer;
   const afterPost = st.postprocess ? afterUpscale : afterUpscale;   // fit only resizes
@@ -540,10 +578,11 @@ function resolverHtml() {
 const STAGES = [
   { k: "highres", n: "Highres", s: () => `${1.5}x  denoise .25  ${state.stages.highres ? "20 steps" : ""}` },
   { k: "detailer", n: "Detailer", s: () => {
-      const live = state.blocks.filter((b) => b.on && b.wired);
-      if (!live.length) return state.blocks.some((b) => b.on) ? "no SEGS wired" : "no blocks on";
-      return `${live.map((b) => b.label).join(" > ")}`;
-    }, dep: () => !state.blocks.some((b) => b.on && b.wired) },
+      if (!state.have.impact) return "Impact Pack not installed";
+      const live = state.blocks.filter((b) => b.on);
+      if (!live.length) return "no blocks on";
+      return live.map((b) => b.label + (b.wired ? "*" : "")).join(" > ");
+    }, dep: () => !state.have.impact || !state.blocks.some((b) => b.on) },
   { k: "upscale", n: "Upscale", s: () => state.have.usdu ? "USDU 2x  seam-fix" : "USDU not installed",
     dep: () => !state.have.usdu },
   { k: "postprocess", n: "Postprocess", s: () => "fit 2048 long edge" },
@@ -597,17 +636,33 @@ function genHtml() {
       <div class="row"><span class="nm">clip_type</span><span class="val">qwen_image</span></div>
       <div class="row"><span class="nm">vae_name</span><span class="val">qwen_image_vae</span></div>
     ` : ""}
+    <div class="sockgrp">
+      ${sock("lora_stack", "LORA_STACK", { optional: true, wired: state.wired.lora_stack,
+        title: "A resource -- applied to model+clip. Nothing in the pack emits one yet (design doc s3b)." })}
+      ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent,
+        title: "Size and batch; else from settings.latent" })}
+    </div>
 
     <div class="sec">sampler <span class="cnt">&middot; first pass</span>
       <span class="gear" data-act="dlg" data-t="sampler">&#9881;</span></div>
+    <div class="sockgrp">
+      ${SAMP_FIELDS.map(([k, ty]) => sock(k, ty, {
+        optional: true, wired: state.sampWired[k],
+        title: state.sampWired[k] ? "Wired -- this wire drives the value" : "Unwired -- the overlay value is used",
+      })).join("")}
+    </div>
     <div class="row click" data-act="dlg" data-t="sampler">
-      <span class="nm">${state.sampler.name} / ${state.sampler.sched}</span>
-      <span class="val">${state.sampler.steps} steps &middot; cfg ${state.sampler.cfg.toFixed(1)}</span>
+      <span class="nm">${state.sampWired.sampler_name ? "&#8722;" : state.sampler.name} /
+        ${state.sampWired.scheduler ? "&#8722;" : state.sampler.sched}</span>
+      <span class="val">${state.sampWired.steps ? "&#8722;" : state.sampler.steps} steps &middot;
+        cfg ${state.sampWired.cfg ? "&#8722;" : state.sampler.cfg.toFixed(1)}</span>
     </div>
     <div class="row click" data-act="dlg" data-t="sampler">
       <span class="nm">seed</span>
-      <span class="val">${state.sampler.seed === -1 ? "-1" : state.sampler.seed}
-        <span style="color:var(--ink-faint)">random</span></span>
+      <span class="val">${state.sampWired.seed
+        ? `<span style="color:var(--accent)">from wire</span>`
+        : `${state.sampler.seed === -1 ? "-1" : state.sampler.seed}
+           <span style="color:var(--ink-faint)">random</span>`}</span>
     </div>
     <div class="row click" data-act="dlg" data-t="mod">
       <span class="nm">mod guidance</span>
@@ -628,14 +683,14 @@ function genHtml() {
       </div>`;
     }).join("")}
 
-    <div class="sec">detail targets</div>
+    <div class="sec">detailer <span class="cnt">&middot; SEGS override per block</span></div>
     <div class="sockgrp">
       ${state.blocks.map((b, i) => sock(`segs_${i + 1}`, "SEGS", {
         optional: true, wired: b.wired,
-        title: `${b.label}${b.on ? "" : " (block off)"}`,
+        title: `${b.label} override -- ${b.wired
+          ? "wired, so this block skips SAM3_Detect and uses your regions"
+          : `unwired, so this block detects "${b.prompt}" itself`}${b.on ? "" : " (block is off)"}`,
       })).join("")}
-      ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent })}
-      ${sock("lora_stack", "LORA_STACK", { optional: true })}
     </div>
 
     <div class="sec">outputs</div>
@@ -707,11 +762,28 @@ function prevHtml() {
 // loops to custom_1000). Each pass is a full re-sample, so a cap is a kindness.
 const MAX_BLOCKS = 4;
 
+// COMBO for sampler_name/scheduler is settled and live-verified --
+// control-panel-design.md s5. So a Control Panel row drives all five, not
+// just the numerics.
+const SAMP_FIELDS = [
+  ["seed", "INT"], ["steps", "INT"], ["cfg", "FLOAT"],
+  ["sampler_name", "COMBO"], ["scheduler", "COMBO"],
+];
+
 const TABS = [
   ["sampler", "Sampler"], ["mod", "Mod guidance"], ["highres", "Highres"],
   ["detailer", "Detailer"], ["upscale", "Upscale"], ["postprocess", "Postprocess"],
   ["save", "Save"], ["preview", "Preview"],
 ];
+
+// A field whose value comes from a wire. The socket's connected state is the
+// single source of truth -- design doc s3a: two plausible sources with no
+// indication of which is live is the entire risk of wired-wins.
+function fWired(label, name) {
+  return `<div class="field"><span>${label}</span>
+    <span class="driven" data-act="unwire" data-k="${name}" title="Click to pretend the wire is removed">
+      driven by wire &middot; <b>${name}</b></span></div>`;
+}
 
 function f(label, value, opts) {
   if (opts) {
@@ -727,20 +799,40 @@ const SCHEDS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponentia
 function dlgBody(tab) {
   const s = state.sampler;
   if (tab === "sampler") {
-    return `<div class="dnote">The first pass. Every later stage inherits these unless its own
-      <b>inherit_sampler_settings</b> is off. <code>shift 3.0</code> is Anima's recommended default
-      and is always applied.</div>
+    const w = state.sampWired;
+    const unwired = SAMP_FIELDS.filter(([k]) => !w[k]).map(([k]) => k);
+    return `<div class="dnote"><b>Wired wins, per field.</b> No <code>use_internal_sampler</code>
+      flag -- each socket that's connected drives its own field and the rest come from here. The
+      five are independent, so wiring only the seed is the normal case.</div>
+      <div class="passtabs">
+        ${SAMP_FIELDS.map(([k]) => `<button class="${w[k] ? "on" : ""}" data-act="wire" data-k="${k}"
+          title="Toggle a wire on ${k}">${k}</button>`).join("")}
+      </div>
       <div class="grid2">
-        ${f("steps", s.steps)}${f("cfg", s.cfg)}
-        ${f("sampler_name", s.name, SAMPLERS)}${f("scheduler", s.sched, SCHEDS)}
+        ${w.steps ? fWired("steps", "steps") : f("steps", s.steps)}
+        ${w.cfg ? fWired("cfg", "cfg") : f("cfg", s.cfg)}
+        ${w.sampler_name ? fWired("sampler_name", "sampler_name") : f("sampler_name", s.name, SAMPLERS)}
+        ${w.scheduler ? fWired("scheduler", "scheduler") : f("scheduler", s.sched, SCHEDS)}
         ${f("denoise", 1.0)}${f("shift", s.shift)}
       </div>
       <div class="sublab">seed</div>
-      <div class="grid2">${f("seed", "-1")}${f("after generate", "randomize",
-        ["fixed", "increment", "decrement", "randomize"])}</div>
-      <div class="dnote" style="margin:13px 0 0">Wire the Control Panel's seed row here instead and
-      this field is ignored -- that's the setup that gets you <code>-1</code> display and the
-      reuse-last-seed button.</div>`;
+      <div class="grid2">
+        ${w.seed ? fWired("seed", "seed") : f("seed", "-1")}
+        ${w.seed ? "" : f("after generate", "randomize", ["fixed", "increment", "decrement", "randomize"])}
+      </div>
+      <div class="dnote" style="margin:13px 0 0">${w.seed
+        ? `Seed comes from the Control Panel row -- which is where <code>-1</code> display, the
+           <code>&#8634;</code> reuse-last-seed button, and after-generate live. This node doesn't
+           duplicate any of it.`
+        : `Wire a Control Panel seed row to the <code>seed</code> socket to get <code>-1</code>
+           display, the reuse-last-seed button, and after-generate. Unwired, this field is just a
+           number.`}</div>
+      ${unwired.length === 0 ? `<div class="missing" style="margin:13px 0 0">
+        <span class="k">all five wired</span><span>Nothing on this tab is live -- every value comes
+        from the graph. That's legitimate, but it's worth being able to see at a glance.</span></div>` : ""}
+      <div class="dnote" style="margin:11px 0 0"><code>shift 3.0</code> is Anima's recommended
+      default and is always applied. Later stages inherit these unless their own
+      <b>inherit_sampler_settings</b> is off.</div>`;
   }
   if (tab === "mod") {
     if (!state.have.spectrum) {
@@ -778,36 +870,59 @@ function dlgBody(tab) {
         ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "simple", SCHEDS)}</div>`;
   }
   if (tab === "detailer") {
+    if (!state.have.impact) {
+      return `<div class="missing"><span class="k">ComfyUI-Impact-Pack</span>
+        <span>not installed -- <code>DetailerForEach</code> is an Impact node, so the whole detailer
+        stage is unavailable. This is true however the regions arrive.</span>
+        <button data-act="have" data-k="impact">pretend it's installed</button></div>
+        <div class="dnote">Detection itself is free -- <code>SAM3_Detect</code> is a ComfyUI built-in.
+        It's the refine step that needs Impact.</div>`;
+    }
     const b = state.blocks.find((x) => x.id === state.block) || state.blocks[0];
     const i = state.blocks.indexOf(b);
     const atMax = state.blocks.length >= MAX_BLOCKS;
     return `<div class="dnote">Upstream ships <b>N blocks</b>, not two: <code>face</code> and
       <code>eye</code> are built in, <code>+ Add block</code> makes more, every tab renames and
-      reorders. We keep that shape -- but each block owns a <code>SEGS</code> socket instead of a
-      <code>detect_prompt</code>, so <i>your</i> detector decides what a block operates on.</div>
+      reorders. Each block <b>detects for itself</b> from its own <code>detect_prompt</code> —
+      <code>SAM3_Detect</code> is a ComfyUI built-in, so that costs nothing.</div>
       <div class="passtabs">
         ${state.blocks.map((x, ix) => `<button class="${x.id === b.id ? "on" : ""}"
           data-act="block" data-v="${x.id}" title="segs_${ix + 1}${x.builtin ? " -- built in" : ""}">
-          ${esc(x.label)}${x.on ? "" : " (off)"}</button>`).join("")}
-        <button data-act="addblock" style="margin-left:auto" ${atMax ? 'disabled style="margin-left:auto;opacity:.4"' : ""}
-          title="${atMax ? "MAX_DETAILER_PASSES reached" : "Adds a block and reveals its SEGS socket"}">+ Add block</button>
+          ${esc(x.label)}${x.on ? "" : " (off)"}${x.wired ? " *" : ""}</button>`).join("")}
+        <button data-act="addblock" ${atMax ? 'disabled style="margin-left:auto;opacity:.4"' : 'style="margin-left:auto"'}
+          title="${atMax ? "MAX_DETAILER_PASSES reached" : "Adds a block and reveals its SEGS override socket"}">+ Add block</button>
       </div>
       <div class="passtabs">
         <button data-act="mvblock" data-v="-1" ${i === 0 ? 'style="opacity:.4"' : ""}
           title="Execution order -- upstream's &lt; &gt; buttons mutate detailer.order">&lt;</button>
         <button data-act="mvblock" data-v="1" ${i === state.blocks.length - 1 ? 'style="opacity:.4"' : ""}>&gt;</button>
         <button data-act="onblock" title="Enable this block">${b.on ? "on" : "off"}</button>
-        <button data-act="wireblock" title="Pretend a SEGS is wired to this block's socket">
-          segs_${i + 1} ${b.wired ? "wired" : "unwired"}</button>
         ${b.builtin
           ? `<button disabled style="opacity:.4" title="face/eye are built in -- upstream's removeTarget refuses a non-custom name">can't remove</button>`
           : `<button data-act="delblock">remove</button>`}
       </div>
-      <div class="field" style="margin-bottom:12px"><span>label</span>
-        <input value="${esc(b.label)}" data-act="lbl" data-live="1"></div>
-      ${!b.wired ? `<div class="missing"><span class="k">segs_${i + 1} unwired</span>
-        <span>This block is inert until a detector feeds it. Upstream never has this state -- it
-        detects for itself.</span></div>` : ""}
+      <div class="grid2" style="margin-bottom:12px">
+        <div class="field"><span>label</span>
+          <input value="${esc(b.label)}" data-act="lbl" data-live="1"></div>
+        ${b.wired
+          ? fWired("detect_prompt", `segs_${i + 1}`)
+          : `<div class="field"><span>detect_prompt</span>
+              <input value="${esc(b.prompt)}" data-act="dp" data-live="1"></div>`}
+      </div>
+      <div class="sublab">detection &middot; this block</div>
+      ${b.wired
+        ? `<div class="dnote"><b>Overridden.</b> <code>segs_${i + 1}</code> is wired, so this block
+            skips <code>SAM3_Detect</code> entirely and refines the regions your detector produced.
+            The refine settings below still apply.
+            <div style="margin-top:8px"><button class="btn ghost" data-act="wireblock"
+              style="margin:0">unwire segs_${i + 1}</button></div></div>`
+        : `<div class="grid2">${f("detect_count", 1)}${f("threshold", 0.52)}</div>
+           <div class="dnote" style="margin:11px 0 0">Detecting <b>${esc(b.prompt || "(empty)")}</b>
+            internally. Wire <code>segs_${i + 1}</code> to override this with your own detector —
+            Impact's Ultralytics bboxes, a SAM chain, a hand-built mask.
+            <div style="margin-top:8px"><button class="btn ghost" data-act="wireblock"
+              style="margin:0">wire segs_${i + 1} (override)</button></div></div>`}
+      <div class="sublab">refine &middot; applies either way</div>
       <div class="grid2">
         ${f("denoise", 0.33)}${f("feather", 5)}
         ${f("guide_size", 1024)}${f("max_size", 2048)}
@@ -963,7 +1078,7 @@ document.addEventListener("click", (e) => {
     let n = 1;
     while (state.blocks.some((b) => b.id === "custom_" + n)) n++;
     const b = { id: "custom_" + n, label: "Detailer Block " + n, builtin: false,
-                on: true, wired: false, feather: 10 };
+                on: true, wired: false, prompt: "", feather: 10 };
     state.blocks.push(b);
     state.block = b.id;
   } else if (act === "delblock") {
@@ -981,7 +1096,10 @@ document.addEventListener("click", (e) => {
     const b = state.blocks.find((x) => x.id === state.block);
     if (!b) return;
     if (act === "onblock") b.on = !b.on; else b.wired = !b.wired;
-  } else if (act === "have") state.have[t.dataset.k] = true;
+  } else if (act === "wire") state.sampWired[t.dataset.k] = !state.sampWired[t.dataset.k];
+  else if (act === "unwire") state.sampWired[t.dataset.k] = false;
+  else if (act === "lorastack") state.wired.lora_stack = !state.wired.lora_stack;
+  else if (act === "have") state.have[t.dataset.k] = true;
   else return;
   paint();
 });
@@ -989,11 +1107,11 @@ document.addEventListener("click", (e) => {
 // Renaming a block is UI metadata only -- runtime dispatch uses the stable id
 // plus block order, exactly as upstream's tab labels do.
 document.addEventListener("input", (e) => {
-  const t = e.target.closest('[data-act="lbl"]');
+  const t = e.target.closest('[data-act="lbl"], [data-act="dp"]');
   if (!t) return;
   const b = state.blocks.find((x) => x.id === state.block);
   if (!b) return;
-  b.label = t.value;
+  if (t.dataset.act === "lbl") b.label = t.value; else b.prompt = t.value;
   document.getElementById("gen").innerHTML = genHtml();   // repaint the node, keep focus in the input
 });
 

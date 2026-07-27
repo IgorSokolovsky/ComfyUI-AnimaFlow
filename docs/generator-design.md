@@ -40,6 +40,9 @@ BACKLOG should be updated.
   we have no better numbers. See §9 for the three the old port got wrong.
 - **The hover-wipe compare** (`web/js/aio/generator_panel_runtime.js:788-829`) — two absolutely
   positioned layers plus a divider, driven by one CSS var from cursor position. See §7.
+- **Per-block detection via `detect_prompt`** — `SAM3_Detect` → `MaskToSEGS` → `DetailerForEach`
+  (`easyuse_anima/image/sam3.py:46-121`). `SAM3_Detect` is a ComfyUI built-in, so this costs no
+  dependency beyond the Impact that `DetailerForEach` already requires. See §6a.
 
 **Deliberately NOT copied:**
 
@@ -47,10 +50,9 @@ BACKLOG should be updated.
   prompt data + resource *names* into a custom dict socket, then loads MODEL/CLIP/VAE inside
   the generator. Plain `MODEL`/`CLIP`/`VAE` sockets are better: they compose with every other
   node in ComfyUI, including our own Loader Panel. See §3.
-- **SAM3-specific detection, and the per-block `detect_prompt` that depends on it.** Upstream
-  hardcodes a SAM3 → Impact `DetailerForEach` path (`nodes/impact_detailer_nodes.py:48`). We take
-  generic `SEGS` sockets instead, which is detector-agnostic and means *we* never import Impact at
-  all. Upstream's N-blocks UX survives this; see §6a for how.
+- *(Nothing here about detection. An earlier draft listed upstream's SAM3 detection as
+  not-copied; that was reversed — we adopt the per-block `detect_prompt` and add an optional `SEGS`
+  override on top. See §6a.)*
 - **~150 of upstream's ~250 settings** — everything behind a dependency we're not taking. See §4.
 - **Their sampler-mode dispatch.** Three modes (`comfy_ksampler` /
   `spectrum_mod_guidance_advanced` / `spectrum_spd_speed`) is why `aio/sampling.py` is 15k of
@@ -123,7 +125,7 @@ reasoning).
 |---|---|---|
 | **Spectrum-KSampler** | `AnimaModGuidance` only | **Take it** |
 | **UltimateSDUpscale** | `UltimateSDUpscale` | Conditional — the upscale stage |
-| **Impact-Pack** | nothing directly | Conditional — via a `SEGS` wire only |
+| **Impact-Pack** | `DetailerForEach`, `MaskToSEGS` | Conditional — **required by the detailer stage** |
 | KJNodes | — | Skip |
 | Anima-DAVE | — | Skip |
 | Anima Safe PAG | — | Skip |
@@ -178,6 +180,10 @@ collide on its rebuild.
 
 ### Inputs
 
+Grouped as the node body groups them — **resources**, **sampler**, **detailer passes** — because a
+socket's neighbours are how a user works out what it is for. (An earlier draft filed `latent` and
+`lora_stack` under a "detail targets" heading with the `SEGS` inputs, which made all three unreadable.)
+
 | | Name | Type | Notes |
 |---|---|---|---|
 | required | `positive` | `CONDITIONING` | |
@@ -186,13 +192,56 @@ collide on its rebuild.
 | required | `use_internal_loaders` | `BOOLEAN` | §3 |
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
-| optional | `latent` | `LATENT` | wire the Control Panel's empty-latent row; else size comes from settings |
-| optional | `segs_1` … `segs_N` | `SEGS` | one per detailer pass, revealed as blocks are added; stage is inert with none (§6a) |
-| optional | `lora_stack` | `LORA_STACK` | |
+| optional | `lora_stack` | `LORA_STACK` | a resource, not a detail target — applied to `model`+`clip` before conditioning. §5b |
+| optional | `latent` | `LATENT` | size and batch; else from `settings.latent` |
+| optional | `seed` / `steps` / `cfg` | `INT`/`INT`/`FLOAT` | §5a — wired wins, per field |
+| optional | `sampler_name` / `scheduler` | `COMBO` | §5a |
+| optional | `segs_1` … `segs_N` | `SEGS` | one per detailer block, revealed as blocks are added. **Override** — wired replaces that block's internal detection (§6a) |
 | hidden | `prompt` / `extra_pnginfo` / `unique_id` | `PROMPT`/`EXTRA_PNGINFO`/`UNIQUE_ID` | §9 — non-negotiable |
 
 Prompt text is **not** an input. Conditioning comes in already encoded, so prompt editing stays
 upstream in the Rule Builder / Prompt Studio line. Upstream made the same call and it is right.
+
+### 5a. Sampler values — five sockets, wired wins, no flag
+
+`seed`, `steps`, `cfg`, `sampler_name` and `scheduler` are each an `optional` socket. **If a socket
+is wired the wire drives that field; if it isn't, the `generation_settings.sampler` value is used.**
+Per field, independently — no `use_internal_sampler` flag.
+
+Deliberately *not* the loaders' flag pattern, and the difference is justified: the five are
+independent, and the realistic setup wires only `seed` from a Control Panel row while steps and cfg
+stay internal. A global flag forces all-or-nothing on values that have no reason to move together.
+The loaders keep their flag because `MODEL`/`CLIP`/`VAE` genuinely do travel together — they are one
+decision about which checkpoint you are running.
+
+**The overlay must show a wired field as driven by the wire**, not as an editable number that is
+silently ignored. That is the whole risk of wired-wins: two plausible sources and no indication of
+which is live. The socket's connected state is the single source of truth for that badge.
+
+`sampler_name` / `scheduler` arrive as **`COMBO`** — settled and verified live on 2026-07-27
+(`control-panel-design.md` §5): a Control Panel combo row sets `output.type = "COMBO"` and wires to a
+KSampler correctly. So the panel can drive all five, not just the numerics.
+
+> **Legacy-litegraph caveat, inherited from the Control Panel** (`control-panel-design.md` §5): on
+> the target renderer a plain declared widget is a canvas widget, not a socket. Declaring these five
+> as socket-only `optional` inputs (`forceInput`) sidesteps the "right-click → Convert widget to
+> input" dance entirely — their internal counterparts live in the settings JSON, not as widgets, so
+> there is nothing to convert and no widget-order exposure (`BACKLOG.md` §4).
+
+### 5b. `lora_stack` — and the producer we don't have
+
+A `LORA_STACK` is a list of `(name, strength_model, strength_clip)`, applied through core
+`LoraLoader` before conditioning (`aio/model_preparation.py:219-241`). It is a **resource** — it
+mutates `model` and `clip` — so it sits with them, not with the detailer inputs.
+
+**Nothing in AnimaFlow currently emits one.** The Loader Panel is `unet`/`vae`/`clip` only
+(`js/controls/rows.mjs`'s `LOADER_CATALOG`), and upstream's producer (`EasyUseAnimaLoraPreset`,
+`nodes/lora_nodes.py:22`) is in the deleted line and was never ported.
+
+Decided 2026-07-27: **add a `lora` row kind to the Loader Panel** — a `lora_name` picker plus
+model/clip strength in its gear, with every lora row combining into one shared `LORA_STACK` output.
+That is a **Controls-line change**, specified in `control-panel-design.md` §3b, not built here. Until
+it lands this socket is only drivable by a third-party pack's `LORA_STACK`.
 
 `AnimaModGuidance` needs `clip` and the raw quality-tag strings, not just conditioning — so the
 quality tags live in `generation_settings.mod_guidance`, defaulting to upstream's
@@ -230,50 +279,61 @@ Order is upstream's (`aio/generation_pipeline.py:10-17`), each stage independent
    decode. Size from the `latent` socket if wired, else `settings.latent`.
 2. **Highres** — latent upscale by `scale_by` (default 1.5), resample, re-sample at
    `denoise` 0.25. Inherits the first-pass sampler unless `inherit_sampler_settings` is off.
-3. **Detailer** — **N passes, one per wired `SEGS`.** Each pass calls Impact's `DetailerForEach`
-   with its own `SEGS` and its own settings block (`nodes/impact_detailer_nodes.py:48,228`). The
-   user's detector node produces the regions, so we never import Impact and never care which
-   detector it was. Defaults from upstream's **face** block, the conservative one
-   (`generation_defaults.py:292-357`). See §6a — this is a closer port than it first looks.
+3. **Detailer** — **N blocks, each detecting for itself.** Per block:
+   `SAM3_Detect` (built-in, driven by the block's `detect_prompt`) → `MaskToSEGS` →
+   `DetailerForEach`, or, when that block's `segs_N` socket is wired, straight to `DetailerForEach`
+   with your regions. Defaults from upstream's **face** block, the conservative one
+   (`generation_defaults.py:292-357`). Requires Impact. See §6a.
 
-### 6a. Detailer — upstream is N user-addable blocks, and `detect_prompt` is the hinge
+### 6a. Detailer — internal detection, with a `SEGS` override
 
-**Upstream is not two tabs.** `face` and `eye` are two *built-in* blocks; beyond them the dialog's
-`+ Add block` creates unbounded `custom_1`, `custom_2`, … each inheriting the **face** defaults and
-enabled on creation (`web/js/aio/detailer_settings_dialog.js:357-368`,
+**Upstream is N user-addable blocks.** `face` and `eye` are two *built-in* blocks; beyond them the
+dialog's `+ Add block` creates unbounded `custom_1`, `custom_2`, … each inheriting the face defaults
+and enabled on creation (`web/js/aio/detailer_settings_dialog.js:357-368`,
 `easyuse_anima_aio.js:3331-3341` — the name generator loops to 1000, so there is no practical cap).
-Every tab is **renameable** and **reorderable** via `<` `>` buttons that mutate `detailer.order`
-(`:320-337`). Custom blocks can be removed; `face`/`eye` cannot (`removeTarget` refuses a
-non-custom name, `:342-344`). The backend mirrors this exactly: `_is_aio_detailer_target_name`
-accepts `face`, `eye`, or `^custom_\d+$` (`aio/generation_normalization.py:97-101`).
+Every tab **renames** and **reorders** via `<` `>` buttons that mutate `detailer.order` (`:320-337`).
+Custom blocks can be removed; `face`/`eye` cannot (`:342-344`). The backend mirrors this:
+`_is_aio_detailer_target_name` accepts `face`, `eye`, or `^custom_\d+$`
+(`aio/generation_normalization.py:97-101`).
 
 So a **Face / Eye / Hands** tab strip is exactly what upstream looks like in use — "Hands" being an
 added block, renamed, with its `detect_prompt` set to `hands`.
 
-**`detect_prompt` is the hinge.** Each block carries its own free-text `detect_prompt`
-(`generation_defaults.py:295`), so *the block is the detection request*. That is what makes N tabs
-coherent: a tab named Hands asks SAM3 for hands and then refines what came back, all inside one
-block. The tab count was never the mechanism.
+**Each block owns its detection.** The per-block chain is
+`SAM3_Detect` → `MaskToSEGS` → `DetailerForEach` (`easyuse_anima/image/sam3.py:46-121`), driven by
+the block's free-text `detect_prompt` (`generation_defaults.py:295`) plus `detect_count` and
+`threshold`. *The block is the detection request*, which is what makes N blocks coherent: a block
+named Hands asks for hands and refines what came back, all in one place.
 
-**What changes for us is where the request lives, not how many there are.** Taking `SEGS` as input
-moves `detect_prompt` out of the node and onto a wire — your detector decides what gets found. The
-faithful analogue of upstream's N blocks is therefore **N passes, each with its own `SEGS` socket
-and its own settings block**, where the semantics ("this pass is hands") come from which detector
-you wired rather than from a text field we own. One pass per socket, executed in block order.
+**We keep that, internal.** An earlier draft of this section had the node take `SEGS` as its only
+input and let the user's own detector produce regions. That was wrong on both counts it claimed:
 
-That maps 1:1 onto upstream's model and keeps every per-type setting that matters — the feather and
-denoise differences between face and eye are real, which is why upstream ships different numbers
-(`noise_mask_feather` 10 face / 20 eye, `:321`, `:387`).
+- It did **not** avoid Impact. `DetailerForEach` is an Impact node, so the stage needs Impact either
+  way; SEGS-only avoided just `MaskToSEGS`.
+- It did **not** come for free. Detection via `SAM3_Detect` is a **ComfyUI built-in** — zero
+  additional dependency — so pushing it out of the node bought nothing and cost the user a
+  hand-wired detector chain per block, in the one node whose whole point is not having to wire a
+  pipeline by hand.
 
-**We already have the machinery for the dynamic-socket part.** The Control Panel declares a fixed
-`MAX_ROWS` worth of slots and shows only as many as there are rows, narrowing each one's visible
-type (`control-panel-design.md` §1, §5). Detailer passes are the same pattern applied to *inputs*:
-declare `MAX_DETAILER_PASSES` optional `SEGS` inputs, reveal only as many as there are blocks. See
-the frontend skill's `ContainsAnyDict` note for the backend half.
+So: **`detect_prompt` per block, detection internal, exactly like upstream.**
 
-**Open (§12):** the value of `MAX_DETAILER_PASSES`. Upstream is effectively unbounded, but each
-pass is a full re-sample — 4 is already a lot of compute, and the constant can grow later, never
-shrink.
+**And a `segs_N` socket per block that overrides it when wired.** Same shape as the resources flag
+(§3) and the sampler fields (§5a) — internal by default, wire to override — which is now the house
+pattern for this node three times over. Wire Impact's Ultralytics bbox detectors, a custom SAM
+chain, or a hand-built mask, and that block uses your regions and skips `SAM3_Detect` entirely.
+Unwired blocks detect for themselves. That is strictly more capable than either design alone, for
+one branch per block.
+
+Per-block settings matter and must not be collapsed: upstream ships `noise_mask_feather` **10 for
+face, 20 for eye** (`:321`, `:387`), and different `denoise` per target. That difference is the
+entire argument for blocks over one global pass.
+
+**`MAX_DETAILER_PASSES = 4`** (settled 2026-07-27). Upstream is effectively uncapped, but every pass
+is a full re-sample. May grow later, never shrink. The dynamic-socket half reuses the Control Panel's
+mechanism — declare a fixed maximum and reveal only as many as there are blocks
+(`control-panel-design.md` §1, §5); see the frontend skill's `ContainsAnyDict` note for the backend
+half.
+
 4. **Upscale** — USDU only, with seam-fix and tile controls exposed (upstream's `seam_fix_mode`
    was hardcoded to `"None"` in the old port, making seam repair unreachable; `29ac56d` fixed
    that and the work is recoverable from git). `mode_type` (Linear/Chess/None) is tile **order**;
@@ -424,8 +484,8 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   — ~130k of JS across them, which is a lot to lazily import. **The mockup implements the single
   tabbed overlay**, with a lit dot per enabled stage on the tab strip so "what's on" is readable
   without opening anything. Confirm from the mockup.
-- `MAX_DETAILER_PASSES` (§6a). Upstream is effectively unbounded; each pass is a full re-sample,
-  so 4 is already a lot of compute. The constant can grow later, never shrink.
+- Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
+  are both settled (§6a).
 
 **Deferred, deliberately:**
 
