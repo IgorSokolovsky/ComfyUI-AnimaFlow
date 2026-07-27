@@ -29,6 +29,13 @@ other can't see.
 
 Upstream line numbers were correct as of `0ad756b`. **Re-verify before trusting them.**
 
+> **The generator rebuild is now specified: [`generator-design.md`](generator-design.md)**
+> (2026-07-27). It supersedes this section for the Generator + Preview pair — dependency
+> verdicts, the resource flag, the three image outputs, and the stage list all live there, and
+> §9 of it carries 1a's three divergences forward. This section stays authoritative for the rest
+> of the deleted anima line (Conditioning Encode, Image Scale, Region Mask Editor, Regional
+> Conditioning), which is still unspecified.
+
 ### 1a. Three divergences the old port had — don't reintroduce them
 
 - **`guide_size_for` was `True`; upstream ships `False`** for both detailer targets
