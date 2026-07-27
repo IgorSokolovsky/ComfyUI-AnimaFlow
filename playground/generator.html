@@ -132,6 +132,7 @@
 
   /* ── a stage row: toggle + name + summary + gear ─────────────── */
   .stagerow {
+    position: relative;
     display: flex; align-items: center; gap: 9px; height: 27px;
     margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
     background: var(--panel-2); border: 1px solid var(--line-soft);
@@ -235,51 +236,37 @@
   .rline .why { margin-left: auto; font-size: 9.5px; color: var(--ink-faint); text-align: right; }
   .rline.pass .v { color: var(--warn); }
 
-  /* ── settings overlay ────────────────────────────────────────── */
-  /* A right-side drawer, NOT a centred modal -- a modal hides the graph you're
-     tuning against, which is the whole point of having the node on screen. */
-  .scrim {
-    position: fixed; inset: 0; z-index: 50; display: none;
-    background: rgba(6,9,13,.55); backdrop-filter: blur(2px);
-    align-items: stretch; justify-content: flex-end;
+  /* ── settings: a popover ANCHORED TO THE ROW, not a drawer ──────
+     Third iteration. A centred modal covered the graph; a right-side drawer
+     still put the controls far from the thing they belong to. A popover next
+     to its own row is what the Control Panel already does (its ⚙ opens
+     `openOverlayWithZoom(..., "below")`), so this is the house pattern rather
+     than a new one -- and it removes the tab strip entirely: there is no
+     "which stage am I editing", because you are editing the row you clicked. */
+  .pop {
+    position: absolute; left: calc(100% + 9px); top: -4px; z-index: 40; width: 344px;
+    /* `left` is fine while the node is left-of-centre on the canvas. A real node
+       has to flip to `right: calc(100% + 9px)` when it would overflow the
+       viewport -- the Control Panel's `openOverlayWithZoom` already owns that
+       decision, so reuse it rather than reimplementing the flip. */
+    max-height: 460px; overflow: auto; padding: 12px 13px; text-align: left;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 18px 46px rgba(0,0,0,.66); cursor: default;
+    animation: popin .11s ease-out;
   }
-  .scrim.open { display: flex; }
-  .dlg {
-    width: 100%; max-width: 460px; height: 100%; display: flex; flex-direction: column;
-    background: var(--panel); border-left: 1px solid var(--line);
-    box-shadow: -24px 0 60px rgba(0,0,0,.6); overflow: hidden;
-    animation: slidein .16s ease-out;
+  @keyframes popin { from { transform: translateX(-5px); opacity: 0 } to { transform: none; opacity: 1 } }
+  .pop h4 {
+    margin: 0 0 10px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--accent); font-weight: 500;
+    display: flex; align-items: center; gap: 7px;
   }
-  @keyframes slidein { from { transform: translateX(24px); opacity: .6 } to { transform: none; opacity: 1 } }
-  /* One column in a 460px drawer -- two would crush every label. */
-  .grid2 { grid-template-columns: 1fr !important; }
-  .field > span { width: 132px; }
-  .dlg header {
-    display: flex; align-items: center; gap: 10px; padding: 12px 15px;
-    border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--panel-2), #171d25);
-  }
-  .dlg header h2 { margin: 0; font-size: 13px; font-weight: 600; }
-  .dlg header .x {
-    margin-left: auto; cursor: pointer; color: var(--ink-faint); font-size: 15px; line-height: 1;
-  }
-  .dlg header .x:hover { color: var(--bad); }
-  .tabs { display: flex; gap: 2px; padding: 9px 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  .tabs button {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .05em; padding: 6px 10px;
-    background: none; border: 1px solid transparent; border-bottom: 0; cursor: pointer;
-    color: var(--ink-faint); border-radius: 6px 6px 0 0;
-  }
-  .tabs button:hover { color: var(--ink-dim); }
-  .tabs button.on {
-    color: var(--accent); background: var(--panel-2);
-    border-color: var(--line); margin-bottom: -1px; padding-bottom: 7px;
-  }
-  .tabs button .dt {
-    display: inline-block; width: 5px; height: 5px; border-radius: 50%;
-    background: var(--accent); margin-left: 5px; vertical-align: 1px;
-  }
-  .dbody { padding: 15px; overflow: auto; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .pop h4 .x { margin-left: auto; cursor: pointer; color: var(--ink-faint); font-size: 12px; }
+  .pop h4 .x:hover { color: var(--bad); }
+  /* One column at 344px -- two crushed every label. */
+  /* ONE column: the popover is 344px, and two columns cut every field in half
+     (the drawer had the same problem at 460px). Left over from the modal, which
+     was 720px wide -- the only width two columns ever fitted. */
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 7px 10px; }
   .field { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
   .field > span { color: var(--ink-dim); width: 116px; flex: none; }
   .field input, .field select {
@@ -332,6 +319,7 @@
      it's right -- these get touched constantly, so burying them in a settings
      panel is wrong) ── */
   .nlora {
+    position: relative;
     display: flex; align-items: center; gap: 7px; height: 24px; margin-bottom: 4px;
     padding: 0 8px; border-radius: 6px; font-size: 11px;
     background: var(--panel-2); border: 1px solid var(--line-soft);
@@ -467,7 +455,9 @@
       way</b> — and <code>SAM3_Detect</code> is a ComfyUI <b>built-in</b>, so owning detection costs
       no dependency at all. Pushing it out bought nothing and cost you a hand-wired detector chain
       per block, in the one node whose point is not wiring a pipeline by hand. Now:
-      <code>detect_prompt</code> per block, with <code>segs_N</code> as an optional <b>override</b>.
+      <code>detect_prompt</code> per block and <b>no <code>SEGS</code> sockets at all</b> — an override
+      socket was briefly kept and then dropped too, on the same grounds as
+      <code>lora_stack</code>: speculative wiring nobody asked for. Appendable if a real need appears.
     </div>
     <div class="q settled">
       <span class="tag">Settled &middot; no LoRA node of our own</span>
@@ -479,13 +469,15 @@
       isn't re-proposed.
     </div>
     <div class="q settled">
-      <span class="tag">Settled &middot; Pixaroma's LoRA node hands back patched MODEL/CLIP</span>
+      <span class="tag">Settled &middot; no lora_stack socket at all</span>
       Checked by pulling the clone to <code>v1.4.62</code>. <b>It does stack</b> — many rows, each with
       a switch and strength, applied in order. What it doesn't do is emit a <code>LORA_STACK</code>
       <i>object</i>: it returns patched <code>MODEL</code> + <code>CLIP</code> + <code>triggers</code>.
       So the normal path needs <b>nothing</b> from this node:
-      <code>Loader Panel → LoRA Loader Pixaroma → Generator.model</code>. The
-      <code>lora_stack</code> socket stays only for packs that <i>do</i> emit one.
+      <code>Loader Panel → LoRA Loader Pixaroma → Generator.model</code>. The <code>lora_stack</code>
+      socket is therefore <b>gone</b> — it was speculative compatibility for packs that emit one, in a
+      pack built for a setup that doesn't. Two ways in, matching the two resource modes: baked into
+      <code>MODEL</code>/<code>CLIP</code>, or the inline list. Append it later if a real need shows up.
       <br><br><b>The trap:</b> route the <b>patched</b> <code>CLIP</code> on to your text encode. Wire
       the raw one and the LoRA's model effect still lands while its CLIP effect vanishes — no error,
       just a weaker result.
@@ -507,7 +499,6 @@
   </div>
 </div>
 
-<div class="scrim" id="scrim"><div class="dlg" id="dlg"></div></div>
 
 <script>
 // ───────────────────────────────────────────────────────────────────────────
@@ -585,20 +576,29 @@ const state = {
   sampWired: { seed: true, steps: false, cfg: false, sampler_name: false, scheduler: false },
   // Detailer BLOCKS, mirroring upstream: `face`/`eye` are built-in and cannot
   // be removed, anything past them is an addable custom block. Each block
-  // DETECTS FOR ITSELF from its own detect_prompt (SAM3_Detect is a ComfyUI
-  // built-in, so this is free) -- `wired` here means an optional SEGS OVERRIDE
-  // is connected, replacing that block's detection. Design doc s6a. MAX is
-  // ours, not upstream's -- upstream's name generator loops to 1000.
+  // DETECTS FOR ITSELF from its own detect_prompt -- SAM3_Detect is a ComfyUI
+  // built-in, so that's free, and there are no SEGS sockets at all. Design doc
+  // s6a. MAX is ours, not upstream's -- upstream's generator loops to 1000.
   blocks: [
-    { id: "face", label: "Face", builtin: true, on: true, wired: false, prompt: "face", feather: 10 },
-    { id: "eye", label: "Eye", builtin: true, on: true, wired: false, prompt: "eye", feather: 20 },
+    { id: "face", label: "Face", builtin: true, on: true, prompt: "face", feather: 10 },
+    { id: "eye", label: "Eye", builtin: true, on: true, prompt: "eye", feather: 20 },
   ],
   block: "face",
   stages: { highres: true, detailer: true, upscale: true, postprocess: false },
   have: { spectrum: true, usdu: true, impact: true },   // soft-import presence
   modGuidance: true,
   sampler: { steps: 32, cfg: 5.0, name: "er_sde", sched: "simple", shift: 3.0, seed: -1 },
+  // Inline mode owns the latent too -- "inline" means every resource, and size
+  // is one (design doc s3).
+  latent: { w: 832, h: 1216, ratio: "2:3", batch: 1 },
   preview: { on: true, a: "base", b: "final", x: 50 },
+  // The Preview node saves too -- upstream's Save Options live in the generator,
+  // but the node HOLDING the images is where "save this one" belongs, and it's
+  // the only place you can save the base/mid/final under different names.
+  pvsave: {
+    on: true, which: "every wired input", ext: "png",
+    path: "anima/%date:yyyy-MM-dd%", name: "%stage%_%seed%_%counter:4%", embed: true,
+  },
   dlg: null,                  // open settings tab
   pass: "a",                  // detailer pass tab
 };
@@ -667,7 +667,7 @@ const STAGES = [
       if (!state.have.impact) return "Impact Pack not installed";
       const live = state.blocks.filter((b) => b.on);
       if (!live.length) return "no blocks on";
-      return live.map((b) => b.label + (b.wired ? "*" : "")).join(" > ");
+      return live.map((b) => b.label).join(" > ");
     }, dep: () => !state.have.impact || !state.blocks.some((b) => b.on) },
   { k: "upscale", n: "Upscale", s: () => state.have.usdu ? "USDU 2x  seam-fix" : "USDU not installed",
     dep: () => !state.have.usdu },
@@ -721,11 +721,17 @@ function genHtml() {
       <div class="row"><span class="nm">clip_name</span><span class="val">qwen_3_06b_base</span></div>
       <div class="row"><span class="nm">clip_type</span><span class="val">qwen_image</span></div>
       <div class="row"><span class="nm">vae_name</span><span class="val">qwen_image_vae</span></div>
+      <div class="row click" data-act="dlg" data-t="latent">${popFor("latent")}
+        <span class="nm">latent</span>
+        <span class="val">${state.latent.w} &times; ${state.latent.h}
+          <span style="color:var(--ink-faint)">(${state.latent.ratio})${
+            state.latent.batch > 1 ? ` &times;${state.latent.batch}` : ""}</span></span>
+      </div>
     ` : ""}
     ${int ? `
       <div class="sec">loras <span class="cnt">&middot; ${state.loras.filter((l) => l.m || l.c).length} active</span></div>
       ${state.loras.length
-        ? state.loras.map((l, i) => `<div class="nlora ${l.m || l.c ? "" : "muted"}">
+        ? state.loras.map((l, i) => `<div class="nlora ${l.m || l.c ? "" : "muted"}">${popFor("lora")}
             <span class="sw sm ${l.m || l.c ? "on" : ""}" data-act="lmute" data-i="${i}"
               title="${l.m || l.c ? "Mute (both strengths to 0)" : "Unmute"}"></span>
             <span class="ln" title="${esc(l.name)}">${esc(l.name || "(unnamed)")}</span>
@@ -736,24 +742,18 @@ function genHtml() {
       <button class="addbtn" data-act="ladd">+ Add LoRA</button>
     ` : ""}
     <div class="sockgrp">
-      ${sock("lora_stack", "LORA_STACK", { optional: true, wired: state.wired.lora_stack && !int,
-        ignored: int,
-        title: int
-          ? "Ignored -- inline mode uses the node's own LoRA list"
-          : "Secondary path. Pixaroma's loader patches MODEL/CLIP instead of emitting a stack." })}
-      ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent,
-        title: "Size and batch; else from settings.latent" })}
+      ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent && !int, ignored: int,
+        title: int ? "Ignored -- inline mode sets size and batch itself" : "Size and batch from the wire" })}
     </div>
 
-    <div class="sec">sampler <span class="cnt">&middot; first pass</span>
-      <span class="gear" data-act="dlg" data-t="sampler">&#9881;</span></div>
+    <div class="sec">sampler <span class="cnt">&middot; first pass</span></div>
     <div class="sockgrp">
       ${SAMP_FIELDS.map(([k, ty]) => sock(k, ty, {
         optional: true, wired: state.sampWired[k],
         title: state.sampWired[k] ? "Wired -- this wire drives the value" : "Unwired -- the overlay value is used",
       })).join("")}
     </div>
-    <div class="row click" data-act="dlg" data-t="sampler">
+    <div class="row click" data-act="dlg" data-t="sampler">${popFor("sampler")}
       <span class="nm">${state.sampWired.sampler_name ? "&#8722;" : state.sampler.name} /
         ${state.sampWired.scheduler ? "&#8722;" : state.sampler.sched}</span>
       <span class="val">${state.sampWired.steps ? "&#8722;" : state.sampler.steps} steps &middot;
@@ -766,7 +766,7 @@ function genHtml() {
         : `${state.sampler.seed === -1 ? "-1" : state.sampler.seed}
            <span style="color:var(--ink-faint)">random</span>`}</span>
     </div>
-    <div class="row click" data-act="dlg" data-t="mod">
+    <div class="row click" data-act="dlg" data-t="mod">${popFor("mod")}
       <span class="nm">mod guidance</span>
       <span class="val" style="color:${state.modGuidance && state.have.spectrum ? "var(--accent)" : "var(--ink-faint)"}">
         ${!state.have.spectrum ? "unavailable" : state.modGuidance ? "step_i8_skip27" : "off"}</span>
@@ -777,23 +777,13 @@ function genHtml() {
     ${STAGES.map((s) => {
       const on = state.stages[s.k];
       const blocked = s.dep && s.dep();
-      return `<div class="stagerow ${on ? "" : "off"} ${on && blocked ? "dep" : ""}">
+      return `<div class="stagerow ${on ? "" : "off"} ${on && blocked ? "dep" : ""}">${popFor(s.k)}
         <span class="sw ${on ? "on" : ""}" data-act="stage" data-k="${s.k}"></span>
         <span class="sn">${s.n}</span>
         <span class="ss" style="${on && blocked ? "color:var(--warn)" : ""}">${esc(s.s())}</span>
         <span class="gear" data-act="dlg" data-t="${s.k}">&#9881;</span>
       </div>`;
     }).join("")}
-
-    <div class="sec">detailer <span class="cnt">&middot; SEGS override per block</span></div>
-    <div class="sockgrp">
-      ${state.blocks.map((b, i) => sock(`segs_${i + 1}`, "SEGS", {
-        optional: true, wired: b.wired,
-        title: `${b.label} override -- ${b.wired
-          ? "wired, so this block skips SAM3_Detect and uses your regions"
-          : `unwired, so this block detects "${b.prompt}" itself`}${b.on ? "" : " (block is off)"}`,
-      })).join("")}
-    </div>
 
     <div class="sec">outputs</div>
     <div class="sockgrp">
@@ -822,12 +812,15 @@ function prevHtml() {
 
   return `
   <div class="titlebar"><span class="tdot"></span><span class="ttl">Anima Preview</span>
+    <span class="badge" style="color:var(--ok);border-color:rgba(74,222,128,.4);margin-left:7px">output</span>
     <span class="badge">beta</span></div>
   <div class="body">
     <div class="sockgrp">
       <div class="sock wired"><span class="d"></span><span>image_a</span><span class="ty">IMAGE</span></div>
       <div class="sock wired"><span class="d"></span><span>image_b</span><span class="ty">IMAGE</span></div>
       <div class="sock opt"><span class="d"></span><span>image_c</span><span class="ty">IMAGE</span></div>
+      <div class="sock" style="opacity:.5" title="Hidden inputs -- required for embed-workflow, so they live HERE now, not on the Generator">
+        <span class="d"></span><span>prompt / extra_pnginfo</span><span class="ty">HIDDEN</span></div>
     </div>
 
     <div class="wipe ${on ? "" : "single"}" id="wipe" style="--x:${state.preview.x}%">
@@ -843,6 +836,11 @@ function prevHtml() {
       <span class="sw ${on ? "on" : ""}" data-act="pvon" title="Compare on/off -- off is a plain single-image view"></span>
       <span style="font-size:10.5px;color:var(--ink-dim)">compare</span>
       <span class="sp">${on ? "hover to wipe" : "single image"}</span>
+    </div>
+    <div class="row click" data-act="dlg" data-t="pvsave" style="margin-top:6px">${popFor("pvsave")}
+      <span class="nm">save</span>
+      <span class="val" style="color:${state.pvsave.on ? "var(--accent)" : "var(--ink-faint)"}">
+        ${state.pvsave.on ? `${state.pvsave.which} &middot; ${state.pvsave.ext}` : "off"}</span>
     </div>
     ${on ? `<div class="pvbar">
       <div class="seg">${SLOTS.map(([k]) =>
@@ -879,7 +877,7 @@ function tabsNow() {
     ["sampler", "Sampler"], ["mod", "Mod guidance"],
     ...(state.internal ? [["lora", "LoRA"]] : []),
     ["highres", "Highres"], ["detailer", "Detailer"], ["upscale", "Upscale"],
-    ["postprocess", "Postprocess"], ["save", "Save"], ["preview", "Preview"],
+    ["postprocess", "Postprocess"], ["preview", "Preview"],
   ];
 }
 
@@ -1005,58 +1003,42 @@ function dlgBody(tab) {
   }
   if (tab === "detailer") {
     if (!state.have.impact) {
-      return `<div class="missing"><span class="k">ComfyUI-Impact-Pack</span>
-        <span>not installed -- <code>DetailerForEach</code> is an Impact node, so the whole detailer
-        stage is unavailable. This is true however the regions arrive.</span>
-        <button data-act="have" data-k="impact">pretend it's installed</button></div>
+      return `<div class="dnote warn"><b>ComfyUI-Impact-Pack not installed.</b>
+        <code>DetailerForEach</code> is an Impact node, so the whole stage is unavailable.
+        <div style="margin-top:8px"><button class="btn ghost" data-act="have" data-k="impact"
+          style="margin:0">pretend it's installed</button></div></div>
         <div class="dnote">Detection itself is free -- <code>SAM3_Detect</code> is a ComfyUI built-in.
         It's the refine step that needs Impact.</div>`;
     }
     const b = state.blocks.find((x) => x.id === state.block) || state.blocks[0];
     const i = state.blocks.indexOf(b);
     const atMax = state.blocks.length >= MAX_BLOCKS;
-    return `<div class="dnote">Upstream ships <b>N blocks</b>, not two: <code>face</code> and
-      <code>eye</code> are built in, <code>+ Add block</code> makes more, every tab renames and
-      reorders. Each block <b>detects for itself</b> from its own <code>detect_prompt</code> —
-      <code>SAM3_Detect</code> is a ComfyUI built-in, so that costs nothing.</div>
+    return `<div class="dnote">N blocks, like upstream: <code>face</code> and <code>eye</code> built
+      in, <code>+ Add block</code> for more, renameable and reorderable. Each block <b>detects for
+      itself</b> from its own <code>detect_prompt</code> -- there are no <code>SEGS</code> inputs.</div>
       <div class="passtabs">
         ${state.blocks.map((x, ix) => `<button class="${x.id === b.id ? "on" : ""}"
-          data-act="block" data-v="${x.id}" title="segs_${ix + 1}${x.builtin ? " -- built in" : ""}">
-          ${esc(x.label)}${x.on ? "" : " (off)"}${x.wired ? " *" : ""}</button>`).join("")}
+          data-act="block" data-v="${x.id}">${esc(x.label)}${x.on ? "" : " (off)"}</button>`).join("")}
         <button data-act="addblock" ${atMax ? 'disabled style="margin-left:auto;opacity:.4"' : 'style="margin-left:auto"'}
-          title="${atMax ? "MAX_DETAILER_PASSES reached" : "Adds a block and reveals its SEGS override socket"}">+ Add block</button>
+          title="${atMax ? "MAX_DETAILER_PASSES reached" : "Add a block"}">+</button>
       </div>
       <div class="passtabs">
         <button data-act="mvblock" data-v="-1" ${i === 0 ? 'style="opacity:.4"' : ""}
-          title="Execution order -- upstream's &lt; &gt; buttons mutate detailer.order">&lt;</button>
+          title="Execution order -- upstream's &lt; &gt; mutate detailer.order">&lt;</button>
         <button data-act="mvblock" data-v="1" ${i === state.blocks.length - 1 ? 'style="opacity:.4"' : ""}>&gt;</button>
-        <button data-act="onblock" title="Enable this block">${b.on ? "on" : "off"}</button>
+        <button data-act="onblock">${b.on ? "on" : "off"}</button>
         ${b.builtin
-          ? `<button disabled style="opacity:.4" title="face/eye are built in -- upstream's removeTarget refuses a non-custom name">can't remove</button>`
+          ? `<button disabled style="opacity:.4" title="face/eye are built in -- upstream's removeTarget refuses a non-custom name">built in</button>`
           : `<button data-act="delblock">remove</button>`}
       </div>
-      <div class="grid2" style="margin-bottom:12px">
+      <div class="grid2" style="margin-bottom:11px">
         <div class="field"><span>label</span>
           <input value="${esc(b.label)}" data-act="lbl" data-live="1"></div>
-        ${b.wired
-          ? fWired("detect_prompt", `segs_${i + 1}`)
-          : `<div class="field"><span>detect_prompt</span>
-              <input value="${esc(b.prompt)}" data-act="dp" data-live="1"></div>`}
+        <div class="field"><span>detect_prompt</span>
+          <input value="${esc(b.prompt)}" data-act="dp" data-live="1"></div>
+        ${f("detect_count", 1)}${f("threshold", 0.52)}
       </div>
-      <div class="sublab">detection &middot; this block</div>
-      ${b.wired
-        ? `<div class="dnote"><b>Overridden.</b> <code>segs_${i + 1}</code> is wired, so this block
-            skips <code>SAM3_Detect</code> entirely and refines the regions your detector produced.
-            The refine settings below still apply.
-            <div style="margin-top:8px"><button class="btn ghost" data-act="wireblock"
-              style="margin:0">unwire segs_${i + 1}</button></div></div>`
-        : `<div class="grid2">${f("detect_count", 1)}${f("threshold", 0.52)}</div>
-           <div class="dnote" style="margin:11px 0 0">Detecting <b>${esc(b.prompt || "(empty)")}</b>
-            internally. Wire <code>segs_${i + 1}</code> to override this with your own detector —
-            Impact's Ultralytics bboxes, a SAM chain, a hand-built mask.
-            <div style="margin-top:8px"><button class="btn ghost" data-act="wireblock"
-              style="margin:0">wire segs_${i + 1} (override)</button></div></div>`}
-      <div class="sublab">refine &middot; applies either way</div>
+      <div class="sublab">refine</div>
       <div class="grid2">
         ${f("denoise", 0.33)}${f("feather", 5)}
         ${f("guide_size", 1024)}${f("max_size", 2048)}
@@ -1071,8 +1053,8 @@ function dlgBody(tab) {
       <div class="dnote warn" style="margin:11px 0 0"><b>Do not "fix" these.</b>
       <code>guide_size_for</code> must be <code>false</code> and <code>noise_mask_feather</code> must
       not be <code>0</code> -- upstream never ships 0, and it's the main control against visible
-      detailer seams. Upstream ships <b>10 for face, 20 for eye</b>, which is exactly why per-block
-      settings are worth keeping. Both were wrong in the deleted port.</div>
+      seams. Upstream ships <b>10 for face, 20 for eye</b>, which is why per-block settings are worth
+      keeping. Both were wrong in the deleted port.</div>
       <div class="sublab">overrides</div>
       <div class="grid2">${f("inherit_sampler_settings", "true", ["true", "false"])}${f("steps", 20)}
         ${f("sampler_name", "euler", SAMPLERS)}${f("scheduler", "sgm_uniform", SCHEDS)}</div>`;
@@ -1113,19 +1095,45 @@ function dlgBody(tab) {
         ${f("max_long_edge", 2048)}${f("max_megapixels", 4.0)}
       </div>`;
   }
-  if (tab === "save") {
-    return `<div class="dnote">Stock <code>SaveImage</code>, not ComfyUI-Image-Saver. The thing that
-      pack is actually wanted for is workflow-reload-on-drag, and declaring the two hidden inputs
-      below gives that for free.</div>
+  if (tab === "latent") {
+    const l = state.latent;
+    return `<div class="dnote">Inline mode owns the latent as well -- <b>inline means every
+      resource</b>, and size is one. With the flag off the <code>latent</code> socket drives it
+      instead (wire the Control Panel's empty-latent row).</div>
       <div class="grid2">
-        ${f("enabled", "true", ["true", "false"])}${f("extension", "png", ["png", "jpg", "webp"])}
-        ${f("path", "anima/%date:yyyy-MM-dd%")}${f("filename", "%seed%_%time%")}
+        ${f("width", l.w)}${f("height", l.h)}
+        ${f("ratio", l.ratio, ["1:1", "16:9", "9:16", "2:1", "3:2", "2:3", "4:3", "3:4", "4:5"])}
+        ${f("batch", l.batch)}
       </div>
-      <div class="sublab">metadata &middot; not optional</div>
-      <div class="dnote warn" style="margin:0">The node declares hidden <code>PROMPT</code> and
-      <code>EXTRA_PNGINFO</code> and passes them through. Without them, dragging a saved PNG back
-      into ComfyUI restores <b>nothing</b> -- which made the deleted port's saves worse than stock.
-      This was never fixed there. Fix it here.</div>`;
+      <div class="dnote" style="margin:11px 0 0">Ratios are pinned to their canonical dimensions at the
+      1024 tier (832&times;1216 for 2:3, not a derived 832&times;1248) -- same table and same reasoning
+      as <code>control-panel-design.md §3a</code>, so the two nodes agree on what "2:3" means.</div>`;
+  }
+  if (tab === "pvsave") {
+    const v = state.pvsave;
+    return `<div class="dnote">Saving lives <b>here</b>, not in the Generator. This node holds the
+      images, so it's the only place base / mid / final can be saved under different names -- which is
+      the point of having three of them.</div>
+      <div class="grid2">
+        ${f("enabled", v.on ? "true" : "false", ["true", "false"])}
+        ${f("which", v.which, ["shown", "both compared", "every wired input"])}
+        ${f("extension", v.ext, ["png", "jpg", "webp"])}
+        ${f("path", v.path)}
+        ${f("filename", v.name)}
+        ${f("embed workflow", v.embed ? "true" : "false", ["true", "false"])}
+      </div>
+      <div class="sublab">filename tokens</div>
+      <div class="dnote" style="margin:0"><code>%stage%</code> is what makes this worth having --
+      <code>base</code> / <code>mid</code> / <code>final</code>, so a comparison set lands as three
+      files you can tell apart. Plus <code>%seed%</code>, <code>%date:FMT%</code>,
+      <code>%counter:N%</code>, <code>%width%</code>, <code>%height%</code>.</div>
+      <div class="dnote warn" style="margin:11px 0 0"><b>Embed workflow</b> needs the hidden
+      <code>PROMPT</code> / <code>EXTRA_PNGINFO</code> inputs, which is why they're declared on
+      <i>this</i> node. The deleted port never declared them at all, making its saves <b>worse</b> than
+      stock <code>SaveImage</code> -- a saved PNG dragged back in restored nothing.</div>
+      <div class="dnote" style="margin:11px 0 0">Defaults <b>on</b>: this is the only node that saves.
+      The Generator has no save stage, which is what makes it pure compute and makes this the terminal
+      <code>OUTPUT_NODE</code> -- a graph with no Preview wired runs nothing, by design.</div>`;
   }
   if (tab === "preview") {
     return `<div class="dnote">Stage images leave as ordinary IMAGE outputs at the end of the run --
@@ -1144,24 +1152,22 @@ function dlgBody(tab) {
   return "";
 }
 
-function dlgHtml() {
-  const tab = state.dlg;
-  const title = (tabsNow().find(([k]) => k === tab) || [, "Settings"])[1];
-  return `
-  <header><h2>Generation settings &middot; ${title}</h2><span class="x" data-act="close">&#10005;</span></header>
-  <div class="tabs">${tabsNow().map(([k, n]) => {
-    const lit = state.stages[k] || (k === "mod" && state.modGuidance && state.have.spectrum)
-      || (k === "lora" && state.loras.some((l) => l.m || l.c))
-      || k === "sampler" || k === "save";
-    return `<button class="${k === tab ? "on" : ""}" data-act="tab" data-t="${k}">${n}${
-      lit ? '<span class="dt"></span>' : ""}</button>`;
-  }).join("")}</div>
-  <div class="dbody">${dlgBody(tab)}</div>
-  <div class="foot">
-    <span class="hint">one blob &middot; generation_settings (hidden STRING)</span>
-    <button class="btn" data-act="close">Done</button>
-  </div>`;
+/** The popover for `key`, rendered INSIDE its own row so it anchors there.
+ * No tab strip: the row you clicked is the thing you're editing. */
+function popFor(key) {
+  if (state.dlg !== key) {
+    return "";
+  }
+  const title = (POP_TITLES[key.split(":")[0]] || "Settings");
+  return `<div class="pop" data-stop="1"><h4>${esc(title)}<span class="x" data-act="close">&#10005;</span></h4>
+    ${dlgBody(key)}</div>`;
 }
+
+const POP_TITLES = {
+  sampler: "Sampler", mod: "Mod guidance", lora: "LoRA",
+  highres: "Highres", detailer: "Detailer", upscale: "Upscale",
+  postprocess: "Postprocess", preview: "Preview", pvsave: "Save", latent: "Empty latent",
+};
 
 // ───────────────────────────────────────────────────────────────────────────
 // Paint + events
@@ -1170,9 +1176,6 @@ function paint() {
   document.getElementById("gen").innerHTML = genHtml();
   document.getElementById("prev").innerHTML = prevHtml();
   document.getElementById("resolver").innerHTML = resolverHtml();
-  const scrim = document.getElementById("scrim");
-  scrim.classList.toggle("open", !!state.dlg);
-  if (state.dlg) document.getElementById("dlg").innerHTML = dlgHtml();
   bindWipe();
 }
 
@@ -1199,10 +1202,10 @@ document.addEventListener("click", (e) => {
   const act = t.dataset.act;
   if (act === "internal") state.internal = !state.internal;
   else if (act === "stage") state.stages[t.dataset.k] = !state.stages[t.dataset.k];
-  else if (act === "dlg") { state.dlg = t.dataset.t; }
-  else if (act === "tab") state.dlg = t.dataset.t;
+  else if (act === "dlg") state.dlg = state.dlg === t.dataset.t ? null : t.dataset.t;  // second click closes
   else if (act === "close") state.dlg = null;
   else if (act === "pvon") state.preview.on = !state.preview.on;
+  else if (act === "pvsaveon") state.pvsave.on = !state.pvsave.on;
   else if (act === "pva") state.preview.a = t.dataset.v;
   else if (act === "pvb") state.preview.b = t.dataset.v;
   else if (act === "block") state.block = t.dataset.v;
@@ -1213,7 +1216,7 @@ document.addEventListener("click", (e) => {
     let n = 1;
     while (state.blocks.some((b) => b.id === "custom_" + n)) n++;
     const b = { id: "custom_" + n, label: "Detailer Block " + n, builtin: false,
-                on: true, wired: false, prompt: "", feather: 10 };
+                on: true, prompt: "", feather: 10 };
     state.blocks.push(b);
     state.block = b.id;
   } else if (act === "delblock") {
@@ -1227,10 +1230,9 @@ document.addEventListener("click", (e) => {
     const j = i + d;
     if (i < 0 || j < 0 || j >= state.blocks.length) return;
     [state.blocks[i], state.blocks[j]] = [state.blocks[j], state.blocks[i]];
-  } else if (act === "onblock" || act === "wireblock") {
+  } else if (act === "onblock") {
     const b = state.blocks.find((x) => x.id === state.block);
-    if (!b) return;
-    if (act === "onblock") b.on = !b.on; else b.wired = !b.wired;
+    if (b) b.on = !b.on;
   } else if (act === "wire") state.sampWired[t.dataset.k] = !state.sampWired[t.dataset.k];
   else if (act === "unwire") state.sampWired[t.dataset.k] = false;
   else if (act === "lorastack") state.wired.lora_stack = !state.wired.lora_stack;
@@ -1277,8 +1279,14 @@ document.addEventListener("input", (e) => {
   document.getElementById("gen").innerHTML = genHtml();   // repaint the node, keep focus in the input
 });
 
-document.getElementById("scrim").addEventListener("click", (e) => {
-  if (e.target.id === "scrim") { state.dlg = null; paint(); }
+// Outside click closes -- but a click INSIDE the popover must not, or every
+// field interaction would shut it (the Control Panel's overlay has the same
+// guard; this is the mistake that reads as "the popover won't stay open").
+document.addEventListener("click", (e) => {
+  if (!state.dlg) return;
+  if (e.target.closest("[data-stop]") || e.target.closest("[data-act]")) return;
+  state.dlg = null;
+  paint();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && state.dlg) { state.dlg = null; paint(); }

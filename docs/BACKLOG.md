@@ -136,6 +136,20 @@ for legacy litegraph to accept a wire — `"COMBO"`, the joined option list, or 
 
 ---
 
+## 3b. Pixaroma's seven Control Panel review rounds — unmined
+
+The clone was pulled `afd0d05` (v1.4.44) → `5036814` (v1.4.62) on 2026-07-27. Their Control Panel
+gained **+1360 lines** in between, including seven numbered review rounds of real bug fixes on the
+same mechanic ours is ported from — plus a Seed R/N control, a combo control and a wheel-zoom fix,
+all built independently of ours.
+
+Concrete plan with per-item reproduction notes: **[`pixaroma-review-rounds-plan.md`](pixaroma-review-rounds-plan.md)**.
+The highest-value item is a **litegraph fact, not their bug**: on disconnect, the event reports the
+origin output slot as `0` for the input-side and `removeLink` paths — only `disconnectOutput` reports
+it correctly. Trust `link.origin_slot`, never `slotIndex`.
+
+---
+
 ## 4. Whole-pack
 
 - **Widget order is append-only.** New widgets go at the end of `required` (or into

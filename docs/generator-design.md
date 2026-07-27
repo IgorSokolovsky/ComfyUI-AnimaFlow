@@ -69,9 +69,25 @@ don't want preview" is expressed by not wiring it.
 
 | | **Anima Generator** | **Anima Preview** |
 |---|---|---|
-| Does | runs the pipeline | compares two images |
-| Emits | `IMAGE ×3`, `LATENT`, `STRING` | nothing (terminal) |
-| Cost when unused | — | zero; it isn't in the graph |
+| Does | runs the pipeline | compares images, **and saves them** |
+| Emits | `IMAGE ×3`, `LATENT`, `STRING` | nothing — terminal |
+| `OUTPUT_NODE` | **no** | **yes** |
+
+**Saving lives on the Preview node, not the Generator** (decided 2026-07-27). Upstream puts Save
+Options inside the generator; we don't, for one concrete reason: the node holding all three stage
+images is the only place they can be saved *under different names*, which is the entire point of
+having three. A `%stage%` filename token turns a comparison run into `base`/`mid`/`final` files you
+can tell apart.
+
+Two consequences, both deliberate:
+
+- **The Generator is pure compute and is not an `OUTPUT_NODE`.** A graph with no Preview wired runs
+  nothing at all. That is the intended behaviour, not an oversight — there is no output to produce.
+- **The hidden `PROMPT` / `EXTRA_PNGINFO` inputs live on the Preview node**, because that is where
+  embed-workflow happens. See §9.
+
+So "I don't want preview" now means "I don't want output either". If a save-without-preview case ever
+turns up, the answer is the Preview node's compare toggle set off — it is still the saver.
 
 **Why the preview is not a live feed.** Upstream streams stage images over a websocket event
 (`easyuse-anima-aio-preview`, `aio/preview.py:15-27`) keyed by `unique_id`. A separate node
@@ -106,6 +122,12 @@ Three constraints, each load-bearing:
 (`nodes/aio_nodes.py:113`). Everything else in the pack stays format-agnostic per
 `.claude/CLAUDE.md`; this one default is about which *loader* Anima needs, not about prompt
 format.
+
+**Inline mode owns the latent too** — width, height, ratio and batch. "Inline" means *every*
+resource, and image size is one; the `latent` socket is ignored exactly like `model`/`clip`/`vae`.
+Ratios are pinned to their canonical dimensions at the 1024 tier (2:3 is 832×1216, **not** a derived
+832×1248) using the same table and the same reasoning as `control-panel-design.md` §3a, so the two
+nodes agree on what "2:3" means.
 
 LoRAs split the same way, but not via a stack socket: externally they arrive already baked into
 `MODEL`/`CLIP` by Pixaroma's loader; inline mode gets its own LoRA list because there is no wire for
@@ -196,12 +218,10 @@ socket's neighbours are how a user works out what it is for. (An earlier draft f
 | required | `use_internal_loaders` | `BOOLEAN` | §3 |
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
-| optional | `lora_stack` | `LORA_STACK` | secondary path only — Pixaroma's loader patches `MODEL`/`CLIP` instead. Ignored in inline mode. §5b |
-| optional | `latent` | `LATENT` | size and batch; else from `settings.latent` |
+| optional | `latent` | `LATENT` | size and batch. Ignored in inline mode (§3) |
 | optional | `seed` / `steps` / `cfg` | `INT`/`INT`/`FLOAT` | §5a — wired wins, per field |
 | optional | `sampler_name` / `scheduler` | `COMBO` | §5a |
-| optional | `segs_1` … `segs_N` | `SEGS` | one per detailer block, revealed as blocks are added. **Override** — wired replaces that block's internal detection (§6a) |
-| hidden | `prompt` / `extra_pnginfo` / `unique_id` | `PROMPT`/`EXTRA_PNGINFO`/`UNIQUE_ID` | §9 — non-negotiable |
+| hidden | `unique_id` | `UNIQUE_ID` | `PROMPT`/`EXTRA_PNGINFO` live on the **Preview** node now — §7, §9 |
 
 Prompt text is **not** an input. Conditioning comes in already encoded, so prompt editing stays
 upstream in the Rule Builder / Prompt Studio line. Upstream made the same call and it is right.
@@ -270,9 +290,17 @@ Loader Panel ──MODEL──> Pixaroma LoRA Loader ──MODEL─────�
 > trigger words that read differently than intended. That is exactly why their node takes `CLIP` at
 > all, and why it sits **before** the text encode rather than just before the generator.
 
-**`lora_stack` stays as an optional socket, demoted.** Pixaroma's path doesn't use it, but
-`LORA_STACK` is a real cross-pack interchange type (efficiency-nodes, rgthree, Impact all emit one),
-and an unused optional socket costs nothing. It is the secondary path, not the documented one.
+**There is no `lora_stack` socket.** It was briefly kept as a "secondary path" for packs that *do*
+emit one (efficiency-nodes, rgthree, Impact) — dropped 2026-07-27 as speculative compatibility in a
+pack built for a setup that doesn't need it. It also made LoRAs look like they had *three* ways in,
+when the honest answer is two, matching the two resource modes exactly:
+
+| mode | how LoRAs arrive |
+|---|---|
+| sockets (`use_internal_loaders` off) | already applied to `MODEL`/`CLIP`, upstream of this node |
+| inline (`use_internal_loaders` on) | the node's own inline list |
+
+Appending an optional socket later is safe under the append-only rule, so nothing is foreclosed.
 
 **The inline list is the one case we must handle ourselves** — and this is now its whole
 justification. With `use_internal_loaders` **on**, the node loads its own unet/clip internally, so
@@ -329,13 +357,14 @@ is ever wanted that is a fourth output, appended.
 is worse than a duplicate image when the entire point is comparison. This must be documented on
 the node — `image_mid == image_base` is a legitimate result meaning "no detailer ran", not a bug.
 
-`OUTPUT_NODE = True` (it saves), which also means it runs without anything wired downstream.
+**Not** an `OUTPUT_NODE` — it doesn't save (§2). Nothing runs unless a Preview is wired.
 
 ---
 
 ## 6. Stages
 
-Order is upstream's (`aio/generation_pipeline.py:10-17`), each stage independently enabled.
+Order is upstream's (`aio/generation_pipeline.py:10-17`) minus its `save_output`, each stage
+independently enabled. **Five stages, not six.**
 
 1. **First pass** — Mod Guidance patch (if enabled and Spectrum present) → `KSampler` → VAE
    decode. Size from the `latent` socket if wired, else `settings.latent`.
@@ -343,11 +372,10 @@ Order is upstream's (`aio/generation_pipeline.py:10-17`), each stage independent
    `denoise` 0.25. Inherits the first-pass sampler unless `inherit_sampler_settings` is off.
 3. **Detailer** — **N blocks, each detecting for itself.** Per block:
    `SAM3_Detect` (built-in, driven by the block's `detect_prompt`) → `MaskToSEGS` →
-   `DetailerForEach`, or, when that block's `segs_N` socket is wired, straight to `DetailerForEach`
-   with your regions. Defaults from upstream's **face** block, the conservative one
+   `DetailerForEach`. No `SEGS` sockets. Defaults from upstream's **face** block, the conservative one
    (`generation_defaults.py:292-357`). Requires Impact. See §6a.
 
-### 6a. Detailer — internal detection, with a `SEGS` override
+### 6a. Detailer — N blocks, detection internal, no sockets
 
 **Upstream is N user-addable blocks.** `face` and `eye` are two *built-in* blocks; beyond them the
 dialog's `+ Add block` creates unbounded `custom_1`, `custom_2`, … each inheriting the face defaults
@@ -379,22 +407,22 @@ input and let the user's own detector produce regions. That was wrong on both co
 
 So: **`detect_prompt` per block, detection internal, exactly like upstream.**
 
-**And a `segs_N` socket per block that overrides it when wired.** Same shape as the resources flag
-(§3) and the sampler fields (§5a) — internal by default, wire to override — which is now the house
-pattern for this node three times over. Wire Impact's Ultralytics bbox detectors, a custom SAM
-chain, or a hand-built mask, and that block uses your regions and skips `SAM3_Detect` entirely.
-Unwired blocks detect for themselves. That is strictly more capable than either design alone, for
-one branch per block.
+**And no `SEGS` sockets.** An override socket per block was specified and then dropped on the same
+grounds as `lora_stack` (§5b): speculative wiring for a case nobody has, in a node whose point is not
+having to wire a pipeline. Detection is internal, period. Adding optional sockets later is safe under
+the append-only rule, so this forecloses nothing — but the default must be that the node just
+works.
 
 Per-block settings matter and must not be collapsed: upstream ships `noise_mask_feather` **10 for
 face, 20 for eye** (`:321`, `:387`), and different `denoise` per target. That difference is the
 entire argument for blocks over one global pass.
 
-**`MAX_DETAILER_PASSES = 4`** (settled 2026-07-27). Upstream is effectively uncapped, but every pass
-is a full re-sample. May grow later, never shrink. The dynamic-socket half reuses the Control Panel's
-mechanism — declare a fixed maximum and reveal only as many as there are blocks
-(`control-panel-design.md` §1, §5); see the frontend skill's `ContainsAnyDict` note for the backend
-half.
+**`MAX_DETAILER_PASSES = 4`** (settled 2026-07-27). Upstream is effectively uncapped; the cap is
+purely about compute, since every pass is a full re-sample. Note the reason **changed**: it was
+originally justified by each pass costing a socket, which stopped being true when the `SEGS` inputs
+went away. Blocks are now plain settings-blob entries like the inline LoRAs — the difference is that
+LoRAs are cheap to add and detailer passes are not. May grow later, never shrink; no dynamic-socket
+machinery is needed at all.
 
 4. **Upscale** — USDU only, with seam-fix and tile controls exposed (upstream's `seam_fix_mode`
    was hardcoded to `"None"` in the old port, making seam repair unreachable; `29ac56d` fixed
@@ -403,7 +431,7 @@ half.
 5. **Postprocess** — the output size cap (`max_long_edge` / `max_megapixels`,
    `aio/postprocess.py:42-86`). The old port only ever rounded *up*, leaving final size
    unbounded. This is the fix.
-6. **Save** — stock `SaveImage`, plus the hidden inputs from §9.
+**No save stage.** Saving is the Preview node's job (§2, §7).
 
 ### First-pass cache — the biggest workflow win
 
@@ -435,6 +463,19 @@ Terminal node, `AnimaFlow/Anima`, one DOM widget.
   misaligns, and the wipe must cross the same framing on both sides.
 - Per-pane labels naming which output each side is, so a wipe is never ambiguous.
 
+### 7a. Save — this node owns it
+
+`OUTPUT_NODE = True`, and the hidden **`PROMPT` / `EXTRA_PNGINFO`** inputs are declared *here*
+because this is where embed-workflow happens (§9's third divergence — the deleted port never declared
+them anywhere, making its saves worse than stock `SaveImage`).
+
+- **On by default**, since it is the only node in the pair that saves.
+- `which`: the shown image / both compared / **every wired input**. The last is the interesting one —
+  it lands a whole comparison set in one run.
+- Filename tokens: **`%stage%`** (`base`/`mid`/`final`) is the one that justifies putting save here at
+  all, plus `%seed%`, `%date:FMT%`, `%counter:N%`, `%width%`, `%height%`.
+- Backend is stock `SaveImage`, not ComfyUI-Image-Saver (§4).
+
 Sizing follows the DOM-widget mechanism the pack already uses (rAF-timed
 `measureContentHeight`, width-passthrough `setSize`, grow-biased `refitNode`; legacy
 `computeSize`/`getHeight` with `computeLayoutSize` kept only for Nodes 2.0 forward-compat).
@@ -463,8 +504,17 @@ we ship:
   upscale:      { enabled: false, scale_by: 2.0, steps: 20, inherit_sampler_settings: true,
                   cfg, sampler_name, scheduler, denoise: 0.2, usdu: {...} },
   postprocess:  { enabled: false, fit: { mode, max_long_edge: 2048, max_megapixels: 4.0, method } },
-  save:         { enabled: true, filename, path, extension },
-  preview:      { compare_enabled: true, compare_a: "base", compare_b: "final" } }
+  detailer:     { blocks: [ { id, label, detect_prompt, detect_count, threshold, ...refine } ],
+                  order: [ ...ids ] } }          // NO save block -- that's the Preview node's state
+```
+
+The Preview node keeps its **own** settings blob, same hidden-serialized-STRING pattern:
+
+```
+{ schema, version,
+  compare: { enabled: true, a: "base", b: "final" },
+  save:    { enabled: true, which: "every wired input", extension: "png",
+             path, filename, embed_workflow: true } }
 ```
 
 `shift = 3.0` is Anima's recommended default and is always applied
@@ -494,7 +544,9 @@ From `BACKLOG.md` §1a. All three were in files that no longer exist; recover th
 3. **Saved images must carry workflow + prompt metadata.** The old port declared no hidden
    `PROMPT` / `EXTRA_PNGINFO`, making its saves *worse than stock `SaveImage`* — dragging a saved
    PNG back into ComfyUI restored nothing. **Never fixed.** Declaring the two hidden inputs and
-   passing them through is the whole fix, and it is also why we don't need Image-Saver.
+   passing them through is the whole fix, and it is also why we don't need Image-Saver. **They belong
+   on the Preview node**, since that is where saving lives now (§2, §7a) — putting them on the
+   Generator would be declaring them where nothing writes a file.
 
 ---
 
@@ -525,7 +577,7 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - **Freeze the `required` key order** in a regression test, as the old
   `test_anima_generator_helpers.py` did — this is the append-only rule made enforceable.
 - **Stage gating**: each stage disabled ⇒ its output passes the previous image through; detailer
-  with no `segs` ⇒ inert, not an error.
+  with every block off, or with Impact absent ⇒ inert, not an error.
 - **Resource resolution**: flag on ⇒ pickers win and sockets are ignored; flag off with no
   `MODEL` ⇒ a readable error, not an `AttributeError` mid-sample.
 - **Soft imports**: Spectrum/USDU absent ⇒ that section disabled, generation otherwise
@@ -542,11 +594,13 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 **Open — needs a decision before building:**
 
 - Which Spectrum repo actually ships `AnimaModGuidance` (§4).
-- Whether the popup settings dialogs are one tabbed overlay or one per stage. Upstream ships
-  one dialog per stage (`web/js/aio/{sampler,detailer,save,postprocess,stage}_settings_dialog.js`)
-  — ~130k of JS across them, which is a lot to lazily import. **The mockup implements the single
-  tabbed overlay**, with a lit dot per enabled stage on the tab strip so "what's on" is readable
-  without opening anything. Confirm from the mockup.
+- ~~one tabbed overlay or one dialog per stage~~ — **settled: neither.** Settings are a **popover
+  anchored to the row you clicked**, which is what the Control Panel already does
+  (`openOverlayWithZoom(..., "below")`). It went modal → right-side drawer → row popover across three
+  review passes: the modal covered the graph being tuned, and the drawer still put the controls far
+  from the thing they belong to. The popover also deletes the "which stage am I editing" problem, so
+  there is no tab strip. **Reuse the Control Panel's overlay helper**, including its viewport-flip
+  logic — do not reimplement the anchoring.
 - Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
   are both settled (§6a).
 
