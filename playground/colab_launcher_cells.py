@@ -940,9 +940,11 @@ sec_launch = widgets.VBox([
     pinggy_token, pinggy_remember,
     widgets.HBox([fe_on, fe_ver]),
     widgets.HTML("<small>Off = whatever <code>requirements.txt</code> pinned for the checked-out "
-                 "ref. On = boot that frontend build instead (Restart to apply). Handy for the "
-                 "Nodes 2.0 subgraph/resize regressions: <code>@1.45.21</code> predates them, "
-                 "<code>@1.48.5</code> fixes them, master pins <code>1.47.10</code> which has them."),
+                 "ref. On = boot that frontend build instead (Restart to apply). Use "
+                 "<code>@1.45.21</code> if you promote custom-node widgets onto subgraphs: 1.47.10 "
+                 "deliberately filters <code>canvasOnly</code> widgets out of the subgraph promotion "
+                 "list and the Parameters panel (frontend PRs #12957/#13870/#13868), which hides "
+                 "e.g. the Pixaroma Resolution panel on the subgraph face. Still true in 1.48.5."),
     widgets.HBox([launch_btn, restart_btn, stop_btn]),
     url_html, launch_log.w])
 
