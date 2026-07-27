@@ -55,19 +55,44 @@ export const LOADER_CATALOG = ["unet", "vae", "clip"];
  * chain instead of returning a fixed string (see that function's doc
  * comment — this is the one genuinely unresolved question in the whole
  * design, per docs/control-panel-design.md §5).
+ *
+ * `pickerList`, where present, is a SEPARATE concern from `outputType`: it
+ * marks a kind whose VALUE is chosen from a live option list (rendered as
+ * the ◀ [ value ▾ ] ▶ stepper, wired to `getKnownLists()`/`NODE_DEF_SOURCE`
+ * below) — always equal to the kind's own key, which doubles as the lookup
+ * key into both. `sampler`/`scheduler` happen to have BOTH `outputType:
+ * "combo"` (their wire really does carry ComfyUI's COMBO type) AND
+ * `pickerList` (their value is also list-picked) — easy to conflate since
+ * they always agree for those two. `unet`/`vae`/`clip` are exactly the case
+ * that separates them: their value is ALSO list-picked (`pickerList` set),
+ * but their wire is a fixed `MODEL`/`VAE`/`CLIP` socket type, never the
+ * combo sentinel. Use `isPickerKind` below for "does this row need a
+ * stepper/option-list UI", and `outputType`/`outputTypeForRow` ONLY for "what
+ * does this row's wire actually carry" — never substitute one check for the
+ * other.
  */
 export const KIND_META = {
-  sampler: { menu: "Sampler", outputType: "combo", combo: "sampler", hasGear: false, panel: "control" },
-  scheduler: { menu: "Scheduler", outputType: "combo", combo: "scheduler", hasGear: false, panel: "control" },
+  sampler: { menu: "Sampler", outputType: "combo", pickerList: "sampler", hasGear: false, panel: "control" },
+  scheduler: { menu: "Scheduler", outputType: "combo", pickerList: "scheduler", hasGear: false, panel: "control" },
   seed: { menu: "Seed", outputType: "INT", hasGear: true, panel: "control" },
   int: { menu: "Int", outputType: "INT", hasGear: false, panel: "control" },
   float: { menu: "Float", outputType: "FLOAT", hasGear: false, panel: "control" },
   latent: { menu: "Empty latent", outputType: "LATENT", hasGear: true, panel: "control" },
-  unet: { menu: "UNET loader", outputType: "MODEL", combo: "unet", hasGear: true, panel: "loader" },
-  vae: { menu: "VAE loader", outputType: "VAE", combo: "vae", hasGear: false, panel: "loader" },
-  clip: { menu: "CLIP loader", outputType: "CLIP", combo: "clip", hasGear: true, panel: "loader" },
+  unet: { menu: "UNET loader", outputType: "MODEL", pickerList: "unet", hasGear: true, panel: "loader" },
+  vae: { menu: "VAE loader", outputType: "VAE", pickerList: "vae", hasGear: false, panel: "loader" },
+  clip: { menu: "CLIP loader", outputType: "CLIP", pickerList: "clip", hasGear: true, panel: "loader" },
   auto: { menu: "Auto", outputType: "*", hasGear: false, panel: "both" },
 };
+
+/** Whether `kindMeta` renders/wires as a picker row (a stepper driven off a
+ * live option list) — see the `KIND_META` doc comment above for why this
+ * must NEVER be inferred from `outputType`. `NODE_DEF_SOURCE`/a live
+ * `getKnownLists()` result are both keyed by the SAME string as
+ * `kindMeta.pickerList` (== the kind's own key), so callers can pass
+ * `row.kind` straight into either once this returns true. */
+export function isPickerKind(kindMeta) {
+  return !!(kindMeta && kindMeta.pickerList);
+}
 
 /**
  * Where each combo-backed kind's option list lives in ComfyUI's own node

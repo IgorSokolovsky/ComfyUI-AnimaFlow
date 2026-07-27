@@ -62,6 +62,8 @@ import {
   ZW,
   mkRow,
   assignSlot,
+  isPickerKind,
+  outputTypeForRow,
 } from "./rows.mjs";
 
 import {
@@ -424,6 +426,30 @@ test("buildRowElement: the Loader Panel (reorder:false) never builds a grip", ()
   assert.ok(refs.gear); // unet HAS a gear (weight_dtype)
 });
 
+// Driven off KIND_META/isPickerKind itself (not a hardcoded kind list) so a
+// newly added picker kind is automatically covered here -- this is the exact
+// class of bug that shipped: unet/vae/clip have `pickerList` set but their
+// `outputType` is a plain socket type (MODEL/VAE/CLIP), not the "combo"
+// sentinel, so a check against `outputType` alone silently skips them and
+// they fall through to a bare, non-interactive value span.
+for (const kind of Object.keys(KIND_META)) {
+  const meta = KIND_META[kind];
+  if (!isPickerKind(meta)) {
+    continue;
+  }
+  test(`buildRowElement/paintRow: picker kind "${kind}" gets a real stepper + caret + non-empty value (not just a bare span)`, () => {
+    const doc = makeDocStub();
+    const panelConfig = meta.panel === "loader" ? LOADER_PANEL_CONFIG : CONTROL_PANEL_CONFIG;
+    const row = mkRow(kind, { value: "installed_option" });
+    const refs = buildRowElement(doc, row, meta, panelConfig);
+    assert.ok(refs.stepLeft && refs.stepRight, `${kind}: missing steppers`);
+    assert.ok(refs.combo && refs.caret, `${kind}: missing combo/caret`);
+    assert.ok(refs.val, `${kind}: missing value span`);
+    paintRow(refs, row, ["installed_option", "other_option"], null);
+    assert.equal(refs.val.textContent, "installed_option", `${kind}: value not painted`);
+  });
+}
+
 test("paintRow: combo row shows the current value from the option list", () => {
   const doc = makeDocStub();
   const row = mkRow("sampler", { value: "dpmpp_2m" });
@@ -583,6 +609,82 @@ test("syncRows builds one DOM row widget per state row PLUS the add-row widget",
   assert.equal(node.widgets.length, 5);
 });
 
+// This is the actual mount path (`index.js`'s setupNode/restoreNode both
+// call syncRows) -- asserting through it, rather than calling
+// `injectStyles`/`paintRow` directly, is what would have caught both the
+// missing CSS injection AND the loader-row picker-predicate bug: the
+// original 41 assertions all called these building blocks directly with
+// correct-by-construction args and never actually exercised the mount path.
+
+test("syncRows (the mount path) actually injects the stylesheet -- would have caught Bug 1", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub(); // freshly made -- injectStyles NOT pre-called
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  assert.equal(doc.getElementById("wtn-controls-style"), null);
+  syncRows(node, ctx);
+  assert.ok(doc.getElementById("wtn-controls-style"), "mount path never injected the stylesheet");
+});
+
+test("syncRows (mount path): every Loader Panel row builds a real picker (stepper), not a bare value span -- would have caught Bug 2", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["flux_unet.safetensors"], vae: ["ae.safetensors"], clip: ["clip_l.safetensors"] }),
+  });
+  syncRows(node, ctx);
+  node._ctrlRows.forEach((entry) => {
+    assert.ok(entry.refs.stepLeft && entry.refs.combo, `${entry.kind}: no picker built`);
+    assert.notEqual(entry.refs.val.textContent, "", `${entry.kind}: value area is empty`);
+  });
+});
+
+test("syncRows (mount path): a Loader Panel row whose class isn't installed shows 'unavailable', never a blank value -- would have caught Bug 2", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { getKnownLists: () => ({}) }); // nothing installed
+  syncRows(node, ctx);
+  node._ctrlRows.forEach((entry) => {
+    assert.equal(entry.refs.val.textContent, "unavailable", `${entry.kind}: expected 'unavailable', got empty/blank`);
+    assert.ok(entry.refs.root.classList.contains("wtn-ctl-disabled"));
+  });
+});
+
+test("syncRows (mount path): the panel_state WIDGET (not just node.properties) reflects the rows actually built -- would have caught Bug 3", () => {
+  const node = makeFakeNode(); // widget starts at Python's literal default "{}"
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  assert.equal(getStateWidget(node).value, "{}");
+  syncRows(node, ctx);
+  const persisted = JSON.parse(getStateWidget(node).value);
+  assert.equal(persisted.rows.length, 3);
+  assert.deepEqual(persisted.rows.map((r) => r.kind).sort(), ["clip", "unet", "vae"]);
+});
+
+test("syncRows (mount path): an explicitly emptied panel (rows:[]) is NOT resurrected by the widget-persist fix", () => {
+  const node = makeFakeNode(JSON.stringify({ version: 1, rows: [] }));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx);
+  assert.equal(node._ctrlRows.length, 0);
+  assert.deepEqual(JSON.parse(getStateWidget(node).value).rows, []);
+});
+
+test("syncOutputs: a Loader Panel row's narrowed output type is the plain MODEL/VAE/CLIP socket type, never the COMBO strategy value", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["a"], vae: ["b"], clip: ["c"] }),
+  });
+  syncRows(node, ctx);
+  const state = ensureState(node, ctx);
+  state.rows.forEach((row) => {
+    const t = node.outputs[row.slot - 1].type;
+    assert.equal(t, outputTypeForRow(row, ctx.getKnownLists()));
+    assert.notEqual(t, "COMBO");
+    assert.ok(["MODEL", "VAE", "CLIP"].includes(t), `unexpected output type ${t} for kind ${row.kind}`);
+  });
+});
+
 test("syncOutputs sizes node.outputs to the HIGHEST slot in use, not to rows.length", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
@@ -740,6 +842,23 @@ test("combo row: clicking the value opens the option list, and picking one close
   fire(opts[1], "click");
   assert.equal(refs.row.value, "karras");
   closeActiveOverlay();
+});
+
+test("Loader Panel row (unet): clicking the steppers cycles the value and persists it -- the exact interaction that was dead before the picker-predicate fix", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["flux1-dev.safetensors", "sdxl_base.safetensors"] }),
+  });
+  syncRows(node, ctx); // default loader rows: unet/vae/clip
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.ok(unetEntry.refs.stepRight, "no stepper wired for the unet row");
+  const before = unetEntry.refs.row.value;
+  fire(unetEntry.refs.stepRight, "click");
+  assert.notEqual(unetEntry.refs.row.value, before);
+  assert.ok(["flux1-dev.safetensors", "sdxl_base.safetensors"].includes(unetEntry.refs.row.value));
+  assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet").value, unetEntry.refs.row.value);
 });
 
 test("seed row: mode button toggles to fixed and back to lastMode; N rolls a new seed and parks at fixed", () => {

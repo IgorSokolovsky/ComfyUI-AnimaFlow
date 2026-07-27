@@ -54,7 +54,7 @@
  * import lands in time.
  */
 
-import { AFTER_LETTER, formatLatentValue, formatNumericValue, numericPercent } from "./rows.mjs";
+import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
 
 const STYLE_ID = "wtn-controls-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -329,7 +329,7 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
 
   if (row.kind === "auto") {
     // No value area at all -- an unresolved row has nothing to show yet.
-  } else if (kindMeta && kindMeta.outputType === "combo") {
+  } else if (isPickerKind(kindMeta)) {
     const stepper = el(doc, "div", "wtn-ctl-stepper");
     const left = el(doc, "span", "wtn-ctl-arrow wtn-ctl-left");
     const combo = el(doc, "div", "wtn-ctl-combo");
@@ -367,9 +367,10 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     rowEl.appendChild(val);
     Object.assign(refs, { val, dim });
   } else {
-    // unet / vae / clip / sampler / scheduler with a plain string value and
-    // no list yet resolved shouldn't happen (handled above for combo kinds),
-    // but keep a safe fallback so an unexpected kind never crashes render.
+    // Every catalog kind is handled above (picker kinds -- sampler/scheduler/
+    // unet/vae/clip -- via isPickerKind, seed/int/float/latent by name), so
+    // this only fires for a genuinely unexpected kind -- keep a safe fallback
+    // so that never crashes render.
     const val = el(doc, "span", "wtn-ctl-val");
     rowEl.appendChild(val);
     refs.val = val;
@@ -404,7 +405,7 @@ export function paintRow(refs, row, optionList, disabledReason) {
     return;
   }
 
-  if (kindMeta && kindMeta.outputType === "combo") {
+  if (isPickerKind(kindMeta)) {
     const list = Array.isArray(optionList) ? optionList : [];
     const idx = Math.max(0, list.indexOf(row.value));
     refs.val.textContent = list.length ? String(list[idx] ?? list[0]) : (disabledReason ? "unavailable" : "");
@@ -454,6 +455,15 @@ export function buildAddRow(doc, label) {
 export function openOverlay(doc, anchorEl, contentEl, placement, onClose) {
   const win = (doc && doc.defaultView) || (typeof window !== "undefined" ? window : null);
   const overlay = el(doc, "div", "wtn-ctl-overlay wtn");
+  // Belt-and-suspenders: `.wtn-ctl-overlay`'s `position: fixed` normally
+  // comes from the injected stylesheet, but if that injection is ever
+  // missing/late/fails, a `position: static` overlay lays out as a block at
+  // the very bottom of the page -- invisible, not merely unstyled, and every
+  // click on it silently does nothing a user can see (exactly what made
+  // "+ Add control" look dead before `injectStyles` was wired up). Setting
+  // it inline here means a stylesheet failure can never hide a menu again.
+  overlay.style.position = "fixed";
+  overlay.style.zIndex = "10020";
   overlay.appendChild(contentEl);
   const body = doc.body || doc;
   body.appendChild(overlay);

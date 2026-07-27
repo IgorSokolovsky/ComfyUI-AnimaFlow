@@ -67,6 +67,7 @@ import {
   RATIOS,
   TIERS,
   NODE_DEF_SOURCE,
+  isPickerKind,
   normalizeState,
   defaultState,
   addRow,
@@ -85,6 +86,7 @@ import {
 } from "./rows.mjs";
 
 import {
+  injectStyles,
   buildRowElement,
   buildAddRow,
   paintRow,
@@ -118,6 +120,13 @@ function parseWidgetValue(node) {
   }
 }
 
+/** Whether `raw` (the parsed widget JSON, or garbage) already carries an
+ * explicit `rows` array — the one bit `resolveState`/`ensureState`/
+ * `restoreStateFromWidget` all need to agree on (see their doc comments). */
+function hasSavedRows(raw) {
+  return !!(raw && typeof raw === "object" && Array.isArray(raw.rows));
+}
+
 /**
  * `defaultState(panelKind)` if `raw` has no `rows` ARRAY at all (a brand
  * new node: Python's declared widget default is the literal string `"{}"`,
@@ -130,10 +139,23 @@ function parseWidgetValue(node) {
  * re-populating on the next reload.
  */
 function resolveState(raw, panelKind) {
-  if (raw && typeof raw === "object" && Array.isArray(raw.rows)) {
+  if (hasSavedRows(raw)) {
     return normalizeState(raw, panelKind);
   }
   return defaultState(panelKind);
+}
+
+/** Mirror `state` into the hidden `panel_state` widget's `.value` -- the
+ * only thing that actually reaches `nodes/controls/*.py` / survives into
+ * `widgets_values`. Private: `persistState` (below) is the public "persist
+ * after a mutation" entry point; `ensureState`/`restoreStateFromWidget` call
+ * this directly (never `persistState`, which would recurse back into
+ * `ensureState`) for the one case they themselves need to write. */
+function writeStateToWidget(node, state) {
+  const w = getStateWidget(node);
+  if (w) {
+    w.value = JSON.stringify(state);
+  }
 }
 
 /** The live working state for `node`, initializing it from the hidden
@@ -141,7 +163,19 @@ function resolveState(raw, panelKind) {
  * `node.properties` was cleared) — never re-parses on subsequent calls, so
  * row object identities stay stable across repeated calls in the same
  * session (this is what lets `applyResolvedKind` mutate a row in place and
- * have every existing DOM ref immediately see it). */
+ * have every existing DOM ref immediately see it).
+ *
+ * If the widget's raw value had NO `rows` array yet (`!hasSavedRows` --
+ * Python's literal `"{}"` default on a brand-new node), the materialized
+ * default is written straight back to the widget before returning. Without
+ * this, a freshly-placed Loader Panel builds 3 real rows in the UI but the
+ * `panel_state` widget itself keeps carrying `"{}"` — `nodes/controls/
+ * *.py`'s `rows_by_slot` finds nothing in that, so every output would
+ * silently emit 0 the first time this node is ever queued, and nothing
+ * survives a save (the widget is what serializes). Never fires for a
+ * genuinely emptied panel: that state already has an explicit `rows: []`,
+ * which `hasSavedRows` treats as "already saved" and skips entirely -- this
+ * never resurrects a row the user deliberately removed. */
 export function ensureState(node, ctx) {
   if (!node.properties) {
     node.properties = {};
@@ -151,8 +185,12 @@ export function ensureState(node, ctx) {
   if (existing && Array.isArray(existing.rows)) {
     return existing;
   }
-  const state = resolveState(parseWidgetValue(node), ctx.panelConfig.key);
+  const raw = parseWidgetValue(node);
+  const state = resolveState(raw, ctx.panelConfig.key);
   node.properties[prop] = state;
+  if (!hasSavedRows(raw)) {
+    writeStateToWidget(node, state);
+  }
   return state;
 }
 
@@ -160,13 +198,19 @@ export function ensureState(node, ctx) {
  * -- called from `onConfigure` (after litegraph has restored the real saved
  * `widgets_values`, including this exact widget) so a restored workflow's
  * rows/slots are rebuilt from what was actually saved, not whatever
- * `ensureState` may have already defaulted to during `onNodeCreated`. */
+ * `ensureState` may have already defaulted to during `onNodeCreated`. Same
+ * "write the materialized default back if the raw value had no `rows`"
+ * contract as `ensureState` above, for the same reason. */
 export function restoreStateFromWidget(node, ctx) {
-  const state = resolveState(parseWidgetValue(node), ctx.panelConfig.key);
+  const raw = parseWidgetValue(node);
+  const state = resolveState(raw, ctx.panelConfig.key);
   if (!node.properties) {
     node.properties = {};
   }
   node.properties[ctx.panelConfig.stateProp] = state;
+  if (!hasSavedRows(raw)) {
+    writeStateToWidget(node, state);
+  }
   return state;
 }
 
@@ -175,10 +219,7 @@ export function restoreStateFromWidget(node, ctx) {
  * `nodes/controls/*.py` and what persists into `widgets_values`). */
 export function persistState(node, ctx) {
   const state = ensureState(node, ctx);
-  const w = getStateWidget(node);
-  if (w) {
-    w.value = JSON.stringify(state);
-  }
+  writeStateToWidget(node, state);
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
   }
@@ -889,7 +930,7 @@ function wireRow(node, ctx, row, refs) {
   if (row.kind === "auto") {
     return;
   }
-  if (kindMeta.outputType === "combo") {
+  if (isPickerKind(kindMeta)) {
     wireComboRow(node, ctx, row, refs);
   } else if (row.kind === "seed") {
     wireSeedRow(node, ctx, row, refs);
@@ -939,28 +980,32 @@ function repaintRows(node, ctx) {
     if (!entry.refs) {
       return;
     }
-    const row = entry.refs.row;
-    const kindMeta = KIND_META[row.kind] || KIND_META.auto;
-    let optionList = null;
-    let disabledReason = null;
-    if (kindMeta.outputType === "combo") {
-      optionList = lists[row.kind] || null;
-      if (!optionList) {
-        disabledReason = `${(NODE_DEF_SOURCE[row.kind] && NODE_DEF_SOURCE[row.kind].className) || row.kind} not installed`;
-      } else if (optionList.length && !optionList.includes(row.value)) {
-        // A freshly-added combo row (or one whose saved value fell off the
-        // installed list) has nothing valid to show -- adopt the first
-        // option, same as a real ComfyUI combo widget always showing SOME
-        // current value rather than a blank one.
-        row.value = optionList[0];
-        adoptedDefault = true;
+    try {
+      const row = entry.refs.row;
+      const kindMeta = KIND_META[row.kind] || KIND_META.auto;
+      let optionList = null;
+      let disabledReason = null;
+      if (isPickerKind(kindMeta)) {
+        optionList = lists[row.kind] || null;
+        if (!optionList) {
+          disabledReason = `${(NODE_DEF_SOURCE[row.kind] && NODE_DEF_SOURCE[row.kind].className) || row.kind} not installed`;
+        } else if (optionList.length && !optionList.includes(row.value)) {
+          // A freshly-added combo row (or one whose saved value fell off the
+          // installed list) has nothing valid to show -- adopt the first
+          // option, same as a real ComfyUI combo widget always showing SOME
+          // current value rather than a blank one.
+          row.value = optionList[0];
+          adoptedDefault = true;
+        }
       }
+      paintRow(entry.refs, row, optionList, disabledReason);
+      const typeClass = row.kind === "auto" ? "any" : (kindMeta.outputType === "combo" ? "combo" : kindMeta.outputType.toLowerCase());
+      entry.refs.dot.className = `wtn-ctl-dot t-${typeClass}`;
+      const typeLabel = row.kind === "auto" ? "*" : (kindMeta.outputType === "combo" ? "COMBO" : kindMeta.outputType);
+      entry.refs.dot.title = `${typeLabel} · slot ${row.slot}`;
+    } catch (err) {
+      console.error(`[AnimaFlow Controls] failed to repaint row (kind=${entry.kind}, id=${entry.id}):`, err);
     }
-    paintRow(entry.refs, row, optionList, disabledReason);
-    const typeClass = row.kind === "auto" ? "any" : (kindMeta.outputType === "combo" ? "combo" : kindMeta.outputType.toLowerCase());
-    entry.refs.dot.className = `wtn-ctl-dot t-${typeClass}`;
-    const typeLabel = row.kind === "auto" ? "*" : (kindMeta.outputType === "combo" ? "COMBO" : kindMeta.outputType);
-    entry.refs.dot.title = `${typeLabel} · slot ${row.slot}`;
   });
   if (node._ctrlAddWidget && node._ctrlAddWidget.element) {
     const maxRows = MAX_ROWS[ctx.panelConfig.key] || MAX_ROWS.control;
@@ -990,20 +1035,31 @@ function rebuildRowWidgets(node, ctx) {
 
   const entries = [];
   state.rows.forEach((row) => {
-    const kindMeta = KIND_META[row.kind] || KIND_META.auto;
-    const refs = buildRowElement(doc, row, kindMeta, ctx.panelConfig);
-    const widget = node.addDOMWidget(`ctrl_row_${row.id}`, "ctrl_row", refs.root, {
-      serialize: false,
-      getMinHeight: () => ROW_H,
-    });
-    widget.serialize = false;
-    if (widget.options) {
-      widget.options.serialize = false;
+    // One row's build/wire is wrapped on its OWN so a single bad row (a
+    // future kind with a gap in KIND_META, an addDOMWidget quirk under a
+    // real ComfyUI build, etc.) degrades to that one row missing rather
+    // than throwing out of the whole `forEach` -- which would silently
+    // skip every remaining row AND the "+ Add" strip built right after this
+    // loop (that exact failure mode is what made "+ Add loader" look dead
+    // alongside the empty loader rows during the original bug report).
+    try {
+      const kindMeta = KIND_META[row.kind] || KIND_META.auto;
+      const refs = buildRowElement(doc, row, kindMeta, ctx.panelConfig);
+      const widget = node.addDOMWidget(`ctrl_row_${row.id}`, "ctrl_row", refs.root, {
+        serialize: false,
+        getMinHeight: () => ROW_H,
+      });
+      widget.serialize = false;
+      if (widget.options) {
+        widget.options.serialize = false;
+      }
+      widget.computeSize = () => [node.size[0], ROW_H];
+      widget.computeLayoutSize = () => ({ minHeight: ROW_H, minWidth: 1 });
+      wireRow(node, ctx, row, refs);
+      entries.push({ id: row.id, kind: row.kind, widget, refs });
+    } catch (err) {
+      console.error(`[AnimaFlow Controls] failed to build/wire row (kind=${row.kind}, id=${row.id}):`, err);
     }
-    widget.computeSize = () => [node.size[0], ROW_H];
-    widget.computeLayoutSize = () => ({ minHeight: ROW_H, minWidth: 1 });
-    wireRow(node, ctx, row, refs);
-    entries.push({ id: row.id, kind: row.kind, widget, refs });
   });
   node._ctrlRows = entries;
 
@@ -1033,17 +1089,30 @@ function rebuildRowWidgets(node, ctx) {
  * changed) or a full rebuild (row widgets + listeners recreated to match
  * the new list). Always resyncs output slots/types and re-parks dots
  * afterward.
+ *
+ * `injectStyles(ctx.doc)` runs FIRST, unconditionally, on every call --
+ * `index.js`'s `setupNode`/`restoreNode` (fresh node / node restored from a
+ * saved workflow) both call `syncRows` before any row DOM exists, so this is
+ * the one choke point that guarantees the `.wtn-ctl-*` stylesheet lands
+ * before `rebuildRowWidgets` ever appends a row element -- injectStyles is
+ * idempotent (`STYLE_ID` guard in render.mjs), so calling it on every
+ * `syncRows` (including the cheap repaint-only path) is free.
  */
 export function syncRows(node, ctx) {
+  injectStyles(ctx.doc);
   const state = ensureState(node, ctx);
   const sig = rowSignature(state);
-  if (node._ctrlRowSig === sig && node._ctrlRows) {
-    repaintRows(node, ctx);
-  } else {
-    node._ctrlRowSig = sig;
-    rebuildRowWidgets(node, ctx);
+  try {
+    if (node._ctrlRowSig === sig && node._ctrlRows) {
+      repaintRows(node, ctx);
+    } else {
+      node._ctrlRowSig = sig;
+      rebuildRowWidgets(node, ctx);
+    }
+    syncOutputs(node, ctx);
+  } catch (err) {
+    console.error("[AnimaFlow Controls] syncRows failed:", err);
   }
-  syncOutputs(node, ctx);
 }
 
 // ---------------------------------------------------------------------------
