@@ -77,7 +77,9 @@ test("isOwnedCategory is true for every AnimaFlow topic prefix", () => {
   assert.equal(OWNED_CATEGORY_PREFIX, "AnimaFlow/");
   assert.equal(isOwnedCategory("AnimaFlow/anima"), true);
   assert.equal(isOwnedCategory("AnimaFlow/anima_prompt"), true);
-  assert.equal(isOwnedCategory("AnimaFlow/panel"), true);
+  // Prefix match, not a lookup against a fixed topic list -- any future
+  // `AnimaFlow/<topic>` group is owned too.
+  assert.equal(isOwnedCategory("AnimaFlow/some_future_topic"), true);
 });
 
 test("isOwnedCategory is false for another pack's category", () => {
@@ -104,8 +106,8 @@ test("isOwnedCategory does not match a foreign category that merely CONTAINS the
 // =========================================================================
 
 test("resolveOwnership is true via the PRIMARY signal: className present in ownedNames", () => {
-  const owned = new Set(["PromptCombiner", "SceneCreator"]);
-  assert.equal(resolveOwnership({ className: "PromptCombiner", category: "who knows" }, owned), true);
+  const owned = new Set(["PromptRulesText", "AnimaGenerator"]);
+  assert.equal(resolveOwnership({ className: "PromptRulesText", category: "who knows" }, owned), true);
 });
 
 test("resolveOwnership is true via the FALLBACK signal when className isn't in the set but the category is ours", () => {
@@ -114,12 +116,12 @@ test("resolveOwnership is true via the FALLBACK signal when className isn't in t
 });
 
 test("resolveOwnership is false for a foreign node: name not in the set AND category not ours", () => {
-  const owned = new Set(["PromptCombiner"]);
+  const owned = new Set(["PromptRulesText"]);
   assert.equal(resolveOwnership({ className: "PixaromaNote", category: "Pixaroma/Text" }, owned), false);
 });
 
 test("resolveOwnership is false for a core ComfyUI node", () => {
-  const owned = new Set(["PromptCombiner"]);
+  const owned = new Set(["PromptRulesText"]);
   assert.equal(resolveOwnership({ className: "CLIPTextEncode", category: "conditioning" }, owned), false);
 });
 
@@ -203,8 +205,8 @@ function makeDomWidgetRoot(textareas) {
 test("simulated beforeRegisterNodeDef populates ownedNames from AnimaFlow-categoried nodeData only", () => {
   const ownedNames = new Set();
   const registry = [
-    { name: "PromptCombiner", category: "AnimaFlow/anima_prompt" },
-    { name: "SceneCreator", category: "AnimaFlow/panel" },
+    { name: "PromptRulesText", category: "AnimaFlow/anima_prompt" },
+    { name: "AnimaGenerator", category: "AnimaFlow/anima" },
     { name: "PixaromaNote", category: "Pixaroma/Text" },
     { name: "CLIPTextEncode", category: "conditioning" },
   ];
@@ -216,17 +218,17 @@ test("simulated beforeRegisterNodeDef populates ownedNames from AnimaFlow-catego
   }
   assert.deepEqual(
     Array.from(ownedNames).sort(),
-    ["PromptCombiner", "SceneCreator"],
+    ["AnimaGenerator", "PromptRulesText"],
   );
 });
 
 // ---- Our own node: DOES get attached (DOM-widget-root textarea scan) ----
 
 test("a node whose category is AnimaFlow/anima_prompt IS attached to (DOM-widget-root textarea)", () => {
-  const ownedNames = new Set(["PromptCombiner"]);
+  const ownedNames = new Set(["PromptRulesText"]);
   const textarea = makeTextarea();
   const node = {
-    comfyClass: "PromptCombiner",
+    comfyClass: "PromptRulesText",
     constructor: { category: "AnimaFlow/anima_prompt" },
     widgets: [{ name: "template_dom", element: makeDomWidgetRoot([textarea]) }],
   };
@@ -261,7 +263,7 @@ test("a node whose category is AnimaFlow/anima IS attached to (native textarea w
 // ---- Another pack's node: does NOT get attached -------------------------
 
 test("a node from another pack (PixaromaNote, category Pixaroma/Text) is NOT attached to", () => {
-  const ownedNames = new Set(["PromptCombiner"]); // PixaromaNote never registers into this
+  const ownedNames = new Set(["PromptRulesText"]); // PixaromaNote never registers into this
   const textarea = makeTextarea();
   const node = {
     comfyClass: "PixaromaNote",
@@ -280,7 +282,7 @@ test("a node from another pack (PixaromaNote, category Pixaroma/Text) is NOT att
 // ---- A core ComfyUI node: does NOT get attached -------------------------
 
 test("a core ComfyUI node (CLIPTextEncode, category conditioning) is NOT attached to", () => {
-  const ownedNames = new Set(["PromptCombiner"]);
+  const ownedNames = new Set(["PromptRulesText"]);
   const inputEl = makeTextarea();
   const node = {
     comfyClass: "CLIPTextEncode",
@@ -300,10 +302,10 @@ test("a core ComfyUI node (CLIPTextEncode, category conditioning) is NOT attache
 // ---- Idempotency: a rescan of one of OUR nodes never double-attaches ----
 
 test("idempotency holds for our own nodes: rescanning (the 50ms rescan) does not double-attach", () => {
-  const ownedNames = new Set(["PromptCombiner"]);
+  const ownedNames = new Set(["PromptRulesText"]);
   const textarea = makeTextarea();
   const node = {
-    comfyClass: "PromptCombiner",
+    comfyClass: "PromptRulesText",
     constructor: { category: "AnimaFlow/anima_prompt" },
     widgets: [{ name: "template_dom", element: makeDomWidgetRoot([textarea]) }],
   };

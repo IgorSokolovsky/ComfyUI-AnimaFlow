@@ -11,8 +11,6 @@
 
 - **🎛️ Rule Builder** — a visual editor for **prompt-transform rules**. Define your character/outfit/scene logic as declarative rules; the engine rewrites your prompt before it's encoded. Works for **Anima labelled-prose** *and* **booru tags**. → [**docs/rule-builder.md**](docs/rule-builder.md)
 - **🧱 Prompt Studio** — a **block editor** for prompts: add/remove/reorder labelled blocks across positive/negative panes, **pin** a block to keep it verbatim (for LoRA triggers), optional rules correction. Outputs plain `STRING`.
-- **✍️ Prompt tools** — Prompt Builder (templated `{wildcards}` → live fields) and Prompt Combiner (named sockets → one prompt).
-- **🎬 Scene & panel tools** — Scene Creator, LLM Panels, Panel Parser, Save Panel (metadata) — a small webtoon/comic pipeline.
 - **🌸 Anima helpers** — Anima Generator (six-stage pipeline), Conditioning Encode (artist mix), Detailer Align Hook, Image Scale, Preview.
 - **🗺️ Regional prompting** — draw rect/ellipse regions on a canvas → real `MASK` tensors, then apply a **per-region prompt** on top of a global one using ComfyUI-native conditioning masks. Up to 6 regions.
 - **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
@@ -34,15 +32,14 @@ pip install -r requirements.txt
 > [!IMPORTANT]
 > The custom-node folder **must be named `ComfyUI-AnimaFlow`** — the frontend loads its assets from `/extensions/ComfyUI-AnimaFlow/…`. If you rename it, the Rule Builder overlay and pickers won't load. (Cloning as above gives the right name automatically.)
 
-Nodes appear in the node picker under a single **`AnimaFlow`** category, grouped into three:
+Nodes appear in the node picker under a single **`AnimaFlow`** category, grouped into two:
 
 | Group | Nodes |
 |---|---|
-| `AnimaFlow/anima` | Anima Generator, Anima Conditioning Encode, Anima Region Mask Editor, Anima Regional Conditioning, Detailer Align Hook, Image Scale, Preview |
-| `AnimaFlow/anima_prompt` | Prompt Builder, Prompt Combiner, Prompt Rules (+ CLIP), Anima Prompt Studio |
-| `AnimaFlow/panel` | Scene Creator, LLM Panels, Panel Parser, Save Panel |
+| `AnimaFlow/anima` | Anima Loader, Anima Generator, Anima Conditioning Encode, Anima Region Mask Editor, Anima Regional Conditioning, Detailer Align Hook, Image Scale, Preview |
+| `AnimaFlow/anima_prompt` | Prompt Rules (+ CLIP), Anima Prompt Studio |
 
-Sixteen nodes in total; every one is catalogued with its inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
+Eleven nodes in total; every one is catalogued with its inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
 
 ---
 

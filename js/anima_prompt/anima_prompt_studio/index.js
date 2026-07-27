@@ -36,9 +36,10 @@
  *
  * `AnimaPromptStudio.compose()` is a thin passthrough returning a plain
  * `(positive, negative)` tuple (no `{"ui": {...}}` side-channel, unlike
- * `PromptCombiner`) — so there is no backend "last run" result to reflect
- * here. The LIVE PREVIEW strip is therefore ALWAYS the pure client-side,
- * uncorrected assembly (`core.mjs`'s `assemblePanePreview`), clearly
+ * e.g. Anima Generator's `onExecuted` preview) — so there is no backend
+ * "last run" result to reflect here. The LIVE PREVIEW strip is therefore
+ * ALWAYS the pure client-side, uncorrected assembly (`core.mjs`'s
+ * `assemblePanePreview`), clearly
  * labeled "(uncorrected)" whenever `rules_correction_enabled` is on
  * (`render.mjs`'s `renderPreview`). A debounced call to the existing
  * `/wtn/rules/preview` route for a truly-corrected live preview was

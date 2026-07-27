@@ -99,7 +99,7 @@ export function attachAutocomplete(el) {
       el.setSelectionRange(caretPos, caretPos);
     }
     // Let whatever mirrors this control's value into a hidden serialized
-    // widget (e.g. PromptBuilder's `input` listener) see the change too.
+    // widget (e.g. a DOM-widget node's own `input` listener) see the change too.
     el.dispatchEvent(new Event("input", { bubbles: true }));
     close();
     el.focus();

@@ -1,8 +1,9 @@
-"""AnimaFlow — ComfyUI custom nodes for webtoon creation utilities.
+"""AnimaFlow — ComfyUI custom nodes for the Anima model and prompt authoring.
 
-A toolkit of focused utility nodes for building webtoons: prompt builders,
-scene generators, and related helpers. Nodes are registered below via
-NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS, which ComfyUI reads at startup.
+A toolkit of focused utility nodes: prompt-rule transforms, the Anima Prompt
+Studio block editor, and the Anima-model generation/conditioning pipeline.
+Nodes are registered below via NODE_CLASS_MAPPINGS / NODE_DISPLAY_NAME_MAPPINGS,
+which ComfyUI reads at startup.
 
 Add a node:
   1. Implement its class (e.g. in a `nodes/` package).
@@ -20,12 +21,6 @@ from .nodes.anima.node_anima_preview import AnimaPreview
 from .nodes.anima.node_anima_region_mask_editor import AnimaRegionMaskEditor
 from .nodes.anima.node_anima_regional_conditioning import AnimaRegionalConditioning
 from .nodes.anima_prompt.node_anima_prompt_studio import AnimaPromptStudio
-from .nodes.panel.node_llm_panels import LLMPanels
-from .nodes.panel.node_panel_parser import PanelBatch
-from .nodes.anima_prompt.node_prompt_builder import PromptBuilder
-from .nodes.anima_prompt.node_prompt_combiner import PromptCombiner
-from .nodes.panel.node_save_panel import SavePanel
-from .nodes.panel.node_scene_creator import SceneCreator
 from .nodes.anima_prompt.prompt_rules import PromptRulesClip, PromptRulesText
 
 # Registers the `/wtn/rules/*` aiohttp routes as an import side effect (see
@@ -42,12 +37,6 @@ from .api import rules_api as _rules_api  # noqa: F401
 from .autocomplete import api as _autocomplete_api  # noqa: F401
 
 NODE_CLASS_MAPPINGS: dict[str, type] = {
-    "PromptBuilder": PromptBuilder,
-    "PromptCombiner": PromptCombiner,
-    "SceneCreator": SceneCreator,
-    "LLMPanels": LLMPanels,
-    "PanelBatch": PanelBatch,
-    "SavePanel": SavePanel,
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,
     "AnimaImageScaleByMultiple": AnimaImageScaleByMultiple,
@@ -61,12 +50,6 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
     "AnimaRegionalConditioning": AnimaRegionalConditioning,
 }
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
-    "PromptBuilder": "Prompt Builder",
-    "PromptCombiner": "Prompt Combiner",
-    "SceneCreator": "Scene Creator",
-    "LLMPanels": "LLM Panels",
-    "PanelBatch": "Panel Parser (Batch)",
-    "SavePanel": "Save Panel (metadata)",
     "PromptRulesClip": "Prompt Rules (CLIP)",
     "PromptRulesText": "Prompt Rules",
     "AnimaImageScaleByMultiple": "Anima Image Scale By Multiple",

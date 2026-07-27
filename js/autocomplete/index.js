@@ -5,7 +5,7 @@
 // one node type; it's a cross-node extension within the pack, the one
 // intentional exception to "one index.js per node" in this repo. It also
 // reaches into any of our own custom DOM-widget nodes' own rendered markup
-// (e.g. PromptBuilder's TEMPLATE/FIELDS textareas) so those get autocomplete
+// (e.g. Anima Prompt Studio's block textareas) so those get autocomplete
 // too without needing each node to opt in individually.
 //
 // IMPORTANT — pack-scoped, not graph-wide: `nodeCreated` fires for every
@@ -125,7 +125,7 @@ app.registerExtension({
 
     injectStyles();
     scanNode(node);
-    // Some DOM-widget nodes (e.g. PromptBuilder) build their inner
+    // Some DOM-widget nodes (e.g. Anima Prompt Studio) build their inner
     // textareas synchronously in `onNodeCreated`, which runs before this
     // hook's own body finishes for a freshly-placed node in some load
     // orders -- a short rescan catches anything that wasn't mounted yet

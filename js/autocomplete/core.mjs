@@ -154,8 +154,8 @@ export function tagToPromptText(tag) {
 // Pack ownership gate -- see index.js's top doc comment for the full
 // rationale (this used to be a pack-wide, graph-wide extension; it's now
 // scoped to AnimaFlow's own nodes only). Every node class in this repo
-// declares `CATEGORY = "AnimaFlow/<topic>"` in Python (anima / anima_prompt
-// / panel), which ComfyUI surfaces to the frontend as `nodeData.category`
+// declares `CATEGORY = "AnimaFlow/<topic>"` in Python (anima / anima_prompt),
+// which ComfyUI surfaces to the frontend as `nodeData.category`
 // at `beforeRegisterNodeDef` time and mirrors onto the registered node
 // type as `nodeType.category` (so `node.constructor?.category` reads the
 // same string off any live instance). Kept here, not in index.js, because
@@ -164,10 +164,10 @@ export function tagToPromptText(tag) {
 export const OWNED_CATEGORY_PREFIX = "AnimaFlow/";
 
 /** Is `category` (a `nodeData.category` or `node.constructor.category`
- * string) one of ours? Prefix match, not equality -- the three topics
- * (`AnimaFlow/anima`, `AnimaFlow/anima_prompt`, `AnimaFlow/panel`) all
- * qualify, and any future topic added under the same prefix is picked up
- * automatically with no code change here.
+ * string) one of ours? Prefix match, not equality -- the two topics
+ * (`AnimaFlow/anima`, `AnimaFlow/anima_prompt`) both qualify, and any
+ * future topic added under the same prefix is picked up automatically
+ * with no code change here.
  */
 export function isOwnedCategory(category) {
   return typeof category === "string" && category.startsWith(OWNED_CATEGORY_PREFIX);
@@ -202,7 +202,7 @@ export function resolveOwnership(identity, ownedNames) {
 }
 
 // Widget-NAME patterns this attaches to, per the plan: "ends in `_text`,
-// `prompt`, `positive`, `negative`" (`template` added too -- PromptBuilder's
+// `prompt`, `positive`, `negative`" (`template` added too, for any node whose
 // own field is literally named that). This is intentionally loose/generic:
 // any node in this pack (or, incidentally, any other pack sharing the
 // canvas) with a widget named like this gets autocomplete for free.

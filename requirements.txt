@@ -3,7 +3,7 @@
 # intentionally NOT pinned here to avoid clashing with ComfyUI's own versions.
 #
 # Add dependencies only as shipped code actually imports them. Nodes that need
-# HTTP use stdlib `urllib` (see nodes/panel/node_llm_panels.py) -- no `requests`.
+# HTTP should use stdlib `urllib` -- no `requests`.
 
 # Reads/writes the Rule Builder's character sheets (`rules/*.yaml`). Required at
 # RUNTIME, not just by tests: imported by nodes/anima_prompt/_rules_helpers.py

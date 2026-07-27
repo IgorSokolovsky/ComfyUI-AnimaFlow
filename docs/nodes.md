@@ -9,19 +9,7 @@ Every node in AnimaFlow, grouped by its node-picker category. All nodes are **Be
 
 ## `AnimaFlow/anima_prompt`
 
-Anima-specific prompt authoring — build, combine, and rule-transform prompts.
-
-### Prompt Builder
-Template-driven prompt authoring. Write a template with `{token}` placeholders and fill
-each token's value in per-field widgets; good as the single-node base prompt authoring tool.
-- **In:** `template` (multiline), `prompt_builder_state` (serialized field values, hidden by the UI)
-- **Out:** `prompt` (STRING — labelled prose), `data` (PROMPT_DATA; flat string on `data.prompt`)
-
-### Prompt Combiner
-Merges several **named connection inputs** (character, background, style, …) into one prompt
-via a template. Use it to fuse outputs of multiple upstream prompt/scene nodes.
-- **In:** `template` (multiline, e.g. `{character}, {background}`) + dynamic named sockets (the template's `{tokens}` become inputs; accept STRING or PROMPT_DATA)
-- **Out:** `prompt` (STRING), `data` (PROMPT_DATA) · also shows the combined text live on the node
+Anima-specific prompt authoring — rule-transform and block-compose prompts.
 
 ### Prompt Rules  ·  Prompt Rules (CLIP)
 Apply declarative **prompt-transform rules** (character sheets) to your positive/negative
@@ -44,41 +32,16 @@ other pack's text node.
 
 ---
 
-## `AnimaFlow/panel`
-
-The webtoon/comic panel pipeline — compose a scene, script it into panels, render each,
-save with metadata. (Scene, LLM, panel, and save nodes all share this one group.)
-
-### Scene Creator
-Deterministic multi-character **scene** composer: a template with `{wildcards}` plus reserved
-`{characters}` and `{backgrounds}` tokens filled from enabled per-item state. Assembles a
-structured scene into a labelled-prose document.
-- **In:** `template` (multiline), `scene_state` (per-item state, hidden by the UI) + dynamic wired sockets (incl. per-character outfit overrides)
-- **Out:** `scene` (STRING — labelled prose), `data` (PROMPT_DATA) · shows composed text + resolved slots on the node
-
-### LLM Panels
-Turns a story/scene **brief** into multi-panel labelled-prose text via an OpenAI-compatible
-chat endpoint (OpenRouter by default). Generates the panel script that feeds Panel Parser;
-supports story continuation across runs.
-- **In:** `brief` (multiline), `api_key`, `model` · *`target_panels`, `base_url`, `system_prompt`, `character_bible`, `previous_panels`, `synopsis`, `temperature`, `max_tokens`, `seed`*
-- **Out:** `panels_text`, `synopsis` (STRING)
-- Note: makes an outbound HTTPS call (stdlib `urllib`, 120 s timeout); raises with detail on error.
-
-### Panel Parser (Batch)
-Splits multi-panel labelled-prose text into a **per-panel list**, driving a once-per-panel
-CLIP → KSampler → Save run in one queue. Pairs downstream of LLM Panels.
-- **In:** `panels_text` (multiline) · *`delimiter_regex`, `story_delimiter_regex`, `start_index`*
-- **Out:** `panel`, `story`, `panel_index` (per-panel lists), `count` (INT) — `OUTPUT_IS_LIST`
-
-### Save Panel (metadata)
-Saves a rendered panel PNG with the **prompt/story embedded as PNG metadata** (never drawn on
-the image). Pairs with Panel Parser (runs once per panel). Honors `--disable-metadata`.
-- **In:** `images` (IMAGE), `filename_prefix` · *`prompt_text`, `story_text`, `panel_index`*
-- **Out:** none (output node — writes files to ComfyUI's output dir)
-
----
-
 ## `AnimaFlow/anima`
+
+### Anima Loader
+Picks the unet / vae / text-encoder in one node and outputs **plain `MODEL`/`CLIP`/`VAE`
+sockets** — no bundled context blob, no prompt-data coupling. Defaults are pre-selected for
+Anima (an `anima*` diffusion model, the Qwen-Image VAE, a Qwen text encoder). Loading is
+delegated to core's own `UNETLoader`/`CLIPLoader`/`VAELoader`.
+- **In:** `unet_name`, `vae_name`, `clip_name`, `clip_type` (def `qwen_image` — Anima's text
+  encoder is Qwen-based), `weight_dtype`
+- **Out:** `model` (MODEL), `clip` (CLIP), `vae` (VAE)
 
 ### Anima Generator
 A **decoupled sampler**: standard ComfyUI sockets in, a staged pipeline out. Broadcasts
@@ -153,7 +116,7 @@ conditioning from **any** source, not just the two nodes above.
 
 A booru **tag autocomplete** popup that attaches automatically to prompt-style text widgets
 across the whole pack (name-matched `prompt`/`positive`/`negative`/`_text`/`template`, or any
-multiline STRING box — including DOM-widget nodes like Prompt Builder). Tiered
+multiline STRING box — including DOM-widget nodes like Anima Prompt Studio). Tiered
 exact→prefix→substring search over bundled **Gelbooru** (primary) and **Danbooru** (top-up)
 data, ranked by popularity. No config — just start typing a tag.
 - Route: `GET /wtn/autocomplete?q=&limit=&category=`
