@@ -107,7 +107,9 @@ Three constraints, each load-bearing:
 `.claude/CLAUDE.md`; this one default is about which *loader* Anima needs, not about prompt
 format.
 
-LoRAs follow the same split — external stack when the flag is off, inline list when it is on (§5b).
+LoRAs split the same way, but not via a stack socket: externally they arrive already baked into
+`MODEL`/`CLIP` by Pixaroma's loader; inline mode gets its own LoRA list because there is no wire for
+that node to sit on (§5b).
 
 **Overlap with the Loader Panel is intentional, not redundant.** `AnimaLoaderPanel` already is
 a unet/vae/clip picker with real `MODEL`/`VAE`/`CLIP` outputs, and wiring it in is the better
@@ -194,7 +196,7 @@ socket's neighbours are how a user works out what it is for. (An earlier draft f
 | required | `use_internal_loaders` | `BOOLEAN` | §3 |
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
-| optional | `lora_stack` | `LORA_STACK` | a resource — applied to `model`+`clip` before conditioning. Ignored in inline mode. §5b |
+| optional | `lora_stack` | `LORA_STACK` | secondary path only — Pixaroma's loader patches `MODEL`/`CLIP` instead. Ignored in inline mode. §5b |
 | optional | `latent` | `LATENT` | size and batch; else from `settings.latent` |
 | optional | `seed` / `steps` / `cfg` | `INT`/`INT`/`FLOAT` | §5a — wired wins, per field |
 | optional | `sampler_name` / `scheduler` | `COMBO` | §5a |
@@ -230,51 +232,74 @@ KSampler correctly. So the panel can drive all five, not just the numerics.
 > input" dance entirely — their internal counterparts live in the settings JSON, not as widgets, so
 > there is nothing to convert and no widget-order exposure (`BACKLOG.md` §4).
 
-### 5b. LoRA — an external stack, plus an inline list when `use_internal_loaders` is on
+### 5b. LoRA — Pixaroma's node patches `MODEL`/`CLIP`; we only handle the inline case
 
-A `LORA_STACK` is a list of `(name, strength_model, strength_clip)`, applied through core
-`LoraLoader` before conditioning (`aio/model_preparation.py:219-241`). It is a **resource** — it
-mutates `model` and `clip` — so it sits with them, not with the detailer inputs.
+**Verified against `../ComfyUI-Pixaroma` at `5036814` (v1.4.62)** — pulled 2026-07-27 specifically to
+check this, because the previously-cloned `afd0d05` (v1.4.44) predated the node.
 
-**We do not build a LoRA node, and the Loader Panel gets no `lora` row.** Decided 2026-07-27: the
-user runs **Pixaroma's LoRA stacker**, which already does this well. A second implementation earns
-nothing, and in the Loader Panel it would have cost that node's one-row-one-slot invariant
-(`control-panel-design.md` §3b records why, so it isn't re-proposed).
+`PixaromaLoraLoader` (`nodes/node_lora_loader.py:26`) is a **loader/applier, not a stacker**:
 
-So LoRA reaches this node two ways, matching the resource split exactly:
+| | |
+|---|---|
+| in | `model` (required `MODEL`), `clip` (optional `CLIP`) |
+| out | `MODEL`, `CLIP`, `triggers` (`STRING`) |
 
-- **`use_internal_loaders` off** — the `lora_stack` socket, fed by any stacker.
-- **`use_internal_loaders` on ("inline")** — the node's own inline LoRA list, and the socket is
-  ignored along with `model`/`clip`/`vae`. Same rule as the rest of §3: inline mode means *everything*
-  is inline, LoRAs included, so a scratch graph needs exactly one node.
+It emits **no `LORA_STACK`** — nothing in the whole pack does. It applies every switched-on LoRA in
+row order and hands back **patched `MODEL` and `CLIP`**, and it chains (several in a row).
 
-The inline list lives in `generation_settings.loras` as an ordered array of
-`{name, strength_model, strength_clip}`. **List order is application order.** No cap is needed —
-these are entries in the settings blob, not sockets, so they cost no slots (contrast the detailer's
-`MAX_DETAILER_PASSES`, which is capped precisely because each pass *is* a socket). Its editor is a
-LoRA tab in the settings overlay, present only while inline mode is on.
+**So the primary LoRA path needs nothing from us.** The LoRAs are already baked into `MODEL`/`CLIP`
+before this node ever sees them:
 
-An entry with **both strengths at `0` is skipped** when the stack is built, matching upstream
-(`aio/model_preparation.py:236`). It stays in the list — a zeroed LoRA is muted, not deleted.
+```
+Loader Panel ──MODEL──> Pixaroma LoRA Loader ──MODEL──────────> Generator.model
+             ──CLIP───>                       ──CLIP──> Text Encode ──COND──> Generator.positive
+                                              ──triggers──> (into your prompt text)
+```
 
-#### Port upstream's normalizer, and widen it by one case
+> **The subtle part, and it fails silently.** Route the **patched** `CLIP` onward to your text encode,
+> not the Loader Panel's raw one. Wire the raw `CLIP` to the encoder and the LoRA's *model* effect
+> still lands (via `MODEL`) while its *CLIP* effect vanishes — no error, just a weaker result and
+> trigger words that read differently than intended. That is exactly why their node takes `CLIP` at
+> all, and why it sits **before** the text encode rather than just before the generator.
 
-`_normalize_aio_lora_stack` (`aio/model_preparation.py:164-199`) is deliberately promiscuous about
-input shape, and that tolerance is the whole reason an unknown third-party stacker will just work:
-it unwraps a `{"__value__": …}` envelope, JSON-parses a string, accepts `dict` items under several
-key spellings (`name`/`lora`/`lora_name`, `strength_model`/`model_strength`/`strength`,
-`strength_clip`/`clip_strength`/`strengthTwo`), accepts `list`/`tuple` items, and drops entries whose
-name is empty or `"none"`. Port it as-is.
+**`lora_stack` stays as an optional socket, demoted.** Pixaroma's path doesn't use it, but
+`LORA_STACK` is a real cross-pack interchange type (efficiency-nodes, rgthree, Impact all emit one),
+and an unused optional socket costs nothing. It is the secondary path, not the documented one.
 
-**One gap worth closing:** it requires `len(item) >= 3` for sequence items, so a stacker emitting
-2-tuples `(name, strength)` has every entry **silently dropped**. Accept `len >= 2` and default
-`strength_clip` to `strength_model` — which is already the fallback the dict branch uses.
+**The inline list is the one case we must handle ourselves** — and this is now its whole
+justification. With `use_internal_loaders` **on**, the node loads its own unet/clip internally, so
+there is no `MODEL`/`CLIP` wire for Pixaroma's node to sit on and no way to get LoRAs in from
+outside. Hence: inline mode gets an inline LoRA list, and it is the only mode that needs one.
 
-> **Unverified:** the local Pixaroma clone (`../ComfyUI-Pixaroma` at `afd0d05`) has **no LoRA
-> stacker** — only `node_krea_lora_convert`, a format converter. So its output shape is not something
-> this repo can check; the clone predates it, exactly as it predates the Control Panel
-> (`control-panel-design.md` §1). The normalizer above should absorb whatever it emits, but confirm
-> against the real node before calling this done, and mark the assumption `VERIFY-IN-COMFYUI:`.
+- Stored in `generation_settings.loras` as an ordered array of
+  `{name, strength_model, strength_clip}`. **Order is application order**, matching how their node
+  applies rows.
+- **Uncapped** — settings-blob entries, not sockets, so they cost no slots. (Contrast
+  `MAX_DETAILER_PASSES`, capped precisely because each pass *is* a socket.)
+- Editor is a LoRA tab in the overlay, present only while inline mode is on.
+- Both strengths `0` ⇒ skipped when building, per upstream Anima
+  (`aio/model_preparation.py:236`). The entry stays, muted rather than deleted.
+
+Port upstream's `_normalize_aio_lora_stack` (`aio/model_preparation.py:164-199`) for the inline list
+*and* the demoted socket. It is deliberately promiscuous about shape — `{"__value__": …}` envelopes,
+JSON strings, `dict` items under several key spellings (`name`/`lora`/`lora_name`,
+`strength_model`/`model_strength`/`strength`, `strength_clip`/`clip_strength`/`strengthTwo`),
+`list`/`tuple` items — and drops entries named empty or `"none"`. **Widen one case:** it requires
+`len(item) >= 3`, so a producer emitting 2-tuples `(name, strength)` has every entry *silently
+dropped*. Accept `len >= 2`, defaulting `strength_clip` to `strength_model`.
+
+#### Two things in their node we deliberately don't copy
+
+- **Its state handshake.** `LoraLoaderState` is declared in **`hidden` `INPUT_TYPES`**
+  (`node_lora_loader.py:48`) and injected at `graphToPrompt` time. This pack forbids that pattern —
+  `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` §2 records it delivering the default `"{}"`
+  to a backend in a real deployment while the on-node preview looked correct. Same rule as
+  `control-panel-design.md` §1: a declared, natively-serialized STRING widget, hidden for rendering
+  only.
+- **Its zero-strength semantics.** They keep a zeroed row's trigger words (`apply()`: "the user
+  turned it on on purpose"). Upstream Anima skips zeroed entries outright. We follow **upstream
+  Anima** — we have no trigger-word output for a zeroed LoRA to contribute to, so keeping it would
+  mean applying nothing and claiming something.
 
 ### Outputs
 

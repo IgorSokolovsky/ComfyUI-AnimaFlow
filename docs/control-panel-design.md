@@ -13,8 +13,10 @@ but rows come from a **fixed catalog of control kinds** instead of being generic
 
 ## 1. The upstream reference
 
-`../ComfyUI-Pixaroma` at `afd0d05` (v1.4.44, 2026-07-19) **has no "Control Panel" node** — the
-screenshot that prompted this is from a newer release. Its direct ancestor in the clone is
+`../ComfyUI-Pixaroma` at `5036814` (v1.4.62, pulled 2026-07-27) **still has no "Control Panel"
+node** — the screenshot that prompted this is from a newer release than the clone had, and the pull
+confirmed it is newer than v1.4.62 too. `PixaromaSliders` remains the ancestor
+(`MAX_SLIDERS = 16`). Its direct ancestor in the clone is
 **`PixaromaSliders`** (`nodes/node_sliders.py`, `js/sliders/{index.js,core.mjs,ui.mjs,settings.mjs}`),
 which already carries the whole mechanic. Pixaroma is MIT © Pixaroma — porting patterns from it is
 fine **with attribution in `THIRD_PARTY_NOTICES.md`**.
@@ -193,8 +195,9 @@ natural-looking addition:
 - A `LORA_STACK` is a list, so N lora rows would have had to collapse into **one shared output** —
   breaking this panel's one-row-one-slot invariant, the thing every other row kind depends on. That
   is a real structural cost for a feature an existing node already covers.
-- The Generator instead takes `lora_stack` as a plain socket fed by whatever stacker you like, plus
-  its own inline LoRA list when `use_internal_loaders` is on (`generator-design.md` §5b).
+- Pixaroma's node turned out not to need one at all: `PixaromaLoraLoader` emits patched
+  **`MODEL`/`CLIP`**, not a `LORA_STACK`, so LoRAs reach the Generator already applied. Only its
+  inline-loaders mode needs a LoRA list of its own (`generator-design.md` §5b).
 
 So: **`LOADER_CATALOG` stays `unet` / `vae` / `clip`.** If a lora row is ever revisited, the shared-slot
 problem above is the design question to answer first, not an implementation detail to discover.

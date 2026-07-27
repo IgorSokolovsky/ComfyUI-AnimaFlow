@@ -431,19 +431,23 @@
     <div class="q settled">
       <span class="tag">Settled &middot; no LoRA node of our own</span>
       We don't build a stacker and the Loader Panel gets <b>no</b> <code>lora</code> row — Pixaroma's
-      stacker already does it, and in the Loader Panel it would have broken that node's
-      one-row-one-slot invariant. LoRAs arrive on the <code>lora_stack</code> socket, or from the
-      node's <b>inline list</b> when <code>use_internal_loaders</code> is on — turn it on and a LoRA
-      tab appears. <code>control-panel-design.md §3b</code> records the rejection so it isn't
-      re-proposed.
+      node already does it, and in the Loader Panel it would have broken that node's
+      one-row-one-slot invariant. LoRAs arrive already applied to <code>MODEL</code>/<code>CLIP</code>,
+      or from this node's <b>inline list</b> when <code>use_internal_loaders</code> is on — turn it on
+      and a LoRA tab appears. <code>control-panel-design.md §3b</code> records the rejection so it
+      isn't re-proposed.
     </div>
-    <div class="q">
-      <span class="tag">Verify &middot; what Pixaroma's stacker emits</span>
-      The local clone (<code>afd0d05</code>) has <b>no</b> LoRA stacker — only a Krea format
-      converter — so its output shape can't be checked from this repo. Upstream's normalizer is
-      promiscuous enough that it should absorb whatever it is (dicts under several key spellings,
-      tuples, JSON strings), <i>except</i> that it drops 2-tuples silently. Widen it to
-      <code>len &ge; 2</code> and confirm against the real node.
+    <div class="q settled">
+      <span class="tag">Settled &middot; Pixaroma's node emits MODEL/CLIP, not a stack</span>
+      Checked properly by pulling the clone to <code>v1.4.62</code>.
+      <code>PixaromaLoraLoader</code> is a loader/<i>applier</i> — in <code>MODEL</code> +
+      <code>CLIP</code>, out patched <code>MODEL</code> + <code>CLIP</code> + <code>triggers</code>.
+      Nothing in that pack emits a <code>LORA_STACK</code>. So the normal path needs <b>nothing</b>
+      from this node: <code>Loader Panel → Pixaroma loader → Generator.model</code>. The
+      <code>lora_stack</code> socket stays only for packs that <i>do</i> emit one.
+      <br><br><b>The trap:</b> route the <b>patched</b> <code>CLIP</code> on to your text encode. Wire
+      the raw one and the LoRA's model effect still lands while its CLIP effect vanishes — no error,
+      just a weaker result.
     </div>
     <div class="q settled">
       <span class="tag">Settled &middot; MAX_DETAILER_PASSES = 4</span>
@@ -526,9 +530,11 @@ const PX = { base: 1024, highres: 1536, mid: 1536, upscale: 2048, final: 2048 };
 const state = {
   internal: false,            // use_internal_loaders
   wired: { model: true, clip: true, vae: true, latent: true, lora_stack: false },
-  // Inline LoRA list -- only reachable while use_internal_loaders is on, and
-  // then the lora_stack socket is ignored along with model/clip/vae. No cap:
-  // these are settings-blob entries, not sockets (design doc s5b).
+  // Inline LoRA list. This exists for ONE reason: in inline mode the node loads
+  // its own unet/clip, so there is no MODEL/CLIP wire for Pixaroma's LoRA
+  // loader to sit on. Outside inline mode LoRAs arrive already baked into
+  // MODEL/CLIP and we do nothing. No cap -- settings-blob entries, not sockets
+  // (design doc s5b).
   loras: [
     { name: "Cosmos-Predict2.5-2B-base-distilled-LoRA", m: 1.0, c: 1.0 },
     { name: "detail-slider-v2", m: 0.65, c: 0.65 },
@@ -689,7 +695,7 @@ function genHtml() {
         ignored: int,
         title: int
           ? "Ignored -- inline mode uses the node's own LoRA list"
-          : "Feed it any stacker (the user runs Pixaroma's)" })}
+          : "Secondary path. Pixaroma's loader patches MODEL/CLIP instead of emitting a stack." })}
       ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent,
         title: "Size and batch; else from settings.latent" })}
     </div>
@@ -919,9 +925,10 @@ function dlgBody(tab) {
         <span>LoRAs arrive on the <code>lora_stack</code> socket, so there's nothing to edit here.
         Turn on <code>use_internal_loaders</code> for an inline list.</span></div>`;
     }
-    return `<div class="dnote">Inline LoRAs, used <b>instead of</b> the <code>lora_stack</code>
-      socket while inline mode is on. No cap -- these are settings-blob entries, not sockets. We
-      don't ship a stacker node of our own: <b>Pixaroma's</b> already does that job.</div>
+    return `<div class="dnote">Inline LoRAs exist for <b>one</b> reason: inline mode loads its own
+      unet/clip, so there's no <code>MODEL</code>/<code>CLIP</code> wire for Pixaroma's LoRA loader to
+      sit on. With inline mode off you don't need this tab at all -- their node patches
+      <code>MODEL</code>/<code>CLIP</code> upstream and the LoRAs are already applied.</div>
       ${state.loras.map((l, i) => `<div class="lorarow ${l.m || l.c ? "" : "muted"}">
         <span class="ord">${i + 1}</span>
         <input class="lname" value="${esc(l.name)}" data-act="lname" data-i="${i}" data-live="1">
