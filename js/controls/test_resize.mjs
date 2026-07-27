@@ -1993,6 +1993,135 @@ test("right-click menu: right-clicking a DIFFERENT row switches the open menu, e
   assert.equal(countOpenOverlays(doc), 1, "switching rows must never leave two context menus open");
 });
 
+// ---------------------------------------------------------------------------
+// "+ Add control" / "+ Add loader" catalog menu -- shared the exact same
+// unconditional close-then-reopen bug as the three overlays above (a second
+// click closed whatever was open, itself included, then immediately reopened
+// a fresh menu -- visibly "nothing happens"), left out of scope in the round
+// that fixed the option list / ⚙ popover / right-click menu. Same toggle
+// contract (`ownerKey` / `closeOverlayIfOwnedBy`), keyed off the add button
+// element itself (there's exactly one per node, so its identity IS the key).
+// ---------------------------------------------------------------------------
+
+test("add menu: click '+ Add control' -> opens; click it again -> closes (a true toggle, not close-then-reopen)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx);
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 0, "a second click on the add button must CLOSE its menu");
+});
+
+test("add menu: opening it while a row's option list is open closes the list, and vice versa -- only one of our overlays open at a time", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  const refs = node._ctrlRows[0].refs;
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the add menu must close the other row's option list");
+  assert.ok(!refs.root.classList.contains("wtn-ctl-open"), "the option list's own open class must clear");
+
+  fire(refs.combo, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the option list must close the add menu");
+});
+
+test("add menu: opening it while a row's ⚙ popover is open closes the popover, and vice versa -- only one of our overlays open at a time", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "seed");
+  const refs = node._ctrlRows[0].refs;
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(refs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the add menu must close the other row's gear popover");
+  assert.ok(!refs.gear.classList.contains("wtn-ctl-active"), "the gear's own active class must clear");
+
+  fire(refs.gear, "click");
+  assert.equal(countOpenOverlays(doc), 1, "opening the gear popover must close the add menu");
+});
+
+test("add menu: Escape and an outside click still close it (regression)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx);
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  fireWin(win, "keydown", { key: "Escape" });
+  assert.equal(countOpenOverlays(doc), 0);
+
+  fire(addBtn, "click");
+  assert.equal(countOpenOverlays(doc), 1);
+  const outside = doc.createElement("div");
+  fireWin(win, "pointerdown", { target: outside });
+  assert.equal(countOpenOverlays(doc), 0);
+});
+
+test("add menu: picking a kind from the menu still adds that row and closes the menu (regression -- don't break the actual feature)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx); // starts empty (no defaultState rows for the control panel)
+  const before = node._ctrlRows.length;
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(addBtn, "click");
+  const menu = doc.body.children[doc.body.children.length - 1].children[0];
+  const intOpt = menu.children.find((c) => c.textContent === "Int");
+  assert.ok(intOpt, "expected an 'Int' entry in the add menu");
+  fire(intOpt, "click");
+
+  assert.equal(node._ctrlRows.length, before + 1, "picking a kind must add a row");
+  assert.equal(node._ctrlRows[node._ctrlRows.length - 1].kind, "int");
+  assert.equal(countOpenOverlays(doc), 0, "picking a kind must close the menu");
+});
+
+test("add menu: exactly one add-menu element in the DOM at a time; no orphan left behind when switching between overlays", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler", "dpmpp_2m"] }) });
+  addRowAndSync(node, ctx, "sampler");
+  addRowAndSync(node, ctx, "seed");
+  const [samplerRefs, seedRefs] = node._ctrlRows.map((e) => e.refs);
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(addBtn, "click");
+  fire(samplerRefs.combo, "click");
+  fire(seedRefs.gear, "click");
+  fire(addBtn, "click");
+  fire(addBtn, "click"); // close it again
+
+  assert.equal(countOpenOverlays(doc), 0);
+  assert.equal(
+    doc.body.children.filter((c) => c.className && c.className.includes("wtn-ctl-menu")).length,
+    0,
+    "no orphan add-menu (or other menu) element left in the DOM",
+  );
+});
+
 // =========================================================================
 
 console.log(`\n${count - failures}/${count} passed`);

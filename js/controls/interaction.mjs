@@ -1095,8 +1095,21 @@ function wireAddRow(node, ctx, addRefs) {
   });
 }
 
+/** Opens (or, on a second click of the SAME add button, closes) the catalog
+ * menu -- same toggle contract as `openListMenuFor`/`openGearPopover`/
+ * `openContextMenuFor` above (this one WAS still sharing the unconditional
+ * close-then-reopen bug: a second click always closed whatever was open --
+ * itself included -- then immediately reopened a fresh menu, so it visibly
+ * never closed). `addRefs.root` (the button element itself, stable for the
+ * node's whole lifetime between rebuilds) doubles as its own `ownerKey` --
+ * there's exactly one add button per node, so object identity is already a
+ * unique key, no `${kind}:${id}` string needed. */
 function openAddMenu(node, ctx, addRefs) {
-  closeActiveOverlay();
+  const key = addRefs.root;
+  if (closeOverlayIfOwnedBy(key)) {
+    return; // toggle: the add menu was already open -- just close it
+  }
+  closeActiveOverlay(); // a DIFFERENT overlay was open -- switch to this one
   const doc = ctx.doc;
   const menu = el(doc, "div", "wtn-ctl-menu wtn");
   const head = el(doc, "div", "wtn-ctl-mhead");
@@ -1128,6 +1141,7 @@ function openAddMenu(node, ctx, addRefs) {
       _activeOverlay = null;
     }
   });
+  handle.ownerKey = key;
   _activeOverlay = handle;
 }
 
