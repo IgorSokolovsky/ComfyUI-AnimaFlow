@@ -506,7 +506,19 @@ def launch_comfy(token, log, set_status, set_url, frontend=""):
     try:
         _kill_tunnel(log)          # close any leftover tunnel so the new one isn't rejected
         log("▸ opening pinggy tunnel…")
-        TUNNEL = pinggy.start_tunnel(forwardto="localhost:8188", token=token or "")
+        # force=True is REQUIRED on Colab, not just nice-to-have: _kill_tunnel only knows
+        # about TUNNEL in THIS runtime. When a runtime dies (timeout, crash, "Manage
+        # sessions" kill) the tunnel is never closed client-side, yet pinggy's edge still
+        # counts it as active — so the next Launch is refused with "A tunnel with the same
+        # token (…) is already active". force tells pinggy to drop that stale tunnel first.
+        # Safe here because one token serves one Colab session; it WOULD kick a tunnel
+        # using the same token elsewhere. Older pinggy builds lack the kwarg, so fall back.
+        try:
+            TUNNEL = pinggy.start_tunnel(forwardto="localhost:8188",
+                                         token=token or "", force=True)
+        except TypeError:
+            log("  (pinggy build has no force= — retrying without it)")
+            TUNNEL = pinggy.start_tunnel(forwardto="localhost:8188", token=token or "")
         urls = None
         for _ in range(20):                     # urls may populate a moment later
             urls = getattr(TUNNEL, "urls", None)
@@ -520,6 +532,10 @@ def launch_comfy(token, log, set_status, set_url, frontend=""):
             log("⚠ tunnel started but reported no URL yet.")
     except Exception as e:
         log(f"✗ tunnel failed: {e}")
+        if "already active" in str(e):
+            log("  → a stale tunnel still holds this token. Close it under Active Tunnels "
+                "at https://dashboard.pinggy.io, or clear the token field to get a free "
+                "random URL for this session.")
     set_status("running")
 
 def _kill_tunnel(log):
