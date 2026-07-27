@@ -13,6 +13,8 @@ Add a node:
 
 from __future__ import annotations
 
+from .nodes.controls.control_panel import AnimaControlPanel
+from .nodes.controls.loader_panel import AnimaLoaderPanel
 from .nodes.prompt_rules.prompt_rules import PromptRulesClip, PromptRulesText
 
 # Registers the `/wtn/rules/*` aiohttp routes as an import side effect (see
@@ -31,10 +33,14 @@ from .src.autocomplete import api as _autocomplete_api  # noqa: F401
 NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,
+    "AnimaControlPanel": AnimaControlPanel,
+    "AnimaLoaderPanel": AnimaLoaderPanel,
 }
 NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptRulesClip": "Prompt Rules (CLIP)",
     "PromptRulesText": "Prompt Rules",
+    "AnimaControlPanel": "Anima Control Panel",
+    "AnimaLoaderPanel": "Anima Loader Panel",
 }
 
 WEB_DIRECTORY = "./js"

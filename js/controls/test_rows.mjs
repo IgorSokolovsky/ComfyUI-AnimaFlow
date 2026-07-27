@@ -1,0 +1,546 @@
+/**
+ * test_rows.mjs — regression tests for `rows.mjs`'s pure logic: the row
+ * catalog/slot bookkeeping, the ratio/tier maths, seed clamping, numeric
+ * range/clamp, state normalization, the auto-kind resolver, output-type
+ * narrowing, and the injectable node-def reader. No DOM, no `app`/`window` —
+ * plain `node js/controls/test_rows.mjs`.
+ */
+
+import assert from "node:assert/strict";
+
+import {
+  MAX_ROWS,
+  CONTROL_CATALOG,
+  LOADER_CATALOG,
+  KIND_META,
+  RATIOS,
+  TIERS,
+  snap16,
+  dimsFor,
+  clampSeedString,
+  randomSeedString,
+  decimalsOf,
+  rangeOf,
+  clampNumeric,
+  usefulRange,
+  mkRow,
+  assignSlot,
+  defaultState,
+  normalizeState,
+  addRow,
+  duplicateRow,
+  removeRow,
+  reorderRows,
+  resolveComboOutputType,
+  outputTypeForRow,
+  resolveAutoKind,
+  applyResolvedKind,
+  formatLatentValue,
+  formatNumericValue,
+  numericPercent,
+  getComboOptions,
+} from "./rows.mjs";
+
+let failures = 0;
+let count = 0;
+function test(name, fn) {
+  count += 1;
+  try {
+    fn();
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL - ${name}`);
+    console.error(err && err.stack ? err.stack : err);
+  }
+}
+
+// =========================================================================
+// Catalog constants
+// =========================================================================
+
+test("MAX_ROWS: control=16, loader=8", () => {
+  assert.equal(MAX_ROWS.control, 16);
+  assert.equal(MAX_ROWS.loader, 8);
+});
+
+test("CONTROL_CATALOG / LOADER_CATALOG match the design doc's row catalog", () => {
+  assert.deepEqual(CONTROL_CATALOG, ["sampler", "scheduler", "seed", "int", "float", "latent"]);
+  assert.deepEqual(LOADER_CATALOG, ["unet", "vae", "clip"]);
+});
+
+test("KIND_META has an entry for every catalog kind + auto, with hasGear matching the design's ⚙ column", () => {
+  for (const kind of [...CONTROL_CATALOG, ...LOADER_CATALOG, "auto"]) {
+    assert.ok(KIND_META[kind], `missing KIND_META for ${kind}`);
+  }
+  // No ⚙ on int/float/sampler/scheduler/vae -- design doc §3: "range/step/
+  // value are adopted from the first wire" (int/float) or "no ⚙" (vae).
+  assert.equal(KIND_META.int.hasGear, false);
+  assert.equal(KIND_META.float.hasGear, false);
+  assert.equal(KIND_META.sampler.hasGear, false);
+  assert.equal(KIND_META.scheduler.hasGear, false);
+  assert.equal(KIND_META.vae.hasGear, false);
+  assert.equal(KIND_META.seed.hasGear, true);
+  assert.equal(KIND_META.latent.hasGear, true);
+  assert.equal(KIND_META.unet.hasGear, true);
+  assert.equal(KIND_META.clip.hasGear, true);
+});
+
+// =========================================================================
+// Ratio / tier maths (design doc §3a)
+// =========================================================================
+
+test("dimsFor: the canonical pairs at the 1024 tier are exact", () => {
+  assert.deepEqual(dimsFor("1:1", 1024), [1024, 1024]);
+  assert.deepEqual(dimsFor("16:9", 1024), [1344, 768]);
+  assert.deepEqual(dimsFor("9:16", 1024), [768, 1344]);
+  assert.deepEqual(dimsFor("2:1", 1024), [1408, 704]);
+  assert.deepEqual(dimsFor("3:2", 1024), [1216, 832]);
+  assert.deepEqual(dimsFor("2:3", 1024), [832, 1216]);
+  assert.deepEqual(dimsFor("4:3", 1024), [1152, 896]);
+  assert.deepEqual(dimsFor("3:4", 1024), [896, 1152]);
+  assert.deepEqual(dimsFor("4:5", 1024), [912, 1152]);
+});
+
+test("dimsFor: every other tier scales the 1024 pair by tier/1024 and snaps to 16", () => {
+  for (const tier of TIERS) {
+    const [w, h] = dimsFor("2:3", tier);
+    assert.equal(w % 16, 0, `w=${w} not 16-aligned at tier ${tier}`);
+    assert.equal(h % 16, 0, `h=${h} not 16-aligned at tier ${tier}`);
+    const expectedW = Math.max(64, Math.round((832 * tier) / 1024 / 16) * 16);
+    const expectedH = Math.max(64, Math.round((1216 * tier) / 1024 / 16) * 16);
+    assert.equal(w, expectedW, `tier ${tier}`);
+    assert.equal(h, expectedH, `tier ${tier}`);
+  }
+});
+
+test("dimsFor: falls back to 1:1 for an unknown ratio, and to the 1024 tier for a bad tier", () => {
+  assert.deepEqual(dimsFor("9:9", 1024), dimsFor("1:1", 1024));
+  assert.deepEqual(dimsFor("1:1", NaN), dimsFor("1:1", 1024));
+  assert.deepEqual(dimsFor("1:1", undefined), dimsFor("1:1", 1024));
+});
+
+test("snap16 floors at 64 and rounds to the nearest 16", () => {
+  assert.equal(snap16(10), 64);
+  assert.equal(snap16(100), 96);
+  assert.equal(snap16(110), 112);
+});
+
+test("changing ratio preserves the tier (dimsFor takes the tier as an independent argument)", () => {
+  const tier = 1328;
+  const [w1] = dimsFor("2:3", tier);
+  const [w2] = dimsFor("16:9", tier);
+  assert.notEqual(w1, w2);
+  // Both were computed at the SAME tier -- verifying the caller pattern
+  // (rows.mjs never infers tier from ratio) rather than re-deriving it.
+  assert.deepEqual(dimsFor("2:3", tier), [snap16((832 * tier) / 1024), snap16((1216 * tier) / 1024)]);
+});
+
+test("RATIOS / TIERS expose exactly the design doc's tables", () => {
+  assert.equal(RATIOS.length, 9);
+  assert.deepEqual(TIERS, [512, 768, 1024, 1280, 1328, 1408, 1536, 2048]);
+});
+
+// =========================================================================
+// Seed -- always a string, clamped to [0, 2^64-1]
+// =========================================================================
+
+test("clampSeedString clamps a huge (400-digit) integer to 2^64-1", () => {
+  const huge = "9".repeat(400);
+  assert.equal(clampSeedString(huge), (2n ** 64n - 1n).toString());
+});
+
+test("clampSeedString handles Infinity/NaN/empty/negative without throwing", () => {
+  assert.equal(clampSeedString("Infinity"), "0");
+  assert.equal(clampSeedString("NaN"), "0");
+  assert.equal(clampSeedString(""), "0");
+  assert.equal(clampSeedString(null), "0");
+  assert.equal(clampSeedString(undefined), "0");
+  // "-5" has no LEADING sign in the digit-extraction regex, so it reads
+  // as the digits "5" (a real minus never reaches BigInt() at all) --
+  // still never throws, which is the actual contract here.
+  assert.equal(clampSeedString(-5), "5");
+});
+
+test("clampSeedString passes a valid in-range seed through unchanged", () => {
+  assert.equal(clampSeedString("1000000000000"), "1000000000000");
+  assert.equal(clampSeedString((2n ** 64n - 1n).toString()), (2n ** 64n - 1n).toString());
+});
+
+test("randomSeedString returns a numeric string within [0, 2^64-1]", () => {
+  for (let i = 0; i < 20; i += 1) {
+    const s = randomSeedString();
+    assert.match(s, /^\d+$/);
+    assert.ok(BigInt(s) >= 0n && BigInt(s) <= 2n ** 64n - 1n);
+  }
+});
+
+// =========================================================================
+// Numeric (int/float) maths
+// =========================================================================
+
+test("decimalsOf reads decimal places from step, floors at 0, caps at 6", () => {
+  assert.equal(decimalsOf(1), 0);
+  assert.equal(decimalsOf(0.01), 2);
+  assert.equal(decimalsOf(0.1), 1);
+  assert.equal(decimalsOf(0), 2); // no usable step -> the documented default
+  assert.equal(decimalsOf("not a number"), 2);
+});
+
+test("rangeOf always returns low-to-high even if min/max are swapped", () => {
+  assert.deepEqual(rangeOf({ min: 100, max: 0 }), [0, 100]);
+  assert.deepEqual(rangeOf({ min: 0, max: 100 }), [0, 100]);
+  assert.deepEqual(rangeOf({}), [0, 100]);
+});
+
+test("clampNumeric snaps to the step grid, clamps to range, rounds int to whole numbers", () => {
+  assert.equal(clampNumeric("int", 5.7, { min: 0, max: 10, step: 1 }), 6);
+  assert.equal(clampNumeric("int", 999, { min: 0, max: 10, step: 1 }), 10);
+  assert.equal(clampNumeric("int", -5, { min: 0, max: 10, step: 1 }), 0);
+  assert.equal(clampNumeric("float", 0.1234, { min: 0, max: 1, step: 0.01 }), 0.12);
+});
+
+test("usefulRange keeps the full range when it's already draggable (<=400 steps)", () => {
+  assert.deepEqual(usefulRange(0, 100, 1, 50), [0, 100]);
+});
+
+test("usefulRange caps a huge range at ~4x the current value, never above the real max", () => {
+  const [lo, hi] = usefulRange(1, 10000, 1, 20);
+  assert.equal(lo, 1);
+  assert.ok(hi <= 10000);
+  assert.equal(hi, 80); // 20 * 4
+});
+
+// =========================================================================
+// Row factory + slot assignment (docs/control-panel-design.md §4)
+// =========================================================================
+
+test("mkRow builds sane per-kind defaults", () => {
+  assert.equal(mkRow("seed").value, "0");
+  assert.deepEqual(mkRow("seed").opts, { after: "randomize", lastMode: "randomize" });
+  assert.equal(mkRow("int").opts.step, 1);
+  assert.equal(mkRow("float").opts.step, 0.01);
+  assert.equal(mkRow("latent").opts.mode, "predefined");
+  assert.equal(mkRow("unet").opts.weight_dtype, "default");
+  assert.equal(mkRow("clip").opts.device, "default");
+});
+
+test("mkRow overrides merge into opts rather than replacing it wholesale", () => {
+  const row = mkRow("int", { opts: { min: 5 } });
+  assert.equal(row.opts.min, 5);
+  assert.equal(row.opts.max, 100); // untouched default preserved
+});
+
+test("assignSlot hands out the LOWEST unused positive integer", () => {
+  const rows = [{ slot: 1 }, { slot: 3 }];
+  const fresh = {};
+  assignSlot(rows, fresh);
+  assert.equal(fresh.slot, 2);
+});
+
+test("assignSlot on an empty row list starts at 1", () => {
+  const fresh = {};
+  assignSlot([], fresh);
+  assert.equal(fresh.slot, 1);
+});
+
+// =========================================================================
+// State: default / normalize / mutate
+// =========================================================================
+
+test("defaultState: control panel starts empty, loader panel starts with unet+vae+clip", () => {
+  const control = defaultState("control");
+  assert.deepEqual(control.rows, []);
+  const loader = defaultState("loader");
+  assert.deepEqual(loader.rows.map((r) => r.kind), ["unet", "vae", "clip"]);
+  assert.deepEqual(loader.rows.map((r) => r.slot), [1, 2, 3]);
+});
+
+test("normalizeState drops rows whose kind isn't in this panel's catalog (or auto)", () => {
+  const state = normalizeState({ rows: [{ kind: "unet", slot: 1 }, { kind: "seed", slot: 2 }] }, "control");
+  assert.deepEqual(state.rows.map((r) => r.kind), ["seed"]);
+});
+
+test("normalizeState clamps to MAX_ROWS for the panel", () => {
+  const rows = Array.from({ length: 30 }, (_, i) => ({ kind: "int", slot: i + 1, value: 1, opts: {} }));
+  const state = normalizeState({ rows }, "control");
+  assert.equal(state.rows.length, 16);
+});
+
+test("normalizeState keeps an already-valid unique slot, re-stamps a duplicate/missing one", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { kind: "int", slot: 5, value: 1, opts: {} },
+        { kind: "float", slot: 5, value: 1, opts: {} }, // duplicate slot
+        { kind: "seed", value: "1" }, // missing slot
+      ],
+    },
+    "control",
+  );
+  const slots = state.rows.map((r) => r.slot);
+  assert.equal(slots[0], 5); // untouched
+  assert.equal(new Set(slots).size, 3); // all unique after re-stamping
+});
+
+test("normalizeState clamps a garbage seed/int/float/latent row rather than throwing", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { kind: "seed", slot: 1, value: "Infinity", opts: { after: "bogus" } },
+        { kind: "int", slot: 2, value: "not a number", opts: { min: 100, max: 0, step: -5 } },
+        { kind: "latent", slot: 3, opts: { mode: "bogus", ratio: "bogus", tier: 999, w: -5, h: -5, batch: -1 } },
+      ],
+    },
+    "control",
+  );
+  const [seedRow, intRow, latentRow] = state.rows;
+  assert.equal(seedRow.value, "0");
+  assert.equal(seedRow.opts.after, "randomize");
+  assert.ok(Number.isFinite(intRow.value));
+  assert.equal(latentRow.opts.mode, "predefined");
+  assert.equal(latentRow.opts.tier, 1024);
+  assert.equal(latentRow.opts.batch, 1);
+});
+
+test("normalizeState tolerates non-object / missing rows entirely", () => {
+  assert.deepEqual(normalizeState(null, "control").rows, []);
+  assert.deepEqual(normalizeState({}, "control").rows, []);
+  assert.deepEqual(normalizeState("garbage", "control").rows, []);
+});
+
+test("addRow appends in display order with a fresh slot, refuses past MAX_ROWS", () => {
+  const state = { version: 1, rows: [] };
+  for (let i = 0; i < 16; i += 1) {
+    assert.ok(addRow(state, "int", "control"));
+  }
+  assert.equal(state.rows.length, 16);
+  assert.equal(addRow(state, "int", "control"), null);
+});
+
+test("duplicateRow inserts right after the original with a NEW slot (never inherits wires)", () => {
+  const state = { version: 1, rows: [] };
+  const original = addRow(state, "seed", "control");
+  original.value = "42";
+  const copy = duplicateRow(state, original.id, "control");
+  assert.equal(state.rows.indexOf(copy), state.rows.indexOf(original) + 1);
+  assert.notEqual(copy.slot, original.slot);
+  assert.equal(copy.value, "42"); // copies the VALUE, just not the slot
+});
+
+test("duplicateRow refuses past MAX_ROWS and for an unknown id", () => {
+  const state = { version: 1, rows: [] };
+  for (let i = 0; i < 8; i += 1) {
+    addRow(state, "unet", "loader");
+  }
+  assert.equal(duplicateRow(state, state.rows[0].id, "loader"), null);
+  const small = { version: 1, rows: [] };
+  addRow(small, "unet", "loader");
+  assert.equal(duplicateRow(small, 999999, "loader"), null);
+});
+
+test("removeRow frees its slot for reuse before any number above the current max", () => {
+  const state = { version: 1, rows: [] };
+  const a = addRow(state, "int", "control");
+  const b = addRow(state, "int", "control");
+  const c = addRow(state, "int", "control");
+  assert.deepEqual([a.slot, b.slot, c.slot], [1, 2, 3]);
+  assert.ok(removeRow(state, b.id));
+  const d = addRow(state, "int", "control");
+  assert.equal(d.slot, 2); // reused, not 4
+});
+
+test("removeRow returns false for an id that doesn't exist", () => {
+  const state = { version: 1, rows: [] };
+  assert.equal(removeRow(state, 12345), false);
+});
+
+test("reorderRows moves an element without mutating the input array", () => {
+  const original = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  const moved = reorderRows(original, 0, 2);
+  assert.deepEqual(moved.map((r) => r.id), [2, 3, 1]);
+  assert.deepEqual(original.map((r) => r.id), [1, 2, 3]); // untouched
+});
+
+test("reorderRows clamps an out-of-range target index", () => {
+  const original = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  assert.deepEqual(reorderRows(original, 0, 999).map((r) => r.id), [2, 3, 1]);
+  assert.deepEqual(reorderRows(original, 2, -999).map((r) => r.id), [3, 1, 2]);
+});
+
+test("a drag-reorder recomputed from the ORIGINAL snapshot on every step never leapfrogs", () => {
+  // Mirrors playground/control-panel.html's pointermove handler: always
+  // reorder the SNAPSHOT taken at drag-start, never the previous result.
+  const snapshot = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+  const step1 = reorderRows(snapshot, 0, 1);
+  const step2 = reorderRows(snapshot, 0, 2); // recomputed from snapshot, not step1
+  assert.deepEqual(step2.map((r) => r.id), ["b", "c", "a", "d"]);
+});
+
+// =========================================================================
+// Output typing (docs/control-panel-design.md §5)
+// =========================================================================
+
+test("resolveComboOutputType defaults to the 'COMBO' strategy", () => {
+  assert.equal(resolveComboOutputType(["a", "b"]), "COMBO");
+  assert.equal(resolveComboOutputType(null), "COMBO");
+});
+
+test("outputTypeForRow: plain types pass through, combo kinds go through resolveComboOutputType, auto is always '*'", () => {
+  assert.equal(outputTypeForRow({ kind: "seed" }, {}), "INT");
+  assert.equal(outputTypeForRow({ kind: "latent" }, {}), "LATENT");
+  assert.equal(outputTypeForRow({ kind: "unet" }, {}), "MODEL");
+  assert.equal(outputTypeForRow({ kind: "sampler" }, { sampler: ["euler"] }), "COMBO");
+  assert.equal(outputTypeForRow({ kind: "auto" }, {}), "*");
+});
+
+// =========================================================================
+// Auto rows (docs/control-panel-design.md §6)
+// =========================================================================
+
+const CONTROL_ALLOWED = new Set(CONTROL_CATALOG);
+const LOADER_ALLOWED = new Set(LOADER_CATALOG);
+
+test("resolveAutoKind: INT named seed/noise_seed resolves to seed and adopts the current value", () => {
+  const resolved = resolveAutoKind({ type: "INT", name: "noise_seed", value: 12345 }, { allowedKinds: CONTROL_ALLOWED });
+  assert.equal(resolved.kind, "seed");
+  assert.equal(resolved.value, "12345");
+});
+
+test("resolveAutoKind: a plain INT resolves to int, adopting name/min/max/step/value with usefulRange applied", () => {
+  const resolved = resolveAutoKind(
+    { type: "INT", name: "steps", min: 1, max: 10000, step2: 1, value: 20 },
+    { allowedKinds: CONTROL_ALLOWED },
+  );
+  assert.equal(resolved.kind, "int");
+  assert.equal(resolved.name, "steps");
+  assert.equal(resolved.value, 20);
+  assert.equal(resolved.opts.max, 80); // usefulRange: 20 * 4
+});
+
+test("resolveAutoKind: FLOAT resolves to float", () => {
+  const resolved = resolveAutoKind(
+    { type: "FLOAT", name: "cfg", min: 0, max: 20, step2: 0.1, value: 7.5 },
+    { allowedKinds: CONTROL_ALLOWED },
+  );
+  assert.equal(resolved.kind, "float");
+  assert.equal(resolved.value, 7.5);
+});
+
+test("resolveAutoKind: COMBO matches by comparing the OPTION LIST, never by input name", () => {
+  const samplers = ["euler", "dpmpp_2m", "ddim"];
+  const schedulers = ["normal", "karras"];
+  const resolved = resolveAutoKind(
+    { type: "COMBO", name: "some_weird_custom_name", value: "euler", comboValues: samplers },
+    { allowedKinds: CONTROL_ALLOWED, knownLists: { sampler: samplers, scheduler: schedulers } },
+  );
+  assert.equal(resolved.kind, "sampler");
+  assert.equal(resolved.value, "euler");
+});
+
+test("resolveAutoKind: an unrecognized COMBO list stays unresolved (returns null)", () => {
+  const resolved = resolveAutoKind(
+    { type: "COMBO", name: "whatever", value: "x", comboValues: ["only", "two"] },
+    { allowedKinds: CONTROL_ALLOWED, knownLists: { sampler: ["a", "b", "c"], scheduler: ["d", "e"] } },
+  );
+  assert.equal(resolved, null);
+});
+
+test("resolveAutoKind: LATENT resolves to latent with sane default opts", () => {
+  const resolved = resolveAutoKind({ type: "LATENT" }, { allowedKinds: CONTROL_ALLOWED });
+  assert.equal(resolved.kind, "latent");
+  assert.equal(resolved.opts.mode, "predefined");
+});
+
+test("resolveAutoKind: MODEL/VAE/CLIP are rejected on the Control Panel's allowed set", () => {
+  assert.equal(resolveAutoKind({ type: "MODEL" }, { allowedKinds: CONTROL_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "VAE" }, { allowedKinds: CONTROL_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "CLIP" }, { allowedKinds: CONTROL_ALLOWED }), null);
+});
+
+test("resolveAutoKind: MODEL/VAE/CLIP resolve on the Loader Panel's allowed set", () => {
+  assert.equal(resolveAutoKind({ type: "MODEL", value: "x.safetensors" }, { allowedKinds: LOADER_ALLOWED }).kind, "unet");
+  assert.equal(resolveAutoKind({ type: "VAE", value: "y.safetensors" }, { allowedKinds: LOADER_ALLOWED }).kind, "vae");
+  assert.equal(resolveAutoKind({ type: "CLIP", value: "z.safetensors" }, { allowedKinds: LOADER_ALLOWED }).kind, "clip");
+});
+
+test("resolveAutoKind: seed/int/float/sampler/scheduler/latent are rejected on the Loader Panel", () => {
+  assert.equal(resolveAutoKind({ type: "INT", name: "seed" }, { allowedKinds: LOADER_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "INT", name: "steps" }, { allowedKinds: LOADER_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "FLOAT" }, { allowedKinds: LOADER_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "LATENT" }, { allowedKinds: LOADER_ALLOWED }), null);
+});
+
+test("applyResolvedKind mutates the SAME row object in place (identity preserved)", () => {
+  const row = mkRow("auto");
+  const resolved = resolveAutoKind({ type: "INT", name: "steps", min: 1, max: 100, value: 30 }, { allowedKinds: CONTROL_ALLOWED });
+  const same = row;
+  assert.ok(applyResolvedKind(row, resolved));
+  assert.equal(row, same);
+  assert.equal(row.kind, "int");
+});
+
+test("applyResolvedKind is a no-op (returns false) for a null resolution", () => {
+  const row = mkRow("auto");
+  assert.equal(applyResolvedKind(row, null), false);
+  assert.equal(row.kind, "auto");
+});
+
+// =========================================================================
+// Display formatting
+// =========================================================================
+
+test("formatLatentValue shows the ratio ONLY in predefined mode", () => {
+  const predefined = mkRow("latent", { opts: { mode: "predefined", ratio: "2:3", w: 832, h: 1216, batch: 1 } });
+  assert.deepEqual(formatLatentValue(predefined), { main: "832 × 1216", dim: "(2:3)" });
+  const custom = mkRow("latent", { opts: { mode: "custom", w: 900, h: 700, batch: 1 } });
+  assert.deepEqual(formatLatentValue(custom), { main: "900 × 700", dim: "" });
+});
+
+test("formatLatentValue shows batch only when > 1", () => {
+  const row = mkRow("latent", { opts: { mode: "predefined", ratio: "1:1", w: 1024, h: 1024, batch: 4 } });
+  assert.equal(formatLatentValue(row).dim, "(1:1) ×4");
+});
+
+test("formatNumericValue respects the step's decimal places", () => {
+  assert.equal(formatNumericValue(mkRow("int", { value: 30, opts: { step: 1 } })), "30");
+  assert.equal(formatNumericValue(mkRow("float", { value: 5, opts: { step: 0.1 } })), "5.0");
+});
+
+test("numericPercent maps value across [min,max] to 0..100", () => {
+  const row = mkRow("int", { value: 25, opts: { min: 0, max: 100, step: 1 } });
+  assert.equal(numericPercent(row), 25);
+});
+
+// =========================================================================
+// getComboOptions (injectable registry)
+// =========================================================================
+
+test("getComboOptions reads a combo spec's option list from a fake registry", () => {
+  const registry = {
+    KSampler: {
+      nodeData: {
+        input: { required: { sampler_name: [["euler", "dpmpp_2m"]], scheduler: [["normal", "karras"]] } },
+      },
+    },
+  };
+  assert.deepEqual(getComboOptions(registry, "KSampler", "sampler_name"), ["euler", "dpmpp_2m"]);
+  assert.deepEqual(getComboOptions(registry, "KSampler", "scheduler"), ["normal", "karras"]);
+});
+
+test("getComboOptions returns null for a missing class/field/malformed registry -- never throws", () => {
+  assert.equal(getComboOptions({}, "KSampler", "sampler_name"), null);
+  assert.equal(getComboOptions(null, "KSampler", "sampler_name"), null);
+  assert.equal(getComboOptions({ KSampler: {} }, "KSampler", "sampler_name"), null);
+  assert.equal(
+    getComboOptions({ UNETLoader: { nodeData: { input: { required: { unet_name: ["COMBO"] } } } } }, "UNETLoader", "unet_name"),
+    null, // spec[0] isn't an array (newer-build "COMBO" string form) -- no list available
+  );
+});
+
+// =========================================================================
+
+console.log(`\n${count - failures}/${count} passed`);
+if (failures > 0) {
+  process.exitCode = 1;
+}

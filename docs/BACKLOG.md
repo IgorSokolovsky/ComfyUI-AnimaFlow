@@ -101,7 +101,35 @@ Wired into both Prompt Rules panes via `js/prompt_rules/node/highlight_wiring.mj
 
 ---
 
-## 3. Whole-pack
+## 3. Control Panel + Loader Panel — designed, not built
+
+New track approved 2026-07-27. Full spec: [`control-panel-design.md`](control-panel-design.md);
+mockup: [`../playground/control-panel.html`](../playground/control-panel.html). **No code exists yet.**
+
+Two nodes (`AnimaFlow/Controls`): a value panel (sampler, scheduler, seed, int, float, empty latent)
+and a loader panel (unet, vae, clip), each row carrying its own output dot. Ported from Pixaroma's
+`PixaromaSliders` — MIT, needs a `THIRD_PARTY_NOTICES.md` entry when built.
+
+Three things it changes pack-wide, so they land here rather than only in the spec:
+
+- **Picker topics are now Title Case** (decided 2026-07-27): `anima_prompt` → **`Prompt`**, and the
+  new pair is **`AnimaFlow/Controls`**. Folder names stay lowercase — Python packages must be
+  importable — so "folder and category agree" means case-insensitively now.
+  `.claude/skills/animaflow-node-theme/SKILL.md` fixes the list at three snake_case topics
+  (`anima` / `anima_prompt` / `panel`) and needs both changes. **Not** `Panel` for the new one:
+  that's reserved for the deleted webtoon panel pipeline and would collide on its rebuild.
+- **The JS budget goes 3 → 4.** One `js/controls/index.js` registers *both* extensions and lazily
+  imports the per-node `.mjs`, so two new nodes cost one auto-loaded file. Update the count in
+  `.claude/CLAUDE.md` with that reason when built.
+- The theme skill still cites `js/anima_prompt/...` paths that became `js/prompt_rules/...` in
+  `e703dd2` — worth fixing while in there.
+
+Open question that only a live ComfyUI settles (spec §5): what `output.type` a combo row must carry
+for legacy litegraph to accept a wire — `"COMBO"`, the joined option list, or fall back to `"*"`.
+
+---
+
+## 4. Whole-pack
 
 - **Widget order is append-only.** New widgets go at the end of `required` (or into
   `optional`), never inserted. Node widgets are positional, so inserting mid-list silently

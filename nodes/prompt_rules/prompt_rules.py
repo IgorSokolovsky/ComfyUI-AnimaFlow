@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from ._rules_helpers import PROFILE_CHOICES, is_changed_digest, run_rules
 
-_CATEGORY = "AnimaFlow/anima_prompt"
+# Picker category is Title Case ("Prompt"); the folder/package underneath it
+# stays snake_case (`nodes/prompt_rules/`, `js/prompt_rules/`) because Python
+# package names must be importable. "Folder and category agree" now means
+# "agree case-insensitively", not literally.
+_CATEGORY = "AnimaFlow/Prompt"
 
 
 def _shared_required() -> dict:

@@ -7,7 +7,7 @@ Every node in AnimaFlow, grouped by its node-picker category. All nodes are **Be
 
 ---
 
-## `AnimaFlow/anima_prompt`
+## `AnimaFlow/Prompt`
 
 Anima-specific prompt authoring — rule-transform prompts, authored via the visual Rule Builder.
 

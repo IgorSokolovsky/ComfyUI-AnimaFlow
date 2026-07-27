@@ -1,0 +1,738 @@
+/**
+ * rows.mjs — pure logic for the Control Panel / Loader Panel nodes
+ * (`AnimaControlPanel` / `AnimaLoaderPanel`, `nodes/controls/*.py`, being
+ * built in parallel by another agent against `docs/control-panel-design.md`).
+ *
+ * NO DOM, NO `app`/`window`/`LiteGraph` reference anywhere in this file — it
+ * is importable under plain `node` (see `test_rows.mjs`) and is the single
+ * place the row catalog, the state shape, the slot bookkeeping, and the
+ * ratio/tier maths live. `render.mjs` (DOM) and `interaction.mjs` (event
+ * wiring + node orchestration) both import from here rather than
+ * duplicating any of it.
+ *
+ * ## State shape (mirrors docs/control-panel-design.md §4 exactly)
+ *
+ *   { version: 1, rows: [ { id, slot, kind, name, value, opts } ] }
+ *
+ * `id` is a frontend-only bookkeeping key (never serialized by
+ * Python — see `nodes/controls/_rows_helpers.py`'s contract); `slot` is the
+ * durable output-index label described below. `rows` is DISPLAY order.
+ *
+ * ## Slot vs. display order — the mechanism drag-to-reorder depends on
+ *
+ * `slot` is assigned ONCE, at row creation (`assignSlot` below: lowest
+ * unused positive integer), and never renumbered by anything in this
+ * module. `rows` (the array) is display order only. `interaction.mjs` maps
+ * `row.slot` to a real `node.outputs` array index (`node.outputs[slot - 1]`)
+ * and re-parks that index's dot at whichever row currently owns that slot's
+ * Y — so dragging a row in the panel changes ITS OWN VISUAL POSITION without
+ * touching any `node.outputs` index, and therefore never rewires a single
+ * link. Duplicating a row calls `assignSlot` again, which always hands out a
+ * FRESH number (the duplicate is a new output — it cannot inherit the
+ * original's wires). Removing a row simply drops it from `rows`; its slot
+ * number becomes free and `assignSlot` will hand it to the next new row
+ * before ever handing out anything above the current max.
+ */
+
+// ---------------------------------------------------------------------------
+// Row catalog
+// ---------------------------------------------------------------------------
+
+export const MAX_ROWS = { control: 16, loader: 8 };
+
+// A zero-width space: truthy (so neither renderer falls back to drawing the
+// raw output name on top of our row) but paints nothing — same trick
+// ComfyUI-Pixaroma's sliders use for the same reason (see js/sliders/core.mjs).
+export const ZW = "​";
+
+export const CONTROL_CATALOG = ["sampler", "scheduler", "seed", "int", "float", "latent"];
+export const LOADER_CATALOG = ["unet", "vae", "clip"];
+
+/**
+ * One entry per row kind. `outputType` is either a plain socket type string
+ * (`INT`/`FLOAT`/`LATENT`/`MODEL`/`VAE`/`CLIP`) or the literal `"combo"`
+ * sentinel, which tells `outputTypeForRow` below to run the combo-typing
+ * chain instead of returning a fixed string (see that function's doc
+ * comment — this is the one genuinely unresolved question in the whole
+ * design, per docs/control-panel-design.md §5).
+ */
+export const KIND_META = {
+  sampler: { menu: "Sampler", outputType: "combo", combo: "sampler", hasGear: false, panel: "control" },
+  scheduler: { menu: "Scheduler", outputType: "combo", combo: "scheduler", hasGear: false, panel: "control" },
+  seed: { menu: "Seed", outputType: "INT", hasGear: true, panel: "control" },
+  int: { menu: "Int", outputType: "INT", hasGear: false, panel: "control" },
+  float: { menu: "Float", outputType: "FLOAT", hasGear: false, panel: "control" },
+  latent: { menu: "Empty latent", outputType: "LATENT", hasGear: true, panel: "control" },
+  unet: { menu: "UNET loader", outputType: "MODEL", combo: "unet", hasGear: true, panel: "loader" },
+  vae: { menu: "VAE loader", outputType: "VAE", combo: "vae", hasGear: false, panel: "loader" },
+  clip: { menu: "CLIP loader", outputType: "CLIP", combo: "clip", hasGear: true, panel: "loader" },
+  auto: { menu: "Auto", outputType: "*", hasGear: false, panel: "both" },
+};
+
+/**
+ * Where each combo-backed kind's option list lives in ComfyUI's own node
+ * defs — read at runtime by `index.js`'s `getComboOptions` (below), never
+ * hardcoded here, so the lists always track whatever is actually installed
+ * (docs/control-panel-design.md §3/"Loader Panel": "option lists need no
+ * backend route").
+ */
+export const NODE_DEF_SOURCE = {
+  sampler: { className: "KSampler", field: "sampler_name" },
+  scheduler: { className: "KSampler", field: "scheduler" },
+  unet: { className: "UNETLoader", field: "unet_name" },
+  vae: { className: "VAELoader", field: "vae_name" },
+  clip: { className: "CLIPLoader", field: "clip_name" },
+};
+
+export const AFTER_MODES = ["fixed", "increment", "decrement", "randomize"];
+export const AFTER_LETTER = { fixed: "F", randomize: "R", increment: "I", decrement: "D" };
+
+export const UNET_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"];
+export const CLIP_TYPES = ["stable_diffusion", "sdxl", "flux", "wan", "qwen_image"];
+export const CLIP_DEVICES = ["default", "cpu"];
+
+/**
+ * Aspect ratios, each pinned to its canonical dimensions at the 1024 tier
+ * (the SDXL/Anima buckets people already recognise — 832×1216, 1344×768…).
+ * docs/control-panel-design.md §3a: deriving these from an area formula
+ * instead lands 2:3 at 832×1248, which reads as wrong to anyone who knows
+ * the buckets — so the table is pinned, not derived.
+ */
+export const RATIOS = [
+  ["1:1", 1024, 1024], ["16:9", 1344, 768], ["9:16", 768, 1344],
+  ["2:1", 1408, 704], ["3:2", 1216, 832], ["2:3", 832, 1216],
+  ["4:3", 1152, 896], ["3:4", 896, 1152], ["4:5", 912, 1152],
+];
+export const TIERS = [512, 768, 1024, 1280, 1328, 1408, 1536, 2048];
+
+export function snap16(n) {
+  return Math.max(64, Math.round(n / 16) * 16);
+}
+
+/** Every tier scales the canonical 1024-tier pair by `tier/1024` and snaps
+ * to 16 — see this module's ratio-table doc comment above. Falls back to
+ * the first ratio ("1:1") for an unknown ratio name, and to the 1024 tier
+ * for a non-finite/unknown tier, rather than throwing on bad state. */
+export function dimsFor(ratio, tier) {
+  const found = RATIOS.find((r) => r[0] === ratio) || RATIOS[0];
+  const t = Number(tier);
+  const k = (Number.isFinite(t) && t > 0 ? t : 1024) / 1024;
+  return [snap16(found[1] * k), snap16(found[2] * k)];
+}
+
+// ---------------------------------------------------------------------------
+// Seed — always a STRING (2^64-1 > Number.MAX_SAFE_INTEGER; see the design
+// doc §4's "seed is a STRING in state" note — a numeric seed silently
+// rounds at the top of the range).
+// ---------------------------------------------------------------------------
+
+const MAX_SEED = 2n ** 64n - 1n;
+
+/** Clamp a hand-edited/typed/pasted seed to a valid `[0, 2^64-1]` string.
+ * Tolerant of anything: empty, `Infinity`/`NaN`, a 400-digit integer, a
+ * negative number, non-digit junk — all clamp to a legal string rather than
+ * throwing, mirroring the guard the Python side does independently
+ * (`nodes/controls/_rows_helpers.py`'s `int()` + clamp, per the design doc). */
+export function clampSeedString(raw) {
+  const match = String(raw ?? "").match(/\d+/);
+  if (!match) {
+    return "0";
+  }
+  let n;
+  try {
+    n = BigInt(match[0]);
+  } catch {
+    return "0";
+  }
+  if (n < 0n) {
+    n = 0n;
+  }
+  if (n > MAX_SEED) {
+    n = MAX_SEED;
+  }
+  return n.toString();
+}
+
+/** Roll a fresh seed for the "N" button. Combines two 32-bit randoms into a
+ * BigInt so the result isn't quietly capped at `Number.MAX_SAFE_INTEGER`
+ * either — not cryptographically meaningful, just "a new plausible seed". */
+export function randomSeedString() {
+  const hi = BigInt(Math.floor(Math.random() * 0x100000000));
+  const lo = BigInt(Math.floor(Math.random() * 0x100000000));
+  return ((hi << 32n) | lo).toString();
+}
+
+// ---------------------------------------------------------------------------
+// Numeric (int/float) range/step/value maths — ported from
+// ComfyUI-Pixaroma's js/sliders/core.mjs (rangeOf/clampValue/decimalsOf),
+// generalized to operate on a row's `{value, opts:{min,max,step}}` shape.
+// ---------------------------------------------------------------------------
+
+/** Decimal places implied by `step` (0.01 -> 2), floored at 0/capped at 6 —
+ * used both for display and for rounding, so a float row never shows
+ * `0.30000000000000004`. */
+export function decimalsOf(step) {
+  const s = Math.abs(Number(step) || 0);
+  if (!s || !Number.isFinite(s)) {
+    return 2;
+  }
+  const txt = String(s);
+  const dot = txt.indexOf(".");
+  if (dot < 0) {
+    return 0;
+  }
+  return Math.min(6, txt.length - dot - 1);
+}
+
+/** A row's range, always returned low-to-high — a user (or a hand-edited
+ * workflow) can set Min 100 / Max 0, and every reader has to agree on which
+ * end is which or the fill paints backwards and the drag runs the wrong way. */
+export function rangeOf(opts) {
+  let lo = Number(opts && opts.min);
+  let hi = Number(opts && opts.max);
+  if (!Number.isFinite(lo)) {
+    lo = 0;
+  }
+  if (!Number.isFinite(hi)) {
+    hi = 100;
+  }
+  if (hi < lo) {
+    const t = lo;
+    lo = hi;
+    hi = t;
+  }
+  return [lo, hi];
+}
+
+/** Snap `value` to `opts`'s step grid, clamp to its range, and kill float
+ * drift — `kind` is `"int"` or `"float"`. */
+export function clampNumeric(kind, value, opts) {
+  const [min, max] = rangeOf(opts);
+  let step = Math.abs(Number(opts && opts.step));
+  if (!Number.isFinite(step) || step <= 0) {
+    step = kind === "int" ? 1 : 0.01;
+  }
+  let n = Number(value);
+  if (!Number.isFinite(n)) {
+    n = min;
+  }
+  n = Math.round((n - min) / step) * step + min;
+  n = Math.min(max, Math.max(min, n));
+  if (kind === "int") {
+    return Math.round(n);
+  }
+  return Number(n.toFixed(decimalsOf(step)));
+}
+
+/** Pick a range that is actually draggable. A `steps` input allows
+ * `1..10000`; a slider spanning that is ~40 steps per pixel — useless. Keep
+ * the input's own minimum and step, cap the top at 4x the current value
+ * (never above the input's real maximum) — ported verbatim from
+ * ComfyUI-Pixaroma's `usefulRange` (js/sliders/core.mjs). */
+export function usefulRange(min, max, step, value) {
+  const span = (max - min) / (step || 1);
+  if (Number.isFinite(span) && span <= 400) {
+    return [min, max];
+  }
+  const v = Number.isFinite(value) ? value : min;
+  let top = Math.max(v * 4, min + 10 * step);
+  if (Number.isFinite(max)) {
+    top = Math.min(top, max);
+  }
+  return [min, top];
+}
+
+// ---------------------------------------------------------------------------
+// Row factory + slot assignment
+// ---------------------------------------------------------------------------
+
+let _uid = 0;
+/** Frontend-only bookkeeping id, never touches `slot`. Exposed mainly so
+ * tests can reset/observe it deterministically if ever needed. */
+export function nextUid() {
+  _uid += 1;
+  return _uid;
+}
+
+/** Build a fresh row of `kind` with that kind's default `value`/`opts`.
+ * `overrides` may set `name`/`value` and is shallow-merged into `opts`
+ * (never wholesale-replaces it), so a caller can override e.g. just
+ * `{opts: {min: 1}}` without having to restate every other option. */
+export function mkRow(kind, overrides = {}) {
+  const row = { id: nextUid(), kind, name: kind, value: undefined, opts: {} };
+
+  if (kind === "seed") {
+    row.value = "0";
+    row.opts = { after: "randomize", lastMode: "randomize" };
+  } else if (kind === "int") {
+    row.value = 1;
+    row.opts = { min: 1, max: 100, step: 1 };
+  } else if (kind === "float") {
+    row.value = 0.5;
+    row.opts = { min: 0, max: 1, step: 0.01 };
+  } else if (kind === "latent") {
+    row.opts = { mode: "predefined", ratio: "1:1", tier: 1024, w: 1024, h: 1024, batch: 1 };
+  } else if (kind === "unet") {
+    row.opts = { weight_dtype: "default" };
+  } else if (kind === "clip") {
+    row.opts = { type: "stable_diffusion", device: "default" };
+  }
+  // sampler / scheduler / vae / auto: no extra opts.
+
+  if (overrides.name !== undefined) {
+    row.name = overrides.name;
+  }
+  if (overrides.value !== undefined) {
+    row.value = overrides.value;
+  }
+  if (overrides.opts) {
+    row.opts = { ...row.opts, ...overrides.opts };
+  }
+  return row;
+}
+
+/** Hand `row` the lowest unused positive integer among every OTHER row's
+ * slot, and stamp it in place. This is the entire "never renumber" contract:
+ * called exactly once per row, at creation (fresh add) or re-creation
+ * (duplicate) — never on reorder. */
+export function assignSlot(rows, row) {
+  const used = new Set(rows.filter((r) => r !== row && Number.isFinite(r.slot)).map((r) => r.slot));
+  let s = 1;
+  while (used.has(s)) {
+    s += 1;
+  }
+  row.slot = s;
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// State shape: default / normalize / mutate
+// ---------------------------------------------------------------------------
+
+/** A brand-new node's starting state. The Loader Panel starts pre-populated
+ * with its three fixed loaders (an empty loader panel has nothing useful to
+ * emit); the Control Panel starts empty — its whole catalog is opt-in via
+ * "+ Add control". */
+export function defaultState(panelKind) {
+  if (panelKind === "loader") {
+    const rows = [mkRow("unet"), mkRow("vae"), mkRow("clip")];
+    rows.forEach((r) => assignSlot(rows, r));
+    return { version: 1, rows };
+  }
+  return { version: 1, rows: [] };
+}
+
+function normalizeRow(raw, panelKind) {
+  const kind = raw.kind;
+  const row = {
+    id: nextUid(),
+    slot: Number.isFinite(raw.slot) && raw.slot > 0 ? Math.round(raw.slot) : undefined,
+    kind,
+    name: typeof raw.name === "string" && raw.name ? raw.name : kind,
+    value: raw.value,
+    opts: raw.opts && typeof raw.opts === "object" ? { ...raw.opts } : {},
+  };
+
+  if (kind === "seed") {
+    row.value = clampSeedString(row.value);
+    const after = AFTER_MODES.includes(row.opts.after) ? row.opts.after : "randomize";
+    const lastMode = AFTER_MODES.includes(row.opts.lastMode)
+      ? row.opts.lastMode
+      : (after === "fixed" ? "randomize" : after);
+    row.opts = { after, lastMode };
+  } else if (kind === "int" || kind === "float") {
+    const [min, max] = rangeOf(row.opts);
+    let step = Number(row.opts.step);
+    if (!Number.isFinite(step) || step <= 0) {
+      step = kind === "int" ? 1 : 0.01;
+    }
+    row.opts = {
+      min: kind === "int" ? Math.round(min) : min,
+      max: kind === "int" ? Math.round(max) : max,
+      step,
+    };
+    row.value = clampNumeric(kind, row.value, row.opts);
+  } else if (kind === "latent") {
+    const mode = row.opts.mode === "custom" ? "custom" : "predefined";
+    const ratio = RATIOS.some((r) => r[0] === row.opts.ratio) ? row.opts.ratio : "1:1";
+    const tier = TIERS.includes(Number(row.opts.tier)) ? Number(row.opts.tier) : 1024;
+    let w = Number(row.opts.w);
+    let h = Number(row.opts.h);
+    if (mode === "predefined" || !Number.isFinite(w) || !Number.isFinite(h)) {
+      [w, h] = dimsFor(ratio, tier);
+    } else {
+      w = snap16(Math.max(16, w));
+      h = snap16(Math.max(16, h));
+    }
+    let batch = Math.round(Number(row.opts.batch));
+    if (!Number.isFinite(batch) || batch < 1) {
+      batch = 1;
+    }
+    row.opts = { mode, ratio, tier, w, h, batch };
+  } else if (kind === "unet") {
+    row.opts = { weight_dtype: UNET_DTYPES.includes(row.opts.weight_dtype) ? row.opts.weight_dtype : "default" };
+    row.value = typeof row.value === "string" ? row.value : undefined;
+  } else if (kind === "vae") {
+    row.opts = {};
+    row.value = typeof row.value === "string" ? row.value : undefined;
+  } else if (kind === "clip") {
+    row.opts = {
+      type: CLIP_TYPES.includes(row.opts.type) ? row.opts.type : "stable_diffusion",
+      device: CLIP_DEVICES.includes(row.opts.device) ? row.opts.device : "default",
+    };
+    row.value = typeof row.value === "string" ? row.value : undefined;
+  } else if (kind === "sampler" || kind === "scheduler") {
+    row.opts = {};
+    row.value = typeof row.value === "string" ? row.value : undefined;
+  } else {
+    // "auto" (or anything unrecognized, guarded out by the caller's
+    // allowedKinds filter before this function ever sees it)
+    row.opts = {};
+  }
+  return row;
+}
+
+/**
+ * Defensively parse `raw` (the JSON already `JSON.parse`d, or garbage) into
+ * a valid state for `panelKind` — clamps to `MAX_ROWS`, drops rows whose
+ * `kind` isn't in this panel's catalog (or `"auto"`), clamps every row's
+ * opts/value by kind, and re-stamps `slot` for anything missing/duplicate/
+ * non-finite while leaving every already-valid unique slot untouched (so
+ * restoring a saved workflow never silently renumbers a link).
+ */
+export function normalizeState(raw, panelKind) {
+  const maxRows = MAX_ROWS[panelKind] || MAX_ROWS.control;
+  const catalog = panelKind === "loader" ? LOADER_CATALOG : CONTROL_CATALOG;
+  const allowedKinds = new Set([...catalog, "auto"]);
+
+  let rows = [];
+  if (raw && typeof raw === "object" && Array.isArray(raw.rows)) {
+    rows = raw.rows
+      .filter((r) => r && typeof r === "object" && allowedKinds.has(r.kind))
+      .slice(0, maxRows)
+      .map((r) => normalizeRow(r, panelKind));
+  }
+
+  const seen = new Set();
+  for (const r of rows) {
+    if (Number.isFinite(r.slot) && r.slot > 0 && !seen.has(r.slot)) {
+      seen.add(r.slot);
+    } else {
+      r.slot = undefined;
+    }
+  }
+  for (const r of rows) {
+    if (r.slot === undefined) {
+      assignSlot(rows, r);
+    }
+  }
+
+  return { version: 1, rows };
+}
+
+/** Append a new `kind` row to `state` (display order: last), assigning it a
+ * fresh slot. Returns the new row, or `null` if the panel is already at
+ * `MAX_ROWS[panelKind]`. */
+export function addRow(state, kind, panelKind) {
+  const maxRows = MAX_ROWS[panelKind] || MAX_ROWS.control;
+  if (state.rows.length >= maxRows) {
+    return null;
+  }
+  const row = mkRow(kind);
+  assignSlot(state.rows, row);
+  state.rows.push(row);
+  return row;
+}
+
+/** Insert a copy of the row with id `rowId` immediately after it. The copy
+ * is a NEW output (`assignSlot` again) — it cannot inherit the original's
+ * wires, so pretending otherwise would be a lie (design doc §3). Returns the
+ * new row, or `null` if not found / the panel is already full. */
+export function duplicateRow(state, rowId, panelKind) {
+  const maxRows = MAX_ROWS[panelKind] || MAX_ROWS.control;
+  if (state.rows.length >= maxRows) {
+    return null;
+  }
+  const idx = state.rows.findIndex((r) => r.id === rowId);
+  if (idx < 0) {
+    return null;
+  }
+  const copy = { ...state.rows[idx], id: nextUid(), opts: { ...state.rows[idx].opts } };
+  copy.slot = undefined;
+  assignSlot(state.rows, copy);
+  state.rows.splice(idx + 1, 0, copy);
+  return copy;
+}
+
+/** Drop the row with id `rowId`. Its slot becomes free — `assignSlot` will
+ * hand it to the next added row before ever handing out anything above the
+ * current max. Returns `true` if a row was actually removed. */
+export function removeRow(state, rowId) {
+  const idx = state.rows.findIndex((r) => r.id === rowId);
+  if (idx < 0) {
+    return false;
+  }
+  state.rows.splice(idx, 1);
+  return true;
+}
+
+/**
+ * Pure array reorder: move the element at `fromIndex` in `originalRows` to
+ * `toIndex`, clamped to the array's bounds. Deliberately takes
+ * `originalRows` (a snapshot) rather than mutating in place — callers
+ * dragging a row must recompute from the ORIGINAL order on every pointer
+ * move, not from a previously-mutated array, or rows leapfrog each other as
+ * the array mutates underneath the maths (this exact trap is called out in
+ * `playground/control-panel.html`'s `pointermove` handler).
+ */
+export function reorderRows(originalRows, fromIndex, toIndex) {
+  if (fromIndex < 0 || fromIndex >= originalRows.length) {
+    return originalRows.slice();
+  }
+  const clampedTo = Math.max(0, Math.min(originalRows.length - 1, toIndex));
+  const arr = originalRows.slice();
+  arr.splice(clampedTo, 0, ...arr.splice(fromIndex, 1));
+  return arr;
+}
+
+// ---------------------------------------------------------------------------
+// Output typing — docs/control-panel-design.md §5, "the one real unknown"
+// ---------------------------------------------------------------------------
+
+/**
+ * Which of the three combo-typing strategies is active. Legacy litegraph
+ * compares output/input type STRINGS; a combo widget's declared type is
+ * either the option list itself (older builds) or the literal string
+ * `"COMBO"` (newer ones) — this can only be settled by trying it against a
+ * real, live ComfyUI page (docs/control-panel-design.md §5 explicitly warns
+ * against guessing this from the schema). Flip this constant during that
+ * verification pass; nothing else in this module needs to change.
+ *
+ * VERIFY-IN-COMFYUI: try `"COMBO"` first (current default); if a wire to a
+ * combo input silently refuses, try `"list"`; `"permissive"` always
+ * connects but loses the wire-time type guard entirely.
+ */
+export const COMBO_TYPE_STRATEGY = "COMBO"; // "COMBO" | "list" | "permissive"
+
+/** `list` is this combo kind's CURRENT option list (or `null`/empty if the
+ * owning node def isn't installed) — see `outputTypeForRow` below. */
+export function resolveComboOutputType(list) {
+  if (COMBO_TYPE_STRATEGY === "list" && Array.isArray(list) && list.length) {
+    return list.join(",");
+  }
+  if (COMBO_TYPE_STRATEGY === "permissive") {
+    return "*";
+  }
+  return "COMBO";
+}
+
+/**
+ * The narrowed output type for `row`, given `listsByKind` (the live option
+ * lists this session's `KSampler`/`UNETLoader`/`VAELoader`/`CLIPLoader` defs
+ * currently carry — see `NODE_DEF_SOURCE`/`index.js`'s `getComboOptions`).
+ * An unresolved `"auto"` row is always `"*"` (permissive — nothing is known
+ * about it yet, so any wire is refused only by the TARGET's own type, not
+ * ours).
+ */
+export function outputTypeForRow(row, listsByKind) {
+  const meta = KIND_META[row.kind];
+  if (!meta || row.kind === "auto") {
+    return "*";
+  }
+  if (meta.outputType === "combo") {
+    const list = listsByKind && listsByKind[row.kind];
+    return resolveComboOutputType(list);
+  }
+  return meta.outputType;
+}
+
+// ---------------------------------------------------------------------------
+// Auto rows — docs/control-panel-design.md §6
+// ---------------------------------------------------------------------------
+
+function sameList(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * Resolve an `"auto"` row's real kind from the input it was just wired to.
+ *
+ * @param {object} target - `{ type, name, min, max, step2, value, comboValues }`
+ *   describing the CONNECTION TARGET's declared input type and (for a
+ *   widget-backed input) the widget behind it. `type` is one of
+ *   `"INT"|"FLOAT"|"COMBO"|"LATENT"|"MODEL"|"VAE"|"CLIP"` (case-insensitive).
+ * @param {{allowedKinds?: Set<string>, knownLists?: {sampler?: string[], scheduler?: string[]}}} opts
+ *   `allowedKinds` restricts which kinds THIS panel may resolve into (the
+ *   Control Panel rejects MODEL/VAE/CLIP; the Loader Panel rejects
+ *   seed/int/float/sampler/scheduler/latent) — defaults to every Control
+ *   Panel kind. `knownLists` is used to match a COMBO target by comparing
+ *   its OPTION LIST against `sampler_name`'s/`scheduler`'s (never by input
+ *   NAME — `sampler_name` isn't a reliable name across custom node packs).
+ * @returns {{kind:string, name?:string, value?:*, opts?:object}|null} the
+ *   resolved row fields to merge in (via `applyResolvedKind`), or `null` if
+ *   this target can't be resolved (kind stays `"auto"`, e.g. an unrecognized
+ *   combo list, or a type this panel doesn't accept at all).
+ */
+export function resolveAutoKind(target, opts = {}) {
+  const allowed = opts.allowedKinds || new Set(CONTROL_CATALOG);
+  const t = String((target && target.type) || "").toUpperCase();
+  const name = String((target && target.name) || "").toLowerCase();
+
+  if (t === "INT") {
+    if ((name === "seed" || name === "noise_seed") && allowed.has("seed")) {
+      return {
+        kind: "seed",
+        name: target.name || "seed",
+        value: clampSeedString(target.value),
+        opts: { after: "randomize", lastMode: "randomize" },
+      };
+    }
+    if (!allowed.has("int")) {
+      return null;
+    }
+    let step = Number(target.step2);
+    if (!Number.isFinite(step) || step <= 0) {
+      step = 1;
+    }
+    step = Math.max(1, Math.round(step));
+    let min = Number.isFinite(Number(target.min)) ? Math.round(Number(target.min)) : 0;
+    let max = Number.isFinite(Number(target.max)) ? Math.round(Number(target.max)) : 100;
+    const cur = Number(target.value);
+    const [lo, hi] = usefulRange(min, max, step, cur);
+    return {
+      kind: "int",
+      name: target.name ? String(target.name).replace(/_/g, " ") : "Value",
+      value: Number.isFinite(cur) ? Math.round(cur) : Math.round(lo),
+      opts: { min: Math.round(lo), max: Math.round(hi), step },
+    };
+  }
+
+  if (t === "FLOAT") {
+    if (!allowed.has("float")) {
+      return null;
+    }
+    let step = Number(target.step2);
+    if (!Number.isFinite(step) || step <= 0) {
+      step = 0.01;
+    }
+    const min = Number.isFinite(Number(target.min)) ? Number(target.min) : 0;
+    const max = Number.isFinite(Number(target.max)) ? Number(target.max) : 1;
+    const cur = Number(target.value);
+    const [lo, hi] = usefulRange(min, max, step, cur);
+    return {
+      kind: "float",
+      name: target.name ? String(target.name).replace(/_/g, " ") : "Value",
+      value: Number.isFinite(cur) ? Number(cur.toFixed(decimalsOf(step))) : lo,
+      opts: { min: lo, max: hi, step },
+    };
+  }
+
+  if (t === "COMBO") {
+    const values = Array.isArray(target.comboValues) ? target.comboValues : [];
+    const lists = opts.knownLists || {};
+    if (allowed.has("sampler") && sameList(values, lists.sampler)) {
+      return { kind: "sampler", name: "sampler name", value: target.value, opts: {} };
+    }
+    if (allowed.has("scheduler") && sameList(values, lists.scheduler)) {
+      return { kind: "scheduler", name: "scheduler", value: target.value, opts: {} };
+    }
+    // Unrecognized combo list -- stays "auto" (unresolved) rather than
+    // guessing; see this function's doc comment.
+    return null;
+  }
+
+  if (t === "LATENT" && allowed.has("latent")) {
+    return { kind: "latent", name: "empty latent", opts: mkRow("latent").opts };
+  }
+
+  if (t === "MODEL" || t === "VAE" || t === "CLIP") {
+    // MODEL's row kind is "unet" (the loader that PRODUCES a MODEL) -- not
+    // a lowercased "model", which isn't a kind in the catalog at all.
+    const kind = t === "MODEL" ? "unet" : t.toLowerCase();
+    if (!allowed.has(kind)) {
+      return null;
+    }
+    return { kind, name: kind, value: typeof target.value === "string" ? target.value : undefined, opts: mkRow(kind).opts };
+  }
+
+  return null;
+}
+
+/** Apply a `resolveAutoKind` result to `row` in place. Returns `true` if
+ * anything was applied (a truthy `resolved`), `false` otherwise (row stays
+ * `"auto"`). */
+export function applyResolvedKind(row, resolved) {
+  if (!resolved) {
+    return false;
+  }
+  row.kind = resolved.kind;
+  if (resolved.name !== undefined) {
+    row.name = resolved.name;
+  }
+  if (resolved.value !== undefined) {
+    row.value = resolved.value;
+  }
+  row.opts = { ...(resolved.opts || {}) };
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Display formatting (pure — render.mjs uses these, no DOM required to test)
+// ---------------------------------------------------------------------------
+
+/** `{ main: "832 × 1216", dim: "(2:3) ×4" }` — ratio shown ONLY in
+ * Predefined mode (design doc §3a: in Custom mode the numbers are whatever
+ * the user typed, so naming a ratio would assert a choice never made). */
+export function formatLatentValue(row) {
+  const o = row.opts || {};
+  const parts = [];
+  if (o.mode === "predefined") {
+    parts.push(`(${o.ratio})`);
+  }
+  if (Number(o.batch) > 1) {
+    parts.push(`×${o.batch}`);
+  }
+  return { main: `${o.w} × ${o.h}`, dim: parts.join(" ") };
+}
+
+/** The numeric row's display text, decimal places implied by its step. */
+export function formatNumericValue(row) {
+  const step = row.opts && row.opts.step;
+  const n = Number(row.value);
+  return Number.isFinite(n) ? n.toFixed(decimalsOf(step)) : "0";
+}
+
+/** 0..100 — how far across its own range the row's current value sits, for
+ * the inline slider fill. */
+export function numericPercent(row) {
+  const [min, max] = rangeOf(row.opts);
+  const span = max - min || 1;
+  const n = Number(row.value);
+  const v = Number.isFinite(n) ? n : min;
+  return Math.max(0, Math.min(1, (v - min) / span)) * 100;
+}
+
+// ---------------------------------------------------------------------------
+// Reading ComfyUI's own node defs (injectable registry -- see index.js,
+// which is the only caller that ever passes a REAL `window.LiteGraph.
+// registered_node_types`; kept here, not there, so it's testable with a
+// fake registry under plain `node`).
+// ---------------------------------------------------------------------------
+
+/**
+ * `getComboOptions(registry, "KSampler", "sampler_name")` -> the option
+ * list (a fresh array copy), or `null` if that node class/field isn't
+ * registered (pack absent) or its spec isn't a combo. Tolerant of a
+ * malformed/partial registry entry at every step — never throws.
+ */
+export function getComboOptions(registry, className, field) {
+  try {
+    const nodeData = registry && registry[className] && registry[className].nodeData;
+    const required = nodeData && nodeData.input && nodeData.input.required;
+    const spec = required && required[field];
+    const values = Array.isArray(spec) ? spec[0] : null;
+    return Array.isArray(values) ? values.slice() : null;
+  } catch {
+    return null;
+  }
+}

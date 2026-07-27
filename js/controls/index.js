@@ -1,0 +1,363 @@
+/**
+ * index.js — the ONLY auto-loaded `.js` for the Controls line (`.claude/
+ * CLAUDE.md`'s JS download budget: this one file registers BOTH
+ * `AnimaControlPanel` and `AnimaLoaderPanel`).
+ *
+ * Absolute `/scripts/app.js` import (this file is nested in `js/controls/`
+ * — the frontend skill's gotcha #1: a relative `../../scripts/app.js`
+ * resolves wrong from a subfolder and silently kills the whole extension).
+ * That's the ONLY static import in this file, deliberately.
+ *
+ * ## `rows.mjs`/`render.mjs`/`interaction.mjs` are LAZY, not static
+ *
+ * `beforeRegisterNodeDef` runs for EVERY node type on EVERY ComfyUI page at
+ * startup, whether or not the user ever places one of ours. A static
+ * top-level `import` of the three sibling modules here would mean every
+ * page pays for fetching+evaluating the whole row-catalog/DOM/CSS/event
+ * stack the moment this ONE already-auto-loaded file runs — exactly the
+ * "shipped to users who don't need it" cost `.claude/CLAUDE.md`'s JS
+ * download budget exists to avoid. So `loadMods()` below only ever runs a
+ * guarded dynamic `import()` (cached after the first call, since both node
+ * classes share it) the FIRST TIME an actual node INSTANCE of either class
+ * is created or restored (`onNodeCreated`/`onConfigure`) — a page with zero
+ * Control/Loader Panel nodes anywhere never fetches them at all.
+ *
+ * A loaded workflow node runs `onNodeCreated` THEN `onConfigure` (per the
+ * dynamic-node-frontend skill) — both kick off `loadMods()`, which resolves
+ * once and services both `.then()` callbacks in that same order. Since
+ * litegraph's OWN (synchronous, un-wrapped) `onConfigure` has already
+ * restored every widget's real saved value (including `panel_state`)
+ * before either callback fires, `setupNode` and `restoreNode` both end up
+ * reading the SAME correctly-restored state regardless of how long the
+ * import takes — the async gap only delays when the DOM rows actually
+ * appear, never which state they show once they do.
+ *
+ * ## What lives here vs. in `interaction.mjs`
+ *
+ * Everything ComfyUI-runtime-specific and NOT unit-testable under plain
+ * `node` lives here: reading `window.LiteGraph.registered_node_types` for
+ * the live `sampler_name`/`scheduler`/`unet_name`/`vae_name`/`clip_name`
+ * option lists (`getKnownLists`), inspecting a link's actual target
+ * node/widget (`describeLinkTarget`), the litegraph lifecycle hooks
+ * (`onNodeCreated`/`onConfigure`/`onConnectionsChange`/`arrange`/
+ * `serialize`/`onRemoved`), and `window.confirm` for the "this row has a
+ * live link" guard. Every actual row/state/output mutation is delegated to
+ * `interaction.mjs`, which stays testable with a fake registry/graph.
+ *
+ * ## Widget contract (matches `nodes/controls/*.py`'s declared
+ * `panel_state` STRING widget, `default: "{}"` — verified against the
+ * actual sibling build, per `docs/control-panel-design.md` §4)
+ *
+ * `panel_state` is hidden for RENDERING only (never `serialize = false` —
+ * it must keep reaching the backend) and mirrored from
+ * `node.properties.<stateProp>` after every mutation
+ * (`interaction.mjs`'s `persistState`).
+ */
+import { app } from "/scripts/app.js";
+
+// CATEGORY is Title Case ("AnimaFlow/Controls") on the Python side; nothing
+// here needs to know that string, only the two class names.
+const PANEL_CONFIGS = {
+  control: {
+    className: "AnimaControlPanel",
+    key: "control",
+    stateProp: "controlPanelState",
+    catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+    allowAuto: true,
+    reorder: true,
+    addLabel: "+ Add control",
+  },
+  loader: {
+    className: "AnimaLoaderPanel",
+    key: "loader",
+    stateProp: "loaderPanelState",
+    catalog: ["unet", "vae", "clip"],
+    allowAuto: false,
+    reorder: false,
+    addLabel: "+ Add loader",
+  },
+};
+
+const CLASS_TO_PANEL = Object.fromEntries(Object.values(PANEL_CONFIGS).map((p) => [p.className, p]));
+
+// ---------------------------------------------------------------------------
+// Lazy module loading -- see this file's top doc comment.
+// ---------------------------------------------------------------------------
+
+let _modsPromise = null;
+function loadMods() {
+  if (!_modsPromise) {
+    _modsPromise = Promise.all([
+      import("./rows.mjs"),
+      import("./render.mjs"),
+      import("./interaction.mjs"),
+    ]).then(([rows, render, interaction]) => ({ rows, render, interaction }));
+  }
+  return _modsPromise;
+}
+
+/** Hide `panel_state` from RENDERING only -- it keeps serializing normally
+ * (dynamic-node-frontend skill's "hide a declared widget that must still
+ * serialize" pattern). Never `w.serialize = false` here. */
+function hideStateWidget(node, mods) {
+  const w = mods.interaction.getStateWidget(node);
+  if (!w) {
+    return;
+  }
+  w.hidden = true;
+  w.computeSize = () => [0, -4];
+  if (w.inputEl && w.inputEl.style) {
+    w.inputEl.style.display = "none";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reading ComfyUI's own node defs -- the only place this whole feature
+// touches `window.LiteGraph` (rows.mjs's `getComboOptions` itself takes an
+// injectable registry so IT stays testable; only the actual global read
+// happens here).
+// ---------------------------------------------------------------------------
+
+let _listsCache = null;
+let _listsCacheAt = 0;
+const LISTS_CACHE_MS = 1000; // node defs don't change mid-session; a light cache is still cheap insurance
+
+function readKnownLists(mods) {
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (_listsCache && now - _listsCacheAt < LISTS_CACHE_MS) {
+    return _listsCache;
+  }
+  const registry = (typeof window !== "undefined" && window.LiteGraph && window.LiteGraph.registered_node_types) || {};
+  const lists = {};
+  for (const kind of Object.keys(mods.rows.NODE_DEF_SOURCE)) {
+    const src = mods.rows.NODE_DEF_SOURCE[kind];
+    lists[kind] = mods.rows.getComboOptions(registry, src.className, src.field);
+  }
+  _listsCache = lists;
+  _listsCacheAt = now;
+  return lists;
+}
+
+/**
+ * Inspect a just-made link's TARGET input (and the widget behind it, for a
+ * widget-backed input) and describe it in the shape `rows.mjs`'s
+ * `resolveAutoKind` expects. Returns `null` for anything it can't safely
+ * describe (missing target/graph, etc.) -- `resolveAutoOnConnect` treats
+ * that as "leave the row auto".
+ *
+ * VERIFY-IN-COMFYUI: on legacy litegraph a widget-backed input (e.g.
+ * KSampler's `sampler_name`) only becomes a real link TARGET after the
+ * user right-clicks it -> "Convert widget to input" (design doc §5's UX
+ * caveat) -- this function only ever runs for an ACTUAL link, so that
+ * conversion is assumed to have already happened by the time it's called.
+ */
+function describeLinkTarget(link) {
+  try {
+    const targetNode = app.graph && typeof app.graph.getNodeById === "function" ? app.graph.getNodeById(link.target_id) : null;
+    const inp = targetNode && targetNode.inputs && targetNode.inputs[link.target_slot];
+    if (!inp) {
+      return null;
+    }
+    const type = String(inp.type || "").toUpperCase();
+    const wname = (inp.widget && inp.widget.name) || inp.name;
+    const widget = (targetNode.widgets || []).find((w) => w.name === wname);
+    const options = (widget && widget.options) || {};
+    let comboValues = options.values;
+    if (typeof comboValues === "function") {
+      try {
+        comboValues = comboValues();
+      } catch {
+        comboValues = null;
+      }
+    }
+    return {
+      type,
+      name: wname || inp.name,
+      min: options.min,
+      max: options.max,
+      step2: options.step2,
+      value: widget ? widget.value : undefined,
+      comboValues: Array.isArray(comboValues) ? comboValues : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function confirmRemove(row) {
+  if (typeof window === "undefined" || typeof window.confirm !== "function") {
+    return true; // no confirm surface available (e.g. under test) -- don't block removal
+  }
+  return window.confirm(`"${row.name || row.kind}" is wired to something. Remove this row and its link?`);
+}
+
+function buildCtx(panelConfig, mods) {
+  return {
+    panelConfig,
+    doc: typeof document !== "undefined" ? document : null,
+    getKnownLists: () => readKnownLists(mods),
+    describeLinkTarget,
+    confirmRemove,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy litegraph sizing -- per the dynamic-node-frontend skill / design
+// doc §7: computeSize returns MIN_W (never the live width, or the node can
+// only ever grow), bodyHeight counts our rows only (else legacy reserves a
+// 20px slot row PER OUTPUT above the body), and arrange() is re-run after
+// alignOutputsLegacy so slots re-measure with our positions in place.
+// ---------------------------------------------------------------------------
+
+function setupNode(node, panelConfig, mods) {
+  if (node._ctrlSetup) {
+    return;
+  }
+  node._ctrlSetup = true;
+  node._ctrlMods = mods;
+  const ctx = buildCtx(panelConfig, mods);
+  node._ctrlCtx = ctx;
+
+  hideStateWidget(node, mods);
+  mods.interaction.ensureState(node, ctx);
+
+  // Without this, widget Y depends on slot bounds which depend on widget Y
+  // -- the node walks taller every frame (ComfyUI-Pixaroma's
+  // `js/sliders/index.js` doc comment; same trap here since our outputs are
+  // parked ON row widgets too).
+  node.widgets_start_y = 2;
+
+  node.computeSize = function computeControlsSize() {
+    return [mods.render.MIN_W, mods.render.bodyHeight(mods.interaction.rowCountOf(this, ctx))];
+  };
+
+  if (!node.size || node.size[0] < mods.render.MIN_W) {
+    node.size = node.size || [0, 0];
+    node.size[0] = mods.render.DEFAULT_W;
+    node.size[1] = mods.render.bodyHeight(mods.interaction.rowCountOf(node, ctx));
+  }
+
+  mods.interaction.syncRows(node, ctx);
+  mods.interaction.scheduleFit(node, ctx);
+}
+
+function restoreNode(node, panelConfig, mods) {
+  node._ctrlMods = mods;
+  const ctx = node._ctrlCtx || buildCtx(panelConfig, mods);
+  node._ctrlCtx = ctx;
+  hideStateWidget(node, mods);
+  mods.interaction.restoreStateFromWidget(node, ctx);
+  node.widgets_start_y = 2;
+  mods.interaction.syncRows(node, ctx);
+  // Deliberately NO scheduleFit/fitNode here -- trust the size litegraph
+  // already restored from the saved workflow (skill's "never resize on
+  // load" rule; a clean workflow must not open "modified").
+}
+
+app.registerExtension({
+  name: "webtoon.controls",
+
+  beforeRegisterNodeDef(nodeType, nodeData) {
+    const panelConfig = CLASS_TO_PANEL[nodeData.name];
+    if (!panelConfig) {
+      return;
+    }
+    if (nodeType.prototype._wtnControlsPatched) {
+      return; // hot-reload guard
+    }
+    nodeType.prototype._wtnControlsPatched = true;
+
+    const _created = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function (...args) {
+      const result = _created ? _created.apply(this, args) : undefined;
+      const node = this;
+      loadMods()
+        .then((mods) => setupNode(node, panelConfig, mods))
+        .catch((err) => {
+          console.error("[AnimaFlow Controls] failed to load js/controls modules:", err);
+        });
+      return result;
+    };
+
+    const _configure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (...args) {
+      // Set BEFORE anything else runs (including the async mods load) --
+      // `resolveAutoOnConnect`'s caller (onConnectionsChange, below) and
+      // `scheduleFit`'s queued rAF must see this flag for the WHOLE loading
+      // window, however long the (one-time, cached) import takes.
+      this._ctrlConfiguring = true;
+      const result = _configure ? _configure.apply(this, args) : undefined;
+      const node = this;
+      loadMods()
+        .then((mods) => {
+          restoreNode(node, panelConfig, mods);
+        })
+        .catch((err) => {
+          console.error("[AnimaFlow Controls] failed to load js/controls modules:", err);
+        })
+        .finally(() => {
+          node._ctrlConfiguring = false;
+        });
+      return result;
+    };
+
+    // Auto rows resolve on first user connection ONLY -- gated on
+    // `!_ctrlConfiguring` so a workflow's link replay on load can never
+    // rewrite a saved kind (design doc §6). Also a no-op if `mods` haven't
+    // finished loading yet (an exceedingly narrow window right after node
+    // creation) -- the row simply stays "auto" until the user reconnects.
+    const _conn = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function (type, slotIndex, isConnected, link) {
+      if (type === 2 /* LiteGraph.OUTPUT */ && isConnected && !this._ctrlConfiguring && link && this._ctrlMods) {
+        this._ctrlMods.interaction.resolveAutoOnConnect(this, this._ctrlCtx, slotIndex, link);
+      }
+      return _conn ? _conn.apply(this, arguments) : undefined;
+    };
+
+    // Legacy: park each output dot at its OWN row widget's Y. arrange()
+    // computes widget.y, so re-run it once positions are set -- the second
+    // pass re-measures the slots with our pos in place (ComfyUI-Pixaroma's
+    // `js/sliders/index.js` does the identical double-arrange for the same
+    // reason). No-op until `mods` has loaded (nothing to align yet).
+    const _arrange = nodeType.prototype.arrange;
+    nodeType.prototype.arrange = function (...args) {
+      const result = _arrange ? _arrange.apply(this, args) : undefined;
+      if (this._ctrlMods) {
+        this._ctrlMods.interaction.alignOutputsLegacy(this);
+        if (_arrange) {
+          _arrange.apply(this, args);
+        }
+      }
+      return result;
+    };
+
+    // Strip render-time slot geometry before it lands in the saved
+    // workflow -- meaningless in a different renderer, and rebuilt on
+    // every arrange anyway (ComfyUI-Pixaroma's identical `serialize` patch).
+    const _serialize = nodeType.prototype.serialize;
+    nodeType.prototype.serialize = function (...args) {
+      const o = _serialize ? _serialize.apply(this, args) : undefined;
+      if (o && o.outputs) {
+        for (const out of o.outputs) {
+          if (out && out.pos) {
+            delete out.pos;
+          }
+        }
+      }
+      return o;
+    };
+
+    const _removed = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function (...args) {
+      if (this._ctrlMods) {
+        this._ctrlMods.interaction.closeActiveOverlay();
+      }
+      return _removed ? _removed.apply(this, args) : undefined;
+    };
+  },
+
+  // Right-click "+ Add …" is already in-body (a themed dashed strip, not a
+  // node menu item); the row-level Duplicate/Remove menu is a genuine
+  // right-click ON the row, wired by interaction.mjs. No extension-level
+  // getNodeMenuItems needed for this build.
+});

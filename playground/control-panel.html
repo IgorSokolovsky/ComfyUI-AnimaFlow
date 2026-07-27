@@ -1,0 +1,881 @@
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #151a21;
+    --panel-2: #1b212a;
+    --line: #28303b;
+    --line-soft: #1f2731;
+    --ink: #e7ecf3;
+    --ink-dim: #93a0b1;
+    --ink-faint: #5f6c7d;
+    --accent: #2dd4bf;
+    --accent-strong: #34e5d2;
+    --accent-deep: #14b8a6;
+    --on-accent: #062420;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --console: #0a0d12;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: var(--ink); font-family: var(--ui);
+    background:
+      radial-gradient(900px 420px at 82% -160px, rgba(45,212,191,.10), transparent 70%),
+      var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  /* ── page header ─────────────────────────────────────────────── */
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .glyph {
+    width: 30px; height: 30px; border-radius: 9px; flex: none;
+    background: radial-gradient(circle at 30% 30%, var(--accent), var(--accent-deep));
+    box-shadow: 0 0 18px rgba(45,212,191,.35);
+  }
+  h1 { font-size: 18px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+  .head .sub { font-size: 12.5px; color: var(--ink-dim); }
+  .note {
+    font-size: 12.5px; color: var(--ink-dim); line-height: 1.65; margin: 14px 0 10px;
+    padding: 11px 14px; background: var(--panel); border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--accent); border-radius: 0 10px 10px 0; max-width: 860px;
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+  .live {
+    font-size: 12.5px; color: var(--ink-dim); margin: 0 0 24px; padding: 9px 13px;
+    max-width: 860px; border-radius: 0 10px 10px 0;
+    background: var(--panel); border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--warn);
+  }
+  .live b { color: var(--warn); font-weight: 600; }
+  code { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+
+  .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-faint); margin: 26px 0 10px;
+  }
+  .label:first-of-type { margin-top: 0; }
+
+  /* ── canvas stage: the nodes as they'd sit on a graph ────────── */
+  .stage {
+    position: relative; display: flex; gap: 30px; flex-wrap: wrap; align-items: flex-start;
+    padding: 30px 34px 210px; border-radius: 14px; border: 1px solid var(--line-soft);
+    background:
+      linear-gradient(rgba(255,255,255,.014) 1px, transparent 1px) 0 0 / 22px 22px,
+      linear-gradient(90deg, rgba(255,255,255,.014) 1px, transparent 1px) 0 0 / 22px 22px,
+      #0b0e13;
+  }
+
+  /* ── a node ──────────────────────────────────────────────────── */
+  .node {
+    width: 328px; border-radius: 11px; border: 1px solid var(--line);
+    background: var(--panel); box-shadow: 0 14px 34px rgba(0,0,0,.5);
+  }
+  .node.wide { width: 300px; }
+  .titlebar {
+    display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+    background: linear-gradient(180deg, var(--panel-2), #171d25);
+    border-bottom: 1px solid var(--line); border-radius: 11px 11px 0 0;
+  }
+  .titlebar .dot {
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+    background: var(--accent); box-shadow: 0 0 9px rgba(45,212,191,.55);
+  }
+  .titlebar .t { font-size: 13px; font-weight: 620; letter-spacing: -.01em; }
+  .titlebar .beta {
+    margin-left: auto; font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+    color: var(--warn); border: 1px solid rgba(251,191,36,.35); border-radius: 5px;
+    padding: 2px 5px; text-transform: uppercase;
+  }
+  .body { padding: 9px; display: flex; flex-direction: column; gap: 7px; }
+
+  /* ── a row = one control = one output dot ────────────────────── */
+  .row {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    height: 30px; padding: 0 8px 0 10px; border-radius: 7px;
+    background: var(--console); border: 1px solid var(--line-soft);
+  }
+  /* min-width so a long value can't crush the label to "u…" — the VALUE takes
+     the ellipsis instead, since the label is the thing you scan by. */
+  .row .nm {
+    font-size: 12px; color: var(--ink-dim); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 54px;
+  }
+  .row .val {
+    font-family: var(--mono); font-size: 12px; font-weight: 640; color: var(--ink);
+    white-space: nowrap;
+  }
+  /* secondary bits inside a value — the latent's ratio and batch count */
+  .row .val .dim { color: var(--ink-faint); font-weight: 500; }
+  /* the row whose menu is open reads as active */
+  .row.open { border-color: var(--accent-deep); }
+
+  /* output dot, parked on this row's Y — the whole point of the layout */
+  .out {
+    position: absolute; right: -18px; top: 50%; transform: translateY(-50%);
+    width: 11px; height: 11px; border-radius: 50%;
+    border: 1.5px solid #0b0e13;
+  }
+  /* ComfyUI's own socket colours for the real types — LATENT pink, MODEL
+     purple, CLIP yellow, VAE red — so the dots read the same as every other
+     node on the canvas. COMBO has no ComfyUI colour, hence neutral.
+
+     The t- prefix is load-bearing: these are TYPE NAMES, and a bare `.combo`
+     on the dot collided with the `.combo` widget class below, which handed the
+     dot `position: relative; display: flex`. That knocked it out of absolute
+     positioning and made it an in-flow 11px flex item + an 8px row gap, so
+     combo rows silently lost 19px of width and their ▶ sat 19px short of the
+     border while every other row was fine. Namespace type classes. */
+  .out.t-int    { background: #7dd3fc; }
+  .out.t-float  { background: #4ade80; }
+  .out.t-combo  { background: #9ca3af; }
+  .out.t-latent { background: #ff9cf9; }
+  .out.t-model  { background: #b39ddb; }
+  .out.t-clip   { background: #ffd500; }
+  .out.t-vae    { background: #ff6e6e; }
+  .out.t-any    { background: transparent; border: 1.5px dashed var(--ink-faint); }
+
+  /* ── combo row: ◀ [ value ▾ ] ▶ ──────────────────────────────
+     The steppers walk the list one at a time; the caret next to the value
+     opens the full list. Same split as Pixaroma. */
+  .stepper { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  /* DRAWN triangles, not ◀ ▶ text glyphs. A glyph carries its own side bearing
+     — ~4px of whitespace inside the em box at 14px — so `padding-right: 8px`
+     could only ever RENDER as ~12px, and no padding value fixes that. A border
+     triangle's box IS the triangle, so 8px measures 8px. It also kills the
+     font-dependent size variance between platforms. */
+  .arrow {
+    width: 0; height: 0; flex: none; cursor: pointer; opacity: .92;
+    border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  }
+  .arrow.left  { border-right: 8px solid var(--accent); }
+  .arrow.right { border-left: 8px solid var(--accent); }
+  .arrow:hover { opacity: 1; }
+  .arrow.left:hover  { border-right-color: var(--accent-strong); }
+  .arrow.right:hover { border-left-color: var(--accent-strong); }
+  .combo { position: relative; display: flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; }
+  .combo .val { overflow: hidden; text-overflow: ellipsis; }
+  /* The caret is an affordance, not an action — grey in every state, including
+     open. Teal is reserved for the steppers, which DO something on click. */
+  .combo .caret {
+    width: 0; height: 0; flex: none; transform: translateY(1px);
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid var(--ink-faint);
+  }
+  .combo:hover .val { color: var(--accent-strong); }
+  .combo:hover .caret { border-top-color: var(--ink-dim); }
+
+  /* ── the option list — drops BELOW the field, at FIELD WIDTH ──
+     Anchored to the ROW (left:0/right:0), not to the value text: anchoring it
+     to .combo made its edges depend on how long the current value happens to
+     be, so every row's menu started and ended somewhere different. Never
+     anchor to .node either — that's a static box, so left/top would resolve
+     against .stage and the menu lands somewhere arbitrary.
+     4px menu padding + 6px option padding = the row's own 10px text inset. */
+  .menu {
+    position: absolute; z-index: 15; top: calc(100% + 6px); left: 0; right: 0;
+    max-height: 264px; overflow-y: auto; padding: 4px;
+    border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel-2); box-shadow: 0 20px 44px rgba(0,0,0,.7);
+  }
+  .menu .opt {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+    padding: 5px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .menu .opt:hover { background: var(--console); color: var(--ink); }
+  /* The current option reads as a neutral grey fill, NOT the teal accent —
+     accent is for actions, not for "this is where you already are". */
+  .menu .opt.sel { background: #2b3440; color: var(--ink); font-weight: 650; }
+  .menu .mhead {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-faint); padding: 4px 6px 6px;
+  }
+  .menu .opt .hint { color: var(--ink-faint); font-size: 10.5px; margin-left: 6px; }
+  .menu::-webkit-scrollbar { width: 9px; }
+  .menu::-webkit-scrollbar-track { background: transparent; }
+  .menu::-webkit-scrollbar-thumb { background: #2f3a48; border-radius: 9px; border: 2px solid var(--panel-2); }
+
+  /* seed row: R toggles randomize-each-run, N rolls one now and holds it */
+  .mini {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700; color: var(--ink-dim);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px;
+    padding: 2px 5px; cursor: pointer; line-height: 1.35; flex: none;
+  }
+  .mini:hover { color: var(--ink); border-color: var(--accent-deep); }
+  .mini.on { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+
+  /* numeric row with the inline slider fill — drag anywhere on the row */
+  .row.slider { overflow: hidden; cursor: ew-resize; }
+  .fill {
+    position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px 0 0 6px;
+    background: linear-gradient(90deg, rgba(45,212,191,.30), rgba(45,212,191,.16));
+    border-right: 1px solid var(--accent-deep); pointer-events: none;
+  }
+  .row.slider .nm, .row.slider .val, .row.slider .gear { position: relative; z-index: 1; }
+
+  /* auto row — not yet resolved */
+  .row.auto { border-style: dashed; border-color: #2c3644; }
+  .row.auto .nm { color: var(--ink-faint); font-style: italic; }
+
+  /* ── reorder grip (Control Panel only) ───────────────────────── */
+  .grip {
+    flex: none; width: 9px; height: 15px; cursor: grab; margin-left: -3px;
+    background-image: radial-gradient(circle, var(--ink-faint) 1.1px, transparent 1.3px);
+    background-size: 4px 4px; opacity: .5; touch-action: none;
+  }
+  .grip:hover { opacity: 1; }
+  .row.dragging { opacity: .5; border-color: var(--accent); cursor: grabbing; }
+
+  /* ⚙ is ALWAYS the rightmost element in a row: border → 8px → ⚙ → 8px → ▶.
+     A row with no settings simply ends at its ▶, 8px from the border — no
+     reserved slot, so the two kinds of row don't line up with each other. */
+  .gear {
+    font-size: 14px; color: var(--ink-faint); cursor: pointer; flex: none;
+    width: 18px; text-align: center;
+  }
+  .gear:hover, .gear.active { color: var(--accent); }
+
+  .addwrap { position: relative; display: flex; flex-direction: column; }
+  .add {
+    height: 28px; margin-top: 1px; border-radius: 7px; cursor: pointer;
+    border: 1px dashed #2c3644; background: transparent; color: var(--ink-faint);
+    font-family: var(--ui); font-size: 11.5px; letter-spacing: .01em; width: 100%;
+  }
+  .add:hover, .addwrap.open .add { border-color: var(--accent-deep); color: var(--accent); }
+
+  /* ── the ⚙ settings popover — a DIFFERENT menu to the option list:
+     it opens to the RIGHT of its row, not below the field. Anchored to the
+     row (.row is position:relative). Never anchor to .node — that's a static
+     box, so left/top would resolve against .stage instead. */
+  .pop {
+    position: absolute; z-index: 20; width: 240px; padding: 12px;
+    left: calc(100% + 26px); top: -10px;          /* clears the dot at right:-18px */
+    border-radius: 11px; border: 1px solid var(--line);
+    background: var(--panel-2); box-shadow: 0 20px 46px rgba(0,0,0,.66);
+  }
+  .pop::before {
+    content: ""; position: absolute; left: -5px; top: 20px; width: 9px; height: 9px;
+    background: var(--panel-2); border-left: 1px solid var(--line);
+    border-bottom: 1px solid var(--line); transform: rotate(45deg);
+  }
+  .pop h4 {
+    margin: 0 0 10px; font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-faint); font-weight: 600;
+  }
+  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .field span { font-size: 11.5px; color: var(--ink-dim); width: 58px; flex: none; }
+  .field input, .field select {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink); width: 100%;
+    background: var(--console); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 7px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  /* ── latent popover: Custom | Predefined, then swapped content ── */
+  .pop.wide { width: 272px; }
+  .seg {
+    display: flex; gap: 3px; padding: 3px; margin-bottom: 11px;
+    background: var(--console); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .seg button {
+    flex: 1; font-family: var(--ui); font-size: 11.5px; color: var(--ink-dim);
+    background: transparent; border: none; padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .seg button:hover { color: var(--ink); }
+  .seg button.on { background: var(--accent); color: var(--on-accent); font-weight: 620; }
+
+  .wh { display: flex; gap: 8px; }
+  .wh label {
+    flex: 1; display: flex; flex-direction: column; gap: 5px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .wh input {
+    font-family: var(--mono); font-size: 12px; color: var(--ink); width: 100%;
+    background: var(--console); border: 1px solid var(--line); border-radius: 6px; padding: 6px 7px;
+  }
+  .wh input:focus { outline: none; border-color: var(--accent); }
+
+  .ratios { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 10px; }
+  .rbtn {
+    display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+    background: var(--console); border: 1px solid var(--line); border-radius: 6px; padding: 6px 4px;
+  }
+  .rbtn:hover { color: var(--ink); border-color: var(--accent-deep); }
+  .rbtn.on { background: var(--accent); color: var(--on-accent); font-weight: 650; border-color: var(--accent); }
+  /* orientation glyph — inherits currentColor, so it flips with the chip state */
+  .rbtn .ic { border: 1.4px solid currentColor; border-radius: 2px; flex: none; }
+
+  .reslist {
+    max-height: 152px; overflow-y: auto; padding: 3px;
+    background: var(--console); border: 1px solid var(--line); border-radius: 7px;
+  }
+  .res {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); text-align: center;
+    padding: 5px; border-radius: 5px; cursor: pointer;
+  }
+  .res:hover { background: var(--panel-2); color: var(--ink); }
+  .res.on { background: rgba(45, 212, 191, .14); color: var(--accent); font-weight: 650; }
+  .reslist::-webkit-scrollbar { width: 9px; }
+  .reslist::-webkit-scrollbar-track { background: transparent; }
+  .reslist::-webkit-scrollbar-thumb { background: #2f3a48; border-radius: 9px; border: 2px solid var(--console); }
+  .popfoot { display: flex; gap: 7px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+  .pbtn {
+    font-family: var(--ui); font-size: 11.5px; cursor: pointer; flex: 1;
+    background: transparent; border: 1px solid var(--line); border-radius: 7px;
+    color: var(--ink-dim); padding: 5px 8px;
+  }
+  .pbtn:hover { color: var(--ink); border-color: var(--accent-deep); }
+  .pbtn.danger:hover { color: var(--bad); border-color: var(--bad); }
+
+  /* ── consumer stub, so the split reads visually ──────────────── */
+  .col { display: flex; flex-direction: column; gap: 22px; }
+  .consumer {
+    align-self: flex-start; width: 208px;
+    border-radius: 11px; border: 1px solid var(--line); background: #12171e;
+    box-shadow: 0 10px 26px rgba(0,0,0,.4); opacity: .92;
+  }
+  .consumer .titlebar { background: #161c24; }
+  .consumer .titlebar .dot { background: var(--ink-faint); box-shadow: none; }
+  .consumer .stub {
+    display: flex; align-items: center; height: 26px; padding: 0 10px; margin: 6px 9px;
+    border-radius: 6px; background: var(--console); border: 1px solid var(--line-soft);
+    font-size: 11.5px; color: var(--ink-dim); position: relative;
+  }
+  .consumer .stub .in {
+    position: absolute; left: -17px; top: 50%; transform: translateY(-50%);
+    width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #0b0e13;
+  }
+  .consumer .stub .in.t-int { background: #7dd3fc; }
+  .consumer .stub .in.t-combo { background: #9ca3af; }
+  .consumer .stub .in.t-model { background: #b39ddb; }
+  .consumer .stub .in.t-latent { background: #ff9cf9; }
+
+  /* ── legend / anatomy strip ──────────────────────────────────── */
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 16px; margin-top: 26px; }
+  .card {
+    padding: 14px 16px; border-radius: 11px; border: 1px solid var(--line-soft);
+    background: var(--panel);
+  }
+  .card h3 { margin: 0 0 10px; font-size: 13px; font-weight: 620; }
+  .card p { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.65; }
+  .card p:last-child { margin-bottom: 0; }
+  .kv { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; font-size: 12px; color: var(--ink-dim); }
+  .kv .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .kv b { color: var(--ink); font-family: var(--mono); font-size: 11.5px; font-weight: 600; }
+  .warnbox { border-left: 2px solid var(--warn); border-radius: 0 11px 11px 0; }
+  .warnbox h3 { color: var(--warn); }
+</style>
+
+<div class="wrap">
+  <div class="head">
+    <div class="glyph"></div>
+    <div>
+      <h1>Control Panel &amp; Loader Panel</h1>
+      <div class="sub">Mockup for <code>docs/control-panel-design.md</code> — house theme, legacy-litegraph layout</div>
+    </div>
+  </div>
+
+  <p class="note">
+    One row = one control = <b>one output dot, parked on that row's Y</b>. Rows come from a fixed
+    catalog (sampler, scheduler, seed, int, float, latent — and models on the second node) rather
+    than being generic numbers. Split into two nodes because ComfyUI caches per node — a seed and
+    a UNET in one panel means <b>every seed bump reloads the model</b>.
+  </p>
+
+  <p class="live">
+    <b>This mockup is live.</b> Click a value or its <b>▾</b> to open the list, use <b>◀ ▶</b> to
+    step one option at a time, drag across <b>steps</b> / <b>cfg</b> to set them, hit <b>R</b> and
+    <b>N</b> on the seed, open a <b>⚙</b>, and use <b>+ Add control</b> / <b>+ Add loader</b> to
+    pick a new row from the catalog.
+  </p>
+
+  <p class="label">On the graph</p>
+  <div class="stage">
+    <div id="mount-control"></div>
+    <div class="col">
+      <div id="mount-loader"></div>
+      <div class="consumer">
+        <div class="titlebar">
+          <div class="dot"></div>
+          <div class="t" style="font-weight:560">KSampler</div>
+        </div>
+        <div style="padding-bottom:8px">
+          <div class="stub"><div class="in t-model"></div>model</div>
+          <div class="stub"><div class="in t-latent"></div>latent_image</div>
+          <div class="stub"><div class="in t-int"></div>seed</div>
+          <div class="stub"><div class="in t-int"></div>steps</div>
+          <div class="stub"><div class="in t-combo"></div>sampler_name</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <h3>Slot colours = narrowed type</h3>
+      <div class="kv"><span class="sw" style="background:#7dd3fc"></span><b>INT</b> seed, steps</div>
+      <div class="kv"><span class="sw" style="background:#4ade80"></span><b>FLOAT</b> cfg, denoise</div>
+      <div class="kv"><span class="sw" style="background:#9ca3af"></span><b>COMBO</b> sampler, scheduler</div>
+      <div class="kv"><span class="sw" style="background:#ff9cf9"></span><b>LATENT</b> empty latent</div>
+      <div class="kv"><span class="sw" style="background:#b39ddb"></span><b>MODEL</b> unet row</div>
+      <div class="kv"><span class="sw" style="background:#ffd500"></span><b>CLIP</b> clip row</div>
+      <div class="kv"><span class="sw" style="background:#ff6e6e"></span><b>VAE</b> vae row</div>
+      <div class="kv"><span class="sw" style="border:1.5px dashed #5f6c7d"></span><b>*</b> unresolved Auto row</div>
+      <p style="margin-top:10px">ComfyUI's own socket colours, so the dots read the same as every
+        other node on the canvas. Python declares every slot wildcard; the frontend narrows the
+        <i>visible</i> type so a wrong wire is refused at the wire, not mid-run.</p>
+    </div>
+
+    <div class="card">
+      <h3>Row anatomy</h3>
+      <p><b style="color:#e7ecf3">Name</b> left, <b style="color:#e7ecf3">value</b> right, dot pinned
+        to the row's own Y — no slot column, so the node is exactly as tall as its rows.</p>
+      <p>On a list row, <code>◀ ▶</code> step one option at a time and the <code>▼</code> beside the
+        value opens the full list below the field — option lists only.</p>
+      <p>On a seed row, <code>R</code> is a <b style="color:#e7ecf3">toggle</b>: a fresh seed every
+        run. <code>N</code> is a <b style="color:#e7ecf3">one-shot button</b>: roll a new seed now
+        and hold it fixed. <code>⚙</code> appears only on rows with more to say, and opens to the
+        right — a different menu from the option list.</p>
+      <p>Control Panel rows have a <b style="color:#e7ecf3">grip</b> on the left — drag to reorder.
+        Each row keeps the output slot it was created with (hover a dot to see it), so rearranging
+        the panel never touches a wire. The loader panel has no grip: three fixed loaders have no
+        ordering worth dragging.</p>
+      <p>Deleting a row is the case that <i>does</i> disturb slots — confirm first when anything
+        below is wired.</p>
+    </div>
+
+    <div class="card warnbox">
+      <h3>Two panels, not one</h3>
+      <p>ComfyUI's cache signature is per <i>node</i> and propagates to everything downstream of any
+        output. Mixing a seed row with a model row means a 10s+ reload on every tweak.</p>
+      <p>So: <b>one panel per change-frequency tier</b>. Two Control Panels is normal — a "tweak
+        these" and a "set once".</p>
+      <p>On legacy litegraph, <code>sampler_name</code> is a canvas widget: right-click →
+        <i>Convert widget to input</i> before it can be wired.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Mockup behaviour. Deliberately one render() off one state object: that's the
+// shape the real node wants too, since every mutation has to re-sync the
+// serialized state widget anyway. Option lists here are hardcoded samples; the
+// real node reads them out of ComfyUI's node defs (KSampler.sampler_name etc).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LISTS = {
+  sampler: ["euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun",
+            "heunpp2", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive",
+            "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde",
+            "ddpm", "ddim", "uni_pc", "uni_pc_bh2", "res_multistep", "gradient_estimation"],
+  scheduler: ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform",
+              "beta", "linear_quadratic", "kl_optimal"],
+  unet: ["animaPencil_v5.safetensors", "animagineXL_v4.safetensors", "illustrious_v2.safetensors",
+         "noobai_eps_v11.safetensors", "flux1-dev.safetensors", "wan2.1_t2v_14B.safetensors"],
+  vae: ["sdxl_vae.safetensors", "ae.safetensors", "wan_2.1_vae.safetensors", "taesdxl"],
+  clip: ["qwen_2.5_vl_7b.safetensors", "clip_l.safetensors", "t5xxl_fp16.safetensors",
+         "umt5_xxl_fp8_scaled.safetensors"],
+};
+
+// One entry per row kind in the catalog. `type` is the narrowed socket type.
+const KINDS = {
+  sampler:   { menu: "Sampler",      type: "combo",  list: "sampler" },
+  scheduler: { menu: "Scheduler",    type: "combo",  list: "scheduler" },
+  seed:      { menu: "Seed",         type: "int",    gear: "Seed" },
+  // No ⚙ on int/float: their range, step and starting value are adopted from
+  // the input they're first wired to (§6), so there'd be nothing to set here.
+  int:       { menu: "Int",          type: "int",    num: 1 },
+  float:     { menu: "Float",        type: "float",  num: 1 },
+  latent:    { menu: "Empty latent", type: "latent", gear: "Empty latent" },
+  unet:      { menu: "UNET loader",  type: "model",  list: "unet", gear: "UNET loader" },
+  vae:       { menu: "VAE loader",   type: "vae",    list: "vae" },
+  clip:      { menu: "CLIP loader",  type: "clip",   list: "clip", gear: "CLIP loader" },
+};
+
+const AFTER = ["fixed", "increment", "decrement", "randomize"];
+
+// Aspect ratios, each pinned to its canonical dimensions at the 1024 tier (the
+// SDXL/Anima buckets people already recognise — 832×1216, 1344×768 …). Other
+// tiers scale from that pair and snap to 16, which keeps the well-known numbers
+// exact instead of deriving everything from an area formula that would land on
+// 832×1248 and look subtly wrong to anyone who knows the buckets.
+const RATIOS = [
+  ["1:1", 1024, 1024], ["16:9", 1344, 768], ["9:16", 768, 1344],
+  ["2:1", 1408, 704],  ["3:2", 1216, 832],  ["2:3", 832, 1216],
+  ["4:3", 1152, 896],  ["3:4", 896, 1152],  ["4:5", 912, 1152],
+];
+const TIERS = [512, 768, 1024, 1280, 1328, 1408, 1536, 2048];
+const snap16 = (n) => Math.max(64, Math.round(n / 16) * 16);
+function dimsFor(ratio, tier) {
+  const [, w, h] = RATIOS.find((r) => r[0] === ratio) || RATIOS[0];
+  const k = tier / 1024;
+  return [snap16(w * k), snap16(h * k)];
+}
+function ratioIcon(w, h) {
+  const [a, b] = w === h ? [9, 9] : w > h ? [12, 8] : [8, 12];
+  return `<span class="ic" style="width:${a}px;height:${b}px"></span>`;
+}
+
+let uid = 0;
+function mkRow(kind, over = {}) {
+  const k = KINDS[kind], r = { id: ++uid, kind, label: over.label ?? kind };
+  if (k.list) r.idx = 0;
+  // `after` is the control-after-generate mode; `lastMode` remembers what the
+  // toggle should return to when it comes back off "fixed".
+  if (kind === "seed") Object.assign(r, { seed: "1000000000000", after: "randomize", lastMode: "randomize" });
+  if (kind === "int")   Object.assign(r, { value: 30, min: 1, max: 120, step: 1 });
+  if (kind === "float") Object.assign(r, { value: 5, min: 0, max: 20, step: 0.1 });
+  if (kind === "latent") Object.assign(r, { mode: "predefined", ratio: "2:3", tier: 1024, w: 832, h: 1216, batch: 1 });
+  if (kind === "unet") r.dtype = "default";
+  if (kind === "clip") { r.ctype = "qwen_image"; r.device = "default"; }
+  return Object.assign(r, over);
+}
+
+const state = {
+  open: null,   // { row: id, what: "list" | "pop" } | { add: panelKey }
+  panels: {
+    control: {
+      title: "Anima Control Panel", add: "+ Add control", width: "", reorder: true,
+      catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+      rows: [
+        mkRow("sampler", { label: "sampler name", idx: 2 }),
+        mkRow("scheduler", { idx: 1 }),
+        mkRow("seed"),
+        mkRow("int", { label: "steps", value: 30 }),
+        mkRow("float", { label: "cfg", value: 5 }),
+        mkRow("latent", { label: "empty latent" }),
+        { id: ++uid, kind: "auto", label: "Auto — wire me to anything" },
+      ],
+    },
+    loader: {
+      title: "Anima Loader Panel", add: "+ Add loader", width: "wide",
+      catalog: ["unet", "vae", "clip"],
+      rows: [mkRow("unet"), mkRow("vae"), mkRow("clip")],
+    },
+  },
+};
+
+// A row's SLOT is assigned once, at creation, and never changes — reordering
+// rows must not renumber slots, or dragging a row would silently rewire every
+// downstream link. Display order (the rows array) and slot order are separate
+// things; Python's RETURN_NAMES stays positional by slot.
+function assignSlot(p, r) {
+  const used = new Set(p.rows.map((x) => x.slot).filter(Boolean));
+  let s = 1;
+  while (used.has(s)) s++;
+  r.slot = s;
+  return r;
+}
+for (const key in state.panels) state.panels[key].rows.forEach((r) => assignSlot(state.panels[key], r));
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const decimals = (r) => (String(r.step).split(".")[1] || "").length;
+const rowById = (id) => {
+  for (const key in state.panels) {
+    const i = state.panels[key].rows.findIndex((r) => r.id === +id);
+    if (i > -1) return { panel: state.panels[key], key, row: state.panels[key].rows[i], i };
+  }
+  return null;
+};
+
+// ── row bodies ──────────────────────────────────────────────────────────────
+function comboBody(r) {
+  const list = LISTS[KINDS[r.kind].list];
+  return `<div class="stepper">
+      <span class="arrow left" data-act="step" data-r="${r.id}" data-d="-1"></span>
+      <div class="combo" data-act="list" data-r="${r.id}">
+        <span class="val">${esc(list[r.idx])}</span><span class="caret"></span>
+      </div>
+      <span class="arrow right" data-act="step" data-r="${r.id}" data-d="1"></span>
+    </div>`;
+}
+
+function renderRow(r, p) {
+  const k = KINDS[r.kind] || {};
+  const open = state.open?.row === r.id;
+  const cls = ["row"];
+  if (r.kind === "auto") cls.push("auto");
+  if (k.num) cls.push("slider");
+  if (open) cls.push("open");
+  if (reo?.id === r.id) cls.push("dragging");
+
+  let inner = p.reorder ? `<span class="grip" data-act="grip" data-r="${r.id}" title="Drag to reorder — does not move the output slot"></span>` : "";
+  inner += `<div class="nm">${esc(r.label)}</div>`;
+  if (k.list) inner += comboBody(r);
+  else if (r.kind === "seed") {
+    // The mode button MIRRORS control-after-generate: F/R/I/D. Pick decrement in
+    // the ⚙ and this button becomes D — one control, one truth, no second place
+    // to read the mode from.
+    const letter = { fixed: "F", randomize: "R", increment: "I", decrement: "D" }[r.after];
+    const on = r.after !== "fixed";
+    inner += `<div class="val">${esc(r.seed)}</div>
+      <span class="mini ${on ? "on" : ""}" data-act="mode" data-r="${r.id}" title="After each run: ${r.after} — click to ${on ? "hold it fixed" : "resume " + r.lastMode}">${letter}</span>
+      <span class="mini" data-act="newseed" data-r="${r.id}" title="New seed now, then hold it fixed">N</span>`;
+  } else if (k.num) {
+    const pct = Math.max(0, Math.min(1, (r.value - r.min) / (r.max - r.min))) * 100;
+    inner = `<div class="fill" style="width:${pct}%"></div>` + inner +
+      `<div class="val">${r.value.toFixed(decimals(r))}</div>`;
+  } else if (r.kind === "latent") {
+    // Show the ratio next to the dimensions, but only in Predefined mode — in
+    // Custom the dimensions are whatever you typed, so naming a ratio would be
+    // asserting something the user never picked.
+    const ratio = r.mode === "predefined" ? ` <span class="dim">(${r.ratio})</span>` : "";
+    inner += `<div class="val">${r.w} × ${r.h}${ratio}${r.batch > 1 ? ` <span class="dim">×${r.batch}</span>` : ""}</div>`;
+  }
+
+  if (k.gear) inner += `<span class="gear ${open && state.open.what === "pop" ? "active" : ""}" data-act="pop" data-r="${r.id}" title="${esc(k.gear)} settings">⚙</span>`;
+  // The dot's tooltip carries the SLOT, which is fixed at creation and does not
+  // follow the row when it's dragged — see the reorder handler below.
+  inner += `<div class="out t-${r.kind === "auto" ? "any" : k.type}" title="${r.kind === "auto" ? "*" : k.type.toUpperCase()} · slot ${r.slot}"></div>`;
+
+  if (open && state.open.what === "list") inner += listMenu(r);
+  if (open && state.open.what === "pop") inner += popover(r);
+  // Right-click menu — the only removal path for rows that have no ⚙ (int,
+  // float, the combos), so every row stays removable without extra chrome.
+  if (open && state.open.what === "ctx") {
+    inner += `<div class="menu">
+      <div class="mhead">${esc(r.label)}</div>
+      <div class="opt" data-act="dup" data-r="${r.id}">Duplicate<span class="hint">new slot</span></div>
+      <div class="opt" data-act="del" data-r="${r.id}">Remove row</div>
+    </div>`;
+  }
+  return `<div class="${cls.join(" ")}" data-row="${r.id}">${inner}</div>`;
+}
+
+function listMenu(r) {
+  const list = LISTS[KINDS[r.kind].list];
+  return `<div class="menu">` + list.map((o, i) =>
+    `<div class="opt ${i === r.idx ? "sel" : ""}" data-act="pick" data-r="${r.id}" data-i="${i}">${esc(o)}</div>`
+  ).join("") + `</div>`;
+}
+
+// ── the latent ⚙: three parts — mode switch, swapped content, batch ─────────
+function latentPop(r) {
+  const custom = r.mode === "custom";
+  let mid;
+  if (custom) {
+    mid = `<div class="wh">
+      <label>width<input data-act="set" data-r="${r.id}" data-f="w" value="${r.w}"></label>
+      <label>height<input data-act="set" data-r="${r.id}" data-f="h" value="${r.h}"></label>
+    </div>`;
+  } else {
+    mid = `<div class="ratios">` + RATIOS.map(([name, w, h]) =>
+      `<div class="rbtn ${name === r.ratio ? "on" : ""}" data-act="ratio" data-r="${r.id}" data-v="${name}">${ratioIcon(w, h)}${name}</div>`
+    ).join("") + `</div><div class="reslist">` + TIERS.map((t) => {
+      const [w, h] = dimsFor(r.ratio, t);
+      return `<div class="res ${t === r.tier ? "on" : ""}" data-act="res" data-r="${r.id}" data-v="${t}">${w} × ${h}</div>`;
+    }).join("") + `</div>`;
+  }
+  return `<div class="pop wide"><h4>Empty latent</h4>
+    <div class="seg">
+      <button class="${custom ? "on" : ""}" data-act="lmode" data-r="${r.id}" data-v="custom">Custom</button>
+      <button class="${custom ? "" : "on"}" data-act="lmode" data-r="${r.id}" data-v="predefined">Predefined</button>
+    </div>
+    ${mid}
+    <div class="field" style="margin:11px 0 0"><span>batch</span><input data-act="set" data-r="${r.id}" data-f="batch" value="${r.batch}"></div>
+    <div class="popfoot">
+      <button class="pbtn" data-act="close">Done</button>
+      <button class="pbtn danger" data-act="del" data-r="${r.id}">Remove row</button>
+    </div></div>`;
+}
+
+// ── the ⚙ popover, per kind ─────────────────────────────────────────────────
+function popover(r) {
+  const k = KINDS[r.kind];
+  let f = "";
+  if (r.kind === "seed") {
+    f = `<div class="field"><span>after run</span><select data-act="set" data-r="${r.id}" data-f="after">`
+      + AFTER.map((a) => `<option ${a === r.after ? "selected" : ""}>${a}</option>`).join("")
+      + `</select></div>
+        <div class="field"><span>value</span><input data-act="set" data-r="${r.id}" data-f="seed" value="${esc(r.seed)}"></div>`;
+  } else if (r.kind === "latent") {
+    return latentPop(r);
+  } else if (r.kind === "unet") {
+    f = `<div class="field"><span>dtype</span><select data-act="set" data-r="${r.id}" data-f="dtype">`
+      + ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"].map((d) =>
+        `<option ${d === r.dtype ? "selected" : ""}>${d}</option>`).join("") + `</select></div>`;
+  } else if (r.kind === "clip") {
+    f = `<div class="field"><span>type</span><select data-act="set" data-r="${r.id}" data-f="ctype">`
+      + ["qwen_image", "stable_diffusion", "sdxl", "flux", "wan"].map((d) =>
+        `<option ${d === r.ctype ? "selected" : ""}>${d}</option>`).join("") + `</select></div>
+      <div class="field"><span>device</span><select data-act="set" data-r="${r.id}" data-f="device">`
+      + ["default", "cpu"].map((d) => `<option ${d === r.device ? "selected" : ""}>${d}</option>`).join("")
+      + `</select></div>`;
+  }
+  return `<div class="pop"><h4>${esc(k.gear)}</h4>${f}
+    <div class="popfoot">
+      <button class="pbtn" data-act="close">Done</button>
+      <button class="pbtn danger" data-act="del" data-r="${r.id}">Remove row</button>
+    </div></div>`;
+}
+
+// ── panels ──────────────────────────────────────────────────────────────────
+function renderPanel(key) {
+  const p = state.panels[key];
+  const addOpen = state.open?.add === key;
+  return `<div class="node ${p.width}">
+    <div class="titlebar"><div class="dot"></div><div class="t">${esc(p.title)}</div><div class="beta">beta</div></div>
+    <div class="body">
+      ${p.rows.map((r) => renderRow(r, p)).join("")}
+      <div class="addwrap ${addOpen ? "open" : ""}">
+        <button class="add" data-act="add" data-p="${key}">${esc(p.add)}</button>
+        ${addOpen ? `<div class="menu"><div class="mhead">Add a control</div>` +
+          p.catalog.map((kind) => `<div class="opt" data-act="addkind" data-p="${key}" data-k="${kind}">${esc(KINDS[kind].menu)}<span class="hint">${KINDS[kind].type.toUpperCase()}</span></div>`).join("") +
+          `<div class="opt" data-act="addkind" data-p="${key}" data-k="auto">Auto<span class="hint">decided by the first wire</span></div></div>` : ""}
+      </div>
+    </div></div>`;
+}
+
+function render() {
+  document.getElementById("mount-control").innerHTML = renderPanel("control");
+  document.getElementById("mount-loader").innerHTML = renderPanel("loader");
+}
+
+// ── events ──────────────────────────────────────────────────────────────────
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-act]");
+  if (!t) { state.open = null; return render(); }
+  const act = t.dataset.act;
+  const ctx = t.dataset.r ? rowById(t.dataset.r) : null;
+  const r = ctx?.row;
+
+  if (act === "step") {
+    const list = LISTS[KINDS[r.kind].list];
+    r.idx = (r.idx + +t.dataset.d + list.length) % list.length;
+  } else if (act === "list") {
+    state.open = state.open?.row === r.id && state.open.what === "list" ? null : { row: r.id, what: "list" };
+  } else if (act === "pick") {
+    r.idx = +t.dataset.i; state.open = null;
+  } else if (act === "pop") {
+    state.open = state.open?.row === r.id && state.open.what === "pop" ? null : { row: r.id, what: "pop" };
+  } else if (act === "mode") {
+    if (r.after === "fixed") r.after = r.lastMode || "randomize";
+    else { r.lastMode = r.after; r.after = "fixed"; }
+  } else if (act === "newseed") {
+    r.seed = String(Math.floor(Math.random() * 9e12));
+    if (r.after !== "fixed") { r.lastMode = r.after; r.after = "fixed"; }
+  } else if (act === "lmode") {
+    r.mode = t.dataset.v;
+  } else if (act === "ratio") {
+    // Keep the size tier when the ratio changes — picking 16:9 should not also
+    // jump you from the 1328 tier back to 1024.
+    r.ratio = t.dataset.v;
+    [r.w, r.h] = dimsFor(r.ratio, r.tier);
+  } else if (act === "res") {
+    r.tier = +t.dataset.v;
+    [r.w, r.h] = dimsFor(r.ratio, r.tier);
+  } else if (act === "dup") {
+    // A duplicate is a NEW output, so it takes a fresh slot — it cannot inherit
+    // the original's wires, and pretending otherwise would be a lie.
+    const copy = { ...r, id: ++uid, slot: 0 };
+    ctx.panel.rows.splice(ctx.i + 1, 0, assignSlot(ctx.panel, copy));
+    state.open = null;
+  } else if (act === "del") {
+    ctx.panel.rows.splice(ctx.i, 1); state.open = null;
+  } else if (act === "close") {
+    state.open = null;
+  } else if (act === "add") {
+    state.open = state.open?.add === t.dataset.p ? null : { add: t.dataset.p };
+  } else if (act === "addkind") {
+    const p = state.panels[t.dataset.p], kind = t.dataset.k;
+    const row = kind === "auto"
+      ? { id: ++uid, kind: "auto", label: "Auto — wire me to anything" }
+      : mkRow(kind, { label: kind === "sampler" ? "sampler name" : kind === "latent" ? "empty latent" : kind });
+    p.rows.push(assignSlot(p, row));
+    state.open = null;
+  } else if (act === "set") {
+    return; // handled on change
+  }
+  render();
+});
+
+// Commit popover fields on change (not input) so typing isn't interrupted by a
+// re-render stealing focus.
+document.addEventListener("change", (e) => {
+  const t = e.target.closest('[data-act="set"]');
+  if (!t) return;
+  const { row: r } = rowById(t.dataset.r);
+  const f = t.dataset.f, v = t.value;
+  if (["w", "h", "batch"].includes(f)) {
+    const n = parseFloat(v);
+    if (Number.isFinite(n)) r[f] = Math.max(1, Math.round(n));
+  } else if (f === "seed") {
+    r.seed = (v.match(/\d+/) || ["0"])[0].slice(0, 20);   // seeds are strings: 2^64 > MAX_SAFE_INTEGER
+  } else if (f === "after") {
+    r.after = v;
+    if (v !== "fixed") r.lastMode = v;                    // keeps the F/R/I/D button honest
+  } else r[f] = v;
+  render();
+});
+
+// Right-click a row for its menu (currently just removal).
+document.addEventListener("contextmenu", (e) => {
+  const row = e.target.closest(".row");
+  if (!row) return;
+  e.preventDefault();
+  const id = +row.dataset.row;
+  state.open = state.open?.row === id && state.open.what === "ctx" ? null : { row: id, what: "ctx" };
+  render();
+});
+
+// ── drag to REORDER (Control Panel only; the loader panel sets `reorder`
+// false, since three fixed loaders have no ordering to care about).
+// Reordering moves the ROW, never its slot: each row keeps the slot it was
+// created with, so dragging rearranges the panel without touching a wire.
+let reo = null;
+const STEP = 37;   // row height 30 + body gap 7
+
+document.addEventListener("pointerdown", (e) => {
+  const g = e.target.closest('[data-act="grip"]');
+  if (!g) return;
+  const ctx = rowById(g.dataset.r);
+  reo = { panel: ctx.panel, from: ctx.i, id: ctx.row.id, y: e.clientY, snapshot: ctx.panel.rows.slice() };
+  state.open = null;
+  e.preventDefault();
+  render();
+});
+
+document.addEventListener("pointermove", (e) => {
+  if (!reo) return;
+  // Recompute from the ORIGINAL order every move (not from the current one), so
+  // the result depends only on how far the pointer has travelled — otherwise
+  // rows leapfrog each other as the array mutates underneath the maths.
+  const to = Math.max(0, Math.min(reo.snapshot.length - 1, reo.from + Math.round((e.clientY - reo.y) / STEP)));
+  const arr = reo.snapshot.slice();
+  arr.splice(to, 0, ...arr.splice(reo.from, 1));
+  if (arr.some((r, i) => r !== reo.panel.rows[i])) { reo.panel.rows = arr; render(); }
+});
+
+document.addEventListener("pointerup", () => { if (reo) { reo = null; render(); } });
+
+// Drag a numeric row to set it. Pointer events so it keeps tracking outside
+// the row, and the ⚙ / value still take their own clicks.
+let drag = null;
+document.addEventListener("pointerdown", (e) => {
+  const row = e.target.closest(".row.slider");
+  if (!row || e.target.closest("[data-act]")) return;
+  const ctx = rowById(row.dataset.row);
+  drag = { r: ctx.row, box: row.getBoundingClientRect() };
+  setFromX(e.clientX);
+  row.setPointerCapture?.(e.pointerId);
+});
+document.addEventListener("pointermove", (e) => { if (drag) setFromX(e.clientX); });
+document.addEventListener("pointerup", () => { drag = null; });
+
+function setFromX(x) {
+  const { r, box } = drag;
+  const pct = Math.max(0, Math.min(1, (x - box.left) / box.width));
+  const raw = r.min + pct * (r.max - r.min);
+  const snapped = Math.round(raw / r.step) * r.step;
+  r.value = +Math.min(r.max, Math.max(r.min, snapped)).toFixed(decimals(r));
+  render();
+}
+
+render();
+</script>
