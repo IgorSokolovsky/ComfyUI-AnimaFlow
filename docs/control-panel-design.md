@@ -13,10 +13,18 @@ but rows come from a **fixed catalog of control kinds** instead of being generic
 
 ## 1. The upstream reference
 
-`../ComfyUI-Pixaroma` at `5036814` (v1.4.62, pulled 2026-07-27) **still has no "Control Panel"
-node** — the screenshot that prompted this is from a newer release than the clone had, and the pull
-confirmed it is newer than v1.4.62 too. `PixaromaSliders` remains the ancestor
-(`MAX_SLIDERS = 16`). Its direct ancestor in the clone is
+`../ComfyUI-Pixaroma` at `5036814` (v1.4.62, pulled 2026-07-27). **The "Control Panel Pixaroma" node
+in the screenshot that prompted this line *is* `PixaromaSliders`** — `NODE_DISPLAY_NAME_MAPPINGS =
+{"PixaromaSliders": "Control Panel Pixaroma"}` (`nodes/node_sliders.py:112`). Class name unchanged,
+display name changed.
+
+> **Correction, 2026-07-27.** Earlier revisions of this section claimed the clone "has no Control
+> Panel node" and that the screenshot came from an unreleased version. That was a **false negative**:
+> both greps looked at class names and filenames and never at the display-name mapping. There was
+> never a missing node. Nothing downstream changes — this doc already treats `PixaromaSliders` as the
+> thing being ported, and the kept/not-copied lists below are unaffected — but the lesson is worth
+> keeping: in a ComfyUI pack, **the name a user sees is in `NODE_DISPLAY_NAME_MAPPINGS`, not in the
+> class**, so a search for a node by its UI title must grep that mapping. Its direct ancestor in the clone is
 **`PixaromaSliders`** (`nodes/node_sliders.py`, `js/sliders/{index.js,core.mjs,ui.mjs,settings.mjs}`),
 which already carries the whole mechanic. Pixaroma is MIT © Pixaroma — porting patterns from it is
 fine **with attribution in `THIRD_PARTY_NOTICES.md`**.

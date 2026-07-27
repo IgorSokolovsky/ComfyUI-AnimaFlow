@@ -236,17 +236,24 @@
   .rline.pass .v { color: var(--warn); }
 
   /* ── settings overlay ────────────────────────────────────────── */
+  /* A right-side drawer, NOT a centred modal -- a modal hides the graph you're
+     tuning against, which is the whole point of having the node on screen. */
   .scrim {
     position: fixed; inset: 0; z-index: 50; display: none;
-    background: rgba(6,9,13,.72); backdrop-filter: blur(3px);
-    align-items: center; justify-content: center; padding: 30px;
+    background: rgba(6,9,13,.55); backdrop-filter: blur(2px);
+    align-items: stretch; justify-content: flex-end;
   }
   .scrim.open { display: flex; }
   .dlg {
-    width: 100%; max-width: 720px; max-height: 100%; display: flex; flex-direction: column;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
-    box-shadow: 0 30px 80px rgba(0,0,0,.7); overflow: hidden;
+    width: 100%; max-width: 460px; height: 100%; display: flex; flex-direction: column;
+    background: var(--panel); border-left: 1px solid var(--line);
+    box-shadow: -24px 0 60px rgba(0,0,0,.6); overflow: hidden;
+    animation: slidein .16s ease-out;
   }
+  @keyframes slidein { from { transform: translateX(24px); opacity: .6 } to { transform: none; opacity: 1 } }
+  /* One column in a 460px drawer -- two would crush every label. */
+  .grid2 { grid-template-columns: 1fr !important; }
+  .field > span { width: 132px; }
   .dlg header {
     display: flex; align-items: center; gap: 10px; padding: 12px 15px;
     border-bottom: 1px solid var(--line); background: linear-gradient(180deg, var(--panel-2), #171d25);
@@ -321,7 +328,35 @@
   }
   .passtabs button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
-  /* ── inline LoRA rows ── */
+  /* ── LoRA rows IN THE NODE (Pixaroma puts + Add LoRA in the node body, and
+     it's right -- these get touched constantly, so burying them in a settings
+     panel is wrong) ── */
+  .nlora {
+    display: flex; align-items: center; gap: 7px; height: 24px; margin-bottom: 4px;
+    padding: 0 8px; border-radius: 6px; font-size: 11px;
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+  }
+  .nlora.muted { opacity: .45; }
+  .nlora.empty {
+    justify-content: center; color: var(--ink-faint); font-size: 10.5px;
+    border-style: dashed; background: none; height: 30px;
+  }
+  .nlora .ln {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink-dim); font-family: var(--mono); font-size: 10px;
+  }
+  .nlora .lv { font-family: var(--mono); font-size: 10.5px; color: var(--ink); flex: none; }
+  .sw.sm { width: 20px; height: 11px; }
+  .sw.sm::after { width: 6px; height: 6px; top: 1.5px; left: 1.5px; }
+  .sw.sm.on::after { transform: translateX(9px); }
+  .addbtn {
+    display: block; width: 100%; margin-top: 2px; padding: 6px; cursor: pointer;
+    font-size: 11px; font-weight: 550; border-radius: 6px;
+    color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent);
+  }
+  .addbtn:hover { background: var(--accent-strong); }
+
+  /* ── inline LoRA rows (the drawer's detail editor) ── */
   .lorarow {
     display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
   }
@@ -412,6 +447,12 @@
       per enabled stage, so "what's actually on" is readable without opening anything.
     </div>
     <div class="q settled">
+      <span class="tag">Changed &middot; settings are a right-side drawer</span>
+      Not a centred modal — a modal covers the graph you're tuning against, which defeats having the
+      node on screen. The drawer is 460px, so the overlay is <b>one column</b>; two crushed every
+      label. Upstream ships five separate centred dialogs; this is one drawer with a tab strip.
+    </div>
+    <div class="q settled">
       <span class="tag">Settled &middot; sampler values, wired wins per field</span>
       No <code>use_internal_sampler</code> flag. Each of <code>seed</code> / <code>steps</code> /
       <code>cfg</code> / <code>sampler_name</code> / <code>scheduler</code> is its own socket; wired
@@ -438,12 +479,12 @@
       isn't re-proposed.
     </div>
     <div class="q settled">
-      <span class="tag">Settled &middot; Pixaroma's node emits MODEL/CLIP, not a stack</span>
-      Checked properly by pulling the clone to <code>v1.4.62</code>.
-      <code>PixaromaLoraLoader</code> is a loader/<i>applier</i> — in <code>MODEL</code> +
-      <code>CLIP</code>, out patched <code>MODEL</code> + <code>CLIP</code> + <code>triggers</code>.
-      Nothing in that pack emits a <code>LORA_STACK</code>. So the normal path needs <b>nothing</b>
-      from this node: <code>Loader Panel → Pixaroma loader → Generator.model</code>. The
+      <span class="tag">Settled &middot; Pixaroma's LoRA node hands back patched MODEL/CLIP</span>
+      Checked by pulling the clone to <code>v1.4.62</code>. <b>It does stack</b> — many rows, each with
+      a switch and strength, applied in order. What it doesn't do is emit a <code>LORA_STACK</code>
+      <i>object</i>: it returns patched <code>MODEL</code> + <code>CLIP</code> + <code>triggers</code>.
+      So the normal path needs <b>nothing</b> from this node:
+      <code>Loader Panel → LoRA Loader Pixaroma → Generator.model</code>. The
       <code>lora_stack</code> socket stays only for packs that <i>do</i> emit one.
       <br><br><b>The trap:</b> route the <b>patched</b> <code>CLIP</code> on to your text encode. Wire
       the raw one and the LoRA's model effect still lands while its CLIP effect vanishes — no error,
@@ -680,15 +721,19 @@ function genHtml() {
       <div class="row"><span class="nm">clip_name</span><span class="val">qwen_3_06b_base</span></div>
       <div class="row"><span class="nm">clip_type</span><span class="val">qwen_image</span></div>
       <div class="row"><span class="nm">vae_name</span><span class="val">qwen_image_vae</span></div>
-      <div class="row click" data-act="dlg" data-t="lora">
-        <span class="nm">loras</span>
-        <span class="val">${state.loras.filter((l) => l.m || l.c).length
-          ? `${state.loras.filter((l) => l.m || l.c).length} active`
-          : `<span style="color:var(--ink-faint)">none</span>`}${
-          state.loras.some((l) => !l.m && !l.c)
-            ? ` <span style="color:var(--ink-faint)">&middot; ${state.loras.filter((l) => !l.m && !l.c).length} muted</span>`
-            : ""}</span>
-      </div>
+    ` : ""}
+    ${int ? `
+      <div class="sec">loras <span class="cnt">&middot; ${state.loras.filter((l) => l.m || l.c).length} active</span></div>
+      ${state.loras.length
+        ? state.loras.map((l, i) => `<div class="nlora ${l.m || l.c ? "" : "muted"}">
+            <span class="sw sm ${l.m || l.c ? "on" : ""}" data-act="lmute" data-i="${i}"
+              title="${l.m || l.c ? "Mute (both strengths to 0)" : "Unmute"}"></span>
+            <span class="ln" title="${esc(l.name)}">${esc(l.name || "(unnamed)")}</span>
+            <span class="lv">${l.m.toFixed(2)}</span>
+            <span class="gear" data-act="dlg" data-t="lora" title="LoRA settings">&#9881;</span>
+          </div>`).join("")
+        : `<div class="nlora empty">No LoRAs yet &mdash; click + Add LoRA</div>`}
+      <button class="addbtn" data-act="ladd">+ Add LoRA</button>
     ` : ""}
     <div class="sockgrp">
       ${sock("lora_stack", "LORA_STACK", { optional: true, wired: state.wired.lora_stack && !int,
@@ -925,10 +970,10 @@ function dlgBody(tab) {
         <span>LoRAs arrive on the <code>lora_stack</code> socket, so there's nothing to edit here.
         Turn on <code>use_internal_loaders</code> for an inline list.</span></div>`;
     }
-    return `<div class="dnote">Inline LoRAs exist for <b>one</b> reason: inline mode loads its own
-      unet/clip, so there's no <code>MODEL</code>/<code>CLIP</code> wire for Pixaroma's LoRA loader to
-      sit on. With inline mode off you don't need this tab at all -- their node patches
-      <code>MODEL</code>/<code>CLIP</code> upstream and the LoRAs are already applied.</div>
+    return `<div class="dnote">The list lives <b>in the node</b> -- add, mute and reorder there. This
+      tab is only the detail editor for names and per-LoRA strengths. Inline LoRAs exist for
+      <b>one</b> reason: inline mode loads its own unet/clip, so there's no
+      <code>MODEL</code>/<code>CLIP</code> wire for Pixaroma's LoRA loader to sit on.</div>
       ${state.loras.map((l, i) => `<div class="lorarow ${l.m || l.c ? "" : "muted"}">
         <span class="ord">${i + 1}</span>
         <input class="lname" value="${esc(l.name)}" data-act="lname" data-i="${i}" data-live="1">
@@ -940,7 +985,8 @@ function dlgBody(tab) {
           ${i === state.loras.length - 1 ? 'style="opacity:.35"' : ""}>&or;</button>
         <button data-act="ldel" data-i="${i}" title="Remove">&times;</button>
       </div>`).join("")}
-      <div style="margin-top:10px"><button class="btn ghost" data-act="ladd" style="margin:0">+ Add LoRA</button></div>
+      <div style="margin-top:10px"><button class="btn ghost" data-act="ladd" style="margin:0">+ Add LoRA</button>
+        <span style="font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);margin-left:8px">also in the node body</span></div>
       <div class="dnote" style="margin:13px 0 0"><b>List order is application order.</b> A LoRA with
       both strengths at <code>0</code> is skipped when the stack is built, matching upstream --
       it stays in the list, muted rather than deleted. Set one to zero to see it dim.</div>`;
@@ -1188,7 +1234,16 @@ document.addEventListener("click", (e) => {
   } else if (act === "wire") state.sampWired[t.dataset.k] = !state.sampWired[t.dataset.k];
   else if (act === "unwire") state.sampWired[t.dataset.k] = false;
   else if (act === "lorastack") state.wired.lora_stack = !state.wired.lora_stack;
-  else if (act === "ladd") state.loras.push({ name: "", m: 1.0, c: 1.0 });
+  else if (act === "ladd") {
+    state.loras.push({ name: "", m: 1.0, c: 1.0 });
+    state.dlg = "lora";   // a fresh row has no name yet -- open the editor on it
+  } else if (act === "lmute") {
+    const l = state.loras[+t.dataset.i];
+    if (!l) return;
+    // Mute remembers the strength it came from, so unmute isn't a guess.
+    if (l.m || l.c) { l.was = [l.m, l.c]; l.m = 0; l.c = 0; }
+    else { [l.m, l.c] = l.was || [1.0, 1.0]; }
+  }
   else if (act === "ldel") state.loras.splice(+t.dataset.i, 1);
   else if (act === "lmv") {
     const i = +t.dataset.i, j = i + +t.dataset.d;

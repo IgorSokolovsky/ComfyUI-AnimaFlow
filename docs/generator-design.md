@@ -237,15 +237,23 @@ KSampler correctly. So the panel can drive all five, not just the numerics.
 **Verified against `../ComfyUI-Pixaroma` at `5036814` (v1.4.62)** — pulled 2026-07-27 specifically to
 check this, because the previously-cloned `afd0d05` (v1.4.44) predated the node.
 
-`PixaromaLoraLoader` (`nodes/node_lora_loader.py:26`) is a **loader/applier, not a stacker**:
+`PixaromaLoraLoader` — display name **"LoRA Loader Pixaroma"** (`nodes/node_lora_loader.py:26`):
 
 | | |
 |---|---|
 | in | `model` (required `MODEL`), `clip` (optional `CLIP`) |
 | out | `MODEL`, `CLIP`, `triggers` (`STRING`) |
 
-It emits **no `LORA_STACK`** — nothing in the whole pack does. It applies every switched-on LoRA in
-row order and hands back **patched `MODEL` and `CLIP`**, and it chains (several in a row).
+**It absolutely does stack** — its own description is "Stack as many LoRAs as you want in one node",
+each row with an on/off switch and strength, applied in row order, and several nodes chain. The
+distinction that matters here is narrower, and an earlier revision of this section put it badly by
+calling it "not a stacker":
+
+> **It stacks internally and hands back patched `MODEL`/`CLIP`. It does not emit a `LORA_STACK`
+> object** for some later node to apply. Nothing in that pack emits one.
+
+That is the only thing this design turns on: there is no stack-shaped output to plug into a
+`lora_stack` socket, so the socket is not how LoRAs get here.
 
 **So the primary LoRA path needs nothing from us.** The LoRAs are already baked into `MODEL`/`CLIP`
 before this node ever sees them:
