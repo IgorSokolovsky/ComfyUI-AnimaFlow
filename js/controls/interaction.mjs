@@ -439,6 +439,27 @@ function wireSeedRow(node, ctx, row, refs) {
     }
     afterEdit(node, ctx);
   });
+  if (refs.reuseBtn) {
+    refs.reuseBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Guarded even though paintRow already hides this button for the same
+      // condition (render.mjs's seed branch) -- a stray click racing a
+      // repaint that hasn't landed yet must never resurrect a `lastUsed`
+      // that was never actually set.
+      if (row.opts.lastUsed == null) {
+        return;
+      }
+      row.value = row.opts.lastUsed;
+      // Same "record lastMode before pinning to fixed" contract as newBtn
+      // above, so the mode button's own toggle (wireSeedRow's first
+      // listener) still resumes the RIGHT mode afterward.
+      if (row.opts.after !== "fixed") {
+        row.opts.lastMode = row.opts.after;
+        row.opts.after = "fixed";
+      }
+      afterEdit(node, ctx);
+    });
+  }
 }
 
 function wireNumericRow(node, ctx, row, refs) {

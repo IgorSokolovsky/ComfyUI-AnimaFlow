@@ -20,6 +20,7 @@ import {
   dimsFor,
   clampSeedString,
   randomSeedString,
+  applyAfterGenerate,
   decimalsOf,
   rangeOf,
   clampNumeric,
@@ -185,6 +186,108 @@ test("randomSeedString returns a numeric string within [0, 2^64-1]", () => {
     assert.match(s, /^\d+$/);
     assert.ok(BigInt(s) >= 0n && BigInt(s) <= 2n ** 64n - 1n);
   }
+});
+
+// =========================================================================
+// applyAfterGenerate -- advancing a seed row after a run (stock-ComfyUI
+// semantics: the value at queue time is the one that was used)
+// =========================================================================
+
+const MAX_SEED_STR = (2n ** 64n - 1n).toString();
+
+test("applyAfterGenerate: fixed leaves value untouched but still records lastUsed", () => {
+  const row = mkRow("seed", { value: "42", opts: { after: "fixed", lastMode: "randomize" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.value, "42");
+  assert.equal(row.opts.lastUsed, "42");
+  // `lastUsed` moved from absent -> "42" on this call -- that alone must be
+  // reported as "changed" (the new contract: value OR lastUsed moved), or
+  // it never reaches persistState and is lost on reload. See the dedicated
+  // regression test below for the exact run-1-true/run-2-false shape.
+  assert.equal(changed, true);
+});
+
+test("applyAfterGenerate: fixed returns true the FIRST time (lastUsed newly recorded) and false the SECOND time (lastUsed unchanged) -- the exact bug that lost the ↺ seed across a reload", () => {
+  const row = mkRow("seed", { value: "42", opts: { after: "fixed", lastMode: "randomize" } });
+  const firstChanged = applyAfterGenerate(row);
+  assert.equal(firstChanged, true, "run 1: lastUsed moved from absent to '42'");
+  assert.equal(row.opts.lastUsed, "42");
+  assert.equal(row.value, "42");
+
+  const secondChanged = applyAfterGenerate(row);
+  assert.equal(secondChanged, false, "run 2: lastUsed already equals row.value -- nothing moved");
+  assert.equal(row.opts.lastUsed, "42");
+  assert.equal(row.value, "42");
+});
+
+test("applyAfterGenerate: randomize records lastUsed as the PRE-advance value, then rolls a new one", () => {
+  const row = mkRow("seed", { value: "42", opts: { after: "randomize", lastMode: "randomize" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, "42");
+  assert.notEqual(row.value, "42");
+  assert.match(row.value, /^\d+$/);
+  assert.equal(changed, true);
+});
+
+test("applyAfterGenerate: increment advances by 1 and records lastUsed", () => {
+  const row = mkRow("seed", { value: "100", opts: { after: "increment", lastMode: "increment" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, "100");
+  assert.equal(row.value, "101");
+  assert.equal(changed, true);
+});
+
+test("applyAfterGenerate: decrement advances by -1 and records lastUsed", () => {
+  const row = mkRow("seed", { value: "100", opts: { after: "decrement", lastMode: "decrement" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, "100");
+  assert.equal(row.value, "99");
+  assert.equal(changed, true);
+});
+
+test("applyAfterGenerate: increment CLAMPS at MAX_SEED rather than wrapping (value itself doesn't move, but lastUsed newly recording still counts as changed)", () => {
+  const row = mkRow("seed", { value: MAX_SEED_STR, opts: { after: "increment", lastMode: "increment" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, MAX_SEED_STR);
+  assert.equal(row.value, MAX_SEED_STR); // stayed pinned, never wrapped to 0
+  assert.equal(changed, true); // lastUsed moved from absent -> MAX_SEED_STR
+  // A SECOND call, still pinned at the ceiling: lastUsed is now already
+  // MAX_SEED_STR, so nothing moved this time -- exercises the "value never
+  // moves AND lastUsed stops moving too" steady state.
+  const changedAgain = applyAfterGenerate(row);
+  assert.equal(row.value, MAX_SEED_STR);
+  assert.equal(changedAgain, false);
+});
+
+test("applyAfterGenerate: decrement CLAMPS at 0 rather than going negative/wrapping (value itself doesn't move, but lastUsed newly recording still counts as changed)", () => {
+  const row = mkRow("seed", { value: "0", opts: { after: "decrement", lastMode: "decrement" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, "0");
+  assert.equal(row.value, "0"); // stayed pinned, never wrapped to MAX_SEED
+  assert.equal(changed, true); // lastUsed moved from absent -> "0"
+  const changedAgain = applyAfterGenerate(row);
+  assert.equal(row.value, "0");
+  assert.equal(changedAgain, false);
+});
+
+test("applyAfterGenerate: an unknown/missing after mode falls back to randomize (matches normalizeRow's own fallback)", () => {
+  const row = mkRow("seed", { value: "42", opts: { after: "bogus", lastMode: "bogus" } });
+  const changed = applyAfterGenerate(row);
+  assert.equal(row.opts.lastUsed, "42");
+  assert.notEqual(row.value, "42");
+  assert.equal(changed, true);
+
+  const noAfter = mkRow("seed", { value: "7", opts: {} });
+  applyAfterGenerate(noAfter);
+  assert.equal(noAfter.opts.lastUsed, "7");
+  assert.notEqual(noAfter.value, "7");
+});
+
+test("applyAfterGenerate mutates the SAME row object in place (identity preserved, no DOM/app/api access)", () => {
+  const row = mkRow("seed", { value: "5", opts: { after: "fixed", lastMode: "fixed" } });
+  const same = row;
+  applyAfterGenerate(row);
+  assert.equal(row, same);
 });
 
 // =========================================================================
@@ -434,6 +537,29 @@ test("normalizeState clamps a garbage seed/int/float/latent row rather than thro
   assert.equal(latentRow.opts.mode, "predefined");
   assert.equal(latentRow.opts.tier, 1024);
   assert.equal(latentRow.opts.batch, 1);
+});
+
+test("normalizeState preserves a seed row's lastUsed (clamped), and omits it entirely when absent", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { kind: "seed", slot: 1, value: "5", opts: { after: "increment", lastMode: "increment", lastUsed: "4" } },
+        { kind: "seed", slot: 2, value: "9", opts: { after: "fixed", lastMode: "randomize" } }, // no lastUsed at all
+      ],
+    },
+    "control",
+  );
+  assert.equal(state.rows[0].opts.lastUsed, "4");
+  assert.equal(Object.prototype.hasOwnProperty.call(state.rows[1].opts, "lastUsed"), false);
+});
+
+test("normalizeState clamps an out-of-range lastUsed the same way it clamps value", () => {
+  const huge = "9".repeat(400);
+  const state = normalizeState(
+    { rows: [{ kind: "seed", slot: 1, value: "1", opts: { after: "fixed", lastMode: "fixed", lastUsed: huge } }] },
+    "control",
+  );
+  assert.equal(state.rows[0].opts.lastUsed, (2n ** 64n - 1n).toString()); // clampSeedString's own MAX_SEED clamp
 });
 
 test("normalizeState tolerates non-object / missing rows entirely", () => {

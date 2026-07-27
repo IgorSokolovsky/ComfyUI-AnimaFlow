@@ -283,6 +283,126 @@ function setupNode(node, panelConfig, mods) {
   mods.interaction.scheduleFit(node, ctx);
 }
 
+// ---------------------------------------------------------------------------
+// Queue hook: advance every AnimaControlPanel seed row's value AFTER a run
+// (`rows.mjs`'s `applyAfterGenerate` — stock-ComfyUI semantics: the value
+// present AT QUEUE TIME is the one that was actually used, THEN it advances
+// for next time). This is the ONE place `app.queuePrompt` itself is ever
+// touched — everything else in this feature stays inside `interaction.mjs`/
+// `rows.mjs`.
+// ---------------------------------------------------------------------------
+
+// Module-level flag (not a per-node/per-registration one): `beforeRegisterNodeDef`
+// runs once per NODE TYPE (twice here — control, then loader), but this hook
+// only ever needs installing ONCE for the whole page, and must survive a
+// hot-reload the same way `_wtnControlsPatched` does on the prototype above.
+let _queuePromptWrapped = false;
+
+/** Every live `AnimaControlPanel` node currently on the graph — checks BOTH
+ * `comfyClass` and `.type` (ComfyUI graph internals vary across frontend
+ * versions/builds; matching either is strictly more defensive than either
+ * alone) and tolerates a missing/mid-construction graph entirely. */
+function findControlPanelNodes() {
+  const nodes = (app.graph && app.graph._nodes) || [];
+  return nodes.filter((n) => n && (n.comfyClass === "AnimaControlPanel" || n.type === "AnimaControlPanel"));
+}
+
+/**
+ * Advance every seed row on every live Control Panel node, then persist +
+ * repaint each node that actually changed. A no-op if `loadMods()` has never
+ * even been kicked off (`_modsPromise` still null) — if nothing has ever
+ * called `loadMods()`, no Control/Loader Panel node instance has ever run
+ * `onNodeCreated`/`onConfigure` either, so there is provably nothing on the
+ * graph to advance; forcing the (page-wide-cost) import here purely to
+ * discover "still nothing to do" is exactly what the lazy-load contract
+ * (this file's top doc comment) exists to avoid. Once `_modsPromise` exists
+ * it's already resolved-or-resolving from that earlier real usage, so
+ * awaiting it here costs nothing extra.
+ */
+function advanceSeedsAfterRun() {
+  if (!_modsPromise) {
+    return;
+  }
+  loadMods()
+    .then((mods) => {
+      for (const node of findControlPanelNodes()) {
+        try {
+          const ctx = node._ctrlCtx;
+          const nodeMods = node._ctrlMods;
+          if (!ctx || !nodeMods) {
+            continue; // this node's own setupNode/restoreNode hasn't run yet
+          }
+          const state = nodeMods.interaction.ensureState(node, ctx);
+          let changed = false;
+          for (const row of state.rows) {
+            if (row.kind === "seed" && mods.rows.applyAfterGenerate(row)) {
+              changed = true;
+            }
+          }
+          if (changed) {
+            nodeMods.interaction.persistState(node, ctx);
+            // `syncRows` (never a direct DOM poke) -- the row's kind/count/
+            // order haven't changed, so this takes the CHEAP repaint-only
+            // path (interaction.mjs's own contract), it's just the only
+            // exported entry point that repaints.
+            nodeMods.interaction.syncRows(node, ctx);
+          }
+        } catch (err) {
+          console.error(`[AnimaFlow Controls] failed to advance seed(s) for node ${node.id}:`, err);
+        }
+      }
+    })
+    .catch((err) => {
+      console.error("[AnimaFlow Controls] failed to load js/controls modules for seed advance:", err);
+    });
+}
+
+/**
+ * Wrap `app.queuePrompt` exactly once, AFTER the original resolves — so the
+ * seed a queued prompt actually carried is guaranteed to be the one
+ * `applyAfterGenerate` records as `lastUsed` before advancing it for next
+ * time. Never wraps if `app.queuePrompt` isn't a function (a frontend build
+ * that renamed/removed it) — the original is simply left alone rather than
+ * throwing.
+ *
+ * The original's own return value/rejection is passed straight back to
+ * whatever called `queuePrompt` UNMODIFIED — our advance step runs off a
+ * SEPARATE `.then()` chain on a copy of that promise, with its own
+ * try/catch (inside `advanceSeedsAfterRun`) and its own `.catch()` here, so
+ * neither a queue failure nor a bug in our own advance step can ever surface
+ * as (or suppress) an error from the real queuePrompt call.
+ *
+ * VERIFY-IN-COMFYUI: confirm this actually fires on the live frontend build
+ * — this repo's test suite is headless (no real `app`/`app.queuePrompt`
+ * exists under plain `node`), so "does wrapping `app.queuePrompt` here
+ * actually intercept a real Queue Prompt click" can only be confirmed in a
+ * live ComfyUI page.
+ */
+function installQueuePromptHook() {
+  if (_queuePromptWrapped) {
+    return;
+  }
+  if (typeof app.queuePrompt !== "function") {
+    return;
+  }
+  _queuePromptWrapped = true;
+  const original = app.queuePrompt;
+  app.queuePrompt = function (...args) {
+    const result = original.apply(this, args);
+    Promise.resolve(result)
+      .then(() => {
+        advanceSeedsAfterRun();
+      })
+      .catch(() => {
+        // The original queuePrompt's own rejection already reached the real
+        // caller via `result` above -- this catch exists solely so a failed
+        // queue never also runs the advance step, and never produces an
+        // unhandled-rejection warning of its own doing so.
+      });
+    return result;
+  };
+}
+
 function restoreNode(node, panelConfig, mods) {
   node._ctrlMods = mods;
   const ctx = node._ctrlCtx || buildCtx(panelConfig, mods);
@@ -300,6 +420,13 @@ app.registerExtension({
   name: "webtoon.controls",
 
   beforeRegisterNodeDef(nodeType, nodeData) {
+    // Cheap + internally guarded (installQueuePromptHook's own
+    // `_queuePromptWrapped` flag) -- called on EVERY node type's
+    // registration, not just ours, so it only actually installs once, the
+    // first time `beforeRegisterNodeDef` runs for anything at all after
+    // `app.queuePrompt` exists.
+    installQueuePromptHook();
+
     const panelConfig = CLASS_TO_PANEL[nodeData.name];
     if (!panelConfig) {
       return;

@@ -440,11 +440,12 @@ test("buildRowElement: a combo row (sampler) gets a stepper + combo + caret + ge
   assert.ok(refs.dot);
 });
 
-test("buildRowElement: a seed row gets val + mode button + N button + gear", () => {
+test("buildRowElement: a seed row gets val + mode button + N button + reuse button + gear, reuse button starts hidden", () => {
   const doc = makeDocStub();
   const row = mkRow("seed");
   const refs = buildRowElement(doc, row, KIND_META.seed, CONTROL_PANEL_CONFIG);
-  assert.ok(refs.val && refs.modeBtn && refs.newBtn && refs.gear);
+  assert.ok(refs.val && refs.modeBtn && refs.newBtn && refs.reuseBtn && refs.gear);
+  assert.ok(refs.reuseBtn.classList.contains("wtn-ctl-hidden"));
 });
 
 test("buildRowElement: an int row gets a fill + val, no gear", () => {
@@ -1454,6 +1455,76 @@ test("seed row: mode button toggles to fixed and back to lastMode; N rolls a new
   assert.notEqual(row.value, before);
   assert.equal(row.opts.after, "fixed");
   assert.equal(row.opts.lastMode, "decrement");
+});
+
+test("seed row: paintRow shows '-1' while randomize, but the REAL number once lastUsed exists and mode is fixed/increment/decrement", () => {
+  const doc = makeDocStub();
+  const row = mkRow("seed", { value: "777", opts: { after: "randomize", lastMode: "randomize" } });
+  const refs = buildRowElement(doc, row, KIND_META.seed, CONTROL_PANEL_CONFIG);
+  paintRow(refs, row, null, null);
+  assert.equal(refs.val.textContent, "-1"); // intent, not truth -- see render.mjs's seed branch
+  row.opts.after = "fixed";
+  paintRow(refs, row, null, null);
+  assert.equal(refs.val.textContent, "777"); // fixed always shows the real number
+  row.opts.after = "increment";
+  paintRow(refs, row, null, null);
+  assert.equal(refs.val.textContent, "777");
+});
+
+test("seed row: the ↺ reuse button is hidden until there's a lastUsed, and STAYS visible on fixed too (the click-hides-itself bug this replaces)", () => {
+  const doc = makeDocStub();
+  const row = mkRow("seed", { value: "1", opts: { after: "increment", lastMode: "increment" } });
+  const refs = buildRowElement(doc, row, KIND_META.seed, CONTROL_PANEL_CONFIG);
+  paintRow(refs, row, null, null);
+  assert.ok(refs.reuseBtn.classList.contains("wtn-ctl-hidden"), "no lastUsed yet -- must stay hidden");
+
+  row.opts.lastUsed = "999";
+  paintRow(refs, row, null, null);
+  assert.ok(!refs.reuseBtn.classList.contains("wtn-ctl-hidden"), "lastUsed exists -- must show");
+
+  // The old rule ALSO hid this on fixed, which made the button vanish out
+  // from under the cursor the instant it was clicked (the click itself pins
+  // `after = "fixed"`). The new rule is mode-independent: as long as there's
+  // a `lastUsed` to go back to, it stays visible, fixed included.
+  row.opts.after = "fixed";
+  paintRow(refs, row, null, null);
+  assert.ok(!refs.reuseBtn.classList.contains("wtn-ctl-hidden"), "fixed with a lastUsed present -- must still show");
+});
+
+test("seed row: clicking ↺ adopts lastUsed as the value and pins the mode to fixed (recording lastMode first)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "seed");
+  const refs = node._ctrlRows[0].refs;
+  const row = refs.row;
+  row.value = "55";
+  row.opts.after = "increment";
+  row.opts.lastMode = "increment";
+  row.opts.lastUsed = "999";
+  fire(refs.reuseBtn, "click");
+  assert.equal(row.value, "999");
+  assert.equal(row.opts.after, "fixed");
+  assert.equal(row.opts.lastMode, "increment");
+  // persisted -- the panel_state widget reflects the reused value + mode.
+  const persisted = JSON.parse(getStateWidget(node).value).rows[0];
+  assert.equal(persisted.value, "999");
+  assert.equal(persisted.opts.after, "fixed");
+});
+
+test("seed row: clicking ↺ with no lastUsed at all is a harmless no-op (defensive guard, mirrors paintRow hiding it)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "seed");
+  const refs = node._ctrlRows[0].refs;
+  const row = refs.row;
+  const before = row.value;
+  fire(refs.reuseBtn, "click");
+  assert.equal(row.value, before);
+  assert.equal(row.opts.after, "randomize"); // untouched -- mkRow's default
 });
 
 test("numeric row: dragging across the row sets the value proportionally and persists on release", () => {

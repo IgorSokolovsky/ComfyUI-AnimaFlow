@@ -174,6 +174,9 @@ const CSS = `
 }
 .wtn-ctl-mini:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 .wtn-ctl-mini.wtn-ctl-on { color: var(--wtn-on-accent, ${TOKENS.onAccent}); background: var(--wtn-accent, ${TOKENS.accent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
+/* ↺ reuse-last-seed: HIDDEN (not merely disabled) whenever there's nothing
+   yet to reuse -- see paintRow's seed branch for the exact condition. */
+.wtn-ctl-mini.wtn-ctl-hidden { display: none; }
 
 /* ── numeric row: drag the row to set, inline fill shows range position ── */
 .wtn-ctl-row.wtn-ctl-slider { overflow: hidden; cursor: ew-resize; }
@@ -407,10 +410,19 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     const newBtn = el(doc, "span", "wtn-ctl-mini");
     newBtn.textContent = "N";
     newBtn.title = "New seed now, then hold it fixed";
+    // ↺ reuse-last-seed -- deliberately BETWEEN newBtn and the (possible)
+    // ⚙ gear, appended below, so ⚙ stays the RIGHTMOST element before the
+    // dot (render.mjs's own CSS comment on `.wtn-ctl-gear`, docs/control-
+    // panel-design.md). Starts hidden -- paintRow decides visibility on
+    // every repaint (this row has nothing to reuse until its first run).
+    const reuseBtn = el(doc, "span", "wtn-ctl-mini wtn-ctl-hidden");
+    reuseBtn.textContent = "↺";
+    reuseBtn.title = "Reuse the last used seed and hold it fixed";
     rowEl.appendChild(val);
     rowEl.appendChild(mode);
     rowEl.appendChild(newBtn);
-    Object.assign(refs, { val, modeBtn: mode, newBtn });
+    rowEl.appendChild(reuseBtn);
+    Object.assign(refs, { val, modeBtn: mode, newBtn, reuseBtn });
   } else if (row.kind === "int" || row.kind === "float") {
     rowEl.classList.add("wtn-ctl-slider");
     const fill = el(doc, "div", "wtn-ctl-fill");
@@ -468,11 +480,36 @@ export function paintRow(refs, row, optionList, disabledReason) {
     const idx = Math.max(0, list.indexOf(row.value));
     refs.val.textContent = list.length ? String(list[idx] ?? list[0]) : (disabledReason ? "unavailable" : "");
   } else if (row.kind === "seed") {
-    refs.val.textContent = row.value;
+    // "-1" is the "you won't know until it runs" convention (mirrors stock
+    // ComfyUI's own randomize-seed widget display) -- ONLY for `randomize`.
+    // The STORED value underneath stays the real number (still reachable by
+    // the ⚙ popover's `value` field -- `interaction.mjs`'s
+    // `buildSeedPopover` reads `row.value` directly and is never told about
+    // this display substitution -- and still what actually reaches the
+    // backend through `panel_state`), so the row's label is the only thing
+    // that shows "intent" instead of "truth"; every other mode paints the
+    // real number, same as before.
+    refs.val.textContent = row.opts.after === "randomize" ? "-1" : row.value;
     const on = row.opts.after !== "fixed";
     refs.modeBtn.textContent = AFTER_LETTER[row.opts.after] || "R";
     refs.modeBtn.classList.toggle("wtn-ctl-on", on);
     refs.modeBtn.title = `After each run: ${row.opts.after} -- click to ${on ? "hold it fixed" : `resume ${row.opts.lastMode}`}`;
+    // ↺ reuse-last-seed: shown whenever there IS a `lastUsed` to go back to
+    // -- full stop, regardless of the current mode. Deliberately NOT also
+    // gated on `after !== "fixed"` (the old rule): that made the button
+    // vanish out from under the cursor the instant it was clicked, since the
+    // click itself pins `after = "fixed"`, which then hid the very button
+    // that was just pressed. A no-op restore while already `fixed` (value
+    // already equals `lastUsed`) is harmless -- one rule, "there is a
+    // last-used seed to go back to," is easier to reason about than one that
+    // also depends on the mode. `N` (roll a new seed now) stays the
+    // always-available control for every mode; `↺` is specifically "go back
+    // to what the last run used." Hidden, not merely disabled, when there's
+    // nothing yet to reuse -- see this module's `.wtn-ctl-hidden` CSS.
+    if (refs.reuseBtn) {
+      const showReuse = row.opts.lastUsed != null;
+      refs.reuseBtn.classList.toggle("wtn-ctl-hidden", !showReuse);
+    }
   } else if (row.kind === "int" || row.kind === "float") {
     refs.fill.style.width = `${numericPercent(row)}%`;
     refs.val.textContent = formatNumericValue(row);

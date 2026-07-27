@@ -194,6 +194,65 @@ export function randomSeedString() {
   return ((hi << 32n) | lo).toString();
 }
 
+/**
+ * Advance ONE seed row after a run — stock-ComfyUI seed-control semantics:
+ * the value present AT QUEUE TIME is the one that was actually used, so this
+ * must be called AFTER the queued prompt has actually been sent (see
+ * `index.js`'s `queuePrompt` wrap — never before, or `lastUsed` would record
+ * a seed that was never really queued).
+ *
+ * Records `row.opts.lastUsed = row.value` (the seed that WAS just used)
+ * BEFORE touching `row.value` at all, then advances `row.value` per
+ * `row.opts.after`:
+ *   - `"fixed"` — `row.value` is left untouched (but `lastUsed` is still
+ *     recorded, so the ↺ reuse-last-seed button — `interaction.mjs`'s
+ *     `wireSeedRow` — always has something to fall back to the moment the
+ *     mode is switched OFF fixed, even though it stays hidden while fixed).
+ *   - `"randomize"` — a fresh `randomSeedString()`.
+ *   - `"increment"`/`"decrement"` — BigInt ±1, CLAMPED at `[0, MAX_SEED]`
+ *     rather than wrapping — a wrapping seed would silently jump from one
+ *     edge of the range to the other, which reads as a bug, not a feature
+ *     (mirrors `clampSeedString`'s own no-wrap contract above).
+ * An unknown/missing `after` (a hand-edited/garbage state) is treated as
+ * `"randomize"`, mirroring `normalizeRow`'s own fallback below.
+ *
+ * Pure row mutation — NO DOM, NO `app`/`api` access — so `index.js`'s
+ * `queuePrompt` wrap can call this directly with zero further imports, and
+ * it stays unit-testable here under plain `node`. Returns whether ANYTHING
+ * that must be persisted changed — `row.value` moved, OR `row.opts.lastUsed`
+ * moved from whatever it held coming in — NOT merely whether `row.value`
+ * changed. That distinction is the whole point: on `fixed`, `row.value`
+ * never moves, but `lastUsed` still needs to reach the serialized
+ * `panel_state` widget (via `index.js`'s `advanceSeedsAfterRun` ->
+ * `persistState`) or the ↺ button has nothing to restore after a page
+ * reload. This still stays cheap rather than degenerating into
+ * "always true": on `fixed`, run 1 sets `lastUsed` from absent to a real
+ * value (a genuine change -> persists once), and run 2 finds `lastUsed`
+ * already equal to `row.value` from run 1 (no change -> skips) — so a
+ * `fixed` row persists exactly once per value it's ever held, never once
+ * per run. Do NOT "simplify" this back to `row.value !== prevValue`.
+ */
+export function applyAfterGenerate(row) {
+  const prevValue = row.value;
+  const prevLastUsed = row.opts.lastUsed;
+  row.opts.lastUsed = prevValue;
+  const lastUsedChanged = row.opts.lastUsed !== prevLastUsed;
+  const after = AFTER_MODES.includes(row.opts.after) ? row.opts.after : "randomize";
+  if (after === "fixed") {
+    return lastUsedChanged;
+  }
+  if (after === "randomize") {
+    row.value = randomSeedString();
+  } else if (after === "increment") {
+    const n = BigInt(clampSeedString(prevValue));
+    row.value = (n >= MAX_SEED ? MAX_SEED : n + 1n).toString();
+  } else if (after === "decrement") {
+    const n = BigInt(clampSeedString(prevValue));
+    row.value = (n <= 0n ? 0n : n - 1n).toString();
+  }
+  return row.value !== prevValue || lastUsedChanged;
+}
+
 // ---------------------------------------------------------------------------
 // Numeric (int/float) range/step/value maths — ported from
 // ComfyUI-Pixaroma's js/sliders/core.mjs (rangeOf/clampValue/decimalsOf),
@@ -470,7 +529,18 @@ function normalizeRow(raw, panelKind) {
     const lastMode = AFTER_MODES.includes(row.opts.lastMode)
       ? row.opts.lastMode
       : (after === "fixed" ? "randomize" : after);
-    row.opts = { after, lastMode };
+    const opts = { after, lastMode };
+    // Carry `lastUsed` (the seed `applyAfterGenerate` actually queued last
+    // time, above) through a normalize pass — this object was previously
+    // rebuilt as exactly `{after, lastMode}`, which silently DROPPED
+    // `lastUsed` on every save/reload. Old saved workflows have no
+    // `lastUsed` at all — that's fine, it's simply omitted (never defaulted
+    // to `"0"` or similar), so the ↺ reuse button stays correctly hidden
+    // until this row's first post-load run records a real one.
+    if (row.opts.lastUsed != null) {
+      opts.lastUsed = clampSeedString(row.opts.lastUsed);
+    }
+    row.opts = opts;
   } else if (kind === "int" || kind === "float") {
     const [min, max] = rangeOf(row.opts);
     let step = Number(row.opts.step);
