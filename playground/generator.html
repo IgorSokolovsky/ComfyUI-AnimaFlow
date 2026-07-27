@@ -321,6 +321,29 @@
   }
   .passtabs button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
+  /* ── inline LoRA rows ── */
+  .lorarow {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+  }
+  .lorarow.muted { opacity: .45; }
+  .lorarow .ord {
+    font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); width: 13px; flex: none;
+  }
+  .lorarow input {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink); min-width: 0;
+    background: var(--console); border: 1px solid var(--line); border-radius: 5px;
+    padding: 4px 6px; outline: none;
+  }
+  .lorarow input:focus { border-color: var(--accent-deep); }
+  .lorarow .lname { flex: 1; }
+  .lorarow .lstr { width: 48px; flex: none; text-align: center; }
+  .lorarow button {
+    font-family: var(--mono); font-size: 10px; cursor: pointer; flex: none;
+    width: 20px; height: 22px; border-radius: 4px; color: var(--ink-dim);
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .lorarow button:hover { color: var(--ink); border-color: var(--accent-deep); }
+
   .foot {
     display: flex; align-items: center; gap: 8px; padding: 11px 15px;
     border-top: 1px solid var(--line); background: var(--panel-2);
@@ -405,13 +428,22 @@
       per block, in the one node whose point is not wiring a pipeline by hand. Now:
       <code>detect_prompt</code> per block, with <code>segs_N</code> as an optional <b>override</b>.
     </div>
+    <div class="q settled">
+      <span class="tag">Settled &middot; no LoRA node of our own</span>
+      We don't build a stacker and the Loader Panel gets <b>no</b> <code>lora</code> row — Pixaroma's
+      stacker already does it, and in the Loader Panel it would have broken that node's
+      one-row-one-slot invariant. LoRAs arrive on the <code>lora_stack</code> socket, or from the
+      node's <b>inline list</b> when <code>use_internal_loaders</code> is on — turn it on and a LoRA
+      tab appears. <code>control-panel-design.md §3b</code> records the rejection so it isn't
+      re-proposed.
+    </div>
     <div class="q">
-      <span class="tag">Open &middot; the LORA_STACK producer</span>
-      <b>Nothing in AnimaFlow emits one.</b> The Loader Panel is unet/vae/clip only, and upstream's
-      producer was in the deleted line. Decided: a <code>lora</code> row kind in the Loader Panel,
-      all lora rows combining into one shared <code>LORA_STACK</code> — which is the one row kind
-      that breaks that panel's one-row-one-slot rule. Specified in
-      <code>control-panel-design.md §3b</code>; the Control Panel mockup has no lora row yet.
+      <span class="tag">Verify &middot; what Pixaroma's stacker emits</span>
+      The local clone (<code>afd0d05</code>) has <b>no</b> LoRA stacker — only a Krea format
+      converter — so its output shape can't be checked from this repo. Upstream's normalizer is
+      promiscuous enough that it should absorb whatever it is (dicts under several key spellings,
+      tuples, JSON strings), <i>except</i> that it drops 2-tuples silently. Widen it to
+      <code>len &ge; 2</code> and confirm against the real node.
     </div>
     <div class="q settled">
       <span class="tag">Settled &middot; MAX_DETAILER_PASSES = 4</span>
@@ -494,6 +526,13 @@ const PX = { base: 1024, highres: 1536, mid: 1536, upscale: 2048, final: 2048 };
 const state = {
   internal: false,            // use_internal_loaders
   wired: { model: true, clip: true, vae: true, latent: true, lora_stack: false },
+  // Inline LoRA list -- only reachable while use_internal_loaders is on, and
+  // then the lora_stack socket is ignored along with model/clip/vae. No cap:
+  // these are settings-blob entries, not sockets (design doc s5b).
+  loras: [
+    { name: "Cosmos-Predict2.5-2B-base-distilled-LoRA", m: 1.0, c: 1.0 },
+    { name: "detail-slider-v2", m: 0.65, c: 0.65 },
+  ],
   // Per-field, wired wins (design doc s3a). No use_internal_sampler flag: the
   // five are independent, and the realistic setup wires only the seed.
   sampWired: { seed: true, steps: false, cfg: false, sampler_name: false, scheduler: false },
@@ -635,10 +674,22 @@ function genHtml() {
       <div class="row"><span class="nm">clip_name</span><span class="val">qwen_3_06b_base</span></div>
       <div class="row"><span class="nm">clip_type</span><span class="val">qwen_image</span></div>
       <div class="row"><span class="nm">vae_name</span><span class="val">qwen_image_vae</span></div>
+      <div class="row click" data-act="dlg" data-t="lora">
+        <span class="nm">loras</span>
+        <span class="val">${state.loras.filter((l) => l.m || l.c).length
+          ? `${state.loras.filter((l) => l.m || l.c).length} active`
+          : `<span style="color:var(--ink-faint)">none</span>`}${
+          state.loras.some((l) => !l.m && !l.c)
+            ? ` <span style="color:var(--ink-faint)">&middot; ${state.loras.filter((l) => !l.m && !l.c).length} muted</span>`
+            : ""}</span>
+      </div>
     ` : ""}
     <div class="sockgrp">
-      ${sock("lora_stack", "LORA_STACK", { optional: true, wired: state.wired.lora_stack,
-        title: "A resource -- applied to model+clip. Nothing in the pack emits one yet (design doc s3b)." })}
+      ${sock("lora_stack", "LORA_STACK", { optional: true, wired: state.wired.lora_stack && !int,
+        ignored: int,
+        title: int
+          ? "Ignored -- inline mode uses the node's own LoRA list"
+          : "Feed it any stacker (the user runs Pixaroma's)" })}
       ${sock("latent", "LATENT", { optional: true, wired: state.wired.latent,
         title: "Size and batch; else from settings.latent" })}
     </div>
@@ -770,11 +821,16 @@ const SAMP_FIELDS = [
   ["sampler_name", "COMBO"], ["scheduler", "COMBO"],
 ];
 
-const TABS = [
-  ["sampler", "Sampler"], ["mod", "Mod guidance"], ["highres", "Highres"],
-  ["detailer", "Detailer"], ["upscale", "Upscale"], ["postprocess", "Postprocess"],
-  ["save", "Save"], ["preview", "Preview"],
-];
+// The LoRA tab exists only while inline mode is on -- outside it, LoRAs arrive
+// on a wire and there is nothing here to edit.
+function tabsNow() {
+  return [
+    ["sampler", "Sampler"], ["mod", "Mod guidance"],
+    ...(state.internal ? [["lora", "LoRA"]] : []),
+    ["highres", "Highres"], ["detailer", "Detailer"], ["upscale", "Upscale"],
+    ["postprocess", "Postprocess"], ["save", "Save"], ["preview", "Preview"],
+  ];
+}
 
 // A field whose value comes from a wire. The socket's connected state is the
 // single source of truth -- design doc s3a: two plausible sources with no
@@ -856,6 +912,31 @@ function dlgBody(tab) {
       <div class="missing" style="margin:13px 0 0"><span class="k">verify</span>
         <span>Upstream's code and its README disagree on which repo ships
         <code>AnimaModGuidance</code> -- settle before writing an install hint.</span></div>`;
+  }
+  if (tab === "lora") {
+    if (!state.internal) {
+      return `<div class="missing"><span class="k">inline mode is off</span>
+        <span>LoRAs arrive on the <code>lora_stack</code> socket, so there's nothing to edit here.
+        Turn on <code>use_internal_loaders</code> for an inline list.</span></div>`;
+    }
+    return `<div class="dnote">Inline LoRAs, used <b>instead of</b> the <code>lora_stack</code>
+      socket while inline mode is on. No cap -- these are settings-blob entries, not sockets. We
+      don't ship a stacker node of our own: <b>Pixaroma's</b> already does that job.</div>
+      ${state.loras.map((l, i) => `<div class="lorarow ${l.m || l.c ? "" : "muted"}">
+        <span class="ord">${i + 1}</span>
+        <input class="lname" value="${esc(l.name)}" data-act="lname" data-i="${i}" data-live="1">
+        <input class="lstr" value="${l.m}" data-act="lm" data-i="${i}" data-live="1" title="strength_model">
+        <input class="lstr" value="${l.c}" data-act="lc" data-i="${i}" data-live="1" title="strength_clip">
+        <button data-act="lmv" data-i="${i}" data-d="-1" ${i === 0 ? 'style="opacity:.35"' : ""}
+          title="Order IS application order">&and;</button>
+        <button data-act="lmv" data-i="${i}" data-d="1"
+          ${i === state.loras.length - 1 ? 'style="opacity:.35"' : ""}>&or;</button>
+        <button data-act="ldel" data-i="${i}" title="Remove">&times;</button>
+      </div>`).join("")}
+      <div style="margin-top:10px"><button class="btn ghost" data-act="ladd" style="margin:0">+ Add LoRA</button></div>
+      <div class="dnote" style="margin:13px 0 0"><b>List order is application order.</b> A LoRA with
+      both strengths at <code>0</code> is skipped when the stack is built, matching upstream --
+      it stays in the list, muted rather than deleted. Set one to zero to see it dim.</div>`;
   }
   if (tab === "highres") {
     return `<div class="dnote">Latent upscale, resample at low denoise. Runs before the detailer, so
@@ -1012,11 +1093,12 @@ function dlgBody(tab) {
 
 function dlgHtml() {
   const tab = state.dlg;
-  const title = (TABS.find(([k]) => k === tab) || [, "Settings"])[1];
+  const title = (tabsNow().find(([k]) => k === tab) || [, "Settings"])[1];
   return `
   <header><h2>Generation settings &middot; ${title}</h2><span class="x" data-act="close">&#10005;</span></header>
-  <div class="tabs">${TABS.map(([k, n]) => {
+  <div class="tabs">${tabsNow().map(([k, n]) => {
     const lit = state.stages[k] || (k === "mod" && state.modGuidance && state.have.spectrum)
+      || (k === "lora" && state.loras.some((l) => l.m || l.c))
       || k === "sampler" || k === "save";
     return `<button class="${k === tab ? "on" : ""}" data-act="tab" data-t="${k}">${n}${
       lit ? '<span class="dt"></span>' : ""}</button>`;
@@ -1099,6 +1181,13 @@ document.addEventListener("click", (e) => {
   } else if (act === "wire") state.sampWired[t.dataset.k] = !state.sampWired[t.dataset.k];
   else if (act === "unwire") state.sampWired[t.dataset.k] = false;
   else if (act === "lorastack") state.wired.lora_stack = !state.wired.lora_stack;
+  else if (act === "ladd") state.loras.push({ name: "", m: 1.0, c: 1.0 });
+  else if (act === "ldel") state.loras.splice(+t.dataset.i, 1);
+  else if (act === "lmv") {
+    const i = +t.dataset.i, j = i + +t.dataset.d;
+    if (j < 0 || j >= state.loras.length) return;
+    [state.loras[i], state.loras[j]] = [state.loras[j], state.loras[i]];
+  }
   else if (act === "have") state.have[t.dataset.k] = true;
   else return;
   paint();
@@ -1107,11 +1196,22 @@ document.addEventListener("click", (e) => {
 // Renaming a block is UI metadata only -- runtime dispatch uses the stable id
 // plus block order, exactly as upstream's tab labels do.
 document.addEventListener("input", (e) => {
-  const t = e.target.closest('[data-act="lbl"], [data-act="dp"]');
+  const t = e.target.closest('[data-act="lbl"], [data-act="dp"], [data-act="lname"], [data-act="lm"], [data-act="lc"]');
   if (!t) return;
-  const b = state.blocks.find((x) => x.id === state.block);
-  if (!b) return;
-  if (t.dataset.act === "lbl") b.label = t.value; else b.prompt = t.value;
+  const act = t.dataset.act;
+  if (act === "lname" || act === "lm" || act === "lc") {
+    const l = state.loras[+t.dataset.i];
+    if (!l) return;
+    if (act === "lname") l.name = t.value;
+    else {
+      const n = parseFloat(t.value);
+      l[act === "lm" ? "m" : "c"] = Number.isFinite(n) ? n : 0;
+    }
+  } else {
+    const b = state.blocks.find((x) => x.id === state.block);
+    if (!b) return;
+    if (act === "lbl") b.label = t.value; else b.prompt = t.value;
+  }
   document.getElementById("gen").innerHTML = genHtml();   // repaint the node, keep focus in the input
 });
 

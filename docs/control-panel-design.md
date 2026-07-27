@@ -172,7 +172,6 @@ naming a ratio would assert a choice they never made.
 | `unet` | combo of diffusion models | `MODEL` | `UNETLoader.input.required.unet_name[0]` | `weight_dtype` |
 | `vae` | combo of VAEs | `VAE` | `VAELoader.input.required.vae_name[0]` | — |
 | `clip` | combo of CLIPs | `CLIP` | `CLIPLoader.input.required.clip_name[0]` | `type`, `device` |
-| `lora` | combo of LoRAs + strength | *shared* `LORA_STACK` | `LoraLoader.input.required.lora_name[0]` | `strength_model`, `strength_clip` |
 
 **Option lists need no backend route.** They are already in the node defs the frontend holds —
 read them from `app` at row-render time and the lists auto-track whatever is installed. If a def is
@@ -181,37 +180,24 @@ missing (node pack absent), render the row disabled with the reason rather than 
 The Loader Panel's Python side still needs `folder_paths.get_filename_list(...)` to validate the
 saved name and raise a legible error when a model has been moved, since its state is just a string.
 
-### 3b. The `lora` row — the one kind that breaks one-row-one-slot
+### 3b. There is no `lora` row — decided, don't add one
 
-**Status: specified 2026-07-27, not built.** Added because nothing in the pack emitted a
-`LORA_STACK` and the Generator needs one (`generator-design.md` §3b). Upstream's producer
-(`EasyUseAnimaLoraPreset`) is in the deleted line and was never ported.
+**Considered and rejected 2026-07-27.** A `lora` row was briefly specified here (the Generator needs
+a `LORA_STACK` and nothing in this pack emitted one). Dropped on the user's call: they use
+**Pixaroma's LoRA stacker**, which already does the job well, and a second implementation of it earns
+nothing.
 
-A `LORA_STACK` is a list of `(name, strength_model, strength_clip)` applied through core
-`LoraLoader`. That is exactly a row — a picker plus two numbers — so the row machinery already
-covers it. What it does *not* fit is the panel's central invariant.
+Recorded because the reasoning is not obvious from the code, and because the row *would* have been a
+natural-looking addition:
 
-**Every other row owns one output slot. Lora rows share one.** A stack is a list, so N lora rows
-must combine into a single `LORA_STACK` rather than emitting N sockets to be chained by hand. So:
+- A `LORA_STACK` is a list, so N lora rows would have had to collapse into **one shared output** —
+  breaking this panel's one-row-one-slot invariant, the thing every other row kind depends on. That
+  is a real structural cost for a feature an existing node already covers.
+- The Generator instead takes `lora_stack` as a plain socket fed by whatever stacker you like, plus
+  its own inline LoRA list when `use_internal_loaders` is on (`generator-design.md` §5b).
 
-- **Lora rows carry no dot of their own.** The panel grows one **panel-level `lora_stack` slot**
-  while at least one lora row exists, and drops it when the last one goes.
-- That slot takes a number from `assignSlot` like any other, claimed when the first lora row is
-  created and released when the last is removed. Re-adding may hand out a different number and
-  therefore drop the wire — the same cost every row removal already has.
-- **Display order *is* application order** for lora rows: the stack is built top-to-bottom.
-  This is the one place row order carries runtime meaning, and it costs nothing — the stack is
-  assembled from `rows`, so it never touches `slot` and never rewires anything (§4's slot-vs-display
-  split is exactly what makes this safe).
-- A row with both strengths at `0` is skipped when the stack is built, matching upstream
-  (`aio/model_preparation.py:236`). It stays visible — a zeroed row is a muted row, not a deleted one.
-
-`MAX_ROWS.loader` is 8, which now has to cover unet + vae + clip + loras. Raise it if that bites;
-it may grow, never shrink.
-
-**Open:** whether the shared dot renders with a visual grouping (a brace or bracket joining the lora
-rows to it) or just sits as a labelled slot below them. Mock it before building — `playground/control-panel.html`
-is the reference and does not yet have a lora row at all.
+So: **`LOADER_CATALOG` stays `unet` / `vae` / `clip`.** If a lora row is ever revisited, the shared-slot
+problem above is the design question to answer first, not an implementation detail to discover.
 
 ---
 

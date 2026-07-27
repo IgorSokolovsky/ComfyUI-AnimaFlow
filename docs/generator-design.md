@@ -107,6 +107,8 @@ Three constraints, each load-bearing:
 `.claude/CLAUDE.md`; this one default is about which *loader* Anima needs, not about prompt
 format.
 
+LoRAs follow the same split — external stack when the flag is off, inline list when it is on (§5b).
+
 **Overlap with the Loader Panel is intentional, not redundant.** `AnimaLoaderPanel` already is
 a unet/vae/clip picker with real `MODEL`/`VAE`/`CLIP` outputs, and wiring it in is the better
 setup — it caches separately, so a seed bump doesn't reload the UNET. The internal pickers exist
@@ -192,7 +194,7 @@ socket's neighbours are how a user works out what it is for. (An earlier draft f
 | required | `use_internal_loaders` | `BOOLEAN` | §3 |
 | required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
 | optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
-| optional | `lora_stack` | `LORA_STACK` | a resource, not a detail target — applied to `model`+`clip` before conditioning. §5b |
+| optional | `lora_stack` | `LORA_STACK` | a resource — applied to `model`+`clip` before conditioning. Ignored in inline mode. §5b |
 | optional | `latent` | `LATENT` | size and batch; else from `settings.latent` |
 | optional | `seed` / `steps` / `cfg` | `INT`/`INT`/`FLOAT` | §5a — wired wins, per field |
 | optional | `sampler_name` / `scheduler` | `COMBO` | §5a |
@@ -228,24 +230,51 @@ KSampler correctly. So the panel can drive all five, not just the numerics.
 > input" dance entirely — their internal counterparts live in the settings JSON, not as widgets, so
 > there is nothing to convert and no widget-order exposure (`BACKLOG.md` §4).
 
-### 5b. `lora_stack` — and the producer we don't have
+### 5b. LoRA — an external stack, plus an inline list when `use_internal_loaders` is on
 
 A `LORA_STACK` is a list of `(name, strength_model, strength_clip)`, applied through core
 `LoraLoader` before conditioning (`aio/model_preparation.py:219-241`). It is a **resource** — it
 mutates `model` and `clip` — so it sits with them, not with the detailer inputs.
 
-**Nothing in AnimaFlow currently emits one.** The Loader Panel is `unet`/`vae`/`clip` only
-(`js/controls/rows.mjs`'s `LOADER_CATALOG`), and upstream's producer (`EasyUseAnimaLoraPreset`,
-`nodes/lora_nodes.py:22`) is in the deleted line and was never ported.
+**We do not build a LoRA node, and the Loader Panel gets no `lora` row.** Decided 2026-07-27: the
+user runs **Pixaroma's LoRA stacker**, which already does this well. A second implementation earns
+nothing, and in the Loader Panel it would have cost that node's one-row-one-slot invariant
+(`control-panel-design.md` §3b records why, so it isn't re-proposed).
 
-Decided 2026-07-27: **add a `lora` row kind to the Loader Panel** — a `lora_name` picker plus
-model/clip strength in its gear, with every lora row combining into one shared `LORA_STACK` output.
-That is a **Controls-line change**, specified in `control-panel-design.md` §3b, not built here. Until
-it lands this socket is only drivable by a third-party pack's `LORA_STACK`.
+So LoRA reaches this node two ways, matching the resource split exactly:
 
-`AnimaModGuidance` needs `clip` and the raw quality-tag strings, not just conditioning — so the
-quality tags live in `generation_settings.mod_guidance`, defaulting to upstream's
-(`aio/generation_defaults.py:139-141`).
+- **`use_internal_loaders` off** — the `lora_stack` socket, fed by any stacker.
+- **`use_internal_loaders` on ("inline")** — the node's own inline LoRA list, and the socket is
+  ignored along with `model`/`clip`/`vae`. Same rule as the rest of §3: inline mode means *everything*
+  is inline, LoRAs included, so a scratch graph needs exactly one node.
+
+The inline list lives in `generation_settings.loras` as an ordered array of
+`{name, strength_model, strength_clip}`. **List order is application order.** No cap is needed —
+these are entries in the settings blob, not sockets, so they cost no slots (contrast the detailer's
+`MAX_DETAILER_PASSES`, which is capped precisely because each pass *is* a socket). Its editor is a
+LoRA tab in the settings overlay, present only while inline mode is on.
+
+An entry with **both strengths at `0` is skipped** when the stack is built, matching upstream
+(`aio/model_preparation.py:236`). It stays in the list — a zeroed LoRA is muted, not deleted.
+
+#### Port upstream's normalizer, and widen it by one case
+
+`_normalize_aio_lora_stack` (`aio/model_preparation.py:164-199`) is deliberately promiscuous about
+input shape, and that tolerance is the whole reason an unknown third-party stacker will just work:
+it unwraps a `{"__value__": …}` envelope, JSON-parses a string, accepts `dict` items under several
+key spellings (`name`/`lora`/`lora_name`, `strength_model`/`model_strength`/`strength`,
+`strength_clip`/`clip_strength`/`strengthTwo`), accepts `list`/`tuple` items, and drops entries whose
+name is empty or `"none"`. Port it as-is.
+
+**One gap worth closing:** it requires `len(item) >= 3` for sequence items, so a stacker emitting
+2-tuples `(name, strength)` has every entry **silently dropped**. Accept `len >= 2` and default
+`strength_clip` to `strength_model` — which is already the fallback the dict branch uses.
+
+> **Unverified:** the local Pixaroma clone (`../ComfyUI-Pixaroma` at `afd0d05`) has **no LoRA
+> stacker** — only `node_krea_lora_convert`, a format converter. So its output shape is not something
+> this repo can check; the clone predates it, exactly as it predates the Control Panel
+> (`control-panel-design.md` §1). The normalizer above should absorb whatever it emits, but confirm
+> against the real node before calling this done, and mark the assumption `VERIFY-IN-COMFYUI:`.
 
 ### Outputs
 
@@ -393,6 +422,7 @@ we ship:
   mod_guidance: { mode, profile, quality_tags, quality_neg, mod_w, mod_start_layer,
                   mod_end_layer, ... },
   latent:       { width, height, batch },
+  loras:        [ { name, strength_model, strength_clip } ],   // inline mode only; order = apply order
   highres:      { enabled: false, scale_by: 1.5, upscale_method, multiple, max_long_edge,
                   steps: 20, inherit_sampler_settings: true, cfg, sampler_name, scheduler,
                   denoise: 0.25 },
