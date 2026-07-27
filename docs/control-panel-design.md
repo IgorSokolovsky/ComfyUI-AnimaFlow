@@ -218,23 +218,31 @@ parsing it back in `onConfigure` *after* the original runs.
 
 ---
 
-## 5. Output typing — the one real unknown
+## 5. Output typing — SETTLED (2026-07-27)
 
 Python is wildcard for every slot (`ANY` = a `str` subclass whose `__ne__` returns `False`; Pixaroma
 keeps it in `nodes/_type_helpers.py`, we'd add `nodes/controls/_type_helpers.py`). The frontend then
 sets `output.type` per row so litegraph refuses bad wires: `INT`, `FLOAT`, `LATENT`, `MODEL`, `VAE`,
 `CLIP` are all plain strings and behave.
 
-**Combo rows are the open question.** Legacy litegraph compares type *strings*, while a combo input's
-type is the option list itself in older builds and `"COMBO"` in newer ones. Order to try, in a live
-ComfyUI:
+**Combo rows were the open question — now answered: `output.type = "COMBO"` works.** Verified in a
+live ComfyUI on 2026-07-27: sampler and scheduler rows wire to a KSampler and pass the correct value.
+`COMBO_TYPE_STRATEGY` in `js/controls/rows.mjs` stays on `"COMBO"`; the two fallbacks below remain
+implemented in case a future frontend version needs them, but **do not flip the constant while
+combos are working**.
 
-1. `output.type = "COMBO"` — correct on current frontends.
-2. The literal list, joined — what legacy widget-inputs carry.
-3. Leave `"*"`, permissive: connects anywhere, Python coerces. Always works, loses the wire-time guard.
+1. **`"COMBO"` — confirmed correct, the shipped default.**
+2. The literal list, joined — what older legacy widget-inputs carry.
+3. `"*"`, permissive: connects anywhere, Python coerces. Always works, loses the wire-time guard.
 
-Mark it `VERIFY-IN-COMFYUI:` in the code. **Do not guess this from the schema** — it is exactly the
-kind of thing that only a real page settles.
+Community reports also mention a Python-side `RETURN_TYPES = ("COMBO,STRING",)` (note the trailing
+`,STRING`) for nodes emitting combo values. **We did not need it** — the frontend narrowing alone was
+sufficient. Noted only so the next person doesn't reach for it unnecessarily.
+
+**Slot labels also settled.** `SLOT_LABEL_MODE = "row-name"` was the other live unknown: a real
+(non-zero-width) label could in principle have been painted by litegraph on top of our row DOM.
+Verified 2026-07-27 — **no bleed**, because litegraph paints slot text on the canvas while our rows
+are opaque DOM layered above it. The `"hidden"` mode remains as an escape hatch; nothing needs it.
 
 **UX caveat worth stating in the docs:** on **legacy litegraph** (this pack's target renderer) a
 KSampler's `sampler_name` is a canvas widget, not a socket — the user must right-click → *Convert

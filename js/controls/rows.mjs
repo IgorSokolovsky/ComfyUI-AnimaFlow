@@ -635,14 +635,13 @@ export function reorderRows(originalRows, fromIndex, toIndex) {
  * Which of the three combo-typing strategies is active. Legacy litegraph
  * compares output/input type STRINGS; a combo widget's declared type is
  * either the option list itself (older builds) or the literal string
- * `"COMBO"` (newer ones) — this can only be settled by trying it against a
- * real, live ComfyUI page (docs/control-panel-design.md §5 explicitly warns
- * against guessing this from the schema). Flip this constant during that
- * verification pass; nothing else in this module needs to change.
+ * `"COMBO"` (newer ones).
  *
- * VERIFY-IN-COMFYUI: try `"COMBO"` first (current default); if a wire to a
- * combo input silently refuses, try `"list"`; `"permissive"` always
- * connects but loses the wire-time type guard entirely.
+ * VERIFIED 2026-07-27 in a live ComfyUI page (docs/control-panel-design.md
+ * §5): `"COMBO"` is correct — sampler and scheduler rows wire to a KSampler
+ * and deliver the right value. `"list"` and `"permissive"` stay implemented
+ * below only in case a future frontend version needs them; do not flip this
+ * constant while combos are working.
  */
 export const COMBO_TYPE_STRATEGY = "COMBO"; // "COMBO" | "list" | "permissive"
 
@@ -700,13 +699,10 @@ export function outputTypeForRow(row, listsByKind) {
  * `ZW` sentinel (never painted, and useless to UE's name match, but
  * guaranteed never to visibly bleed onto the canvas either).
  *
- * VERIFY-IN-COMFYUI: `ZW` exists ONLY to stop legacy litegraph painting the
- * output's name/label text on the CANVAS on top of our own opaque DOM row —
- * a real label should never visibly bleed through since our rows are DOM
- * elements layered above the canvas, not painted BY it, but that has only
- * been reasoned through here, not confirmed on a live page. If a real label
- * DOES paint over a row, flip this back to `"hidden"` — same one-constant
- * escape hatch as `COMBO_TYPE_STRATEGY` above.
+ * VERIFIED 2026-07-27 in a live ComfyUI page (docs/control-panel-design.md
+ * §5): a real label causes no visible bleed — litegraph paints slot text on
+ * the canvas while our rows are opaque DOM layered above it. `"hidden"`
+ * remains as an escape hatch; nothing currently needs it.
  */
 export const SLOT_LABEL_MODE = "row-name"; // "row-name" | "hidden"
 
