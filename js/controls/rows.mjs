@@ -1305,14 +1305,48 @@ export function numericPercent(row) {
  * list (a fresh array copy), or `null` if that node class/field isn't
  * registered (pack absent) or its spec isn't a combo. Tolerant of a
  * malformed/partial registry entry at every step — never throws.
+ *
+ * **2026-07-28 (V3 node-def schema fix)** — a live probe (ComfyUI 0.28.3 /
+ * frontend 1.45.21) found TWO combo spec shapes live in the SAME session,
+ * verbatim:
+ *
+ *   // V1 schema (UNETLoader, and every OLDER node def):
+ *   required.unet_name === [["anima_baseV10.safetensors", "other.safetensors", ...]]
+ *
+ *   // V3 schema (UpscaleModelLoader, and other migrated node defs):
+ *   required.model_name === ["COMBO", { multiselect: false, options: ["4x-AnimeSharp.pth", ...] }]
+ *
+ * `spec[0]` for the V3 shape is the literal STRING `"COMBO"`, not an array —
+ * the old `Array.isArray(spec[0]) ? spec[0] : null` check returned `null` for
+ * every V3-migrated node, even when the user genuinely has files installed
+ * (the "upscale model picker is empty/disabled" bug this fixes: the folder
+ * was never empty, this function just couldn't see the V3 list at all). Same
+ * root cause class as this pack's other V3-migration fixes — the schema bites
+ * on INPUT defs here, not just RETURN_TYPES/`_output0`.
+ *
+ * Resolution order, structural (duck-typed on `spec[1].options`, NOT by
+ * matching the literal `"COMBO"` string alone — a future schema revision may
+ * spell the sentinel differently, but "the second element carries a real
+ * `options` array" is the actual shape that matters):
+ *   1. `spec[0]` is an array -> that's the V1 list (unchanged).
+ *   2. `spec[0]` is anything else AND `spec[1]` is a plain object whose
+ *      `options` is an array -> that's the V3 list.
+ *   3. Anything else (missing, malformed, `spec[1]` present but with no
+ *      `options` array) -> `null`, exactly as before.
  */
 export function getComboOptions(registry, className, field) {
   try {
     const nodeData = registry && registry[className] && registry[className].nodeData;
     const required = nodeData && nodeData.input && nodeData.input.required;
     const spec = required && required[field];
-    const values = Array.isArray(spec) ? spec[0] : null;
-    return Array.isArray(values) ? values.slice() : null;
+    if (!Array.isArray(spec)) {
+      return null;
+    }
+    if (Array.isArray(spec[0])) {
+      return spec[0].slice(); // V1 schema
+    }
+    const opts = spec[1] && typeof spec[1] === "object" ? spec[1].options : null;
+    return Array.isArray(opts) ? opts.slice() : null; // V3 schema, or unrecognized -> null
   } catch {
     return null;
   }

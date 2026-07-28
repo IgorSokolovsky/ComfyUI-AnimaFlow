@@ -1821,7 +1821,7 @@ test("Detailer section: the SAM3 checkpoint renders as a stepper fed by ctx.getK
   assert.equal(val.textContent, "sam3.1_multiplex_fp16.safetensors");
 });
 
-test("Upscale section: upscale_model_name renders as a stepper fed by ctx.getKnownLists().upscale_models, not a text field", () => {
+test("Upscale section: the model picker (labeled 'Model', not the over-qualified 'upscale_model_name' -- the section card already scopes it) renders as a stepper fed by ctx.getKnownLists().upscale_models, not a text field", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -1831,15 +1831,33 @@ test("Upscale section: upscale_model_name renders as a stepper fed by ctx.getKno
   fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
   const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
 
-  const field = findFieldByLabel(body, "upscale_model_name");
-  assert.ok(field, "expected an 'upscale_model_name' field in the Upscale section");
+  const field = findFieldByLabel(body, "Model");
+  assert.ok(field, "expected a 'Model' field in the Upscale section");
   assert.ok(hasClass(field, "wtn-fld-stepper"), "must be a stepper row, not buildTextField's .wtn-an-field");
   assert.ok(!hasClass(field, "wtn-fld-disabled"));
   const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
   assert.equal(val.textContent, "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors");
 });
 
-test("Detailer SAM3 checkpoint: an empty/missing list keeps showing the SAVED value, disabled -- never rewrites it, never renders an empty-but-clickable picker", () => {
+test("Upscale section: the model picker's DISPLAY label changed to 'Model', but the underlying settings path is still upscale.usdu.upscale_model_name -- a state-shape change would break saved workflows", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: ["2x-AnimeSharpV4_Fast_RCAN_PU.safetensors", "other.pth"] }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
+  assert.ok(!findFieldByLabel(body, "upscale_model_name"), "the raw settings-path name must no longer be the DISPLAYED label");
+
+  const field = findFieldByLabel(body, "Model");
+  const rightArrow = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click");
+  const persisted = genState(node);
+  assert.equal(persisted.upscale.usdu.upscale_model_name, "other.pth", "the settings PATH is unchanged even though the label is");
+});
+
+test("Detailer SAM3 checkpoint: an empty/missing list keeps showing the SAVED value, disabled -- never rewrites it, never renders an empty-but-clickable picker; the empty-list REASON is visible in the row ('no options available', NOT an assertion the folder is empty -- getComboOptions can also come back empty for a V3-schema def it couldn't parse), and the folder hint lives ONLY in the tooltip", () => {
   const node = makeGeneratorNode({
     generation_settings: JSON.stringify({ detailer: { sam3: { checkpoint: "a-value-not-in-any-list.safetensors" } } }),
   });
@@ -1854,7 +1872,10 @@ test("Detailer SAM3 checkpoint: an empty/missing list keeps showing the SAVED va
   const field = findFieldByLabel(body, "checkpoint");
   assert.ok(hasClass(field, "wtn-fld-disabled"), "an empty list must render the picker disabled, not silently rewrite the value");
   const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
-  assert.equal(val.textContent, "a-value-not-in-any-list.safetensors", "the saved value must survive, not fall back to list[0] or the upstream default");
+  assert.ok(val.textContent.includes("a-value-not-in-any-list.safetensors"), "the saved value must survive, not fall back to list[0] or the upstream default");
+  assert.ok(val.textContent.includes("no options available"), "the empty-list reason must be visible in the row itself");
+  assert.ok(!val.textContent.includes("models/checkpoints"), "the row text must NOT assert the folder is empty -- an empty list doesn't always mean that");
+  assert.ok(field.title && field.title.includes("models/checkpoints"), "the folder hint belongs in the tooltip (root.title, buildStepperField's own disabledReason), as a place to check, not a claim");
 
   // Disabled means no click handlers were wired at all -- clicking an arrow
   // (if it somehow fired) must not mutate the persisted state either.
@@ -1862,7 +1883,7 @@ test("Detailer SAM3 checkpoint: an empty/missing list keeps showing the SAVED va
   assert.equal(persisted.detailer.sam3.checkpoint, "a-value-not-in-any-list.safetensors");
 });
 
-test("Upscale upscale_model_name: a `null` (unobtainable) list ALSO keeps the saved value, disabled", () => {
+test("Upscale Model picker: a `null` (unobtainable) list ALSO keeps the saved value, disabled, with the same 'no options available' row text (folder hint only in the tooltip)", () => {
   const node = makeGeneratorNode({
     generation_settings: JSON.stringify({ upscale: { usdu: { upscale_model_name: "my-custom-model.pth" } } }),
   });
@@ -1874,10 +1895,16 @@ test("Upscale upscale_model_name: a `null` (unobtainable) list ALSO keeps the sa
   fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
   const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
 
-  const field = findFieldByLabel(body, "upscale_model_name");
+  const field = findFieldByLabel(body, "Model");
   assert.ok(hasClass(field, "wtn-fld-disabled"));
   const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
-  assert.equal(val.textContent, "my-custom-model.pth");
+  assert.ok(val.textContent.includes("my-custom-model.pth"), "the saved value must survive a null list");
+  assert.ok(val.textContent.includes("no options available"), "the empty-list reason must be visible in the row itself");
+  assert.ok(!val.textContent.includes("models/upscale_models"), "the row text must NOT assert the folder is empty");
+  assert.ok(field.title && field.title.includes("models/upscale_models"), "the folder hint belongs in the tooltip only");
+
+  const persisted = genState(node);
+  assert.equal(persisted.upscale.usdu.upscale_model_name, "my-custom-model.pth", "an empty/null list must never rewrite the saved value");
 });
 
 test("Detailer SAM3 checkpoint: cycling the stepper's arrow writes detailer.sam3.checkpoint (and persists) when the list is non-empty", () => {
@@ -1897,7 +1924,7 @@ test("Detailer SAM3 checkpoint: cycling the stepper's arrow writes detailer.sam3
   assert.equal(persisted.detailer.sam3.checkpoint, "second.safetensors");
 });
 
-test("Upscale upscale_model_name: cycling the stepper's arrow writes upscale.usdu.upscale_model_name (and persists) when the list is non-empty", () => {
+test("Upscale Model picker: cycling the stepper's arrow writes upscale.usdu.upscale_model_name (and persists) when the list is non-empty", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -1906,7 +1933,7 @@ test("Upscale upscale_model_name: cycling the stepper's arrow writes upscale.usd
 
   fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
   let body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
-  const field = findFieldByLabel(body, "upscale_model_name");
+  const field = findFieldByLabel(body, "Model");
   const rightArrow = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
   fire(rightArrow, "click");
 
@@ -1922,6 +1949,112 @@ test("index.js: MODEL_LIST_SOURCES/readKnownLists mirrors js/controls/index.js's
   assert.match(indexSource, /model_name/);
   // getComboOptions is REUSED (imported/re-exported), never reimplemented.
   assert.doesNotMatch(indexSource, /function getComboOptions/);
+});
+
+test("index.js: samplers/schedulers ALSO ride MODEL_LIST_SOURCES/getKnownLists, off KSampler's own registered sampler_name/scheduler combo spec -- task item 1, the same pair js/controls/rows.mjs's NODE_DEF_SOURCE already reads", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(indexSource, /samplers:\s*\{\s*className:\s*"KSampler",\s*field:\s*"sampler_name"/);
+  assert.match(indexSource, /schedulers:\s*\{\s*className:\s*"KSampler",\s*field:\s*"scheduler"/);
+});
+
+// ---------------------------------------------------------------------------
+// Live sampler_name/scheduler option lists (task item 1) -- previously
+// hardcoded 6-entry arrays (SAMPLERS/SCHEDULERS in interaction.mjs), versus
+// ComfyUI's real ~30/~10. Now read through ctx.getKnownLists().samplers/
+// .schedulers, the SAME mechanism the model-file pickers above use --
+// falling back to the hardcoded arrays ONLY when the registry is unavailable.
+// ---------------------------------------------------------------------------
+
+/** The option-list overlay's own `.wtn-an-opt` entries, opened by clicking
+ * `field`'s combo -- shared by every test below that needs to inspect the
+ * REAL live option list a stepper was built with (not just its currently
+ * displayed value). Closes the overlay again before returning, so a caller
+ * that opens a second field's list afterward doesn't collide with an
+ * already-open one. */
+function optionListTextsFor(field) {
+  const combo = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo"));
+  fire(combo, "click");
+  assert.ok(activeOverlayRef.current, "expected the option-list overlay to open");
+  const menu = activeOverlayRef.current.overlay.children[0];
+  const texts = queryAll(menu, (n) => hasClass(n, "wtn-an-opt")).map((o) => o.textContent);
+  closeActiveOverlay();
+  return texts;
+}
+
+test("Sampler section: sampler_name/scheduler options come from a stubbed ctx.getKnownLists().samplers/.schedulers registry -- a real (>6-entry) live list is used, not the 6-entry hardcoded fallback", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const liveSamplers = ["euler", "euler_ancestral", "euler_cfg_pp", "heun", "heunpp2", "dpm_2", "dpm_2_ancestral", "lms", "dpmpp_2m", "ddim"];
+  const liveSchedulers = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "linear_quadratic"];
+  const ctx = makeCtx(doc, {
+    getKnownLists: () => ({
+      checkpoints: [], upscale_models: [], samplers: liveSamplers, schedulers: liveSchedulers,
+    }),
+  });
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler")); // expanded by default
+
+  const samplerField = findFieldByLabel(body, "sampler_name");
+  const schedField = findFieldByLabel(body, "scheduler");
+  assert.deepEqual(optionListTextsFor(samplerField), liveSamplers, "must use the LIVE registry list, in its own order");
+  assert.deepEqual(optionListTextsFor(schedField), liveSchedulers);
+  assert.ok(liveSamplers.length > 6 && liveSchedulers.length > 6, "sanity: the live lists this test feeds are bigger than the hardcoded fallback");
+});
+
+test("Sampler section: sampler_name/scheduler fall back to the hardcoded 6-entry arrays ONLY when ctx.getKnownLists() has no samplers/schedulers key at all (registry unavailable, e.g. a headless host or an unregistered KSampler def)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  // Deliberately the OLD shape (no samplers/schedulers keys) -- same stub
+  // shape every OTHER test in this file already uses via makeCtx's default.
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: [] }) });
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const samplerField = findFieldByLabel(body, "sampler_name");
+  const schedField = findFieldByLabel(body, "scheduler");
+  const samplerOpts = optionListTextsFor(samplerField);
+  const schedOpts = optionListTextsFor(schedField);
+  assert.equal(samplerOpts.length, 6, "must fall back to the hardcoded (deliberately last-resort) SAMPLERS array");
+  assert.equal(schedOpts.length, 6, "must fall back to the hardcoded (deliberately last-resort) SCHEDULERS array");
+  assert.deepEqual(samplerOpts, ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddim"]);
+  assert.deepEqual(schedOpts, ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"]);
+});
+
+test("Sampler section: an empty (not missing) samplers/schedulers array ALSO falls back to the hardcoded list -- 'the registry returned nothing usable' and 'the key is absent' must behave identically", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: [], samplers: [], schedulers: null }) });
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  assert.equal(optionListTextsFor(findFieldByLabel(body, "sampler_name")).length, 6);
+  assert.equal(optionListTextsFor(findFieldByLabel(body, "scheduler")).length, 6);
+});
+
+test("Sampler section: a saved sampler_name/scheduler value ABSENT from the live list still renders (and is never silently rewritten to list[0]) -- ce0528f's lesson, extended to the newly-live sampler/scheduler lists", () => {
+  const node = makeGeneratorNode({
+    generation_settings: JSON.stringify({ sampler: { sampler_name: "not_in_any_list", scheduler: "also_not_in_any_list" } }),
+  });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    getKnownLists: () => ({ checkpoints: [], upscale_models: [], samplers: ["euler", "dpmpp_2m"], schedulers: ["normal", "karras"] }),
+  });
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const samplerField = findFieldByLabel(body, "sampler_name");
+  const schedField = findFieldByLabel(body, "scheduler");
+  const samplerVal = samplerField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  const schedVal = schedField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  assert.equal(samplerVal.textContent, "not_in_any_list", "the saved value must still render even though the live list doesn't contain it");
+  assert.equal(schedVal.textContent, "also_not_in_any_list");
+
+  const persisted = genState(node);
+  assert.equal(persisted.sampler.sampler_name, "not_in_any_list", "must never be silently rewritten to list[0]");
+  assert.equal(persisted.sampler.scheduler, "also_not_in_any_list");
 });
 
 test("interaction.mjs still touches no window/LiteGraph directly -- getKnownLists rides the ctx injection, same contract as getCanvasEl/havePackages (a static source scan, comments stripped)", () => {
@@ -3107,6 +3240,36 @@ test("a stepper's onOpenList is wired (task item 2's dead-dropdown fix) -- click
   assert.equal(activeOverlayRef.current, null, "a second click on the SAME opener must close its own list, not reopen it");
 });
 
+test("stale-value regression (task item 2): stepping a stepper with an ARROW first, then opening its option list, must highlight the NEW value -- this fails against the old buildAnStepper that captured spec.value at build time", () => {
+  const node = makeGeneratorNode({
+    generation_settings: JSON.stringify({ sampler: { sampler_name: "euler" } }),
+  });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    getKnownLists: () => ({ checkpoints: [], upscale_models: [], samplers: ["euler", "dpmpp_2m", "heun"], schedulers: [] }),
+  });
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler")); // expanded by default
+
+  const field = findFieldByLabel(body, "sampler_name");
+  const stepperBody = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body"));
+  const rightArrow = stepperBody.children.find((c) => hasClass(c, "wtn-fld-right"));
+  const combo = stepperBody.children.find((c) => hasClass(c, "wtn-fld-combo"));
+
+  fire(rightArrow, "click"); // euler -> dpmpp_2m, in place (no rebuild)
+  assert.equal(genState(node).sampler.sampler_name, "dpmpp_2m", "the arrow must have written the new value");
+
+  fire(combo, "click");
+  assert.ok(activeOverlayRef.current, "expected the option list to open");
+  const menu = activeOverlayRef.current.overlay.children[0];
+  const opts = queryAll(menu, (n) => hasClass(n, "wtn-an-opt"));
+  const selected = opts.find((o) => hasClass(o, "wtn-an-opt-sel"));
+  assert.ok(selected, "expected exactly one option marked selected");
+  assert.equal(selected.textContent, "dpmpp_2m", "the NEW (post-arrow) value must be the one marked selected, not the stale build-time value ('euler')");
+  closeActiveOverlay();
+});
+
 /** Every visible field LABEL (numeric/stepper/bool/text -- the union
  * `findFieldByLabel`'s own predicate already covers) inside `root`, walked
  * recursively -- used to assert an exact inline/advanced split against
@@ -3153,7 +3316,7 @@ test("Highres: the inline field set is EXACTLY {scale_by, steps, denoise} -- eve
   }
 });
 
-test("Upscale: the inline field set is EXACTLY {upscale_model_name, scale_by, steps, denoise} -- every USDU tile/seam field plus the sampler-inherit block live ONLY in the ⚙ menu (task item 3's table)", () => {
+test("Upscale: the inline field set is EXACTLY {Model, scale_by, steps, denoise} -- 'Model' (renamed from the over-qualified 'upscale_model_name', settings path unchanged) plus every USDU tile/seam field and the sampler-inherit block live ONLY in the ⚙ menu (task item 3's table)", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -3161,7 +3324,7 @@ test("Upscale: the inline field set is EXACTLY {upscale_model_name, scale_by, st
   const refs = mountGeneratorUI(node, ctx);
   fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
   const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
-  assert.deepEqual(allFieldLabels(body).sort(), ["denoise", "scale_by", "steps", "upscale_model_name"].sort());
+  assert.deepEqual(allFieldLabels(body).sort(), ["Model", "denoise", "scale_by", "steps"].sort());
 
   const box = openGearMenu(findSectionHeader(refs.body, "Upscale"));
   toggleInheritOff(box);
@@ -3174,7 +3337,7 @@ test("Upscale: the inline field set is EXACTLY {upscale_model_name, scale_by, st
   ]) {
     assert.ok(advancedLabels.includes(label), `expected ${label} in Upscale's ⚙ menu`);
   }
-  for (const label of ["upscale_model_name", "scale_by", "steps", "denoise"]) {
+  for (const label of ["Model", "scale_by", "steps", "denoise"]) {
     assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the ⚙ menu`);
   }
 });

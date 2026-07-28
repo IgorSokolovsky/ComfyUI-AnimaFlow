@@ -12,7 +12,7 @@
  *     doc: document,                  // or a stub, under test
  *     getCanvasEl(): HTMLCanvasElement|null,   // app.canvas.canvas, live
  *     havePackages(): {spectrum, usdu, impact},// soft-import presence, live
- *     getKnownLists(): {checkpoints, upscale_models},// installed-file lists, live
+ *     getKnownLists(): {checkpoints, upscale_models, samplers, schedulers},// installed-file / combo lists, live
  *   }
  *
  * `getCanvasEl`/`havePackages`/`getKnownLists` are the only three places this
@@ -26,13 +26,21 @@
  * reused rather than reimplemented, per that module's own cross-track
  * precedent already established by `js/shared/fields.mjs`) or `null` if that
  * node class isn't registered at all. Feeds the Detailer section's SAM3
- * checkpoint picker and the Upscale section's `upscale_model_name` picker
- * (both used to be hardcoded upstream defaults with no frontend control at
- * all — this task's whole point) — see `buildDetailerBody`/
- * `buildUpscaleSection` below. A `null`/empty list degrades HONESTLY: the
+ * checkpoint picker and the Upscale section's `Model` picker (settings path
+ * `upscale.usdu.upscale_model_name` — only the DISPLAY label was renamed, to
+ * avoid repeating the section card's own scope, task item 3) (both used to be
+ * hardcoded upstream defaults with no frontend control at all — this task's
+ * whole point) — see `buildDetailerBody`/`buildUpscaleSection` below. A
+ * `null`/empty list degrades HONESTLY: the
  * picker still shows whatever value the settings tree already holds
  * (never silently rewritten), just rendered disabled (`ce0528f`'s lesson:
  * never default to `list[0]` in place of a saved value).
+ * `samplers`/`schedulers` (2026-07-28) are the SAME mechanism off
+ * `KSampler.sampler_name`/`.scheduler`'s own registered combo spec — see
+ * `resolveSamplerOptions` below for how a field built from these degrades to
+ * the (six-entry, deliberately last-resort) hardcoded `SAMPLERS`/`SCHEDULERS`
+ * arrays when this list is empty/unavailable, rather than ever rewriting an
+ * already-saved value that the live list doesn't happen to contain.
  *
  * ## 2026-07-28 reversal (inline-sections dispatch, `docs/generator-
  * design.md` §12) — sections' ESSENTIALS expand IN PLACE
@@ -856,8 +864,30 @@ export function computeEffectiveContextSupplied(node) {
   return { bridgeFound: live.bridgeFound, bridge: live.bridge, supplied, source, runSupplied, values };
 }
 
+// LAST-RESORT fallback ONLY -- see `resolveSamplerOptions` below. The real
+// source of truth is `ctx.getKnownLists().samplers`/`.schedulers`
+// (`index.js`'s `MODEL_LIST_SOURCES`, off `KSampler`'s own registered combo
+// spec); these two arrays are what a caller falls back to when that registry
+// lookup comes back empty (a headless test with no stub, or a `KSampler` def
+// that didn't register) -- six entries each, versus ComfyUI's real ~30
+// samplers / ~10 schedulers, so NEVER treat these as the primary list.
 const SAMPLERS = ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddim"];
 const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
+
+/**
+ * The live `sampler_name`/`scheduler` option list for `listKey`
+ * (`"samplers"`/`"schedulers"`) through `ctx.getKnownLists()`, falling back
+ * to `fallback` (one of the two hardcoded arrays above) ONLY when the
+ * registry lookup is unavailable or empty -- never silently prefers the
+ * fallback when a real (even single-entry) list exists. Mirrors
+ * `buildModelFilePicker`'s own "read through `ctx.getKnownLists()`" shape,
+ * generalized past the two model-file pickers to cover these two as well.
+ */
+function resolveSamplerOptions(ctx, listKey, fallback) {
+  const lists = ctx && typeof ctx.getKnownLists === "function" ? ctx.getKnownLists() : null;
+  const list = lists && Array.isArray(lists[listKey]) ? lists[listKey] : null;
+  return list && list.length ? list : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Expandable section (2026-07-28 inline-sections dispatch, THEN the
@@ -1085,8 +1115,15 @@ function buildAnStepper(doc, ctx, spec, handlers) {
   let ref;
   ref = buildStepperField(doc, spec, {
     onChange,
-    onOpenList: (comboEl) => {
-      openStepperOptionList(doc, ctx, key, comboEl, spec.options, spec.value, ref, (v) => {
+    // `currentValue` -- `buildStepperField`'s own live-tracked value, handed
+    // to this callback by the field itself (fields.mjs's own top doc comment
+    // on this fix). NOT `spec.value`: that's a build-time snapshot, and an
+    // arrow click updates the field's displayed value via `repaint()`
+    // in-place, without ever rebuilding this closure -- reading `spec.value`
+    // here highlighted the WRONG (pre-arrow-click) entry the instant the list
+    // was opened after cycling with an arrow first.
+    onOpenList: (comboEl, currentValue) => {
+      openStepperOptionList(doc, ctx, key, comboEl, spec.options, currentValue, ref, (v) => {
         if (typeof onChange === "function") {
           onChange(v);
         }
@@ -1154,7 +1191,9 @@ function buildSamplerField(doc, node, ctx, field, sampler, eff) {
 
   let fieldRoot;
   if (field === "sampler_name" || field === "scheduler") {
-    const options = field === "sampler_name" ? SAMPLERS : SCHEDULERS;
+    const listKey = field === "sampler_name" ? "samplers" : "schedulers";
+    const fallback = field === "sampler_name" ? SAMPLERS : SCHEDULERS;
+    const options = resolveSamplerOptions(ctx, listKey, fallback);
     fieldRoot = buildAnStepper(doc, ctx, { label: field, value: displayValue, options, disabledReason }, {
       onChange: (v) => { sampler[field] = v; persistGenState(node); },
     }).root;
@@ -1326,14 +1365,25 @@ function appendStageSamplerAdvancedFields(doc, ctx, container, stageSettings, fi
       label: "cfg", kind: "float", opts: { min: 0, max: 30, step: 0.1 },
       getValue: () => stageSettings.cfg, setValue: (v) => { stageSettings.cfg = v; },
     }, onCommit).root);
-    container.appendChild(buildAnStepper(doc, ctx, { label: "sampler_name", value: stageSettings.sampler_name, options: SAMPLERS }, {
+    container.appendChild(buildAnStepper(doc, ctx, { label: "sampler_name", value: stageSettings.sampler_name, options: resolveSamplerOptions(ctx, "samplers", SAMPLERS) }, {
       onChange: (v) => { stageSettings.sampler_name = v; onCommit(); },
     }).root);
-    container.appendChild(buildAnStepper(doc, ctx, { label: "scheduler", value: stageSettings.scheduler, options: SCHEDULERS }, {
+    container.appendChild(buildAnStepper(doc, ctx, { label: "scheduler", value: stageSettings.scheduler, options: resolveSamplerOptions(ctx, "schedulers", SCHEDULERS) }, {
       onChange: (v) => { stageSettings.scheduler = v; onCommit(); },
     }).root);
   }
 }
+
+// The real ComfyUI folder each `listKey` reads from -- named in the
+// empty-list note/tooltip below (task item 3's "the REASON must be visible
+// in the row, not just a disabled-looking picker" fix) so a user with
+// nothing installed sees exactly where to drop a file, rather than a picker
+// that just LOOKS broken. Keyed identically to `MODEL_LIST_SOURCES`
+// (`index.js`) / `ctx.getKnownLists()`'s own return shape.
+const MODEL_FOLDER_HINTS = {
+  checkpoints: "models/checkpoints",
+  upscale_models: "models/upscale_models",
+};
 
 /**
  * A `buildStepperField` bound to a live installed-file list from
@@ -1350,12 +1400,40 @@ function appendStageSamplerAdvancedFields(doc, ctx, container, stageSettings, fi
  * substitutes `list[0]` for a saved value the list doesn't happen to
  * contain — `ce0528f`'s lesson: a value the user already has saved wins
  * over anything guessed from a list.
+ *
+ * **2026-07-28 (empty-list presentation fix)**: a disabled stepper used to
+ * read as broken rather than "working as designed, nothing to pick from."
+ * The REASON is now visible in the row itself: the displayed value gets a
+ * `" (no options available)"` suffix (the SAVED value, untouched underneath —
+ * only the DISPLAY string changes, `getValue()`/`setValue` never see the
+ * suffixed text). Deliberately NOT "no models found in `<folder>`" in the
+ * row text — an empty `list` here does not always mean the folder is empty:
+ * `getComboOptions` (`js/controls/rows.mjs`) can ALSO come back empty for a
+ * node whose combo spec this frontend simply couldn't parse (the V3
+ * node-def schema fix, same dispatch, is exactly a case that used to look
+ * "empty" for a user who had files installed all along) — asserting the
+ * folder is empty in the row itself would have been actively WRONG for that
+ * user. The folder name still appears, but ONLY in `disabledReason`
+ * (`buildStepperField`'s own tooltip, via `root.title`) as a hint of where to
+ * look, phrased as a suggestion rather than a claim about what's there. A
+ * `listKey` with no folder hint (shouldn't occur; every current caller has
+ * one) falls back to `missingText` alone.
  */
 function buildModelFilePicker(doc, ctx, listKey, label, missingText, getValue, setValue, onCommit) {
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
   const list = Array.isArray(lists && lists[listKey]) ? lists[listKey] : [];
+  const savedValue = getValue();
+  let displayValue = savedValue;
+  let disabledReason;
+  if (!list.length) {
+    const folder = MODEL_FOLDER_HINTS[listKey];
+    displayValue = savedValue ? `${savedValue} (no options available)` : "(no options available)";
+    disabledReason = folder
+      ? `${missingText} If this looks wrong, check ${folder} for a model file.`
+      : missingText;
+  }
   return buildAnStepper(doc, ctx, {
-    label, value: getValue(), options: list, disabledReason: list.length ? undefined : missingText,
+    label, value: displayValue, options: list, disabledReason,
   }, {
     onChange: (v) => { setValue(v); onCommit(); },
   }).root;
@@ -1557,8 +1635,13 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
       if (missing) {
         body.appendChild(buildMissing(doc, missingText));
       }
+      // Label is "Model", NOT "upscale_model_name" -- the section card itself
+      // already scopes it to Upscale, so repeating the full settings-path
+      // name in the row was over-qualified (task item 3). DISPLAY only: the
+      // settings path stays `upscale.usdu.upscale_model_name` (unchanged
+      // below) so a state-shape change can't break a saved workflow.
       body.appendChild(buildModelFilePicker(
-        doc, ctx, "upscale_models", "upscale_model_name",
+        doc, ctx, "upscale_models", "Model",
         "No upscale models installed (UpscaleModelLoader's own list is empty or unavailable) -- showing the saved value.",
         () => u.usdu.upscale_model_name, (v) => { u.usdu.upscale_model_name = v; }, () => persistGenState(node),
       ));

@@ -196,11 +196,24 @@ function getCanvasEl() {
 // THIS file never statically imports `js/controls/rows.mjs` directly: doing
 // so would pull it into the JS download budget for every page, whether or
 // not any Anima node is ever placed).
+//
+// **2026-07-28 (live sampler/scheduler lists)**: `samplers`/`schedulers` ride
+// the exact same mechanism, off `KSampler`'s own registered `sampler_name`/
+// `scheduler` combo spec -- the SAME pair `js/controls/rows.mjs`'s
+// `NODE_DEF_SOURCE` already reads for its own sampler/scheduler picker rows,
+// so the two tracks agree on what "the live sampler list" even means. This
+// replaces the previously-HARDCODED six-entry `SAMPLERS`/`SCHEDULERS` arrays
+// in `interaction.mjs` (versus ComfyUI's real ~30/~10) -- those arrays still
+// exist there, but only as the LAST-RESORT fallback for when this registry
+// lookup comes back empty (a headless test with no stub, or a `KSampler` def
+// that somehow didn't register).
 // ---------------------------------------------------------------------------
 
 const MODEL_LIST_SOURCES = {
   checkpoints: { className: "CheckpointLoaderSimple", field: "ckpt_name" },
   upscale_models: { className: "UpscaleModelLoader", field: "model_name" },
+  samplers: { className: "KSampler", field: "sampler_name" },
+  schedulers: { className: "KSampler", field: "scheduler" },
 };
 
 let _listsCache = null;

@@ -1030,8 +1030,57 @@ test("getComboOptions returns null for a missing class/field/malformed registry 
   assert.equal(getComboOptions({ KSampler: {} }, "KSampler", "sampler_name"), null);
   assert.equal(
     getComboOptions({ UNETLoader: { nodeData: { input: { required: { unet_name: ["COMBO"] } } } } }, "UNETLoader", "unet_name"),
-    null, // spec[0] isn't an array (newer-build "COMBO" string form) -- no list available
+    null, // spec[1] is missing entirely (bare `["COMBO"]`, no options object) -- no list available
   );
+});
+
+// 2026-07-28 (V3 node-def schema fix) -- a live probe (ComfyUI 0.28.3 /
+// frontend 1.45.21) found the V1 (array-of-arrays) and V3 (["COMBO", {options}])
+// combo shapes BOTH live in the same session, verbatim shapes below.
+test("getComboOptions reads the V1 schema (array-of-arrays) unchanged -- UNETLoader's real shape", () => {
+  const registry = {
+    UNETLoader: {
+      nodeData: {
+        input: { required: { unet_name: [["DasiwaWAN22...safetensors", "anima_baseV10.safetensors", "other.safetensors"]] } },
+      },
+    },
+  };
+  assert.deepEqual(
+    getComboOptions(registry, "UNETLoader", "unet_name"),
+    ["DasiwaWAN22...safetensors", "anima_baseV10.safetensors", "other.safetensors"],
+  );
+});
+
+test("getComboOptions reads the V3 schema (['COMBO', {options}]) -- UpscaleModelLoader's real shape, the live-probe bug this fixes", () => {
+  const registry = {
+    UpscaleModelLoader: {
+      nodeData: {
+        input: {
+          required: {
+            model_name: ["COMBO", {
+              multiselect: false,
+              options: ["4x-AnimeSharp.pth", "4x_NMKD-Siax_200k.pth", "remacri_extrasmoother.safetensors", "remacri_original.safetensors"],
+            }],
+          },
+        },
+      },
+    },
+  };
+  assert.deepEqual(
+    getComboOptions(registry, "UpscaleModelLoader", "model_name"),
+    ["4x-AnimeSharp.pth", "4x_NMKD-Siax_200k.pth", "remacri_extrasmoother.safetensors", "remacri_original.safetensors"],
+  );
+});
+
+test("getComboOptions: V3-shaped spec[1] present but with no `options` array -> null, not a throw", () => {
+  const registry = {
+    KSampler: { nodeData: { input: { required: { sampler_name: ["COMBO", { multiselect: false }] } } } },
+  };
+  assert.equal(getComboOptions(registry, "KSampler", "sampler_name"), null);
+  const registry2 = {
+    KSampler: { nodeData: { input: { required: { sampler_name: ["COMBO", "not-an-object"] } } } },
+  };
+  assert.equal(getComboOptions(registry2, "KSampler", "sampler_name"), null);
 });
 
 // =========================================================================

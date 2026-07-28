@@ -630,9 +630,23 @@ export function buildNumericField(doc, spec, onCommit) {
 // ---------------------------------------------------------------------------
 
 /** `spec`: `{ label, value, options: string[], disabledReason }`.
- * `onChange(nextValue)` fires when an arrow cycles the value; `onOpenList()`
- * fires when the value/caret itself is clicked. Returns `{ root, val,
- * comboEl, repaint(value) }`. */
+ * `onChange(nextValue)` fires when an arrow cycles the value; `onOpenList
+ * (comboEl, currentValue)` fires when the value/caret itself is clicked.
+ * Returns `{ root, val, comboEl, repaint(value), getValue() }`.
+ *
+ * **`currentValue`/`getValue()` — the stale-captured-value fix (third
+ * instance of the same defect family in one dispatch: a captured snapshot
+ * where a live read was needed).** The arrows cycle the displayed value via
+ * `repaint()` WITHOUT rebuilding this field, so a caller that captured
+ * `spec.value` at build time (as `js/anima/interaction.mjs`'s `buildAnStepper`
+ * used to, passing it straight through to `onOpenList`) goes stale the moment
+ * an arrow moves the value: opening the option list after that highlights the
+ * OLD entry. This module now OWNS the current value (`currentValue`, updated
+ * by every `repaint()` call, arrow-driven or caller-driven) and hands it to
+ * `onOpenList` itself, so no caller needs its own bookkeeping to stay
+ * correct — and `getValue()` is exposed on the returned ref too, for a caller
+ * that needs a live read outside the `onOpenList` callback (mirrors
+ * `buildNumericField`'s own `getValue`-not-a-captured-constant contract). */
 export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   const { label, value, options, disabledReason } = spec;
   const root = el(doc, "div", `wtn-fld-stepper${disabledReason ? " wtn-fld-disabled" : ""}`);
@@ -656,12 +670,15 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   body.appendChild(right);
   root.appendChild(body);
 
+  let currentValue = value;
+
   // `val.title` (native, not the themed `.wtn-tip` mechanism -- that's
   // `buildInfoIcon`'s ⓘ, a different element, never doubled up on this one)
   // is the stepper-combo-overflow fix's own readability half: a long value
   // (a picker's filename) still reads on hover even once the ellipsis
   // above has truncated it on screen.
   const repaint = (v) => {
+    currentValue = v;
     const text = v == null ? "" : String(v);
     val.textContent = text;
     val.title = text;
@@ -692,11 +709,11 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
     combo.addEventListener("click", (e) => {
       e.stopPropagation();
       if (typeof onOpenList === "function") {
-        onOpenList(combo);
+        onOpenList(combo, currentValue);
       }
     });
   }
 
-  return { root, val, comboEl: combo, repaint };
+  return { root, val, comboEl: combo, repaint, getValue: () => currentValue };
 }
 
