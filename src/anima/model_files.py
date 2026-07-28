@@ -50,6 +50,23 @@ def _upscale_model_name(upscale_settings: Dict[str, Any]) -> str:
     return str(usdu_settings.get("upscale_model_name") or DEFAULT_UPSCALE_MODEL)
 
 
+def sam3_checkpoint_name(detailer_settings: Dict[str, Any]) -> str:
+    """Public wrapper over `_sam3_checkpoint_name` — the exact filename
+    `pipeline.run_detailer` resolves and loads when the detailer stage is
+    live. Exists so `pipeline.py`'s logging can report the SAME name this
+    module already computes for the pre-flight check, rather than
+    re-deriving it (or drifting from it) at the log call site (`src/anima/
+    logs.py`'s model-files line).
+    """
+    return _sam3_checkpoint_name(detailer_settings)
+
+
+def upscale_model_name(upscale_settings: Dict[str, Any]) -> str:
+    """Public wrapper over `_upscale_model_name` — same rationale as
+    `sam3_checkpoint_name`, above, for the Upscale stage's model file."""
+    return _upscale_model_name(upscale_settings)
+
+
 def find_missing_model_files(
     *,
     detailer_settings: Dict[str, Any],
@@ -119,4 +136,5 @@ def raise_if_missing(missing: List[Dict[str, str]]) -> None:
 __all__ = (
     "DEFAULT_SAM3_CHECKPOINT", "DEFAULT_UPSCALE_MODEL",
     "ModelFileMissing", "find_missing_model_files", "raise_if_missing",
+    "sam3_checkpoint_name", "upscale_model_name",
 )

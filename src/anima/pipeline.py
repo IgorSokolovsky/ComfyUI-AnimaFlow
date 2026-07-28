@@ -30,9 +30,12 @@ job is narrow by design — translate resolved values into real node calls.
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import context as context_mod
+from . import logs as logs_mod
 from . import model_files as model_files_mod
 from . import node_result as node_result_mod
 from . import postprocess as postprocess_mod
@@ -42,6 +45,24 @@ from . import settings as settings_mod
 from . import soft_imports
 from . import stages as stages_mod
 from . import usdu as usdu_mod
+
+# One console-visible per-run story (task brief: "an entire debugging session
+# was spent pasting browser-console probes to answer questions the server
+# could simply have printed"). `logging.getLogger(...)`, never bare `print` —
+# ComfyUI owns handler/level configuration; this module only ever calls
+# `.info(...)` with a string a pure `logs.py` builder already produced, so a
+# log line can never itself raise mid-sample (every builder there is
+# fail-safe by construction — see that module's own docstring).
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
+
+
+def _debug_enabled() -> bool:
+    """`ANIMAFLOW_DEBUG` (module docstring, `logs.is_debug_enabled`) — the
+    ONE place this file reads `os.environ` for it, so every finer-grained
+    log call below is a single `if _debug_enabled(): ...` guard rather than
+    re-reading the environment per call site."""
+    return logs_mod.is_debug_enabled(os.environ)
+
 
 # ---------------------------------------------------------------------------
 # Lazy comfy lookups + small call-shape helpers
@@ -318,6 +339,8 @@ def run_highres(
     if not isinstance(highres_settings, dict) or not highres_settings.get("enabled"):
         return samples
     stage_sampler = sampler_mod.resolve_stage_sampler(highres_settings, base_sampler)
+    if _debug_enabled():
+        _logger.info(logs_mod.format_stage_sampler_debug("highres", stage_sampler))
     upscaled = latent_upscale_by(
         samples, highres_settings.get("upscale_method", "bicubic"), highres_settings.get("scale_by", 1.5),
     )
@@ -428,6 +451,10 @@ def _run_detailer_block(
         return image  # Impact absent -> inert (§11).
 
     stage_sampler = sampler_mod.resolve_stage_sampler(block, base_sampler)
+    if _debug_enabled():
+        _logger.info(logs_mod.format_stage_sampler_debug(
+            f"detailer.{block.get('label') or 'block'}", stage_sampler,
+        ))
     kwargs: Dict[str, Any] = dict(
         image=image, segs=segs, model=model, clip=clip, vae=vae,
         guide_size=float(block.get("guide_size", 1024)),
@@ -502,10 +529,21 @@ def run_detailer(
         block = blocks.get(block_id) if isinstance(blocks, dict) else None
         if not isinstance(block, dict):
             continue
+        before = result
         result = _run_detailer_block(
             image=result, model=model, clip=clip, vae=vae, positive=positive, negative=negative,
             block=block, base_sampler=base_sampler, sam3_model=sam3_model, sam3_clip=sam3_clip,
         )
+        # "Anything currently swallowed" (task brief) -- a block that's
+        # enabled but detected nothing (or hit a soft-dependency-absent
+        # early return inside `_run_detailer_block`) passes `image` through
+        # UNCHANGED; comparing object identity against `before` is how this
+        # tells "ran" apart from "unchanged" without `_run_detailer_block`
+        # needing to hand back its own reason -- every early return in that
+        # function already returns the SAME object it was given.
+        _logger.info(logs_mod.format_detailer_block_line(
+            block_id, enabled=bool(block.get("enabled")), changed=result is not before,
+        ))
     return result
 
 
@@ -550,6 +588,8 @@ def run_upscale(
     width, height = _image_size(image)
     tile_plan = usdu_mod.plan_usdu_tiles(width, height, upscale_settings.get("scale_by", 2.0), usdu_settings)
     stage_sampler = sampler_mod.resolve_stage_sampler(upscale_settings, base_sampler)
+    if _debug_enabled():
+        _logger.info(logs_mod.format_stage_sampler_debug("upscale", stage_sampler))
 
     upscale_model_cls = soft_imports.find_node_class("UpscaleModelLoader") or _comfy_node("UpscaleModelLoader")
     upscale_model = _output0(
@@ -650,6 +690,7 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     broken graph regardless of which stages happen to be enabled.
     """
     settings = settings_mod.normalize_generation_settings(generation_settings)
+    debug = _debug_enabled()
 
     # Model-file pre-flight (readable error instead of a `FileNotFoundError`
     # seven frames deep mid-sample) — needs `detailer_live`/`upscale_live`
@@ -661,18 +702,74 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     # their original call sites further down — nothing here is recomputed.
     have_impact = soft_imports.has_impact_detailer()
     detailer_settings = settings.get("detailer", {})
+    detailer_enabled = bool(detailer_settings.get("enabled"))
     detailer_live = stages_mod.detailer_is_live(
-        detailer_enabled=bool(detailer_settings.get("enabled")),
+        detailer_enabled=detailer_enabled,
         have_impact=have_impact, blocks=detailer_settings.get("blocks"),
     )
     upscale_settings = settings.get("upscale", {})
+    upscale_enabled = bool(upscale_settings.get("enabled"))
     have_usdu = soft_imports.has_usdu()
-    upscale_live = bool(upscale_settings.get("enabled")) and have_usdu
+    upscale_live = upscale_enabled and have_usdu
+
+    # Also computed up front, purely so the run header below can report
+    # every stage in one line — `highres_settings`/`postprocess_settings`
+    # are then reused UNCHANGED at their own call sites further down (same
+    # "compute once, reuse" contract as `detailer_settings`/`upscale_settings`
+    # above), never recomputed.
+    highres_settings = settings.get("highres", {})
+    highres_enabled = bool(highres_settings.get("enabled")) if isinstance(highres_settings, dict) else False
+    postprocess_settings = settings.get("postprocess", {})
+    postprocess_enabled = bool(postprocess_settings.get("enabled")) if isinstance(postprocess_settings, dict) else False
+    mod_guidance_settings = settings.get("mod_guidance", {})
+    mod_guidance_enabled = bool(mod_guidance_settings.get("enabled")) if isinstance(mod_guidance_settings, dict) else False
+    have_mod_guidance = soft_imports.has_mod_guidance()
+    mod_guidance_live = mod_guidance_enabled and have_mod_guidance
+
+    # Run header (task brief: "which stages are live and which are off, and
+    # for anything off because a dependency is missing, say which pack" —
+    # `detailer_is_live` already distinguishes "disabled" from "no Impact
+    # pack"; this surfaces that same distinction for every gated stage, not
+    # just the detailer). Logged BEFORE the model-file pre-flight raise below
+    # so it's still visible even when that check goes on to fail the run.
+    _logger.info(logs_mod.format_run_header(
+        mod_guidance_status=logs_mod.stage_status_text(
+            enabled=mod_guidance_enabled, live=mod_guidance_live,
+            dependency_missing=mod_guidance_enabled and not have_mod_guidance,
+            dependency_label="Spectrum-KSampler (AnimaModGuidance)",
+        ),
+        highres_status=logs_mod.stage_status_text(enabled=highres_enabled, live=highres_enabled),
+        detailer_status=logs_mod.stage_status_text(
+            enabled=detailer_enabled, live=detailer_live,
+            dependency_missing=detailer_enabled and not have_impact,
+            dependency_label="Impact Pack (DetailerForEach/MaskToSEGS)",
+            not_live_reason="no detailer blocks enabled",
+        ),
+        upscale_status=logs_mod.stage_status_text(
+            enabled=upscale_enabled, live=upscale_live,
+            dependency_missing=upscale_enabled and not have_usdu,
+            dependency_label="Ultimate SD Upscale",
+        ),
+        postprocess_status=logs_mod.stage_status_text(enabled=postprocess_enabled, live=postprocess_enabled),
+    ))
+
     model_files_mod.raise_if_missing(model_files_mod.find_missing_model_files(
         detailer_settings=detailer_settings, detailer_live=detailer_live,
         upscale_settings=upscale_settings, upscale_live=upscale_live,
         checkpoint_files=_lookup_filename_list("checkpoints"),
         upscale_model_files=_lookup_filename_list("upscale_models"),
+    ))
+
+    # Model files actually resolved (task brief) — the pre-flight above
+    # already confirmed these are installed whenever their owning stage is
+    # live; `model_files.sam3_checkpoint_name`/`upscale_model_name` resolve
+    # the SAME name `run_detailer`/`run_upscale` are about to load, so this
+    # line can never drift from what actually gets loaded.
+    _logger.info(logs_mod.format_model_files_line(
+        detailer_live=detailer_live,
+        sam3_checkpoint=model_files_mod.sam3_checkpoint_name(detailer_settings) if detailer_live else None,
+        upscale_live=upscale_live,
+        upscale_model=model_files_mod.upscale_model_name(upscale_settings) if upscale_live else None,
     ))
 
     model = context_mod.require_context_value(context, "model")
@@ -690,20 +787,49 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
         for field in resources_mod.SAMPLER_FIELDS
     }
 
+    if debug:
+        # Full eleven-field context-supplied report -- finer-grained than
+        # the five-scalar sampler-provenance line below, gated behind
+        # ANIMAFLOW_DEBUG (module docstring's verbosity contract).
+        supplied_all = {
+            field: context_mod.context_supplied(context, field) for field in context_mod.CONTEXT_FIELDS
+        }
+        _logger.info(logs_mod.format_context_supplied_debug(supplied_all))
+
+    # Sampler provenance -- "the single most valuable line" (task brief):
+    # for each of the five scalars, did it come from the wired ANIMA_CONTEXT
+    # or the settings blob? Computed with the SAME pure `resolve_sampler_
+    # inputs` call `run_first_pass` is about to make internally (this is
+    # presentation, not new logic -- `context.build_context`'s own `supplied`
+    # dict already IS the provenance decision), so this can be logged before
+    # the (possibly expensive) first pass runs, not after.
+    sampler_provenance = {
+        field: context_mod.context_supplied(context, field) for field in resources_mod.SAMPLER_FIELDS
+    }
+    _logger.info(logs_mod.format_sampler_provenance(
+        resources_mod.resolve_sampler_inputs(settings.get("sampler", {}), wired_sampler),
+        sampler_provenance,
+    ))
+
     base_latent, resolved_sampler = run_first_pass(
         model=model, clip=clip, positive=positive, negative=negative,
         latent=latent, settings=settings, wired_sampler=wired_sampler,
     )
     image_base = vae_decode(vae, base_latent)
+    _base_w, _base_h = _image_size(image_base)
+    _logger.info(logs_mod.format_stage_result("first_pass", "on", _base_w, _base_h))
 
-    highres_settings = settings.get("highres", {})
-    highres_enabled = bool(highres_settings.get("enabled"))
     highres_latent = run_highres(
         model=model, positive=positive, negative=negative, samples=base_latent,
         highres_settings=highres_settings, base_sampler=resolved_sampler,
     )
     image_after_highres = vae_decode(vae, highres_latent) if highres_enabled else image_base
     final_latent = highres_latent
+    if highres_enabled:
+        _hw, _hh = _image_size(image_after_highres)
+        _logger.info(logs_mod.format_stage_result("highres", "on", _hw, _hh))
+    else:
+        _logger.info(logs_mod.format_stage_result("highres", "off"))
 
     # `have_impact`/`detailer_settings`/`detailer_live` and
     # `upscale_settings`/`have_usdu`/`upscale_live` were already computed
@@ -714,18 +840,48 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
         base_sampler=resolved_sampler,
     )
     image_mid = image_after_detailer  # design doc §5: "after detailer, before upscale"
+    detailer_status_text = logs_mod.stage_status_text(
+        enabled=detailer_enabled, live=detailer_live,
+        dependency_missing=detailer_enabled and not have_impact,
+        dependency_label="Impact Pack (DetailerForEach/MaskToSEGS)",
+        not_live_reason="no detailer blocks enabled",
+    )
+    if detailer_live:
+        _dw, _dh = _image_size(image_after_detailer)
+        _logger.info(logs_mod.format_stage_result("detailer", detailer_status_text, _dw, _dh))
+    else:
+        _logger.info(logs_mod.format_stage_result("detailer", detailer_status_text))
 
     image_after_upscale = run_upscale(
         image=image_after_detailer, model=model, clip=clip, vae=vae,
         positive=positive, negative=negative, upscale_settings=upscale_settings,
         base_sampler=resolved_sampler,
     )
+    upscale_status_text = logs_mod.stage_status_text(
+        enabled=upscale_enabled, live=upscale_live,
+        dependency_missing=upscale_enabled and not have_usdu,
+        dependency_label="Ultimate SD Upscale",
+    )
+    if upscale_live:
+        _uw, _uh = _image_size(image_after_upscale)
+        _logger.info(logs_mod.format_stage_result("upscale", upscale_status_text, _uw, _uh))
+    else:
+        _logger.info(logs_mod.format_stage_result("upscale", upscale_status_text))
 
-    final_image, postprocess_metadata = run_postprocess(image_after_upscale, settings.get("postprocess", {}))
+    final_image, postprocess_metadata = run_postprocess(image_after_upscale, postprocess_settings)
+    postprocess_applied = bool(postprocess_metadata["applied"])
+    postprocess_status_text = logs_mod.format_postprocess_status(
+        enabled=postprocess_enabled, applied=postprocess_applied,
+    )
+    if postprocess_applied:
+        _pw, _ph = _image_size(final_image)
+        _logger.info(logs_mod.format_stage_result("postprocess", postprocess_status_text, _pw, _ph))
+    else:
+        _logger.info(logs_mod.format_stage_result("postprocess", postprocess_status_text))
 
     stage_labels = stages_mod.resolve_stage_labels(
         highres_enabled=highres_enabled, detailer_live=detailer_live,
-        upscale_live=upscale_live, postprocess_applied=bool(postprocess_metadata["applied"]),
+        upscale_live=upscale_live, postprocess_applied=postprocess_applied,
     )
     stage_tensors = {
         stages_mod.STAGE_BASE: image_base,

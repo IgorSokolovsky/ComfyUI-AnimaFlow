@@ -48,6 +48,8 @@ own docstrings for the rest of this contract.
 """
 from __future__ import annotations
 
+import logging
+
 from ._preview_helpers import (
     build_preview_ui_images,
     extract_seed_from_prompt,
@@ -56,7 +58,23 @@ from ._preview_helpers import (
     resolve_wired_stages,
 )
 
+try:
+    # Real ComfyUI context -- same convention as `nodes/prompt_rules/
+    # _rules_helpers.py`'s import of `src.prompt_rules.core`.
+    from ...src.anima import logs as logs_mod  # type: ignore
+except ImportError:
+    # Standalone context (plain-script tests, repo root on `sys.path`).
+    from src.anima import logs as logs_mod
+
 CATEGORY = "AnimaFlow/Anima"
+
+# One console-visible line per run (task brief: "how many images arrived,
+# the stage labels resolved for them, and for each stage whether it was
+# saved ... or written to temp"). Same shared logger name as `pipeline.py`
+# so ComfyUI's console groups every Anima line together; the message text
+# still carries its own `[AnimaFlow]` prefix (see `src/anima/logs.py`'s own
+# docstring for why both).
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 
 def _unwrap_single(value, default=None):
@@ -169,6 +187,15 @@ class AnimaPreview:
             wired=wired, preview_stages=preview_stages, stages_to_save=stages_to_save,
             preview_settings=settings, seed=seed, prompt=prompt, extra_pnginfo=extra_pnginfo,
         )
+
+        # Server-side console line (task brief): how many images arrived,
+        # which stage labels they resolved to, and -- per stage -- whether
+        # it landed in a real output file (and where) or only a temp one.
+        # Built from `ui_images` itself (already the authoritative routing
+        # result `split_preview_stages` produced), never re-derived.
+        _logger.info(logs_mod.format_preview_run_line(
+            image_count=len(images), stage_labels=labels, entries=ui_images,
+        ))
 
         # The key is `anima_stages`, deliberately NOT `images` -- this node
         # already draws its own preview (`js/anima/`'s DOM hover wipe), and
