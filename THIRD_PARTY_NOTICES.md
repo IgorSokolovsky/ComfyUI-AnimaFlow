@@ -11,10 +11,11 @@ the projects below, whose notices are reproduced here as their licenses require.
 - **License:** MIT
 - **Relationship:** AnimaFlow's tag-autocomplete service derives from this pack's
   booru-autocomplete approach. Logic was directly copied and adapted under the MIT
-  license. (An earlier `AnimaFlow/anima` node line — a leaner port of this pack's
-  generation/conditioning pipeline — has since been removed from this repo; it will be
-  re-derived node-by-node from this same upstream in a future build, at which point its
-  rows will return here.)
+  license. An earlier `AnimaFlow/anima` node line — a leaner port of this pack's
+  generation/conditioning pipeline — was removed from this repo and has now been
+  re-derived, node-by-node, as the **Anima Generator + Anima Preview** pair
+  (`src/anima/`, `nodes/anima/`; contract: `docs/generator-design.md`) — the rows below
+  cover that rebuild specifically.
 
 **What is derived from it** (individual files carry their own more specific notes):
 
@@ -22,6 +23,12 @@ the projects below, whose notices are reproduced here as their licenses require.
 |---|---|
 | `src/autocomplete/`, `js/autocomplete/` | its booru tag-autocomplete approach and the tag-name → prompt-text normalization intent (`anima_prompt/normalize.py`) |
 | `src/autocomplete/classify.py` | `/wtn/classify` tag-highlighting classifier, ported from `autocomplete_dataset.py`'s `classify_prompt_text()`/`_token_section()` and `anima_prompt/ordering.py`'s builtin ANIMA vocab (`QUALITY_TAGS` etc.) — re-labeled in English and rewritten to track exact character offsets into the original text instead of upstream's destructive pre-normalization |
+| `src/anima/loras.py` | `easyuse_anima/aio/model_preparation.py:164-236`'s `_normalize_aio_lora_stack`/zero-strength-skip policy — widened to accept 2-element list/tuple entries (upstream requires >= 3), defaulting `strength_clip` to `strength_model` |
+| `src/anima/postprocess.py` | `easyuse_anima/aio/postprocess.py:42-86`'s `_aio_final_fit_size` output-size-cap maths (the old deleted port's "only ever rounds up" bug, fixed here) |
+| `src/anima/usdu.py` | `easyuse_anima/aio/usdu.py`'s `_aio_usdu_auto_tile_dimension`/`_aio_usdu_tile_plan` USDU tile-planning maths |
+| `src/anima/settings.py` (defaults tree) | `easyuse_anima/aio/generation_defaults.py`'s `AIO_GENERATION_DEFAULT_SETTINGS`, trimmed to the five stages this pack ships, with the two `guide_size_for`/`noise_mask_feather` divergences already fixed in the defaults themselves |
+| `src/anima/sampler.py` | `easyuse_anima/aio/sampling.py:378-436`'s `inherit_sampler_settings` field-coverage semantics |
+| `src/anima/pipeline.py` | call shapes read from `easyuse_anima/aio/model_preparation.py` (`ModelSamplingAuraFlow`/`LoraLoader` invocation), `easyuse_anima/prompt/conditioning.py:85-138` (`AnimaModGuidance.patch()`'s defensive old/new-signature probe), and `easyuse_anima/image/sam3.py` + `easyuse_anima/nodes/{sam3_nodes,impact_detailer_nodes}.py` (the per-block `SAM3_Detect` -> `MaskToSEGS` -> `DetailerForEach` chain, including the `_call_impact_detailer`-style kwargs-filtering call) |
 
 ```
 MIT License

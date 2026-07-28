@@ -126,6 +126,14 @@ const CSS = `
      at node.size[0] on this row's Y) -- empirical, don't "round" them. */
   position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
   width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #0b0e13;
+  /* This element is a purely visual stand-in for the REAL output socket
+     litegraph itself draws on the canvas underneath it (alignOutputsLegacy
+     parks the actual output.pos at this exact spot) -- it owns none of
+     the socket's interactivity. Without pointer-events: none this DOM
+     dot sits in front of the canvas and intercepts the click/drag that is
+     supposed to start a wire, making the node's primary interaction
+     unreliable. Every pointer event here belongs to the canvas below. */
+  pointer-events: none;
 }
 .wtn-ctl-dot.t-int { background: #7dd3fc; }
 .wtn-ctl-dot.t-float { background: #4ade80; }
@@ -299,9 +307,12 @@ const CSS = `
  * that's already set, or it would silently clobber a user's explicit choice
  * every time it runs.
  *
- * `TOKENS.surface`/`TOKENS.surface2` (this module's single source of truth
+ * `TOKENS.surface`/`TOKENS.console` (this module's single source of truth
  * for the palette, mirroring `js/shared/theme.mjs`) are used directly rather
- * than a third hardcoded pair of hexes.
+ * than a third hardcoded pair of hexes. The title-bar uses `TOKENS.console`
+ * (the same inset "field background" token as the DOM rows' own fields),
+ * not `TOKENS.surface2` -- the header reads as the darkest band on the node,
+ * matching the field background, rather than the brightest.
  *
  * Called from `index.js`'s `setupNode` ONLY, and only when
  * `!node._ctrlConfiguring` -- i.e. a genuinely fresh node, never one being
@@ -317,7 +328,7 @@ export function applyNodeChrome(node) {
     node.bgcolor = TOKENS.surface;
   }
   if (node.color == null) {
-    node.color = TOKENS.surface2;
+    node.color = TOKENS.console;
   }
 }
 

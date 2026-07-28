@@ -52,6 +52,24 @@ export const MAX_ROWS = { control: 16, loader: 8 };
 // ComfyUI-Pixaroma's sliders use for the same reason (see js/sliders/core.mjs).
 export const ZW = "​";
 
+// The output TYPE for an interior "hole" -- a slot index (`node.outputs[i]`)
+// that no row currently owns, left behind because removing a row frees its
+// slot NUMBER without shrinking `node.outputs` (see this module's slot-vs-
+// display-order doc comment above; `interaction.mjs`'s `syncOutputs` is
+// where a hole actually gets stamped with this).
+//
+// This must NEVER be `"*"`, `""`, or any other falsy-after-normalization
+// value -- litegraph's own `LiteGraph.isValidConnection` special-cases
+// exactly those as "wildcard, connects to anything", so a `"*"`-typed hole
+// (which is literally what an earlier version of this code left a freed
+// slot as) is a socket that silently accepts a wire from ANY output in the
+// graph, binding it to a slot with no row behind it -- worse than the
+// visible-dot bug it was meant to paper over. A private string nothing
+// else will ever declare as a real input/output type refuses every
+// connection outright, from either side, at the engine level, before this
+// pack's own code ever gets a say.
+export const VACANT_SLOT_TYPE = "__wtn_ctl_vacant__";
+
 export const CONTROL_CATALOG = ["sampler", "scheduler", "seed", "int", "float", "latent"];
 export const LOADER_CATALOG = ["unet", "vae", "clip"];
 

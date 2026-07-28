@@ -60,6 +60,7 @@ import {
   KIND_META,
   MAX_ROWS,
   ZW,
+  VACANT_SLOT_TYPE,
   AFTER_MODES,
   UNET_DTYPES,
   CLIP_TYPES,
@@ -1506,17 +1507,24 @@ function syncSlotLabel(node, row, out) {
  * Keep `node.outputs` sized to the HIGHEST slot currently in use (never to
  * `rows.length` — see `rows.mjs`'s module doc comment: slot is a durable
  * output-array INDEX, not a display position). A freed slot below the
- * current max is intentionally left as an inert `"*"`-typed gap (falls back
- * to litegraph's normal top-right auto-stacking, since `alignOutputsLegacy`
- * below only parks `.pos` for indices a row actually owns) rather than
- * shifting every higher index down, which would be a silent renumber.
+ * current max cannot just be deleted — that would shift every higher index
+ * down, silently rewiring every link on every row above it — so it is left
+ * IN PLACE as an interior "hole" and handed to `markSlotVacant` below,
+ * which is what actually keeps it invisible and inert. `assignSlot`
+ * (rows.mjs) always reuses the lowest free slot first, so a hole is
+ * normally short-lived, but it must not be visibly broken for however long
+ * it lasts.
  *
- * VERIFY-IN-COMFYUI: a freed-but-not-yet-reused slot's gap output currently
- * renders wherever litegraph's default output stacking puts an
- * unpositioned slot (its usual top-right column) — acceptable since
- * `assignSlot` (rows.mjs) always reuses the lowest free slot first, so a
- * gap is normally short-lived, but this exact visual has only been reasoned
- * through here, not seen live.
+ * (Fixes the reported bug: a hole used to keep whatever `.name`/`.label`/
+ * `.pos` the row that vacated it left behind, because nothing here ever
+ * revisited an index no row claims — `alignOutputsLegacy` only ever WRITES
+ * `.pos` for indices a live row owns, so the stale value just sat there.
+ * Since a removed row is usually the last one added, its stale `.pos`
+ * typically pointed at the bottom of the panel, right over the "+ Add
+ * control" strip — a floating output dot with the removed row's own label
+ * painted next to it. `markSlotVacant` now revisits every hole on every
+ * sync and forces all three back to a blank, disconnectable-to-nothing
+ * state.)
  */
 export function syncOutputs(node, ctx) {
   const state = ensureState(node, ctx);
@@ -1568,7 +1576,9 @@ export function syncOutputs(node, ctx) {
   }
 
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
+  const ownedSlots = new Set();
   state.rows.forEach((row) => {
+    ownedSlots.add(row.slot);
     const idx = row.slot - 1;
     const out = node.outputs[idx];
     if (!out) {
@@ -1595,7 +1605,66 @@ export function syncOutputs(node, ctx) {
     }
   });
 
+  // Every index NOT in `ownedSlots` is an interior "hole" (a slot freed by
+  // a row removal, per this function's top doc comment) -- revisit ALL of
+  // them, EVERY sync, not just the moment a row is removed: a hole can sit
+  // unclaimed for an arbitrary number of syncs before `assignSlot` reuses
+  // it, and each of those syncs must keep re-asserting the blank state
+  // rather than trusting whatever the previous call left behind.
+  for (let idx = 0; idx < node.outputs.length; idx++) {
+    if (ownedSlots.has(idx + 1)) {
+      continue;
+    }
+    markSlotVacant(node.outputs[idx], idx + 1);
+  }
+
   alignOutputsLegacy(node);
+}
+
+/**
+ * Force output index `slot - 1` into the blank, inert state a "hole" (an
+ * output no current row owns — see `syncOutputs` above) must be in on
+ * every sync, unconditionally — there is no row behind it to own an
+ * exception the way `syncSlotLabel` preserves a user's own rename of a
+ * LIVE slot.
+ *
+ *  - `out.name` stays `value_${slot}` — same Python-contract reasoning as
+ *    the owned-row branch above: `RETURN_NAMES` is a fixed tuple for the
+ *    whole `MAX_ROWS` range regardless of which slots currently have a
+ *    row, so a hole's name must look exactly like an owned slot's would.
+ *  - `out.label` is forced to the bare `ZW` sentinel. This is what stops
+ *    litegraph painting the vacated row's old display text where no DOM
+ *    row exists any more to cover it.
+ *  - `out.type` becomes `VACANT_SLOT_TYPE` (rows.mjs), NEVER `"*"` — see
+ *    that constant's doc comment. A wildcard-typed hole would still
+ *    accept a wire from anything in the graph, silently binding it to a
+ *    slot with no row behind it: a worse bug than the visible dot this
+ *    function exists to fix.
+ *  - `out.pos` is deleted outright, not left at whatever the vacated row
+ *    last set it to. `alignOutputsLegacy` below only ever WRITES `.pos`
+ *    for indices a live row owns, so a hole's stale `.pos` is exactly the
+ *    reported bug: a dot parked over the "+ Add control" strip (or
+ *    wherever the vacated row's widget last sat). Deleting it hands the
+ *    slot back to litegraph's own default output stacking, which never
+ *    overlaps our DOM rows or the add strip.
+ */
+function markSlotVacant(out, slot) {
+  if (!out) {
+    return;
+  }
+  const wantName = `value_${slot}`;
+  if (out.name !== wantName) {
+    out.name = wantName;
+  }
+  if (out.label !== ZW) {
+    out.label = ZW;
+  }
+  if (out.type !== VACANT_SLOT_TYPE) {
+    out.type = VACANT_SLOT_TYPE;
+  }
+  if (out.pos) {
+    delete out.pos;
+  }
 }
 
 /** Park each row's output dot at ITS OWN row widget's Y (legacy litegraph

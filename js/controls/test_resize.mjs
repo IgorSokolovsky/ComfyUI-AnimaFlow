@@ -50,8 +50,18 @@
  *   [ ] Combo output type ("COMBO" vs the joined list vs "*") actually lets
  *       a wire land on a KSampler's converted `sampler_name` input — see
  *       `rows.mjs`'s `COMBO_TYPE_STRATEGY`, VERIFY-IN-COMFYUI.
- *   [ ] A freed slot's inert output gap renders acceptably (falls back to
- *       litegraph's default corner-stacking) rather than looking broken.
+ *   [ ] A freed slot's inert hole (`markSlotVacant`, `interaction.mjs`)
+ *       actually renders with NO visible dot and NO painted label on a real
+ *       page — this harness can only assert the underlying `node.outputs`
+ *       fields (`name`/`label`/`type`/no `.pos`), never the canvas pixels.
+ *   [ ] Dragging a wire from a row's dot reliably starts the drag on the
+ *       first attempt (Bug 2: `.wtn-ctl-dot` previously had no
+ *       `pointer-events: none` and could intercept the pointerdown meant
+ *       for litegraph's real socket underneath).
+ *   [ ] Attempting to drag a NEW wire onto a known-vacant hole is refused —
+ *       both by `VACANT_SLOT_TYPE` (a normally-typed target) and by the
+ *       `onConnectOutput` guard in `index.js` (a wildcard-typed target);
+ *       this harness cannot exercise litegraph's actual connect() gate.
  */
 
 import assert from "node:assert/strict";
@@ -61,6 +71,7 @@ import {
   MAX_ROWS,
   MAX_ROW_NAME_LEN,
   ZW,
+  VACANT_SLOT_TYPE,
   mkRow,
   assignSlot,
   isPickerKind,
@@ -547,13 +558,15 @@ test("buildAddRow builds a themed button with the given label", () => {
   assert.ok(root.className.includes("wtn-ctl-add"));
 });
 
-// TOKENS.surface/TOKENS.surface2 aren't exported from render.mjs (single
+// TOKENS.surface/TOKENS.console aren't exported from render.mjs (single
 // source of truth stays internal to that module -- see its own doc
 // comment); mirrored here as literals, matching this pack's existing
 // convention of a hardcoded fallback pair (e.g. this same file's CSS
-// `var(--wtn-x, #fallback)` strings).
+// `var(--wtn-x, #fallback)` strings). The title-bar is TOKENS.console (the
+// same inset "field background" token as the DOM rows' own fields), not
+// TOKENS.surface2 -- it reads as the darkest band on the node.
 const CHROME_BODY = "#151a21";
-const CHROME_HEADER = "#1b212a";
+const CHROME_HEADER = "#0a0d12";
 
 test("applyNodeChrome paints bgcolor/color on a fresh node (both null)", () => {
   const node = { bgcolor: null, color: null };
@@ -872,6 +885,148 @@ test("syncOutputs is diff-gated: a second call against UNCHANGED state writes to
   syncOutputs(node, ctx);
 
   assert.deepEqual(writes, { name: 0, label: 0, type: 0 }, "syncOutputs re-wrote an already-correct output field");
+});
+
+// ---------------------------------------------------------------------------
+// C0b. Interior holes left by a row removal (Bug 1 regression). Removing a
+// row frees its SLOT NUMBER without shrinking `node.outputs` past the
+// current max (slot is a durable output-array index, never renumbered --
+// rows.mjs's module doc comment). Before the fix, `syncOutputs` never
+// revisited an index no row claims, so it kept whatever `.name`/`.label`/
+// `.pos` the vacated row last left there -- a real dot, with the removed
+// row's own display text, floating wherever that row's widget last sat
+// (typically over the "+ Add control" strip, since a removed row is
+// usually the last one added). `markSlotVacant` is what these tests pin
+// down: EVERY index no row owns must have a blank label, a connection-
+// refusing type, and no stale `.pos`, on every single sync -- not just the
+// one right after a removal.
+// ---------------------------------------------------------------------------
+
+/** Assert output index `idx` (0-based) is a fully inert hole: contract-
+ * correct name, blank label, a type that refuses every connection, and no
+ * leftover screen position. */
+function assertSlotIsVacant(node, idx, msgSuffix = "") {
+  const out = node.outputs[idx];
+  assert.ok(out, `expected an output object at index ${idx}${msgSuffix}`);
+  assert.equal(out.name, `value_${idx + 1}`, `vacant slot ${idx + 1} name must still match RETURN_NAMES${msgSuffix}`);
+  assert.equal(out.label, ZW, `vacant slot ${idx + 1} label must be blanked to ZW${msgSuffix}`);
+  assert.equal(out.type, VACANT_SLOT_TYPE, `vacant slot ${idx + 1} type must refuse connections${msgSuffix}`);
+  assert.notEqual(out.type, "*", `vacant slot ${idx + 1} must never be wildcard-typed (accepts any wire)${msgSuffix}`);
+  assert.ok(!out.pos, `vacant slot ${idx + 1} must not have a stale .pos parked over live content${msgSuffix}`);
+}
+
+test("removeRowAndSync: removing the FIRST of several rows leaves an inert hole at slot 1, not an orphan label/dot", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const first = addRowAndSync(node, ctx, "int"); // slot 1
+  addRowAndSync(node, ctx, "float"); // slot 2
+  addRowAndSync(node, ctx, "seed"); // slot 3
+
+  removeRowAndSync(node, ctx, first.id);
+
+  assert.equal(node.outputs.length, 3, "node.outputs must NOT shrink past the highest surviving slot");
+  assertSlotIsVacant(node, 0, " (removed FIRST row)");
+});
+
+test("removeRowAndSync: removing a MIDDLE row of several leaves an inert hole, rows above and below keep their own output objects and links", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int"); // slot 1
+  const b = addRowAndSync(node, ctx, "float"); // slot 2
+  const c = addRowAndSync(node, ctx, "seed"); // slot 3
+
+  const outA = node.outputs[a.slot - 1];
+  const outC = node.outputs[c.slot - 1];
+  // Simulate a real wire on the rows that must survive the removal.
+  outA.links = [111];
+  outC.links = [222];
+
+  removeRowAndSync(node, ctx, b.id);
+
+  assert.equal(node.outputs.length, 3, "node.outputs must NOT shrink past slot 3");
+  assertSlotIsVacant(node, b.slot - 1, " (removed MIDDLE row)");
+  // Renumbering would have shifted slot 3's output down to index 1 -- assert
+  // it did NOT move, and its wire survived untouched.
+  assert.equal(node.outputs[a.slot - 1], outA, "row above the removed one must keep its OWN output object");
+  assert.equal(node.outputs[c.slot - 1], outC, "row below the removed one must keep its OWN output object");
+  assert.deepEqual(node.outputs[a.slot - 1].links, [111], "the row above must keep its wire");
+  assert.deepEqual(node.outputs[c.slot - 1].links, [222], "the row below must keep its wire (this is what renumbering would break)");
+});
+
+test("removeRowAndSync: removing the LAST row shrinks node.outputs cleanly -- no hole, nothing to blank", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  addRowAndSync(node, ctx, "int"); // slot 1
+  addRowAndSync(node, ctx, "float"); // slot 2
+  const last = addRowAndSync(node, ctx, "seed"); // slot 3
+
+  removeRowAndSync(node, ctx, last.id);
+
+  assert.equal(node.outputs.length, 2, "the trailing slot must be removed outright, not left as a hole");
+  node.outputs.forEach((out, idx) => {
+    assert.notEqual(out.type, VACANT_SLOT_TYPE, `slot ${idx + 1} is still owned -- must not be marked vacant`);
+  });
+});
+
+test("removeRowAndSync: a hole is re-blanked on EVERY subsequent sync, not just the removal that created it", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int"); // slot 1
+  addRowAndSync(node, ctx, "float"); // slot 2
+  removeRowAndSync(node, ctx, a.id); // slot 1 becomes a hole
+  assertSlotIsVacant(node, 0);
+
+  // Simulate whatever the pre-fix bug left behind (a stale pos/label/type
+  // parked from a previous session) landing on the hole again, then a
+  // plain repaint-equivalent resync (no structural mutation at all) --
+  // the invariant must hold on EVERY call, not only immediately after the
+  // row that vacated the slot was removed.
+  const hole = node.outputs[0];
+  hole.pos = [123, 456];
+  hole.label = "stale leftover text";
+  hole.type = "*";
+
+  syncOutputs(node, ctx);
+
+  assertSlotIsVacant(node, 0, " (after a forced-stale repaint resync)");
+});
+
+test("addRowAndSync: adding a row after removing one reuses the freed slot and renders as a normal owned slot again", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int"); // slot 1
+  const removedSlot = a.slot;
+  addRowAndSync(node, ctx, "float"); // slot 2
+  removeRowAndSync(node, ctx, a.id); // frees slot 1
+  assertSlotIsVacant(node, removedSlot - 1);
+
+  const reused = addRowAndSync(node, ctx, "seed");
+  assert.equal(reused.slot, removedSlot, "assignSlot must hand the freed slot to the next new row before any number above the max");
+
+  const out = node.outputs[reused.slot - 1];
+  assert.equal(out.name, `value_${reused.slot}`);
+  assert.equal(out.label, reused.name, "the reused slot's label must be the NEW row's own name, not still blank/vacant");
+  assert.notEqual(out.type, VACANT_SLOT_TYPE, "a reused slot must no longer refuse connections");
+});
+
+test("removeRowAndSync: removing every row down to zero leaves a clean node -- no holes, no outputs at all", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int");
+  const b = addRowAndSync(node, ctx, "float");
+  const c = addRowAndSync(node, ctx, "seed");
+
+  removeRowAndSync(node, ctx, a.id);
+  removeRowAndSync(node, ctx, b.id);
+  removeRowAndSync(node, ctx, c.id);
+
+  assert.equal(node.outputs.length, 0, "a fully emptied panel must leave zero outputs, not lingering vacant holes");
 });
 
 // ---------------------------------------------------------------------------

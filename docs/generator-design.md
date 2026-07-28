@@ -1,8 +1,10 @@
 # Generator + Preview — design
 
-**Status: specified, awaiting mockup sign-off** (design decisions taken 2026-07-27). No node code
-exists yet. Interactive mockup: [`playground/generator.html`](../playground/generator.html) — it
-is the behavioural reference and the approval gate. Opens the third track, after the Rule Builder
+**Status: mockup signed off; Python side built** (design decisions 2026-07-27, mockup approved and
+Python landed 2026-07-28). `src/anima/` + `nodes/anima/` exist and are registered; **`js/anima/` does
+not** — until it does, both nodes are usable but ugly, driven by ComfyUI's raw widgets over the
+settings JSON. Interactive mockup: [`playground/generator.html`](../playground/generator.html) — still
+the behavioural reference for the frontend slice. Opens the third track, after the Rule Builder
 line and the Controls line. Read alongside
 [`control-panel-design.md`](control-panel-design.md) — this doc reuses its conventions
 (house theme, DOM-widget sizing, hidden-serialized-STRING state) rather than restating them.
@@ -625,7 +627,9 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 
 **Open — needs a decision before building:**
 
-- Which Spectrum repo actually ships `AnimaModGuidance` (§4).
+- ~~Which Spectrum repo ships `AnimaModGuidance`~~ — **settled: `blepping/ComfyUI-Spectrum-KSampler`.**
+  Upstream's *code* cites it twice (`aio/sampling.py:131`, `:257`); only its README says `sorryhyun`.
+  The code wins — it is what actually runs.
 - ~~one tabbed overlay or one dialog per stage~~ — **settled: neither.** Settings are a **popover
   anchored to the row you clicked**, which is what the Control Panel already does
   (`openOverlayWithZoom(..., "below")`). It went modal → right-side drawer → row popover across three
@@ -646,6 +650,6 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - Generation profiles (upstream's Normal/Turbo/Optimized snapshots). Useful, but they only earn
   their keep once the settings tree is stable.
 
-**Next step:** an interactive mockup at `playground/generator.html`, the way
-`playground/control-panel.html` preceded the Controls build. The mockup is the approval gate —
-no `nodes/anima/` or `js/anima/` code before it is signed off.
+**Next step:** `js/anima/` — one auto-loaded `index.js` registering both nodes and lazily importing
+their per-node `.mjs`, built against the mockup. The Python side is done and tested; what's missing is
+the row/popover UI, which is the whole reason the mockup exists.

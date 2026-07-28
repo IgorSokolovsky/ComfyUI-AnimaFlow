@@ -483,6 +483,40 @@ app.registerExtension({
       return _conn ? _conn.apply(this, arguments) : undefined;
     };
 
+    // Second, type-independent line of defense against wiring into an
+    // interior "hole" (a slot no row currently owns -- `interaction.mjs`'s
+    // `syncOutputs`/`markSlotVacant`). `VACANT_SLOT_TYPE` already refuses
+    // this at the engine level via `LiteGraph.isValidConnection` for any
+    // NORMALLY-typed target, but litegraph (like this pack's own Python
+    // `ANY` type) treats a wildcard-typed input as "connects to anything,
+    // regardless of the output's type" -- so a community node with a "*"
+    // input would otherwise still be able to bind a wire to a slot with no
+    // row behind it. This hook asks the pack's own row state directly,
+    // bypassing type matching altogether: a hole refuses a connection no
+    // matter what the other end declares. A no-op (falls through to the
+    // previous handler, or `true`) until `_ctrlMods` has loaded, same as
+    // every other hook here.
+    //
+    // VERIFY-IN-COMFYUI: this pack has no local litegraph source to confirm
+    // `onConnectOutput`'s exact call signature/return-value contract
+    // against (the (outputIndex, inputType, inputSlot, inputNode,
+    // inputIndex) shape and "return false to refuse" are the documented
+    // convention this reasoning relies on) -- only a live drag-to-connect
+    // attempt onto a known-vacant hole can confirm the connection is
+    // actually refused, not just that `VACANT_SLOT_TYPE` blocks typed
+    // targets.
+    const _connectOutput = nodeType.prototype.onConnectOutput;
+    nodeType.prototype.onConnectOutput = function (outputIndex, inputType, inputSlot, inputNode, inputIndex) {
+      if (this._ctrlMods) {
+        const state = this._ctrlMods.interaction.ensureState(this, this._ctrlCtx);
+        const owned = state.rows.some((r) => r.slot === outputIndex + 1);
+        if (!owned) {
+          return false;
+        }
+      }
+      return _connectOutput ? _connectOutput.apply(this, arguments) : true;
+    };
+
     // Legacy: park each output dot at its OWN row widget's Y. arrange()
     // computes widget.y, so re-run it once positions are set -- the second
     // pass re-measures the slots with our pos in place (ComfyUI-Pixaroma's
