@@ -104,6 +104,7 @@ Character sheets live as `rules/*.yaml` files (reusable) and/or embedded per-wor
 | [**docs/nodes.md**](docs/nodes.md) | Catalog of every node: inputs, outputs, and what it's for. |
 | [**docs/control-panel-design.md**](docs/control-panel-design.md) | The Control Panel + Loader Panel — why one node per many controls, per-row output typing, the design decisions and why several reversed. |
 | [**docs/generator-design.md**](docs/generator-design.md) | The Generator + Preview + Context Bridge — stage order, the settings blob, the hover-wipe compare, and where saving lives. |
+| [**docs/settings.md**](docs/settings.md) | The **AnimaFlow** section in ComfyUI's Settings dialog — all seven settings, what each one reaches, and why console logging defaults to off. |
 | [**docs/THEME.md**](docs/THEME.md) | The house theme: tokens, the `.wtn-*` class vocabulary, and the gotchas of styling a node UI inside ComfyUI. |
 | [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md) | Deep spec of the ruleset format + Document model (for tinkerers). |
 

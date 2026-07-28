@@ -292,6 +292,19 @@ type is a per-instance UUID, so it can't be patched through `beforeRegisterNodeD
 instance-level hook installed when the walk first resolves that boundary. Failing OPEN (nothing
 disabled) stays the rule whenever any of this can't be determined: a wrong grey-out is worse than none.
 
+**The boundary node's full shape, all probed live on frontend 1.45.21** — don't re-derive these:
+
+| what | value |
+|---|---|
+| identity | `isVirtualNode === true` **and** a `subgraph` property. Match on **both**; other virtual nodes exist, and `type` is a per-subgraph **UUID**, never a class name |
+| promoted inputs | `["clip","model","vae","latent","seed","steps","cfg","sampler_name","scheduler"]` — the Bridge's own sockets, names matching `CONTEXT_FIELDS`, so `supplied` reads straight off them |
+| promoted outputs | `["context"]` — **same-named**, which is what lets the FORWARD walk cross the boundary |
+| inner node list | **`subgraph._nodes`** (underscore), with `_nodes_by_id` alongside; also `inputNode`/`outputNode` for the inside-facing IO nodes, and `_nodes_in_order`/`_nodes_executable` |
+
+The inner list is what makes `bridgeConfirmed` resolvable — without it the code can only report
+"boundary found, Bridge unconfirmed". `inputNode`/`outputNode` are the handles to use if traversal
+ever needs to run from *inside* a subgraph outward, which nothing does yet.
+
 ### 5a. Sampler values — still per-field wins, now via the context
 
 `seed`, `steps`, `cfg`, `sampler_name` and `scheduler` are still each independently overridable,
