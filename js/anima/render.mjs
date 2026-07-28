@@ -167,17 +167,26 @@ const CSS = `
   background: var(--wtn-accent, ${TOKENS.accent}); border: 1px solid var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-an-addbtn:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 
-/* ── popover content (shares the overlay shell from js/shared/overlay.mjs) ── */
-.wtn-an-pop { width: 268px; padding: 12px 13px; border-radius: 10px; border: 1px solid var(--wtn-line, ${TOKENS.line});
+/* ── popover content (shares the overlay shell from js/shared/overlay.mjs) ──
+   width/max-height/box-sizing below are the signed-off mockup's OWN numbers
+   (playground/generator.html:247/:252 -- \`.pop\`'s \`width: 344px\` /
+   \`max-height: 460px\`), restored after the port shrank them to 268px/420px.
+   \`box-sizing: border-box\` matters here specifically because popovers are
+   appended to \`document.body\` (js/shared/overlay.mjs), not under
+   \`.wtn-an-root\` -- so \`.wtn-an-root, .wtn-an-root *\`'s box-sizing rule
+   above never reached this element, and every field's input column was
+   squeezed by its own padding on top of the too-narrow width. */
+.wtn-an-pop { box-sizing: border-box; width: 344px; padding: 12px 13px; border-radius: 10px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line});
   background: var(--wtn-surface, ${TOKENS.surface}); box-shadow: var(--wtn-shadow, 0 18px 46px rgba(0,0,0,.66));
-  max-height: 420px; overflow: auto; }
+  max-height: 460px; overflow: auto; }
 .wtn-an-pop h4 { margin: 0 0 10px; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); font-weight: 500; display: flex; align-items: center; gap: 7px; }
 .wtn-an-pop h4 .wtn-an-x { margin-left: auto; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12px; }
 .wtn-an-pop h4 .wtn-an-x:hover { color: var(--wtn-bad, ${TOKENS.bad}); }
 .wtn-an-grid { display: grid; grid-template-columns: 1fr; gap: 7px 10px; }
 .wtn-an-field { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 2px; }
-.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 108px; flex: none; }
+.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 116px; flex: none; }
 .wtn-an-field input, .wtn-an-field select { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
   font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 4px 6px; outline: none; }
@@ -225,7 +234,15 @@ const CSS = `
 .wtn-an-wipe .wtn-an-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11px; }
 .wtn-an-pvbar { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; }
-.wtn-an-seg { display: flex; gap: 0; }
+/* The "compare" label degrades (ellipsis) rather than pushing .wtn-an-segs
+   off the row -- min-width:0 is what lets a flex child shrink below its
+   content size at all. */
+.wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Right-aligned cluster holding both base|mid|final segmented groups + the
+   "vs" divider, folded onto the SAME row as the switch+label (§3) --
+   margin-left: auto is what pushes it to the right edge. */
+.wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+.wtn-an-seg { display: flex; gap: 0; flex: none; }
 .wtn-an-seg button { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; padding: 3px 7px; cursor: pointer;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-right-width: 0; }
@@ -462,6 +479,28 @@ export const CHROME = 40;
 export const DEFAULT_W = 360;
 export const DEFAULT_H = 420;
 export const PREVIEW_DEFAULT_H = 420;
+// Preview-only floor: the compare row now carries the switch + "compare"
+// label + BOTH `base|mid|final` segmented groups on one line (§3's fold of
+// the two `.wtn-an-pvbar`s into one), and that cluster measures ~340px, so a
+// narrower node clips it.
+export const PREVIEW_MIN_W = 380;
+
+/** litegraph's `onResize(size)` contract: mutate `size` IN PLACE (same
+ * pattern as `../ComfyUI-Pixaroma/js/pause_image/index.js:270-275`'s own
+ * self-heal). Raises `size[0]` up to `PREVIEW_MIN_W` when it's below (or not
+ * a finite number at all), never touches `size[1]` (height stays owned by
+ * `getMinHeight`/`refitNode`), and tolerates a missing/short/non-numeric
+ * array without throwing. Returns `size` for convenience at the call site. */
+export function clampPreviewSize(size) {
+  if (!Array.isArray(size) || size.length < 1) {
+    return size;
+  }
+  const w = size[0];
+  if (typeof w !== "number" || !Number.isFinite(w) || w < PREVIEW_MIN_W) {
+    size[0] = PREVIEW_MIN_W;
+  }
+  return size;
+}
 
 export function measureMinHeight(root, floor) {
   if (!root) {

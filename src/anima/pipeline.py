@@ -2,10 +2,21 @@
 first pass -> highres -> detailer -> upscale -> postprocess. Every DECISION
 (which stage runs, what its resolved sampler/tile/fit values are, which real
 pass each output names) is made by a pure function in `settings.py`/
-`stages.py`/`sampler.py`/`resources.py`/`loras.py`/`postprocess.py`/
+`stages.py`/`sampler.py`/`resources.py`/`context.py`/`postprocess.py`/
 `usdu.py`; this module ONLY calls ComfyUI/torch/third-party node classes
 with the results, per this task's brief ("every comfy/torch touch is lazy
 and looked up, never a top-level import").
+
+**2026-07-28 reversal**: resource loading (§3's `use_internal_loaders` +
+internal unet/clip/vae pickers) and the inline LoRA stack (§5b's
+`generation_settings.loras`) are BOTH gone. `AnimaGenerator` now takes
+exactly one input — a wired `ANIMA_CONTEXT` from `AnimaContextBridge` — that
+already carries real MODEL/CLIP/VAE objects (LoRAs baked in upstream of the
+bridge, same as they always were upstream of the Generator's own sockets;
+see `context_bridge.py`'s own docstring). `src/anima/loras.py` is
+consequently dead code with no caller left in this file at all — kept
+in place, unedited, per this task's own instruction, since deleting a pure
+module that still round-trips correctly is out of this task's scope.
 
 VERIFY-IN-COMFYUI: every actual comfy/torch/Impact/USDU/Spectrum call in this
 file is written from reading upstream's own call sites
@@ -21,7 +32,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import loras as loras_mod
+from . import context as context_mod
 from . import postprocess as postprocess_mod
 from . import resources as resources_mod
 from . import sampler as sampler_mod
@@ -29,7 +40,6 @@ from . import settings as settings_mod
 from . import soft_imports
 from . import stages as stages_mod
 from . import usdu as usdu_mod
-from .resources import ResourceError
 
 # ---------------------------------------------------------------------------
 # Lazy comfy lookups + small call-shape helpers
@@ -66,114 +76,6 @@ def _image_size(image: Any) -> Tuple[int, int]:
     """An `IMAGE` tensor's `(width, height)` — ComfyUI's own layout is
     `[batch, height, width, channels]`."""
     return int(image.shape[2]), int(image.shape[1])
-
-
-# ---------------------------------------------------------------------------
-# Resource loading (§3) — the internal pickers, only used when
-# `use_internal_loaders` is on. Mirrors
-# `nodes/controls/_loaders_helpers.py`'s delegation to ComfyUI's OWN loader
-# nodes rather than reimplementing `comfy.sd` plumbing.
-# ---------------------------------------------------------------------------
-
-
-def load_internal_model(unet_name: str, weight_dtype: str = "default") -> Any:
-    return _output0(_comfy_node("UNETLoader")().load_unet(unet_name, weight_dtype))
-
-
-def load_internal_vae(vae_name: str) -> Any:
-    return _output0(_comfy_node("VAELoader")().load_vae(vae_name))
-
-
-def load_internal_clip(clip_name: str, clip_type: str = "qwen_image", device: str = "default") -> Any:
-    return _output0(_comfy_node("CLIPLoader")().load_clip(clip_name, clip_type, device))
-
-
-def resolve_resources(
-    *,
-    use_internal_loaders: bool,
-    unet_name: str,
-    clip_name: str,
-    clip_type: str,
-    vae_name: str,
-    model: Any = None,
-    clip: Any = None,
-    vae: Any = None,
-) -> Tuple[Any, Any, Any]:
-    """§3: pickers win when the flag is on, sockets are used (and required)
-    otherwise. Raises `ResourceError` (a readable message — see
-    `resources.py`) rather than an `AttributeError` mid-sample when the flag
-    is off and a required socket is missing.
-    """
-    sources = resources_mod.resolve_loader_resources(
-        use_internal_loaders, model=model, clip=clip, vae=vae,
-    )
-    resolved_model = load_internal_model(unet_name) if sources["model"] == "internal" else model
-    resolved_clip = load_internal_clip(clip_name, clip_type) if sources["clip"] == "internal" else clip
-    resolved_vae = load_internal_vae(vae_name) if sources["vae"] == "internal" else vae
-    return resolved_model, resolved_clip, resolved_vae
-
-
-# ---------------------------------------------------------------------------
-# LoRA application (§5b) — inline mode only; the socket path arrives with
-# LoRAs already baked into MODEL/CLIP upstream of this node (design doc §5b).
-# ---------------------------------------------------------------------------
-
-
-def _resolve_lora_name(name: str) -> str:
-    """Best-effort absolute->relative resolution against ComfyUI's `loras`
-    folder, mirroring upstream's `_lora_stack_name`
-    (`../ComfyUre-EasyUseAnima/easyuse_anima/lora/metadata.py:61-`, MIT ©
-    n0va39). Falls back to the bare (stripped) name on any lookup failure —
-    `LoraLoader` itself is the actual source of truth for whether a name
-    resolves, so this is a best-effort convenience, not a validation gate.
-    """
-    value = str(name or "").strip()
-    if not value:
-        return value
-    try:
-        import os
-
-        import folder_paths  # ComfyUI-only; lazy.
-
-        absolute_value = os.path.abspath(value)
-        for root in folder_paths.get_folder_paths("loras"):
-            absolute_root = os.path.abspath(root)
-            try:
-                relative = os.path.relpath(absolute_value, absolute_root)
-            except ValueError:
-                continue
-            if relative not in (".", "..") and not relative.startswith(f"..{os.sep}"):
-                return relative
-    except Exception:
-        pass
-    return value
-
-
-def apply_lora_stack(model: Any, clip: Any, entries: List[Dict[str, Any]]) -> Tuple[Any, Any, List[Dict[str, Any]]]:
-    """`loras.entries_to_apply(...)`'s already-filtered entries -> patched
-    `(model, clip)` plus the list actually applied (for `metadata_json`).
-    Applies in ORDER (§5b "order is application order"), each row through
-    ComfyUI's own core `LoraLoader`.
-    """
-    entries = loras_mod.entries_to_apply(entries)
-    if not entries:
-        return model, clip, []
-
-    loader_cls = _comfy_node("LoraLoader")
-    loader = loader_cls()
-    patched_model, patched_clip = model, clip
-    applied: List[Dict[str, Any]] = []
-    for entry in entries:
-        name = _resolve_lora_name(entry["name"])
-        result = loader.load_lora(
-            patched_model, patched_clip, name,
-            float(entry["strength_model"]), float(entry["strength_clip"]),
-        )
-        if not isinstance(result, tuple) or len(result) < 2:
-            raise RuntimeError("[AnimaFlow] LoraLoader returned no MODEL/CLIP pair.")
-        patched_model, patched_clip = result[0], result[1]
-        applied.append(dict(entry))
-    return patched_model, patched_clip, applied
 
 
 # ---------------------------------------------------------------------------
@@ -281,16 +183,32 @@ def resize_image(image: Any, target_width: int, target_height: int, method: str 
 # Stage 1 — first pass
 # ---------------------------------------------------------------------------
 
+# The fallback latent size when the context's `latent` socket is unwired
+# (2026-07-28 reversal: `generation_settings.latent` is GONE — see
+# `settings.py`'s own dated note — so there is no settings block left to
+# read a fallback size from). A fixed default, not a readable error, because
+# EVERY `ANIMA_CONTEXT` field is optional by design
+# (`context_bridge.py`'s own docstring: "an unwired socket simply
+# contributes nothing") — an unwired latent must degrade the same
+# predictable way every other unwired context field does, not become the
+# one field that hard-fails a run. 1024x1024, batch 1 matches the just-
+# removed `generation_settings.latent` block's own defaults, so a workflow
+# that never wired `latent` at all keeps behaving exactly like it used to.
+_DEFAULT_LATENT_WIDTH = 1024
+_DEFAULT_LATENT_HEIGHT = 1024
+_DEFAULT_LATENT_BATCH = 1
+
 
 def run_first_pass(
     *, model: Any, clip: Any, positive: Any, negative: Any, latent: Optional[Dict[str, Any]],
     settings: Dict[str, Any], wired_sampler: Optional[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """-> `(sampled_latent, resolved_sampler)`. The input latent is the
-    socket's if wired (§5 "Size from the `latent` socket if wired, else
-    `settings.latent`"), otherwise a fresh empty latent from
-    `settings.latent`. `resolved_sampler` is returned so later stages'
-    `inherit_sampler_settings` (§6b) has a base to inherit from.
+    context's `latent` field if supplied, otherwise a fresh empty latent at
+    the fixed default size above (see that constant block's own comment for
+    why a default beats an error here). `resolved_sampler` is returned so
+    later stages' `inherit_sampler_settings` (§6b) has a base to inherit
+    from.
     """
     resolved_sampler = resources_mod.resolve_sampler_inputs(settings.get("sampler", {}), wired_sampler)
     resolved_sampler = dict(resolved_sampler)
@@ -306,9 +224,8 @@ def run_first_pass(
     patched_model = patch_shift(model, settings.get("sampler", {}).get("shift", 3.0))
     patched_model = apply_mod_guidance(patched_model, clip, positive, negative, settings.get("mod_guidance", {}))
 
-    latent_settings = settings.get("latent", {}) if isinstance(settings.get("latent"), dict) else {}
     resolved_latent = latent if latent is not None else empty_latent(
-        latent_settings.get("width", 1024), latent_settings.get("height", 1024), latent_settings.get("batch", 1),
+        _DEFAULT_LATENT_WIDTH, _DEFAULT_LATENT_HEIGHT, _DEFAULT_LATENT_BATCH,
     )
 
     sampled = run_ksampler(
@@ -594,120 +511,133 @@ def run_postprocess(image: Any, postprocess_settings: Dict[str, Any]) -> Tuple[A
 # ---------------------------------------------------------------------------
 
 
-def run_generator(
-    *,
-    positive: Any,
-    negative: Any,
-    generation_settings: str,
-    use_internal_loaders: bool,
-    unet_name: str,
-    clip_name: str,
-    clip_type: str,
-    vae_name: str,
-    model: Any = None,
-    clip: Any = None,
-    vae: Any = None,
-    latent: Optional[Dict[str, Any]] = None,
-    seed: Optional[int] = None,
-    steps: Optional[int] = None,
-    cfg: Optional[float] = None,
-    sampler_name: Optional[str] = None,
-    scheduler: Optional[str] = None,
-) -> Tuple[Any, Any, Any, Dict[str, Any], str]:
-    """The whole pipeline, front to back: resources -> inline LoRAs -> first
-    pass -> highres -> detailer -> upscale -> postprocess. -> `(image,
-    image_base, image_mid, latent, metadata_json)`, the Generator's exact
-    fixed output set (design doc §5 Outputs).
+def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple[List[Any], Dict[str, Any], str]:
+    """The whole pipeline, front to back: first pass -> highres -> detailer
+    -> upscale -> postprocess, EVERY resource (MODEL/CLIP/VAE/CONDITIONING/
+    LATENT/sampler scalars) read from the single wired `ANIMA_CONTEXT`
+    (2026-07-28 reversal — see this module's own docstring and
+    `context.py`). -> `(images, latent, metadata_json)`:
 
-    Detailer and upscale both operate in PIXEL space (Impact's
-    `DetailerForEach` and USDU both take/return `IMAGE`, matching upstream),
-    so the `latent` output — "final latent" — necessarily means the last
-    real diffusion latent this run produced, i.e. the HIGHRES stage's latent
-    (or the first pass's, if highres is off). Neither design-doc §5's output
-    table nor §8 says explicitly which stage's latent "final" means once
-    detailer/upscale/postprocess have pushed the pipeline into pixel space
-    after it — flagged in the build report as an assumption, not a
-    documented decision.
+      - `images`: a Python LIST of `IMAGE` tensors, ordered `base, mid,
+        final`, one per stage that actually produced a DISTINCT image this
+        run — a stage that didn't run (or didn't change anything) is
+        OMITTED, never duplicated (design doc §5/§6 reversal — the old
+        "pass the previous stage's tensor through" rule existed only to
+        fill three now-deleted fixed sockets). This is the Generator's
+        `OUTPUT_IS_LIST[0] = True` slot.
+      - `latent`: the final latent this run produced. Detailer and upscale
+        both operate in PIXEL space (Impact's `DetailerForEach` and USDU
+        both take/return `IMAGE`, matching upstream), so this necessarily
+        means the last real diffusion latent, i.e. the highres stage's
+        latent (or the first pass's, if highres is off) — flagged in the
+        original build report as an assumption, not a documented decision,
+        and unaffected by this task.
+      - `metadata_json`: per-stage metadata for debugging, INCLUDING
+        `stage_labels` — the ordered list of labels naming what each
+        position in `images` actually is. This is now the ONLY way anything
+        downstream (chiefly `AnimaPreview`) can tell the positions apart,
+        since the list itself carries no labels of its own.
+
+    Every context field this pipeline cannot run without
+    (`model`/`clip`/`vae`/`positive`/`negative`) is read via
+    `context.require_context_value`, which raises a readable
+    `ContextFieldMissing` — never an `AttributeError` mid-sample — naming
+    exactly which `AnimaContextBridge` socket needs wiring. `clip` is
+    required unconditionally even though only Mod Guidance and a live
+    detailer pass actually consume it: requiring it up front keeps the
+    missing-context error surface small and predictable, and a text-to-
+    image graph with no CLIP encoder wired anywhere upstream is already a
+    broken graph regardless of which stages happen to be enabled.
     """
     settings = settings_mod.normalize_generation_settings(generation_settings)
 
-    resolved_model, resolved_clip, resolved_vae = resolve_resources(
-        use_internal_loaders=use_internal_loaders,
-        unet_name=unet_name, clip_name=clip_name, clip_type=clip_type, vae_name=vae_name,
-        model=model, clip=clip, vae=vae,
-    )
-
-    applied_loras: List[Dict[str, Any]] = []
-    if use_internal_loaders:
-        # Inline mode is the only mode that needs an inline LoRA list — the
-        # socket path arrives with LoRAs already baked into MODEL/CLIP
-        # upstream of this node (design doc §5b).
-        entries = loras_mod.normalize_lora_stack(settings.get("loras"))
-        resolved_model, resolved_clip, applied_loras = apply_lora_stack(resolved_model, resolved_clip, entries)
-
+    model = context_mod.require_context_value(context, "model")
+    clip = context_mod.require_context_value(context, "clip")
+    vae = context_mod.require_context_value(context, "vae")
+    positive = context_mod.require_context_value(context, "positive")
+    negative = context_mod.require_context_value(context, "negative")
+    # `latent` and the five sampler fields are genuinely OPTIONAL context
+    # fields (design doc §1: "nothing is required") — an absent one falls
+    # back to `generation_settings`/a fixed default rather than erroring;
+    # see `run_first_pass`'s own default-latent comment.
+    latent = context_mod.context_value(context, "latent")
     wired_sampler = {
-        "seed": seed, "steps": steps, "cfg": cfg,
-        "sampler_name": sampler_name, "scheduler": scheduler,
+        field: context_mod.context_value(context, field)
+        for field in resources_mod.SAMPLER_FIELDS
     }
+
     base_latent, resolved_sampler = run_first_pass(
-        model=resolved_model, clip=resolved_clip, positive=positive, negative=negative,
+        model=model, clip=clip, positive=positive, negative=negative,
         latent=latent, settings=settings, wired_sampler=wired_sampler,
     )
-    image_base = vae_decode(resolved_vae, base_latent)
+    image_base = vae_decode(vae, base_latent)
 
     highres_settings = settings.get("highres", {})
+    highres_enabled = bool(highres_settings.get("enabled"))
     highres_latent = run_highres(
-        model=resolved_model, positive=positive, negative=negative, samples=base_latent,
+        model=model, positive=positive, negative=negative, samples=base_latent,
         highres_settings=highres_settings, base_sampler=resolved_sampler,
     )
-    image_after_highres = (
-        vae_decode(resolved_vae, highres_latent) if highres_settings.get("enabled") else image_base
-    )
+    image_after_highres = vae_decode(vae, highres_latent) if highres_enabled else image_base
     final_latent = highres_latent
 
     have_impact = soft_imports.has_impact_detailer()
     detailer_settings = settings.get("detailer", {})
-    outputs = stages_mod.resolve_outputs(
-        highres_enabled=bool(highres_settings.get("enabled")),
+    detailer_live = stages_mod.detailer_is_live(
         detailer_enabled=bool(detailer_settings.get("enabled")),
-        have_impact=have_impact,
-        blocks=detailer_settings.get("blocks"),
-        upscale_enabled=bool(settings.get("upscale", {}).get("enabled")),
-        have_usdu=soft_imports.has_usdu(),
+        have_impact=have_impact, blocks=detailer_settings.get("blocks"),
     )
-
     image_after_detailer = run_detailer(
-        image=image_after_highres, model=resolved_model, clip=resolved_clip, vae=resolved_vae,
+        image=image_after_highres, model=model, clip=clip, vae=vae,
         positive=positive, negative=negative, detailer_settings=detailer_settings,
         base_sampler=resolved_sampler,
     )
     image_mid = image_after_detailer  # design doc §5: "after detailer, before upscale"
 
+    upscale_settings = settings.get("upscale", {})
+    have_usdu = soft_imports.has_usdu()
+    upscale_live = bool(upscale_settings.get("enabled")) and have_usdu
     image_after_upscale = run_upscale(
-        image=image_after_detailer, model=resolved_model, clip=resolved_clip, vae=resolved_vae,
-        positive=positive, negative=negative, upscale_settings=settings.get("upscale", {}),
+        image=image_after_detailer, model=model, clip=clip, vae=vae,
+        positive=positive, negative=negative, upscale_settings=upscale_settings,
         base_sampler=resolved_sampler,
     )
 
     final_image, postprocess_metadata = run_postprocess(image_after_upscale, settings.get("postprocess", {}))
 
+    stage_labels = stages_mod.resolve_stage_labels(
+        highres_enabled=highres_enabled, detailer_live=detailer_live,
+        upscale_live=upscale_live, postprocess_applied=bool(postprocess_metadata["applied"]),
+    )
+    stage_tensors = {
+        stages_mod.STAGE_BASE: image_base,
+        stages_mod.STAGE_MID: image_mid,
+        stages_mod.STAGE_FINAL: final_image,
+    }
+    images = [stage_tensors[label] for label in stage_labels]
+
     metadata = {
         "schema": settings.get("schema"),
         "version": settings.get("version"),
-        "resources": {
-            "use_internal_loaders": bool(use_internal_loaders),
-        },
-        "loras": applied_loras,
         "sampler": resolved_sampler,
-        "stages": outputs,
+        # The single source of truth for "which position in `images` is
+        # which stage" — `AnimaPreview` reads THIS list back rather than
+        # re-deriving it (task brief: "keep the label mapping in exactly
+        # one pure place").
+        "stage_labels": stage_labels,
+        "stages": {
+            "highres_enabled": highres_enabled,
+            "detailer_live": detailer_live,
+            "upscale_live": upscale_live,
+        },
         "postprocess": postprocess_metadata,
     }
-    return final_image, image_base, image_mid, final_latent, json.dumps(metadata)
+    return images, final_latent, json.dumps(metadata)
 
 
 __all__ = (
-    "resolve_resources", "apply_lora_stack", "patch_shift", "apply_mod_guidance",
+    "patch_shift", "apply_mod_guidance",
     "run_ksampler", "vae_decode", "vae_encode", "empty_latent", "latent_upscale_by",
     "resize_image", "run_first_pass", "run_highres", "run_detailer", "run_upscale",
-    "run_postprocess", "run_generator", "ResourceError",
+    "run_postprocess", "run_generator",
 )

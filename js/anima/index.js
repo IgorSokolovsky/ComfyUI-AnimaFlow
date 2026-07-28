@@ -157,6 +157,18 @@ function mountNode(node, mods, isGenerator) {
   const refs = isGenerator ? mods.interaction.mountGeneratorUI(node, ctx) : mods.interaction.mountPreviewUI(node, ctx);
   mods.interaction.installZoomPassthrough(node, ctx);
 
+  // Preview-only min-width clamp (`render.mjs`'s `PREVIEW_MIN_W` doc comment
+  // for why 380) -- installed here, right after `mods` resolves, so there is
+  // no lazy-load race with a user resize. Chains any pre-existing
+  // `node.onResize` rather than replacing it.
+  if (!isGenerator) {
+    const prevResize = node.onResize;
+    node.onResize = function (size) {
+      mods.render.clampPreviewSize(size);
+      return prevResize ? prevResize.apply(this, arguments) : undefined;
+    };
+  }
+
   let widget;
   if (typeof node.addDOMWidget === "function") {
     widget = node.addDOMWidget(
@@ -201,7 +213,10 @@ function setupNode(node, mods, isGenerator) {
   // `ensureInitialFloor`.
   const curW = Array.isArray(node.size) && typeof node.size[0] === "number" ? node.size[0] : 0;
   const curH = Array.isArray(node.size) && typeof node.size[1] === "number" ? node.size[1] : 0;
-  const w = Math.max(curW, mods.render.DEFAULT_W);
+  // Preview gets its own, taller floor (PREVIEW_MIN_W) -- the Generator has
+  // no compare-row segs cluster, so it keeps plain DEFAULT_W.
+  const wFloor = isGenerator ? mods.render.DEFAULT_W : Math.max(mods.render.DEFAULT_W, mods.render.PREVIEW_MIN_W);
+  const w = Math.max(curW, wFloor);
   const h = Math.max(curH, defaultH);
   if (w !== curW || h !== curH) {
     if (typeof node.setSize === "function") {

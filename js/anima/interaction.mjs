@@ -1112,6 +1112,16 @@ export function buildPreviewBody(doc, node, ctx) {
   // prompt/extra_pnginfo (not even real sockets), are litegraph's; `shown`
   // is used below only to decide which panes the wipe can actually render.
 
+  // Save row FIRST, above the image box (§2) -- builder/value/click handler
+  // are byte-for-byte identical to before, this is a re-order of
+  // `body.appendChild` calls only.
+  const saveRow = buildClickRow({
+    doc, name: "save",
+    value: state.save.enabled ? `${state.save.which} · ${state.save.extension}` : "off",
+  });
+  saveRow.root.addEventListener("click", () => openSavePopover(node, ctx, saveRow.root));
+  body.appendChild(saveRow.root);
+
   const compare = state.compare;
   const wantsDual = !!compare.enabled;
   const haveA = shown[compare.a];
@@ -1154,6 +1164,11 @@ export function buildPreviewBody(doc, node, ctx) {
   }
   body.appendChild(wipe);
 
+  // ONE compare row: [switch] [label "compare"] on the left and, when
+  // `wantsDual`, a right-aligned `.wtn-an-segs` cluster holding both
+  // `base|mid|final` groups (§3's fold -- this used to be a SECOND
+  // `.wtn-an-pvbar` below this one; every click handler/`persistPreviewState`/
+  // `repaintPreview` call below is unchanged from before the fold).
   const pvbar = el(doc, "div", "wtn-an-pvbar");
   const sw = buildSwitch(doc, wantsDual);
   sw.addEventListener("click", () => {
@@ -1161,21 +1176,13 @@ export function buildPreviewBody(doc, node, ctx) {
     persistPreviewState(node);
     repaintPreview(node, ctx);
   });
-  const label = el(doc, "span");
+  const label = el(doc, "span", "wtn-an-pvlab");
   label.textContent = "compare";
   pvbar.appendChild(sw);
   pvbar.appendChild(label);
-  body.appendChild(pvbar);
-
-  const saveRow = buildClickRow({
-    doc, name: "save",
-    value: state.save.enabled ? `${state.save.which} · ${state.save.extension}` : "off",
-  });
-  saveRow.root.addEventListener("click", () => openSavePopover(node, ctx, saveRow.root));
-  body.appendChild(saveRow.root);
 
   if (wantsDual) {
-    const segRow = el(doc, "div", "wtn-an-pvbar");
+    const segs = el(doc, "div", "wtn-an-segs");
     const segA = el(doc, "div", "wtn-an-seg");
     COMPARE_SLOTS.forEach((slot) => {
       const btn = el(doc, "button");
@@ -1204,11 +1211,12 @@ export function buildPreviewBody(doc, node, ctx) {
       });
       segB.appendChild(btn);
     });
-    segRow.appendChild(segA);
-    segRow.appendChild(vs);
-    segRow.appendChild(segB);
-    body.appendChild(segRow);
+    segs.appendChild(segA);
+    segs.appendChild(vs);
+    segs.appendChild(segB);
+    pvbar.appendChild(segs);
   }
+  body.appendChild(pvbar);
 
   return { body, wipeEl: wipe };
 }

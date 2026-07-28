@@ -19,6 +19,20 @@ defaults below, not layered on afterward:
     level concern on AnimaPreview, not a settings-tree concern; see
     `nodes/anima/preview.py`.)
 
+**2026-07-28 reversal — `loras` and `latent` are GONE from this tree.** Both
+only ever existed to serve `use_internal_loaders`'s "inline mode" (design
+doc §3/§5b, now deleted): `loras` was the inline-mode-only ordered LoRA
+list, and `latent` was inline mode's own width/height/batch, used only when
+nothing was wired to the (now also deleted) `latent` socket. Resources —
+MODEL/CLIP/VAE, LoRAs already baked in, and the starting LATENT — all
+arrive exclusively through `AnimaContextBridge`'s `ANIMA_CONTEXT` now
+(`src/anima/context.py`); a hand-edited payload that still sets either key
+is not rejected (unknown keys always pass through per this module's own
+contract, see below), it's simply inert data nothing reads anymore. An
+unwired `latent` context field falls back to a FIXED default size in
+`pipeline.py` itself (1024x1024, batch 1), not to a settings block, since
+there's no more "inline mode" concept for such a block to belong to.
+
 Normalization contract (identical to `_rows_helpers.parse_state`): unknown
 keys pass through untouched, missing keys take defaults, an absent stage
 block means "defaults, disabled" (every stage default already carries
@@ -170,16 +184,6 @@ DEFAULT_GENERATION_SETTINGS: Dict[str, Any] = {
         "mod_taper_scale": 0.25,
         "mod_final_w": 0.0,
     },
-    # Inline mode owns the latent too (design doc §3) — width/height/batch
-    # only; ratio/tier are frontend-only bookkeeping (like
-    # `nodes/controls/_rows_helpers.latent_wh_batch`'s `opts`) that doesn't
-    # exist yet without `js/anima/`, so there is nothing to carry here until
-    # that frontend slice lands.
-    "latent": {"width": 1024, "height": 1024, "batch": 1},
-    # Inline-mode-only ordered LoRA list (design doc §5b). A plain list, not
-    # a dict — order IS apply order, and there is no natural per-entry key
-    # the way detailer blocks have `id`.
-    "loras": [],
     "highres": {
         "enabled": False,
         "scale_by": 1.5,
@@ -394,8 +398,6 @@ def normalize_generation_settings(raw: Any) -> Dict[str, Any]:
 
     merged = _deep_merge_defaults(DEFAULT_GENERATION_SETTINGS, parsed)
     merged["detailer"] = _fixup_detailer(merged.get("detailer"))
-    if not isinstance(merged.get("loras"), list):
-        merged["loras"] = []
     merged["schema"] = GENERATION_SETTINGS_SCHEMA
     merged["version"] = _migrate_version(parsed.get("version"))
     return merged

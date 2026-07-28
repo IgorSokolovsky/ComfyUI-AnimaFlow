@@ -1,6 +1,8 @@
 """Plain-script tests for `src/anima/stages.py` (output-stage gating,
-design doc §5/§6/§11) and `src/anima/sampler.py` (`inherit_sampler_settings`
-resolution, §6b).
+design doc §5/§6/§11 — 2026-07-28 reversal: `resolve_stage_labels` replaces
+`resolve_outputs`, since the Generator's `images` output is now a LIST that
+OMITS a stage rather than duplicating the previous one) and
+`src/anima/sampler.py` (`inherit_sampler_settings` resolution, §6b).
 
 Run directly: `python tests/test_anima_stages.py` (no pytest, per project convention).
 """
@@ -45,101 +47,86 @@ def test_detailer_not_live_with_garbage_blocks_shape():
 
 
 # ---------------------------------------------------------------------------
-# resolve_outputs -- every combination of the four toggles resolves each of
-# the three image outputs to a real stage; image_base never drifts off the
-# first pass.
+# resolve_stage_labels -- the 2026-07-28 replacement for resolve_outputs:
+# "base" is always present; "mid"/"final" are each present only when
+# something ACTUALLY changed the image, never duplicated as a pass-through.
 # ---------------------------------------------------------------------------
 
 
-def test_everything_off_all_outputs_are_base():
-    out = st.resolve_outputs(
-        highres_enabled=False, detailer_enabled=False, have_impact=True, blocks=_ALL_BLOCKS_OFF,
-        upscale_enabled=False, have_usdu=True,
+def test_everything_off_only_base_is_present():
+    labels = st.resolve_stage_labels(
+        highres_enabled=False, detailer_live=False, upscale_live=False, postprocess_applied=False,
     )
-    assert out == {"image_base": "base", "image_mid": "base", "image": "base", "detailer_live": False}
+    assert labels == ["base"]
 
 
-def test_everything_on_advances_through_every_stage():
-    out = st.resolve_outputs(
-        highres_enabled=True, detailer_enabled=True, have_impact=True, blocks=_ONE_BLOCK_ON,
-        upscale_enabled=True, have_usdu=True,
+def test_everything_on_all_three_present_in_order():
+    labels = st.resolve_stage_labels(
+        highres_enabled=True, detailer_live=True, upscale_live=True, postprocess_applied=True,
     )
-    assert out["image_base"] == "base"
-    assert out["image_mid"] == "mid"
-    assert out["image"] == "upscale"
-    assert out["detailer_live"] is True
+    assert labels == ["base", "mid", "final"]
 
 
-def test_highres_only():
-    out = st.resolve_outputs(
-        highres_enabled=True, detailer_enabled=False, have_impact=True, blocks=_ALL_BLOCKS_OFF,
-        upscale_enabled=False, have_usdu=True,
+def test_highres_only_mid_present_final_absent():
+    labels = st.resolve_stage_labels(
+        highres_enabled=True, detailer_live=False, upscale_live=False, postprocess_applied=False,
     )
-    assert out["image_base"] == "base"
-    assert out["image_mid"] == "highres"  # detailer off -> passes highres through
-    assert out["image"] == "highres"
+    assert labels == ["base", "mid"]
 
 
-def test_detailer_only_no_highres():
-    out = st.resolve_outputs(
-        highres_enabled=False, detailer_enabled=True, have_impact=True, blocks=_ONE_BLOCK_ON,
-        upscale_enabled=False, have_usdu=True,
+def test_detailer_only_no_highres_mid_present():
+    labels = st.resolve_stage_labels(
+        highres_enabled=False, detailer_live=True, upscale_live=False, postprocess_applied=False,
     )
-    assert out["image_base"] == "base"
-    assert out["image_mid"] == "mid"
-    assert out["image"] == "mid"  # upscale off -> passes detailer's result through
+    assert labels == ["base", "mid"]
 
 
-def test_upscale_only():
-    out = st.resolve_outputs(
-        highres_enabled=False, detailer_enabled=False, have_impact=True, blocks=_ALL_BLOCKS_OFF,
-        upscale_enabled=True, have_usdu=True,
+def test_upscale_only_no_highres_no_detailer_mid_omitted():
+    # mid would equal base (nothing changed it) -- final still appears
+    # directly after base, mid is OMITTED rather than duplicated.
+    labels = st.resolve_stage_labels(
+        highres_enabled=False, detailer_live=False, upscale_live=True, postprocess_applied=False,
     )
-    assert out["image_base"] == "base"
-    assert out["image_mid"] == "base"
-    assert out["image"] == "upscale"
+    assert labels == ["base", "final"]
 
 
-def test_upscale_enabled_but_usdu_absent_is_inert():
-    out = st.resolve_outputs(
-        highres_enabled=True, detailer_enabled=False, have_impact=True, blocks=_ALL_BLOCKS_OFF,
-        upscale_enabled=True, have_usdu=False,
+def test_postprocess_alone_still_counts_as_final_present():
+    # Postprocess "has no label of its own" (it only resizes whichever
+    # tensor `final` already names) but it DOES change the pixels, so it
+    # alone is enough to make `final` present even with nothing else on.
+    labels = st.resolve_stage_labels(
+        highres_enabled=False, detailer_live=False, upscale_live=False, postprocess_applied=True,
     )
-    assert out["image"] == "highres"  # falls back to the previous stage, not an error.
+    assert labels == ["base", "final"]
 
 
-def test_detailer_enabled_but_impact_absent_is_inert_image_mid_equals_image_base():
-    out = st.resolve_outputs(
-        highres_enabled=False, detailer_enabled=True, have_impact=False, blocks=_ONE_BLOCK_ON,
-        upscale_enabled=False, have_usdu=True,
+def test_mid_present_but_nothing_further_changes_final_omitted():
+    labels = st.resolve_stage_labels(
+        highres_enabled=True, detailer_live=False, upscale_live=False, postprocess_applied=False,
     )
-    # image_mid == image_base is a legitimate "no detailer ran" result (design doc §5).
-    assert out["image_mid"] == out["image_base"] == "base"
-    assert out["detailer_live"] is False
+    assert labels == ["base", "mid"]
+    assert "final" not in labels
 
 
-def test_detailer_enabled_every_block_off_is_inert():
-    out = st.resolve_outputs(
-        highres_enabled=False, detailer_enabled=True, have_impact=True, blocks=_ALL_BLOCKS_OFF,
-        upscale_enabled=False, have_usdu=True,
-    )
-    assert out["image_mid"] == out["image_base"]
-    assert out["detailer_live"] is False
-
-
-def test_image_base_never_drifts_off_first_pass_regardless_of_other_stages():
-    # Every combination of the four toggles -- image_base must ALWAYS be "base".
+def test_base_is_always_first_and_always_present():
     for highres in (False, True):
         for detailer in (False, True):
             for upscale in (False, True):
-                for have_impact in (False, True):
-                    for have_usdu in (False, True):
-                        out = st.resolve_outputs(
-                            highres_enabled=highres, detailer_enabled=detailer,
-                            have_impact=have_impact, blocks=_ONE_BLOCK_ON,
-                            upscale_enabled=upscale, have_usdu=have_usdu,
-                        )
-                        assert out["image_base"] == "base", (highres, detailer, upscale, have_impact, have_usdu)
+                for postprocess in (False, True):
+                    labels = st.resolve_stage_labels(
+                        highres_enabled=highres, detailer_live=detailer,
+                        upscale_live=upscale, postprocess_applied=postprocess,
+                    )
+                    assert labels[0] == "base", (highres, detailer, upscale, postprocess)
+                    assert labels == sorted(labels, key=st.STAGE_ORDER.index)
+
+
+def test_one_enabled_stage_yields_one_entry():
+    # Task brief: "one enabled stage -> one entry" -- falls out for free.
+    labels = st.resolve_stage_labels(
+        highres_enabled=False, detailer_live=False, upscale_live=False, postprocess_applied=False,
+    )
+    assert len(labels) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -228,15 +215,15 @@ ALL_TESTS = [
     test_detailer_not_live_when_every_block_off,
     test_detailer_live_when_enabled_impact_present_and_one_block_on,
     test_detailer_not_live_with_garbage_blocks_shape,
-    test_everything_off_all_outputs_are_base,
-    test_everything_on_advances_through_every_stage,
-    test_highres_only,
-    test_detailer_only_no_highres,
-    test_upscale_only,
-    test_upscale_enabled_but_usdu_absent_is_inert,
-    test_detailer_enabled_but_impact_absent_is_inert_image_mid_equals_image_base,
-    test_detailer_enabled_every_block_off_is_inert,
-    test_image_base_never_drifts_off_first_pass_regardless_of_other_stages,
+    test_everything_off_only_base_is_present,
+    test_everything_on_all_three_present_in_order,
+    test_highres_only_mid_present_final_absent,
+    test_detailer_only_no_highres_mid_present,
+    test_upscale_only_no_highres_no_detailer_mid_omitted,
+    test_postprocess_alone_still_counts_as_final_present,
+    test_mid_present_but_nothing_further_changes_final_omitted,
+    test_base_is_always_first_and_always_present,
+    test_one_enabled_stage_yields_one_entry,
     test_inherit_on_cfg_sampler_scheduler_come_from_base,
     test_inherit_on_steps_and_denoise_are_still_the_stages_own,
     test_inherit_off_cfg_sampler_scheduler_are_the_stages_own,

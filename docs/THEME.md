@@ -106,5 +106,13 @@ root.innerHTML = `<button class="wtn-btn wtn-btn--primary">Apply</button>`;
 - Respect `prefers-reduced-motion`; keep focus rings visible (`--wtn-accent`).
 - Everything is scoped to `.wtn` — no bare `:root`, no element selectors that leak into
   ComfyUI's own DOM.
+- **`theme.css`'s box-sizing reset is `.wtn *` — it does NOT cover the `.wtn` element itself.**
+  Harmless for a node body (each node's own CSS resets its root explicitly, e.g.
+  `.wtn-an-root, .wtn-an-root *`), but a *popover* mounts on `document.body` with `class="… wtn"`
+  and is therefore the one place with no ancestor rule to catch it. A fixed `width:` on such a
+  root is then **content-box**, so its own padding pushes children past the edge and
+  `overflow: auto` silently clips them — it reads as "the menu is cut", not as a sizing bug.
+  Declare `box-sizing: border-box` on any popover/overlay root you give an explicit width
+  (`js/anima/render.mjs`'s `.wtn-an-pop` is the worked example).
 
 Swap any token value in ONE place (`theme.mjs`/`theme.css`) and the whole pack retunes.

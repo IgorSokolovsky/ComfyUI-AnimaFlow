@@ -123,40 +123,49 @@ def test_hostile_template_never_raises():
 # ---------------------------------------------------------------------------
 # Stage-routing -- resolve_wired_stages/resolve_shown_stage/resolve_save_stages/
 # split_preview_stages. All pure: no comfy/torch import, `wired` is just a
-# dict of socket-name -> "is something non-None wired there" stand-ins.
+# `{stage_name: tensor_or_None}` dict now (2026-07-28 reversal -- there is no
+# socket name to stand in for a stage anymore, `AnimaPreview` builds this
+# dict directly from stage LABELS, see `resolve_run_stage_labels` below).
 # ---------------------------------------------------------------------------
 
 
 def _wired(**kwargs):
-    """`_wired(image_a=True, image_c=True)` -> the `wired` dict shape these
-    functions expect (`None` for an unwired socket, any truthy sentinel for
-    a wired one -- the functions only ever check `is not None`)."""
-    sockets = {"image_a": None, "image_b": None, "image_c": None}
+    """`_wired(base=True, final=True)` -> the `wired` dict shape these
+    functions expect (`None` for an absent stage, any truthy sentinel for a
+    present one -- the functions only ever check `is not None`)."""
+    sockets = {"base": None, "mid": None, "final": None}
     for key, value in kwargs.items():
-        sockets[key] = value if value else "wired"
+        sockets[key] = value if value else "present"
     return sockets
 
 
 def test_resolve_wired_stages_returns_only_wired_in_stable_order():
     assert ps.resolve_wired_stages(_wired()) == []
-    assert ps.resolve_wired_stages(_wired(image_b=True)) == ["mid"]
-    assert ps.resolve_wired_stages(_wired(image_c=True, image_a=True)) == ["base", "final"]
-    assert ps.resolve_wired_stages(_wired(image_a=True, image_b=True, image_c=True)) == ["base", "mid", "final"]
+    assert ps.resolve_wired_stages(_wired(mid=True)) == ["mid"]
+    assert ps.resolve_wired_stages(_wired(final=True, base=True)) == ["base", "final"]
+    assert ps.resolve_wired_stages(_wired(base=True, mid=True, final=True)) == ["base", "mid", "final"]
 
 
 def test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired():
-    # compare.b wired -> that's shown.
-    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(image_a=True, image_c=True)) == "final"
-    # compare.b named but NOT wired -> falls back to most-finished wired stage.
-    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(image_a=True, image_b=True)) == "mid"
+    # compare.b present -> that's shown.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(base=True, final=True)) == "final"
+    # compare.b named but NOT present -> falls back to most-finished present stage.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(base=True, mid=True)) == "mid"
     # compare off entirely -> same fallback priority.
-    assert ps.resolve_shown_stage({"enabled": False, "a": "base", "b": "final"}, _wired(image_a=True)) == "base"
-    # nothing wired -> None, never raises.
+    assert ps.resolve_shown_stage({"enabled": False, "a": "base", "b": "final"}, _wired(base=True)) == "base"
+    # nothing present -> None, never raises.
     assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired()) is None
 
 
+def test_resolve_shown_stage_one_entry_degrades_to_single_image():
+    # Task brief: "a one-entry list degrades to single-image" -- the ONLY
+    # present stage wins regardless of what compare.a/.b name.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(base=True)) == "base"
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(mid=True)) == "mid"
+
+
 def test_resolve_save_stages_which_semantics():
-    wired = _wired(image_a=True, image_b=True, image_c=True)
+    wired = _wired(base=True, mid=True, final=True)
     compare = {"enabled": True, "a": "base", "b": "final"}
 
     assert ps.resolve_save_stages({"which": "every wired input"}, compare, wired) == ["base", "mid", "final"]
@@ -164,8 +173,41 @@ def test_resolve_save_stages_which_semantics():
     assert ps.resolve_save_stages({"which": "shown"}, compare, wired) == ["final"]
     # Garbage `which` falls back to "shown"'s behaviour, never raises.
     assert ps.resolve_save_stages({"which": "not-a-real-option"}, compare, wired) == ["final"]
-    # "both compared" only returns stages that are ACTUALLY wired.
-    assert ps.resolve_save_stages({"which": "both compared"}, compare, _wired(image_a=True)) == ["base"]
+    # "both compared" only returns stages that are ACTUALLY present.
+    assert ps.resolve_save_stages({"which": "both compared"}, compare, _wired(base=True)) == ["base"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_run_stage_labels -- the single pure place a run's images-list
+# position -> stage-label mapping comes from (task brief).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_run_stage_labels_prefers_metadata_json_when_it_matches():
+    metadata = json.dumps({"stage_labels": ["base", "final"]})
+    assert ps.resolve_run_stage_labels(2, metadata) == ["base", "final"]
+
+
+def test_resolve_run_stage_labels_falls_back_when_length_mismatches():
+    # metadata says 3 stages, but only 1 image actually arrived -- don't
+    # trust a mismatched record, fall back to the positional default.
+    metadata = json.dumps({"stage_labels": ["base", "mid", "final"]})
+    assert ps.resolve_run_stage_labels(1, metadata) == ["base"]
+
+
+def test_resolve_run_stage_labels_falls_back_on_garbage_metadata():
+    for bad in ["{not json", "null", "42", "", None, 123]:
+        assert ps.resolve_run_stage_labels(2, bad) == ["base", "mid"]
+
+
+def test_resolve_run_stage_labels_falls_back_when_stage_labels_missing_or_wrong_shape():
+    assert ps.resolve_run_stage_labels(1, json.dumps({"no_stage_labels_here": True})) == ["base"]
+    assert ps.resolve_run_stage_labels(2, json.dumps({"stage_labels": "not-a-list"})) == ["base", "mid"]
+    assert ps.resolve_run_stage_labels(2, json.dumps({"stage_labels": [1, 2]})) == ["base", "mid"]
+
+
+def test_resolve_run_stage_labels_zero_images_yields_empty_list():
+    assert ps.resolve_run_stage_labels(0, None) == []
 
 
 def test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp():
@@ -205,8 +247,14 @@ ALL_TESTS = [
     test_hostile_template_never_raises,
     test_resolve_wired_stages_returns_only_wired_in_stable_order,
     test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,
+    test_resolve_shown_stage_one_entry_degrades_to_single_image,
     test_resolve_save_stages_which_semantics,
     test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp,
+    test_resolve_run_stage_labels_prefers_metadata_json_when_it_matches,
+    test_resolve_run_stage_labels_falls_back_when_length_mismatches,
+    test_resolve_run_stage_labels_falls_back_on_garbage_metadata,
+    test_resolve_run_stage_labels_falls_back_when_stage_labels_missing_or_wrong_shape,
+    test_resolve_run_stage_labels_zero_images_yields_empty_list,
 ]
 
 

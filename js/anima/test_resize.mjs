@@ -102,8 +102,10 @@ import {
   sectionLabel,
   measureMinHeight,
   buildPreviewImageUrl,
+  clampPreviewSize,
   DEFAULT_W,
   DEFAULT_H,
+  PREVIEW_MIN_W,
 } from "./render.mjs";
 
 import {
@@ -1114,6 +1116,76 @@ test("Preview: save popover fields write the preview_state WIDGET", () => {
   fire(whichField.children[1], "change");
   assert.equal(previewState(node).save.which, "every wired input");
   assert.ok(SAVE_WHICH_OPTIONS.includes(previewState(node).save.which));
+});
+
+test("clampPreviewSize: raises a below-min width, leaves an at/above-min width untouched, never mutates height", () => {
+  const small = [200, 500];
+  assert.equal(clampPreviewSize(small), small, "returns the same array");
+  assert.equal(small[0], PREVIEW_MIN_W);
+  assert.equal(small[1], 500, "height must never be touched");
+
+  const atMin = [PREVIEW_MIN_W, 300];
+  clampPreviewSize(atMin);
+  assert.equal(atMin[0], PREVIEW_MIN_W);
+  assert.equal(atMin[1], 300);
+
+  const aboveMin = [PREVIEW_MIN_W + 40, 300];
+  clampPreviewSize(aboveMin);
+  assert.equal(aboveMin[0], PREVIEW_MIN_W + 40, "an already-wide size must not be shrunk");
+  assert.equal(aboveMin[1], 300);
+});
+
+test("clampPreviewSize: tolerates a missing/short/non-numeric array without throwing", () => {
+  assert.doesNotThrow(() => clampPreviewSize(undefined));
+  assert.doesNotThrow(() => clampPreviewSize(null));
+  assert.doesNotThrow(() => clampPreviewSize([]));
+  assert.equal(clampPreviewSize(undefined), undefined);
+  const junk = ["not a number", 300];
+  clampPreviewSize(junk);
+  assert.equal(junk[0], PREVIEW_MIN_W, "a non-numeric width is treated as below-min");
+  assert.equal(junk[1], 300, "height untouched even on the junk-width path");
+});
+
+test("Preview body child order: save row -> .wtn-an-wipe -> .wtn-an-pvbar", () => {
+  const node = makePreviewNode({}, { image_a: true, image_c: true });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+  const kids = refs.body.children;
+  assert.equal(kids.length, 3, "exactly save row, wipe, compare bar");
+  assert.ok(hasClass(kids[0], "wtn-an-row"), "1st child is the save row");
+  assert.equal((kids[0].children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent, "save");
+  assert.ok(hasClass(kids[1], "wtn-an-wipe"), "2nd child is the wipe box");
+  assert.ok(hasClass(kids[2], "wtn-an-pvbar"), "3rd child is the compare bar");
+});
+
+test("Preview compare row: with compare.enabled there is exactly ONE .wtn-an-pvbar, and BOTH seg groups live inside its .wtn-an-segs cluster; seg clicks still write compare.a/b and persist", () => {
+  const node = makePreviewNode(
+    { preview_state: JSON.stringify({ compare: { enabled: true, a: "base", b: "final" } }) },
+    { image_a: true, image_b: true, image_c: true },
+  );
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const pvbars = queryAll(refs.body, (n) => hasClass(n, "wtn-an-pvbar"));
+  assert.equal(pvbars.length, 1, "exactly one .wtn-an-pvbar, no second bar for the segs");
+  const pvbar = pvbars[0];
+
+  const segsCluster = pvbar.children.find((c) => hasClass(c, "wtn-an-segs"));
+  assert.ok(segsCluster, "the segs cluster must live inside the SAME pvbar");
+  const segGroups = queryAll(segsCluster, (n) => hasClass(n, "wtn-an-seg"));
+  assert.equal(segGroups.length, 2, "both base|mid|final groups must be inside .wtn-an-segs");
+
+  // The switch + "compare" label are still on the same bar, to its left.
+  assert.ok(pvbar.children.some((c) => hasClass(c, "wtn-an-sw")));
+  assert.ok(pvbar.children.some((c) => hasClass(c, "wtn-an-pvlab") && c.textContent === "compare"));
+
+  // Existing behaviour: clicking a seg button still writes + persists.
+  const segButtons = segGroups.flatMap((seg) => seg.children);
+  const midBtn = segButtons.find((b) => b.textContent === "mid");
+  fire(midBtn, "click");
+  assert.equal(previewState(node).compare.a, "mid");
 });
 
 // ===========================================================================

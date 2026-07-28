@@ -48,10 +48,19 @@ BACKLOG should be updated.
 
 **Deliberately NOT copied:**
 
-- **The `EASY_USE_ANIMA_INPUT` context socket** (`nodes/aio_nodes.py:67-126`). Upstream bundles
-  prompt data + resource *names* into a custom dict socket, then loads MODEL/CLIP/VAE inside
-  the generator. Plain `MODEL`/`CLIP`/`VAE` sockets are better: they compose with every other
-  node in ComfyUI, including our own Loader Panel. See §3.
+- ~~The `EASY_USE_ANIMA_INPUT` context socket~~ — **reversed 2026-07-28: we now ship a context
+  socket too, `ANIMA_CONTEXT`.** This entry originally argued plain `MODEL`/`CLIP`/`VAE` sockets on
+  the Generator itself were better than upstream's bundled dict socket (`nodes/aio_nodes.py:67-126`)
+  because they compose with every other node in ComfyUI. That's still true of the sockets — they
+  didn't go away, they moved. Building the actual Generator surface in ComfyUI made nine separate
+  sockets (`model`/`clip`/`vae`/`positive`/`negative`/`latent`/`seed`/`steps`/`cfg`/`sampler_name`/
+  `scheduler`) visibly worse to work with than upstream's one dict, for a reason upstream's own
+  design already had a chance to teach us: a graph with nine wires into one node is harder to read
+  than a graph with one. The fix keeps upstream's mistake (loading resources *by name inside the
+  generator*) out of the picture while taking its actual insight (bundle it): a new node,
+  `AnimaContextBridge`, takes the nine sockets and emits ONE `ANIMA_CONTEXT` carrying real objects,
+  never names — so composition doesn't move backward into the generator the way upstream's did, it
+  just moves one node upstream, onto a node whose only job is composing. See §3 and §5.
 - *(Nothing here about detection. An earlier draft listed upstream's SAM3 detection as
   not-copied; that was reversed — we adopt the per-block `detect_prompt` and add an optional `SEGS`
   override on top. See §6a.)*
@@ -72,7 +81,7 @@ don't want preview" is expressed by not wiring it.
 | | **Anima Generator** | **Anima Preview** |
 |---|---|---|
 | Does | runs the pipeline | compares images, **and saves them** |
-| Emits | `IMAGE ×3`, `LATENT`, `STRING` | nothing — terminal |
+| Emits | `IMAGE` list (§5 Outputs, reversed 2026-07-28), `LATENT`, `STRING` | nothing — terminal |
 | `OUTPUT_NODE` | **no** | **yes** |
 
 **Saving lives on the Preview node, not the Generator** (decided 2026-07-27). Upstream puts Save
@@ -101,44 +110,67 @@ progress — accepted deliberately.
 
 ---
 
-## 3. Resources — sockets, or the internal loaders, by flag
+## 3. Resources — one `ANIMA_CONTEXT` socket, built by `AnimaContextBridge`
 
-The Generator takes `MODEL` / `CLIP` / `VAE` as **`optional`** sockets, plus a
-`use_internal_loaders` boolean. On → the node's own `unet_name`/`clip_name`/`clip_type`/`vae_name`
-pickers are used and the sockets are ignored. Off → the sockets are used and the pickers hide.
+**Reversed 2026-07-28** (see §1's dated note on the `EASY_USE_ANIMA_INPUT` entry — this section is
+the "how" of that reversal). The Generator used to take `MODEL`/`CLIP`/`VAE` as `optional` sockets
+plus a `use_internal_loaders` flag switching in the node's own `unet_name`/`clip_name`/`clip_type`/
+`vae_name` pickers. **All of that is gone.** There is no internal-loader mode anymore, no pickers,
+no flag. A new node, `AnimaContextBridge` (`nodes/anima/context_bridge.py`, `AnimaFlow/Anima`,
+display name **"Anima Context Bridge"**), takes eleven `optional` sockets — `model` / `clip` /
+`vae` / `positive` / `negative` / `latent` / `seed` / `steps` / `cfg` / `sampler_name` /
+`scheduler` — and emits ONE socket, a custom type `ANIMA_CONTEXT` named `context`, which is now the
+Generator's **entire** `required` input alongside `generation_settings`.
 
-Three constraints, each load-bearing:
+Why bundle rather than keep the sockets loose on the Generator: nine-plus separate wires into one
+node reads worse than one, and the bridge is where composition happens now instead of on the
+generator itself — see §1. Why a *separate node* rather than, say, collapsing the Generator's own
+nine sockets down to a dict-typed input the Generator builds itself: the whole point is that the
+bridge composes with **every other node that already emits these types** — `AnimaLoaderPanel`'s
+real `MODEL`/`VAE`/`CLIP`, a Control Panel row's `COMBO` sampler value, Pixaroma's LoRA loader's
+patched `MODEL`/`CLIP` — the same way the deleted sockets always did, just gathered in one place
+immediately before the Generator instead of scattered across it.
 
-- **The sockets must be `optional`, never `required`.** ComfyUI validates required inputs before
-  the node's code runs, so a required `MODEL` would hard-fail the queue whenever the flag is on
-  and nothing is wired. Optional sockets + a runtime check that raises a readable error
-  (`use_internal_loaders is off but no MODEL is connected`) is the only shape that works.
-- **The pickers hide in JS but keep serializing** — the same hidden-for-rendering-only treatment
-  `panel_state` gets (`js/controls/index.js`'s `hideStateWidget`, and the frontend skill's
-  "hide a declared widget that must still serialize"). Never `serialize = false`. Toggling the
-  flag back and forth must not lose your picks.
-- **Widget order is append-only** (`BACKLOG.md` §4). The flag and the four pickers go at the end
-  of `required` and never move. This already bit the pack once in `42336c0`.
+Three constraints, carried over from the flag design because they're still load-bearing on the new
+one:
 
-`clip_type` defaults to `qwen_image` — the pickers exist to serve Anima
-(`nodes/aio_nodes.py:113`). Everything else in the pack stays format-agnostic per
-`.claude/CLAUDE.md`; this one default is about which *loader* Anima needs, not about prompt
-format.
+- **Every socket on `AnimaContextBridge` is `optional`, never `required`** — there is no
+  `required` list on this node at all. ComfyUI validates required inputs before the node's code
+  runs, so a required `MODEL` would hard-fail the queue for anyone not wiring every single field.
+  An unwired socket simply contributes nothing to the context (see `src/anima/context.py`'s
+  `build_context`) — it's `AnimaGenerator`, the *consumer*, that decides at run time what a
+  particular pipeline configuration actually needs and raises a readable error for whatever's
+  missing (`ContextFieldMissing`, naming the field and pointing back at the bridge).
+- **The context must distinguish "never wired" from "wired to a value that happens to be
+  `None`".** A field the bridge never received at all and a field whose wired producer
+  legitimately emitted `None` both look like `None` if you only look at the value — that's exactly
+  the ambiguity `build_context`'s `supplied` map exists to resolve, and it's why the bridge's own
+  kwarg defaults are a `MISSING` sentinel, not plain `None` (`context.py`'s own docstring has the
+  mechanism). Nothing downstream should ever need to guess.
+- **`AnimaContextBridge`'s own socket order is append-only**, same reasoning as the flag-era
+  pickers (`BACKLOG.md` §4, `42336c0`) — a new context field goes at the end of `OPTIONAL_KEY_ORDER`,
+  never inserted.
 
-**Inline mode owns the latent too** — width, height, ratio and batch. "Inline" means *every*
-resource, and image size is one; the `latent` socket is ignored exactly like `model`/`clip`/`vae`.
-Ratios are pinned to their canonical dimensions at the 1024 tier (2:3 is 832×1216, **not** a derived
-832×1248) using the same table and the same reasoning as `control-panel-design.md` §3a, so the two
-nodes agree on what "2:3" means.
+**LoRAs still need no socket of their own** — this is UNCHANGED by the reversal, just moved one
+node over: externally they arrive already baked into `MODEL`/`CLIP` by Pixaroma's loader, upstream
+of the bridge instead of upstream of the Generator (§5b). The inline LoRA list that used to exist
+for `use_internal_loaders`'s "on" case is gone along with that flag — there is no more internal-
+loader mode for an inline list to serve, so `generation_settings.loras` was deleted too (§8).
+`src/anima/loras.py` still serves nothing on the wire; it's now genuinely dead code (no caller left
+at all), kept in place rather than deleted because a pure module that still round-trips correctly
+wasn't this task's problem to remove.
 
-LoRAs split the same way, but not via a stack socket: externally they arrive already baked into
-`MODEL`/`CLIP` by Pixaroma's loader; inline mode gets its own LoRA list because there is no wire for
-that node to sit on (§5b).
+**An unwired `latent` no longer falls back to an inline-mode settings block** (there is no more
+inline mode) — `pipeline.py` falls back to a FIXED default size (1024×1024, batch 1) instead. This
+was a real decision, not an oversight: every context field is optional by design, so an unwired
+`latent` has to degrade the same predictable way every other unwired field does, not become the one
+field that hard-fails a run. A readable error was considered and rejected for exactly that reason.
 
-**Overlap with the Loader Panel is intentional, not redundant.** `AnimaLoaderPanel` already is
-a unet/vae/clip picker with real `MODEL`/`VAE`/`CLIP` outputs, and wiring it in is the better
-setup — it caches separately, so a seed bump doesn't reload the UNET. The internal pickers exist
-for the one-node case: a scratch graph where a second node isn't worth it.
+**The overlap with the Loader Panel is still intentional, not redundant.** `AnimaLoaderPanel` is a
+unet/vae/clip picker with real `MODEL`/`VAE`/`CLIP` outputs, and wiring it into the bridge is the
+normal setup — it caches separately, so a seed bump doesn't reload the UNET. There is no more
+one-node "scratch graph" case the way the old internal pickers served — a scratch graph now needs
+the bridge node too, which is the cost of collapsing nine sockets onto one that composes.
 
 ---
 
@@ -208,51 +240,58 @@ collide on its rebuild.
 
 ### Inputs
 
-Grouped as the node body groups them — **resources**, **sampler**, **detailer passes** — because a
-socket's neighbours are how a user works out what it is for. (An earlier draft filed `latent` and
-`lora_stack` under a "detail targets" heading with the `SEGS` inputs, which made all three unreadable.)
+**Reversed 2026-07-28** (§1/§3): the Generator's whole input surface collapsed to two `required`
+keys. Everything that used to be a separate socket or a picker widget on THIS node now lives on
+`AnimaContextBridge` instead (§3) — the table below is deliberately short.
 
 | | Name | Type | Notes |
 |---|---|---|---|
-| required | `positive` | `CONDITIONING` | |
-| required | `negative` | `CONDITIONING` | |
+| required | `context` | `ANIMA_CONTEXT` | from `AnimaContextBridge` (§3). Carries MODEL/CLIP/VAE/positive/negative/latent + the five sampler scalars |
 | required | `generation_settings` | `STRING` | hidden-for-rendering, natively serialized; the whole settings tree |
-| required | `use_internal_loaders` | `BOOLEAN` | §3 |
-| required | `unet_name` / `clip_name` / `clip_type` / `vae_name` | combo | §3; hidden when the flag is off |
-| optional | `model` / `clip` / `vae` | `MODEL`/`CLIP`/`VAE` | §3 |
-| optional | `latent` | `LATENT` | size and batch. Ignored in inline mode (§3) |
-| optional | `seed` / `steps` / `cfg` | `INT`/`INT`/`FLOAT` | §5a — wired wins, per field |
-| optional | `sampler_name` / `scheduler` | `COMBO` | §5a |
 | hidden | `unique_id` | `UNIQUE_ID` | `PROMPT`/`EXTRA_PNGINFO` live on the **Preview** node now — §7, §9 |
 
-Prompt text is **not** an input. Conditioning comes in already encoded, so prompt editing stays
-upstream in the Rule Builder / Prompt Studio line. Upstream made the same call and it is right.
+Deleted from this node entirely: `use_internal_loaders`, `unet_name`/`clip_name`/`clip_type`/
+`vae_name`, and the `model`/`clip`/`vae`/`latent`/`seed`/`steps`/`cfg`/`sampler_name`/`scheduler`
+sockets. None of them are "hidden now" or "moved to optional" on the Generator — they don't exist
+on this node's `INPUT_TYPES` at all anymore. **This is a documented breaking change to already-
+saved workflows**, not an oversight: removing widgets (unlike inserting one mid-list, which is what
+the append-only rule actually guards against) unavoidably shifts every positional value after the
+cut point. Accepted because these nodes are days old and still `EXPERIMENTAL`.
 
-### 5a. Sampler values — five sockets, wired wins, no flag
+Prompt text is **not** an input, unaffected by this reversal. Conditioning comes in already
+encoded (now via the context's `positive`/`negative` fields), so prompt editing stays upstream in
+the Rule Builder / Prompt Studio line. Upstream made the same call and it is right.
 
-`seed`, `steps`, `cfg`, `sampler_name` and `scheduler` are each an `optional` socket. **If a socket
-is wired the wire drives that field; if it isn't, the `generation_settings.sampler` value is used.**
-Per field, independently — no `use_internal_sampler` flag.
+### 5a. Sampler values — still per-field wins, now via the context
 
-Deliberately *not* the loaders' flag pattern, and the difference is justified: the five are
-independent, and the realistic setup wires only `seed` from a Control Panel row while steps and cfg
-stay internal. A global flag forces all-or-nothing on values that have no reason to move together.
-The loaders keep their flag because `MODEL`/`CLIP`/`VAE` genuinely do travel together — they are one
-decision about which checkpoint you are running.
+`seed`, `steps`, `cfg`, `sampler_name` and `scheduler` are still each independently overridable,
+same reasoning as before this reversal — the realistic setup wires only `seed` from a Control Panel
+row while steps and cfg stay internal, so a global flag would force all-or-nothing on values that
+have no reason to move together. What changed is WHERE the override comes from: there is no more
+"wired socket on the Generator" to check — the check is now **"did the context supply this field"**
+(`src/anima/context.py`'s `context_supplied`), read off `AnimaContextBridge`'s own sockets one node
+upstream. **If the context supplied a field, it drives that field; if it didn't, the
+`generation_settings.sampler` value is used.** Per field, independently — still no
+`use_internal_sampler` flag, and still a different pattern from the resources' now-deleted flag for
+the same reason as before: `MODEL`/`CLIP`/`VAE` genuinely travel together as one checkpoint
+decision; these five scalars don't.
 
-**The overlay must show a wired field as driven by the wire**, not as an editable number that is
-silently ignored. That is the whole risk of wired-wins: two plausible sources and no indication of
-which is live. The socket's connected state is the single source of truth for that badge.
+**The overlay must show a field driven by the context as driven by the context**, not as an
+editable number that's silently ignored — same risk as before, just re-anchored to "the context
+supplied it" instead of "the socket is wired". Whichever frontend slice reads this: the bridge's
+own connected-socket state is still the single source of truth for that badge, it's just one hop
+further upstream than it used to be.
 
-`sampler_name` / `scheduler` arrive as **`COMBO`** — settled and verified live on 2026-07-27
-(`control-panel-design.md` §5): a Control Panel combo row sets `output.type = "COMBO"` and wires to a
-KSampler correctly. So the panel can drive all five, not just the numerics.
+`sampler_name` / `scheduler` still arrive as **`COMBO`**, now on `AnimaContextBridge` rather than
+the Generator — settled and verified live on 2026-07-27 (`control-panel-design.md` §5): a Control
+Panel combo row sets `output.type = "COMBO"` and wires to a KSampler correctly. So the panel can
+still drive all five, just by wiring into the bridge instead of the generator.
 
 > **Legacy-litegraph caveat, inherited from the Control Panel** (`control-panel-design.md` §5): on
 > the target renderer a plain declared widget is a canvas widget, not a socket. Declaring these five
-> as socket-only `optional` inputs (`forceInput`) sidesteps the "right-click → Convert widget to
-> input" dance entirely — their internal counterparts live in the settings JSON, not as widgets, so
-> there is nothing to convert and no widget-order exposure (`BACKLOG.md` §4).
+> as socket-only `optional` inputs (`forceInput`) on `AnimaContextBridge` sidesteps the "right-click
+> → Convert widget to input" dance entirely — their internal counterparts live in the settings JSON,
+> not as widgets, so there is nothing to convert and no widget-order exposure (`BACKLOG.md` §4).
 
 ### 5b. LoRA — Pixaroma's node patches `MODEL`/`CLIP`; we only handle the inline case
 
@@ -277,56 +316,48 @@ calling it "not a stacker":
 That is the only thing this design turns on: there is no stack-shaped output to plug into a
 `lora_stack` socket, so the socket is not how LoRAs get here.
 
-**So the primary LoRA path needs nothing from us.** The LoRAs are already baked into `MODEL`/`CLIP`
-before this node ever sees them:
+**So the LoRA path needs nothing from us.** The LoRAs are already baked into `MODEL`/`CLIP` before
+either the bridge or the Generator ever sees them:
 
 ```
-Loader Panel ──MODEL──> Pixaroma LoRA Loader ──MODEL──────────> Generator.model
-             ──CLIP───>                       ──CLIP──> Text Encode ──COND──> Generator.positive
+Loader Panel ──MODEL──> Pixaroma LoRA Loader ──MODEL──────────> Context Bridge.model
+             ──CLIP───>                       ──CLIP──> Text Encode ──COND──> Context Bridge.positive
                                               ──triggers──> (into your prompt text)
 ```
+
+(§3's reversal moved this diagram's endpoint from `Generator.model`/`Generator.positive` to
+`Context Bridge.model`/`Context Bridge.positive` — the LoRA reasoning underneath is unchanged.)
 
 > **The subtle part, and it fails silently.** Route the **patched** `CLIP` onward to your text encode,
 > not the Loader Panel's raw one. Wire the raw `CLIP` to the encoder and the LoRA's *model* effect
 > still lands (via `MODEL`) while its *CLIP* effect vanishes — no error, just a weaker result and
 > trigger words that read differently than intended. That is exactly why their node takes `CLIP` at
-> all, and why it sits **before** the text encode rather than just before the generator.
+> all, and why it sits **before** the text encode rather than just before the bridge.
 
-**There is no `lora_stack` socket.** It was briefly kept as a "secondary path" for packs that *do*
-emit one (efficiency-nodes, rgthree, Impact) — dropped 2026-07-27 as speculative compatibility in a
-pack built for a setup that doesn't need it. It also made LoRAs look like they had *three* ways in,
-when the honest answer is two, matching the two resource modes exactly:
+**There is no `lora_stack` socket, and there is no inline LoRA list either anymore.**
 
-| mode | how LoRAs arrive |
-|---|---|
-| sockets (`use_internal_loaders` off) | already applied to `MODEL`/`CLIP`, upstream of this node |
-| inline (`use_internal_loaders` on) | the node's own inline list |
+The `lora_stack` socket was never built — dropped 2026-07-27 as speculative compatibility for packs
+that *do* emit a `LORA_STACK`-shaped output (efficiency-nodes, rgthree, Impact) in a pack built for
+a setup that doesn't need it.
 
-Appending an optional socket later is safe under the append-only rule, so nothing is foreclosed.
+The **inline LoRA list, on the other hand, WAS built and is now deleted (2026-07-28)** — this is a
+genuine reversal, not a "never built" like the stack socket. It existed for exactly one reason:
+with `use_internal_loaders` **on** (§3, now also deleted), the Generator loaded its own unet/clip
+internally, so there was no `MODEL`/`CLIP` wire for Pixaroma's LoRA loader to sit on, and the inline
+list was the only way to get LoRAs in at all in that mode. Deleting `use_internal_loaders` deletes
+that mode entirely, and with it the inline list's whole justification — `generation_settings.loras`
+is gone from the settings tree (§8), and `apply_lora_stack`/`_resolve_lora_name` are gone from
+`pipeline.py`. **There is now exactly ONE way LoRAs arrive: already applied to `MODEL`/`CLIP`,
+upstream of `AnimaContextBridge`.** `src/anima/loras.py`'s pure normalization functions
+(`normalize_lora_stack`/`entries_to_apply`, ported from upstream's `_normalize_aio_lora_stack`) are
+consequently dead code with no caller anywhere in this pack — kept in place, unedited, rather than
+deleted, since removing a pure module that still round-trips correctly wasn't in scope for the task
+that reversed the mode using it.
 
-**The inline list is the one case we must handle ourselves** — and this is now its whole
-justification. With `use_internal_loaders` **on**, the node loads its own unet/clip internally, so
-there is no `MODEL`/`CLIP` wire for Pixaroma's node to sit on and no way to get LoRAs in from
-outside. Hence: inline mode gets an inline LoRA list, and it is the only mode that needs one.
+Appending an optional LoRA-stack socket to `AnimaContextBridge` later is still safe under the
+append-only rule, so nothing is foreclosed if a pack that emits one ever becomes worth supporting.
 
-- Stored in `generation_settings.loras` as an ordered array of
-  `{name, strength_model, strength_clip}`. **Order is application order**, matching how their node
-  applies rows.
-- **Uncapped** — settings-blob entries, not sockets, so they cost no slots. (Contrast
-  `MAX_DETAILER_PASSES`, capped precisely because each pass *is* a socket.)
-- Editor is a LoRA tab in the overlay, present only while inline mode is on.
-- Both strengths `0` ⇒ skipped when building, per upstream Anima
-  (`aio/model_preparation.py:236`). The entry stays, muted rather than deleted.
-
-Port upstream's `_normalize_aio_lora_stack` (`aio/model_preparation.py:164-199`) for the inline list
-*and* the demoted socket. It is deliberately promiscuous about shape — `{"__value__": …}` envelopes,
-JSON strings, `dict` items under several key spellings (`name`/`lora`/`lora_name`,
-`strength_model`/`model_strength`/`strength`, `strength_clip`/`clip_strength`/`strengthTwo`),
-`list`/`tuple` items — and drops entries named empty or `"none"`. **Widen one case:** it requires
-`len(item) >= 3`, so a producer emitting 2-tuples `(name, strength)` has every entry *silently
-dropped*. Accept `len >= 2`, defaulting `strength_clip` to `strength_model`.
-
-#### Two things in their node we deliberately don't copy
+#### One thing in their node we deliberately don't copy
 
 - **Its state handshake.** `LoraLoaderState` is declared in **`hidden` `INPUT_TYPES`**
   (`node_lora_loader.py:48`) and injected at `graphToPrompt` time. This pack forbids that pattern —
@@ -334,30 +365,56 @@ dropped*. Accept `len >= 2`, defaulting `strength_clip` to `strength_model`.
   to a backend in a real deployment while the on-node preview looked correct. Same rule as
   `control-panel-design.md` §1: a declared, natively-serialized STRING widget, hidden for rendering
   only.
-- **Its zero-strength semantics.** They keep a zeroed row's trigger words (`apply()`: "the user
-  turned it on on purpose"). Upstream Anima skips zeroed entries outright. We follow **upstream
-  Anima** — we have no trigger-word output for a zeroed LoRA to contribute to, so keeping it would
-  mean applying nothing and claiming something.
+
+(A second "thing we don't copy" used to live here — their zero-strength semantics for a *zeroed
+inline LoRA row*. Moot now that the inline list itself is gone; upstream's zero-strength choice
+only ever mattered for code we no longer have.)
 
 ### Outputs
 
+**Reversed 2026-07-28.** The three fixed `IMAGE` sockets below (`image`/`image_base`/`image_mid`)
+and the pass-through rule that justified them are BOTH gone, replaced by one `IMAGE` LIST:
+
 | Name | Type | Content |
 |---|---|---|
-| `image` | `IMAGE` | final, after every enabled stage |
-| `image_base` | `IMAGE` | first-pass output — **before highres too** |
-| `image_mid` | `IMAGE` | after detailer, before upscale |
+| `images` | `IMAGE` (`OUTPUT_IS_LIST`) | this run's produced images, ordered `base, mid, final` |
 | `latent` | `LATENT` | final latent |
-| `metadata_json` | `STRING` | per-stage metadata for debugging |
+| `metadata_json` | `STRING` | per-stage metadata for debugging, including `stage_labels` |
 
-**Fixed set, not dynamic-per-enabled-stage.** Dynamic outputs break wires whenever a stage is
-toggled. Unwired outputs cost nothing — the pipeline already computed those tensors.
+Why the reversal: a ComfyUI `IMAGE` is one tensor `[B, H, W, C]`, so a single BATCHED output can't
+hold `base`/`mid`/`final` together once a later stage changes resolution (base 1024, upscaled
+2048) — three separate FIXED sockets were the fix for that, each always populated. Filling all
+three unconditionally is exactly what forced the old pass-through rule: with three sockets to fill
+and no dynamic-output machinery, a disabled stage had nothing to hand back except the previous
+stage's tensor, so `image_mid == image_base` became a *documented*, not incidental, "no detailer
+ran" signal.
 
-**Highres has no socket of its own**, absorbed into the base→mid span. If highres-specific A/B
-is ever wanted that is a fourth output, appended.
+`OUTPUT_IS_LIST = (True, False, False)` removes the reason for that rule to exist at all: `images`
+is now a genuine Python list `AnimaGenerator.generate()` returns for that slot, and a stage that
+didn't produce a genuinely different image is **OMITTED from the list**, never duplicated
+(`src/anima/stages.resolve_stage_labels`). A run where every optional stage is off returns a
+length-1 list (`["base"]` worth of tensors) instead of three identical images. Order is always
+`base` (present unconditionally — always the first pass), then `mid` (present iff highres or a
+live detailer pass changed the image), then `final` (present iff a live upscale or an applied
+postprocess resize changed it again).
 
-**A disabled stage's output passes through the previous stage's image.** A dead socket mid-chain
-is worse than a duplicate image when the entire point is comparison. This must be documented on
-the node — `image_mid == image_base` is a legitimate result meaning "no detailer ran", not a bug.
+**The list itself carries no labels — `metadata_json.stage_labels` is now the ONLY way anything
+downstream can tell the positions apart.** It's an ordered list of strings (`"base"`/`"mid"`/
+`"final"`) the same length as `images`, index-aligned: position `i` of `images` is stage
+`stage_labels[i]`. `AnimaPreview` reads this back rather than re-deriving it — see §7's own
+reversal note and `src/anima/preview_settings.resolve_run_stage_labels`, "keep the label mapping in
+exactly one pure place" is the whole design constraint here.
+
+**Highres still has no socket of its own**, absorbed into the base→mid span exactly as before this
+reversal — that part of the old design didn't change, only the SHAPE that "absorbed into the span"
+takes (a possibly-omitted list entry, not a duplicated fixed socket).
+
+**VERIFY-IN-COMFYUI**: this was built and reasoned from ComfyUI's documented `OUTPUT_IS_LIST`
+execution contract, not exercised against a live process (none installed in this dev environment).
+Expected downstream behaviour: a node wired to `images` that does NOT itself declare
+`INPUT_IS_LIST` is invoked ONCE PER ITEM in the list (every other, non-list input held constant
+across those calls); a node that DOES declare `INPUT_IS_LIST` (`AnimaPreview`, §7) receives the
+whole list in one call instead.
 
 **Not** an `OUTPUT_NODE` — it doesn't save (§2). Nothing runs unless a Preview is wired.
 
@@ -369,7 +426,9 @@ Order is upstream's (`aio/generation_pipeline.py:10-17`) minus its `save_output`
 independently enabled. **Five stages, not six.**
 
 1. **First pass** — Mod Guidance patch (if enabled and Spectrum present) → `KSampler` → VAE
-   decode. Size from the `latent` socket if wired, else `settings.latent`.
+   decode. Size from the context's `latent` field if supplied, else a fixed default
+   (1024×1024, batch 1 — reversed 2026-07-28, §3: there is no more `settings.latent` block to
+   fall back to, since inline mode and its only consumer are both gone).
 2. **Highres** — latent upscale by `scale_by` (default 1.5), resample, re-sample at
    `denoise` 0.25. Inherits the first-pass sampler unless `inherit_sampler_settings` is off.
 3. **Detailer** — **N blocks, each detecting for itself.** Per block:
@@ -476,10 +535,25 @@ design makes it more valuable than it was upstream.
 
 Terminal node, `AnimaFlow/Anima`, one DOM widget.
 
-- **Two IMAGE inputs** (`image_a`, `image_b`), both `optional`, plus an optional third so all
-  three generator outputs can be wired at once and any two chosen.
-- **A picker for which two to compare.** Default `base` vs `final` — the comparison actually
-  wanted most of the time.
+**Reversed 2026-07-28**: `image_a`/`image_b`/`image_c` are gone, replaced by one `images` input
+wired straight to the Generator's own `images` list output (§5's reversal), plus `metadata_json`
+(wired to the Generator's `metadata_json`) so this node can recover which list position is which
+stage. This node now declares `INPUT_IS_LIST = True` — the WHOLE node, not just `images`: every
+declared input, including the hidden `prompt`/`extra_pnginfo`, arrives wrapped in a list, so
+`preview()` unwraps each single-valued one explicitly (see `nodes/anima/preview.py`'s own comment
+for why this is worth spelling out — it's an easy thing to get subtly wrong). `images` is the one
+input that must NOT be unwrapped to its first element, since staying the full list is its entire
+point. Compare is now **within the current run**: the wipe picks two entries from the received
+list by stage name, resolved through `src/anima/preview_settings.resolve_run_stage_labels` — "keep
+the label mapping in exactly one pure place" (§5's own note) means this function, and only this
+function, decides which position is which stage; `AnimaPreview` never re-derives it.
+
+- **One `images` input** (`optional`, `IMAGE`, the whole list) plus `metadata_json` (`optional`,
+  `STRING`) for the label mapping above.
+- **A picker for which two stages to compare.** Default `base` vs `final` — the comparison
+  actually wanted most of the time. If only one stage is present this run (e.g. every optional
+  stage was off), the compare degrades to a plain single-image view automatically —
+  `resolve_shown_stage` just finds the one stage that exists, regardless of what the picker names.
 - **An enable/disable toggle for the wipe.** Off → plain single-image view. The compare must
   never be something to work around.
 - **Hover wipe, not drag.** Upstream attaches `pointermove` without gating on button state
@@ -491,6 +565,24 @@ Terminal node, `AnimaFlow/Anima`, one DOM widget.
   images have different resolutions (base 1024 → upscaled 2048); a naive two-layer overlay
   misaligns, and the wipe must cross the same framing on both sides.
 - Per-pane labels naming which output each side is, so a wipe is never ambiguous.
+
+**Body order (revised 2026-07-28, supersedes `playground/generator.html`'s three-row stack).** The
+mockup put the image box first, then the compare switch, then the `save` row, then the
+`base|mid|final` **vs** `base|mid|final` pickers on a *fourth* row. Built and used, that read wrong
+twice over: `save` is the node's one *setting* and belongs above the thing it acts on rather than
+buried under it, and a whole row spent on two segmented groups pushed the switch that enables them
+away from them. Shipped order is now **`save` row → image box → one compare row**, where the compare
+row carries `[switch] compare` on the left and both pickers right-aligned on the same line
+(`.wtn-an-segs`, `margin-left: auto`). That fold is what sets the node's **min width, 380px**
+(`render.mjs`'s `PREVIEW_MIN_W`, enforced Preview-only via an `onResize` clamp) — the switch + label
++ both groups measure ~340px, and a narrower node clipped the right-hand group.
+
+**Popover geometry is the mockup's, not the port's.** `.pop` was signed off at **344px wide /
+460px max-height with border-box sizing** and a 116px field-label column
+(`playground/generator.html:247`, `:252`, `:271`). The first port shrank it to 268px/420px and
+108px, *and* lost border-box (popovers mount on `document.body`, so `.wtn-an-root *`'s box-sizing
+rule never reaches them) — which squeezed every value control to ~124px and visibly cut long values
+like the `filename` template. Restored to the signed-off numbers; don't re-shrink them.
 
 ### 7a. Save — this node owns it
 
@@ -524,19 +616,25 @@ we ship:
                   sampler_name: "er_sde", scheduler: "simple", denoise: 1.0, shift: 3.0 },
   mod_guidance: { mode, profile, quality_tags, quality_neg, mod_w, mod_start_layer,
                   mod_end_layer, ... },
-  latent:       { width, height, batch },
-  loras:        [ { name, strength_model, strength_clip } ],   // inline mode only; order = apply order
   highres:      { enabled: false, scale_by: 1.5, upscale_method, multiple, max_long_edge,
                   steps: 20, denoise: 0.25,                     // always this stage's own
                   inherit_sampler_settings: true,               // governs the three below
                   cfg: 8.0, sampler_name, scheduler },
-  detailer:     { enabled: false, ...upstream face defaults },
   upscale:      { enabled: false, scale_by: 2.0, steps: 20, inherit_sampler_settings: true,
                   cfg, sampler_name, scheduler, denoise: 0.2, usdu: {...} },
   postprocess:  { enabled: false, fit: { mode, max_long_edge: 2048, max_megapixels: 4.0, method } },
-  detailer:     { blocks: [ { id, label, detect_prompt, detect_count, threshold, ...refine } ],
-                  order: [ ...ids ] } }          // NO save block -- that's the Preview node's state
+  detailer:     { enabled: false, sam3: { checkpoint }, order: [ ...ids ],
+                  blocks: { face: {...}, eye: {...}, [custom_id]: {...} } } }
+                                                  // NO save block -- that's the Preview node's state
 ```
+
+**Reversed 2026-07-28: `latent` and `loras` are DELETED from this tree** (§3's reversal —
+`use_internal_loaders`'s inline mode was their only consumer, and that mode no longer exists).
+Resources — MODEL/CLIP/VAE, LoRAs already baked in, and the starting LATENT — now arrive
+exclusively through `AnimaContextBridge`'s `ANIMA_CONTEXT` (§3); an unwired `latent` falls back to
+a fixed default size in `pipeline.py` itself, not to a settings block. A hand-edited payload that
+still sets either key isn't rejected (unknown keys always pass through, per this section's own
+tolerant/additive contract below) — it's simply inert data nothing reads anymore.
 
 The Preview node keeps its **own** settings blob, same hidden-serialized-STRING pattern:
 
@@ -606,20 +704,44 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   mean disabled-with-defaults, a version bump migrates forward.
 - **Freeze the `required` key order** in a regression test, as the old
   `test_anima_generator_helpers.py` did — this is the append-only rule made enforceable.
-- **Stage gating**: each stage disabled ⇒ its output passes the previous image through; detailer
-  with every block off, or with Impact absent ⇒ inert, not an error.
-- **Resource resolution**: flag on ⇒ pickers win and sockets are ignored; flag off with no
-  `MODEL` ⇒ a readable error, not an `AttributeError` mid-sample.
+  **Reversed 2026-07-28**: the Generator's own frozen order shrank from eight keys to two
+  (`context`, `generation_settings`) — a documented EXCEPTION to append-only (removal, not
+  insertion), not a violation of it; the test asserts the new two-key tuple, not the old one.
+- **Context building** (`test_anima_context.py`, new 2026-07-28): which of `CONTEXT_FIELDS` are
+  recorded as supplied vs. absent; a field supplied as `None` is distinguishable from one that was
+  never supplied at all; hostile/garbage context objects fail closed rather than raising.
+- **Stage labelling**: `resolve_stage_labels` (replaces the deleted `resolve_outputs` — 2026-07-28)
+  — `base` is always present; `mid`/`final` are each present only when something actually changed
+  the image, never duplicated as a pass-through; every combination of the four transform flags
+  keeps `base` first; one enabled stage ⇒ one entry. Detailer gating itself
+  (`detailer_is_live`) is unaffected by this reversal: every block off, or Impact absent, ⇒ inert,
+  not an error.
+- **Missing context fields**: `AnimaGenerator` given a context missing `model`/`clip`/`vae`/
+  `positive`/`negative` raises a readable `ContextFieldMissing` naming the field and the bridge
+  node, never an `AttributeError` mid-sample.
 - **Soft imports**: Spectrum/USDU absent ⇒ that section disabled, generation otherwise
   unchanged. Test with the pack genuinely absent, and in a **subprocess** — a repo-root-on-
   `sys.path` shim masks exactly this class of bug (see the `comfyui-pack-import-structure` skill).
 - **Postprocess fit maths** and **USDU tile planning** are pure functions; test them directly.
-- **`inherit_sampler_settings` resolution** (§6b): with the flag on, a stage's `cfg`, `sampler_name`
-  and `scheduler` come from the first pass while its `steps` and `denoise` never do. Assert both
-  directions for all three stages, and assert the two *un*inherited fields explicitly — "inherit
-  everything" is the intuitive reading and the wrong one.
+- **`inherit_sampler_settings` resolution** (§6b, unaffected by this task's reversal): with the flag
+  on, a stage's `cfg`, `sampler_name` and `scheduler` come from the first pass while its `steps` and
+  `denoise` never do. Assert both directions for all three stages, and assert the two *un*inherited
+  fields explicitly — "inherit everything" is the intuitive reading and the wrong one.
+- **Preview's `INPUT_IS_LIST` unwrapping** (2026-07-28): every declared input — including the
+  hidden `prompt`/`extra_pnginfo` — arrives wrapped in a one-element list and must be unwrapped
+  explicitly, EXCEPT `images` itself, which stays the real multi-item list; a run's position →
+  stage-label mapping (`resolve_run_stage_labels`) prefers `metadata_json.stage_labels` and falls
+  back to positional `base, mid, final` on anything hostile; a one-entry `images` list degrades to
+  a single-image view, not a broken compare.
 - Frontend: `node js/anima/test_*.mjs` for the wipe geometry and settings round-trip. Mark
-  what only a browser can confirm with `VERIFY-IN-COMFYUI:`.
+  what only a browser can confirm with `VERIFY-IN-COMFYUI:`. **As of this task, the JS suite tests
+  the surface this doc's §3/§5/§6/§7 reversals just removed** (`use_internal_loaders`, the inline
+  LoRA/latent rows, `image_a`/`image_b`/`image_c`, `resolveOutputs`'s pass-through rule) — it still
+  reports green because it's fixture/mock-driven and nothing in it currently cross-checks against
+  live Python at test time, but the checked-in `fixture_default_generation_settings.json` already
+  disagrees with `src/anima/settings.DEFAULT_GENERATION_SETTINGS` (`latent`/`loras` no longer
+  exist there). Bringing the JS side current with this reversal is the next dispatch's job, not
+  done here.
 
 ---
 

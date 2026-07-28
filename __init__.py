@@ -13,6 +13,7 @@ Add a node:
 
 from __future__ import annotations
 
+from .nodes.anima.context_bridge import AnimaContextBridge
 from .nodes.anima.generator import AnimaGenerator
 from .nodes.anima.preview import AnimaPreview
 from .nodes.controls.control_panel import AnimaControlPanel
@@ -37,6 +38,7 @@ NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesText": PromptRulesText,
     "AnimaControlPanel": AnimaControlPanel,
     "AnimaLoaderPanel": AnimaLoaderPanel,
+    "AnimaContextBridge": AnimaContextBridge,
     "AnimaGenerator": AnimaGenerator,
     "AnimaPreview": AnimaPreview,
 }
@@ -45,6 +47,7 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptRulesText": "Prompt Rules",
     "AnimaControlPanel": "Anima Control Panel",
     "AnimaLoaderPanel": "Anima Loader Panel",
+    "AnimaContextBridge": "Anima Context Bridge",
     "AnimaGenerator": "Anima Generator",
     "AnimaPreview": "Anima Preview",
 }

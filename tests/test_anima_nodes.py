@@ -1,9 +1,12 @@
-"""Plain-script tests for the `AnimaGenerator`/`AnimaPreview` node classes'
-structural contract (design doc §5/§7, BACKLOG.md §4): the frozen `required`
-key order (append-only -- `42336c0` already broke saved workflows once by
-inserting mid-list), `optional`/`hidden` shape, `OUTPUT_NODE`/`EXPERIMENTAL`/
-`CATEGORY`, and that every `INPUT_TYPES` entry and every `RETURN_TYPES` entry
-carries a tooltip (theme-skill requirement).
+"""Plain-script tests for the `AnimaContextBridge`/`AnimaGenerator`/
+`AnimaPreview` node classes' structural contract (design doc §1/§3/§5/§7,
+BACKLOG.md §4): the frozen `required` key order (append-only -- `42336c0`
+already broke saved workflows once by inserting mid-list; THIS commit's own
+Generator shrink is a documented EXCEPTION to that rule, not a violation --
+see `generator.py`'s own module docstring), `optional`/`hidden` shape,
+`OUTPUT_NODE`/`OUTPUT_IS_LIST`/`INPUT_IS_LIST`/`EXPERIMENTAL`/`CATEGORY`, and
+that every `INPUT_TYPES` entry and every `RETURN_TYPES` entry carries a
+tooltip (theme-skill requirement).
 
 Run directly: `python tests/test_anima_nodes.py` (no pytest, per project convention).
 """
@@ -14,8 +17,77 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from nodes.anima.context_bridge import OPTIONAL_KEY_ORDER, AnimaContextBridge
 from nodes.anima.generator import REQUIRED_KEY_ORDER, AnimaGenerator
 from nodes.anima.preview import AnimaPreview
+
+# ---------------------------------------------------------------------------
+# AnimaContextBridge
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_has_no_required_inputs_at_all():
+    # design doc §1/§3: "nothing is required -- an unwired socket simply
+    # contributes nothing".
+    input_types = AnimaContextBridge.INPUT_TYPES()
+    assert input_types["required"] == {}
+
+
+def test_bridge_optional_key_order_is_frozen():
+    input_types = AnimaContextBridge.INPUT_TYPES()
+    assert tuple(input_types["optional"].keys()) == OPTIONAL_KEY_ORDER
+    assert OPTIONAL_KEY_ORDER == (
+        "model", "clip", "vae", "positive", "negative", "latent",
+        "seed", "steps", "cfg", "sampler_name", "scheduler",
+    )
+
+
+def test_bridge_five_sampler_scalars_are_forceinput():
+    input_types = AnimaContextBridge.INPUT_TYPES()
+    for name in ("seed", "steps", "cfg", "sampler_name", "scheduler"):
+        assert input_types["optional"][name][1].get("forceInput") is True, name
+
+
+def test_bridge_has_no_hidden_inputs():
+    assert AnimaContextBridge.INPUT_TYPES().get("hidden", {}) == {}
+
+
+def test_bridge_is_experimental_and_correct_category():
+    assert AnimaContextBridge.EXPERIMENTAL is True
+    assert AnimaContextBridge.CATEGORY == "AnimaFlow/Anima"
+
+
+def test_bridge_single_output_is_a_context_socket_named_context():
+    assert AnimaContextBridge.RETURN_TYPES == ("ANIMA_CONTEXT",)
+    assert AnimaContextBridge.RETURN_NAMES == ("context",)
+
+
+def test_bridge_every_input_and_output_has_a_tooltip():
+    input_types = AnimaContextBridge.INPUT_TYPES()
+    for name, spec in input_types["optional"].items():
+        opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+        assert "tooltip" in opts, name
+    assert len(AnimaContextBridge.OUTPUT_TOOLTIPS) == len(AnimaContextBridge.RETURN_TYPES)
+
+
+def test_bridge_build_returns_a_context_object_recording_supplied_fields():
+    node = AnimaContextBridge()
+    (context,) = node.build(model="M", positive="POS")
+    assert context["values"]["model"] == "M"
+    assert context["values"]["positive"] == "POS"
+    assert context["supplied"]["model"] is True
+    assert context["supplied"]["positive"] is True
+    # Everything else genuinely never passed -- absent, not "supplied as None".
+    assert context["supplied"]["clip"] is False
+    assert context["values"]["clip"] is None
+
+
+def test_bridge_build_with_nothing_wired_supplies_nothing():
+    node = AnimaContextBridge()
+    (context,) = node.build()
+    assert all(v is False for v in context["supplied"].values())
+    assert all(v is None for v in context["values"].values())
+
 
 # ---------------------------------------------------------------------------
 # AnimaGenerator
@@ -23,46 +95,30 @@ from nodes.anima.preview import AnimaPreview
 
 
 def test_generator_required_key_order_is_frozen():
-    # THE regression this test exists for: widget order is append-only.
-    # If this ever fails because someone inserted a new key mid-list, the
-    # fix is to append it at the end of `required` (or move it to
-    # `optional`), NEVER to update this frozen tuple to match new code.
+    # THE regression this test exists for: widget order is append-only --
+    # this Generator shrink is this repo's one documented EXCEPTION (see
+    # generator.py's module docstring), not a silent violation. A future
+    # ADDITION to this tuple must still go at the end, never inserted.
     input_types = AnimaGenerator.INPUT_TYPES()
     assert tuple(input_types["required"].keys()) == REQUIRED_KEY_ORDER
-    assert REQUIRED_KEY_ORDER == (
-        "positive", "negative", "generation_settings", "use_internal_loaders",
-        "unet_name", "clip_name", "clip_type", "vae_name",
-    )
+    assert REQUIRED_KEY_ORDER == ("context", "generation_settings")
 
 
-def test_generator_the_four_pickers_and_flag_are_last():
-    # design doc §3: "The flag and the four pickers go at the end of
-    # `required` and never move."
-    assert REQUIRED_KEY_ORDER[-5:] == (
-        "use_internal_loaders", "unet_name", "clip_name", "clip_type", "vae_name",
-    )
-
-
-def test_generator_resource_and_sampler_sockets_are_optional_not_required():
-    # design doc §3: a required MODEL would hard-fail the queue whenever the
-    # flag is on and nothing is wired -- these MUST be optional.
+def test_generator_has_no_optional_inputs_left():
+    # Every socket except context/generation_settings was deleted this task
+    # (design doc §1/§3/§5 reversal): use_internal_loaders, the four
+    # pickers, and model/clip/vae/latent/seed/steps/cfg/sampler_name/
+    # scheduler are all gone, replaced by the single `context` input.
     input_types = AnimaGenerator.INPUT_TYPES()
-    for name in ("model", "clip", "vae", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler"):
-        assert name in input_types["optional"], name
-        assert name not in input_types["required"], name
+    assert input_types["optional"] == {}
 
 
-def test_generator_five_sampler_sockets_are_forceinput():
-    # design doc §5a's legacy-litegraph caveat: forceInput sidesteps the
-    # "convert widget to input" dance for these five.
+def test_generator_context_is_the_custom_anima_context_type():
     input_types = AnimaGenerator.INPUT_TYPES()
-    for name in ("seed", "steps", "cfg", "sampler_name", "scheduler"):
-        assert input_types["optional"][name][1].get("forceInput") is True, name
+    assert input_types["required"]["context"][0] == "ANIMA_CONTEXT"
 
 
 def test_generator_hidden_is_unique_id_only():
-    # design doc §5: "hidden: unique_id | UNIQUE_ID | PROMPT/EXTRA_PNGINFO
-    # live on the Preview node now."
     input_types = AnimaGenerator.INPUT_TYPES()
     assert input_types["hidden"] == {"unique_id": "UNIQUE_ID"}
 
@@ -76,20 +132,20 @@ def test_generator_is_experimental_and_correct_category():
     assert AnimaGenerator.CATEGORY == "AnimaFlow/Anima"
 
 
-def test_generator_fixed_output_set():
-    assert AnimaGenerator.RETURN_TYPES == ("IMAGE", "IMAGE", "IMAGE", "LATENT", "STRING")
-    assert AnimaGenerator.RETURN_NAMES == ("image", "image_base", "image_mid", "latent", "metadata_json")
+def test_generator_images_output_is_a_list_latent_and_metadata_are_not():
+    # design doc §3 reversal: images (index 0) is OUTPUT_IS_LIST; latent and
+    # metadata_json are single values.
+    assert AnimaGenerator.RETURN_TYPES == ("IMAGE", "LATENT", "STRING")
+    assert AnimaGenerator.RETURN_NAMES == ("images", "latent", "metadata_json")
+    assert AnimaGenerator.OUTPUT_IS_LIST == (True, False, False)
 
 
 def test_generator_every_input_has_a_tooltip():
     input_types = AnimaGenerator.INPUT_TYPES()
     for section in ("required", "optional"):
         for name, spec in input_types[section].items():
-            if name == "generation_settings":
-                continue  # STRING widget config; checked separately below.
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             assert "tooltip" in opts, f"{section}.{name} has no tooltip"
-    assert "tooltip" in input_types["required"]["generation_settings"][1]
 
 
 def test_generator_every_output_has_a_tooltip():
@@ -106,6 +162,21 @@ def test_generator_generation_settings_is_a_real_string_widget_not_hidden():
     assert "generation_settings" not in input_types.get("hidden", {})
 
 
+def test_generator_missing_context_field_raises_readable_error_not_attributeerror():
+    from src.anima.context import ContextFieldMissing, build_context
+
+    node = AnimaGenerator()
+    empty_context = build_context({})
+    try:
+        node.generate(context=empty_context, generation_settings="{}")
+        assert False, "expected ContextFieldMissing"
+    except ContextFieldMissing as exc:
+        assert "model" in str(exc)
+        assert "Anima Context Bridge" in str(exc)
+    except AttributeError:
+        assert False, "must raise a readable error, not an AttributeError"
+
+
 # ---------------------------------------------------------------------------
 # AnimaPreview
 # ---------------------------------------------------------------------------
@@ -113,6 +184,12 @@ def test_generator_generation_settings_is_a_real_string_widget_not_hidden():
 
 def test_preview_is_an_output_node():
     assert AnimaPreview.OUTPUT_NODE is True
+
+
+def test_preview_declares_input_is_list():
+    # design doc reversal: images arrives as a real list, and the whole
+    # node (including the hidden inputs) is wrapped as a result.
+    assert AnimaPreview.INPUT_IS_LIST is True
 
 
 def test_preview_is_experimental_and_correct_category():
@@ -126,11 +203,18 @@ def test_preview_hidden_is_prompt_and_extra_pnginfo():
     assert input_types["hidden"] == {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}
 
 
-def test_preview_image_inputs_are_all_optional():
+def test_preview_images_and_metadata_json_are_optional():
     input_types = AnimaPreview.INPUT_TYPES()
-    for name in ("image_a", "image_b", "image_c"):
+    for name in ("images", "metadata_json"):
         assert name in input_types["optional"], name
         assert name not in input_types.get("required", {}), name
+
+
+def test_preview_no_more_image_a_b_c_sockets():
+    input_types = AnimaPreview.INPUT_TYPES()
+    for name in ("image_a", "image_b", "image_c"):
+        assert name not in input_types["optional"]
+        assert name not in input_types.get("required", {})
 
 
 def test_preview_state_is_a_real_string_widget_not_hidden():
@@ -153,21 +237,32 @@ def test_preview_every_input_has_a_tooltip():
 
 
 ALL_TESTS = [
+    test_bridge_has_no_required_inputs_at_all,
+    test_bridge_optional_key_order_is_frozen,
+    test_bridge_five_sampler_scalars_are_forceinput,
+    test_bridge_has_no_hidden_inputs,
+    test_bridge_is_experimental_and_correct_category,
+    test_bridge_single_output_is_a_context_socket_named_context,
+    test_bridge_every_input_and_output_has_a_tooltip,
+    test_bridge_build_returns_a_context_object_recording_supplied_fields,
+    test_bridge_build_with_nothing_wired_supplies_nothing,
     test_generator_required_key_order_is_frozen,
-    test_generator_the_four_pickers_and_flag_are_last,
-    test_generator_resource_and_sampler_sockets_are_optional_not_required,
-    test_generator_five_sampler_sockets_are_forceinput,
+    test_generator_has_no_optional_inputs_left,
+    test_generator_context_is_the_custom_anima_context_type,
     test_generator_hidden_is_unique_id_only,
     test_generator_is_not_an_output_node,
     test_generator_is_experimental_and_correct_category,
-    test_generator_fixed_output_set,
+    test_generator_images_output_is_a_list_latent_and_metadata_are_not,
     test_generator_every_input_has_a_tooltip,
     test_generator_every_output_has_a_tooltip,
     test_generator_generation_settings_is_a_real_string_widget_not_hidden,
+    test_generator_missing_context_field_raises_readable_error_not_attributeerror,
     test_preview_is_an_output_node,
+    test_preview_declares_input_is_list,
     test_preview_is_experimental_and_correct_category,
     test_preview_hidden_is_prompt_and_extra_pnginfo,
-    test_preview_image_inputs_are_all_optional,
+    test_preview_images_and_metadata_json_are_optional,
+    test_preview_no_more_image_a_b_c_sockets,
     test_preview_state_is_a_real_string_widget_not_hidden,
     test_preview_has_no_declared_outputs,
     test_preview_every_input_has_a_tooltip,

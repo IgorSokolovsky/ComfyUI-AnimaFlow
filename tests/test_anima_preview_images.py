@@ -1,7 +1,15 @@
 """Plain-script tests for `AnimaPreview.preview()`'s actual `"ui": {"images":
-[...]}}` payload -- the contract fixed in this build: saving OFF must not
-mean the frontend's hover wipe gets zero images, and every entry must carry
-a `stage` key so the wipe can tell which pane is which.
+[...]}}` payload -- the contract fixed in the original build: saving OFF must
+not mean the frontend's hover wipe gets zero images, and every entry must
+carry a `stage` key so the wipe can tell which pane is which.
+
+**2026-07-28 reversal**: `image_a`/`image_b`/`image_c` are gone. This file
+now drives `preview()` through its real `images` LIST + `metadata_json`
+inputs, and (since `AnimaPreview.INPUT_IS_LIST = True`) wraps every kwarg in
+a one-element list the same way ComfyUI's own execution engine would, EXCEPT
+`images` itself, which stays the real multi-item list (see
+`nodes/anima/preview.py`'s own module docstring for why that one input is
+never wrapped again).
 
 File writing is FAKED, not performed -- `nodes/anima/_preview_helpers.py`'s
 `save_images`/`write_temp_stage_images` are monkeypatched at the MODULE level
@@ -59,16 +67,32 @@ def _install_fake_writers():
     return calls, restore
 
 
-def _images_from(**wired_and_state):
+def _images_from(state, images=None, metadata_labels=None):
     """Runs `AnimaPreview().preview(...)` with fake writers installed and
-    returns the emitted `ui.images` list. `state` (a dict, JSON-encoded
-    here) and `image_a`/`image_b`/`image_c` (any non-None sentinel counts as
-    "wired") are passed straight through as kwargs."""
-    state = wired_and_state.pop("state", {})
+    with every input wrapped the way `INPUT_IS_LIST = True` would (a
+    one-element list for `preview_state`/`metadata_json`; `images` itself
+    stays a real multi-item list, matching `nodes/anima/preview.py`'s own
+    contract) -> `(ui_images, calls)`.
+
+    `images` is a plain list of sentinel tensors (any non-None value counts
+    as "present" downstream). `metadata_labels`, if given, becomes this
+    run's `metadata_json.stage_labels` -- omit it to exercise the positional
+    (base/mid/final) fallback instead.
+    """
+    images = list(images) if images else []
+    metadata_json = (
+        json.dumps({"stage_labels": list(metadata_labels)}) if metadata_labels is not None else ""
+    )
     calls, restore = _install_fake_writers()
     try:
         node = AnimaPreview()
-        result = node.preview(preview_state=json.dumps(state), **wired_and_state)
+        result = node.preview(
+            preview_state=[json.dumps(state)],
+            images=images,
+            metadata_json=[metadata_json],
+            prompt=[None],
+            extra_pnginfo=[None],
+        )
         return result["ui"]["images"], calls
     finally:
         restore()
@@ -76,14 +100,13 @@ def _images_from(**wired_and_state):
 
 # ---------------------------------------------------------------------------
 # Saving OFF -- the bug this build fixes: the wipe must still get an image
-# for every wired stage.
+# for every stage present this run.
 # ---------------------------------------------------------------------------
 
 
-def test_saving_off_yields_a_temp_entry_per_wired_stage():
+def test_saving_off_yields_a_temp_entry_per_present_stage():
     images, calls = _images_from(
-        state={"save": {"enabled": False}},
-        image_a="A", image_b="B", image_c="C",
+        {"save": {"enabled": False}}, images=["A", "B", "C"], metadata_labels=["base", "mid", "final"],
     )
     assert len(images) == 3
     by_stage = {img["stage"]: img for img in images}
@@ -102,8 +125,8 @@ def test_saving_off_yields_a_temp_entry_per_wired_stage():
 
 def test_saving_on_every_wired_input_yields_output_entries_no_temp_duplicates():
     images, calls = _images_from(
-        state={"save": {"enabled": True, "which": "every wired input"}},
-        image_a="A", image_b="B", image_c="C",
+        {"save": {"enabled": True, "which": "every wired input"}},
+        images=["A", "B", "C"], metadata_labels=["base", "mid", "final"],
     )
     assert len(images) == 3
     assert all(img["type"] == "output" for img in images)
@@ -115,47 +138,56 @@ def test_saving_on_every_wired_input_yields_output_entries_no_temp_duplicates():
 
 def test_saving_on_shown_only_still_previews_the_other_compared_stage_via_temp():
     # `which: "shown"` (the default) only SAVES compare.b ("final" here) --
-    # but `base` is also wired and named by compare.a, so the wipe still
+    # but `base` is also present and named by compare.a, so the wipe still
     # needs it: it must arrive as a TEMP entry, not be silently dropped.
     # This is the one test that asserts BOTH halves of the contract at once:
     # `which` still controls what's SAVED, while the PREVIEW set stays
-    # "every wired stage" regardless.
+    # "every present stage" regardless.
     images, calls = _images_from(
-        state={"save": {"enabled": True, "which": "shown"}, "compare": {"enabled": True, "a": "base", "b": "final"}},
-        image_a="A", image_c="C",
+        {"save": {"enabled": True, "which": "shown"}, "compare": {"enabled": True, "a": "base", "b": "final"}},
+        images=["A", "C"], metadata_labels=["base", "final"],
     )
     by_stage = {img["stage"]: img for img in images}
     assert set(by_stage) == {"base", "final"}
     assert by_stage["final"]["type"] == "output"  # shown == compare.b == final -> actually saved
-    assert by_stage["base"]["type"] == "temp"  # wired + compared, but not in save.which's scope
+    assert by_stage["base"]["type"] == "temp"  # present + compared, but not in save.which's scope
     assert calls["save"] == [["final"]]
     assert calls["temp"] == [["base"]]
 
 
 # ---------------------------------------------------------------------------
-# Single-socket and empty-graph edges.
+# Single-image and empty-graph edges.
 # ---------------------------------------------------------------------------
 
 
-def test_only_image_b_wired_yields_exactly_one_mid_entry():
-    images, _ = _images_from(state={}, image_b="B")
+def test_only_mid_present_yields_exactly_one_mid_entry():
+    images, _ = _images_from({}, images=["B"], metadata_labels=["mid"])
     assert len(images) == 1
     assert images[0]["stage"] == "mid"
 
 
 def test_nothing_wired_yields_an_empty_list_no_exception():
-    images, calls = _images_from(state={})
+    images, calls = _images_from({}, images=[])
     assert images == []
     assert calls["save"] == []
     assert calls["temp"] == []
 
 
+def test_one_entry_list_with_no_metadata_falls_back_to_base_label():
+    # No metadata_json at all -- a single image degrades to "base" (the
+    # positional default's first entry), not an exception.
+    images, _ = _images_from({}, images=["A"])
+    assert len(images) == 1
+    assert images[0]["stage"] == "base"
+
+
 ALL_TESTS = [
-    test_saving_off_yields_a_temp_entry_per_wired_stage,
+    test_saving_off_yields_a_temp_entry_per_present_stage,
     test_saving_on_every_wired_input_yields_output_entries_no_temp_duplicates,
     test_saving_on_shown_only_still_previews_the_other_compared_stage_via_temp,
-    test_only_image_b_wired_yields_exactly_one_mid_entry,
+    test_only_mid_present_yields_exactly_one_mid_entry,
     test_nothing_wired_yields_an_empty_list_no_exception,
+    test_one_entry_list_with_no_metadata_falls_back_to_base_label,
 ]
 
 

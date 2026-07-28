@@ -4,29 +4,26 @@ this is node-specific glue for the ONE node that saves, not pipeline
 orchestration; mirrors the project's `nodes/<scope>/_*_helpers.py`
 convention (`nodes/controls/_loaders_helpers.py`).
 
-Every PURE decision this node needs (which stages are wired, which map to
-which socket, which get saved vs. previewed) now lives in
-`src/anima/preview_settings.py` (moved there per `.claude/CLAUDE.md`'s
-pure/impure rule) — this module only does the actual file I/O, driven by
-that module's decisions. `build_preview_ui_images` is the one entry point
-`nodes/anima/preview.py` calls; its `save_fn`/`temp_fn` params are
-dependency-injected specifically so `tests/test_anima_preview_images.py`
-can fake the writers and assert the routing/shape contract without PIL,
-numpy, or a real ComfyUI install (per the project's "file writing must be
-faked/injected, not actually performed" test convention).
+Every PURE decision this node needs (which stages are present, which get
+saved vs. previewed, and — as of this task — the position->stage-label
+mapping itself) lives in `src/anima/preview_settings.py` (moved there per
+`.claude/CLAUDE.md`'s pure/impure rule) — this module only does the actual
+file I/O, driven by that module's decisions. `build_preview_ui_images` is
+the one entry point `nodes/anima/preview.py` calls; its `save_fn`/`temp_fn`
+params are dependency-injected specifically so
+`tests/test_anima_preview_images.py` can fake the writers and assert the
+routing/shape contract without PIL, numpy, or a real ComfyUI install (per
+the project's "file writing must be faked/injected, not actually performed"
+test convention).
 
-INTERIM SOCKET/STAGE CONVENTION (flagged in the build report — there is no
-`js/anima/` yet to draw the per-pane "which output is this side" labels
-design doc §7 describes, so Python has no OTHER way to know which stage
-`image_a`/`image_b`/`image_c` each represent): this module assumes the
-Generator's three outputs are wired positionally --
-`image_base -> image_a`, `image_mid -> image_b`, `image -> image_c` -- and
-`preview_settings.compare.a`/`.b` name a STAGE (`"base"`/`"mid"`/`"final"`),
-resolved through `STAGE_TO_SOCKET` (now in `preview_settings.py`) to find the
-actual wired tensor. This is a reasonable "usable if ugly" interim wiring
-convention, not a documented design decision — the future `js/anima/` slice
-should either confirm it (adding real per-socket stage labels) or replace it
-outright.
+**2026-07-28 reversal**: the old "positional socket convention"
+(`image_a`/`image_b`/`image_c` standing in for `base`/`mid`/`final` — this
+docstring used to flag it as interim, ugly-but-usable) is GONE along with
+those three sockets. `AnimaPreview` now receives one `images` list plus
+`metadata_json`, and builds a real `{stage: tensor}` dict from
+`preview_settings.resolve_run_stage_labels` — every function below is keyed
+directly by stage name, never a socket name, because there is no socket
+name left to be keyed by.
 """
 from __future__ import annotations
 
@@ -39,8 +36,8 @@ try:
     # convention as `nodes/prompt_rules/_rules_helpers.py`'s import of
     # `src.prompt_rules.core`.
     from ...src.anima.preview_settings import (  # type: ignore
-        STAGE_TO_SOCKET,
         format_filename,
+        resolve_run_stage_labels,
         resolve_save_stages,
         resolve_wired_stages,
         split_preview_stages,
@@ -48,23 +45,24 @@ try:
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
     from src.anima.preview_settings import (
-        STAGE_TO_SOCKET,
         format_filename,
+        resolve_run_stage_labels,
         resolve_save_stages,
         resolve_wired_stages,
         split_preview_stages,
     )
 
-# `resolve_save_stages`/`resolve_wired_stages` are re-exported (unused
-# directly in THIS module -- `build_preview_ui_images` below only needs
-# `split_preview_stages`) purely so `nodes/anima/preview.py` can pull every
-# pure decision it needs through this module's single import line, matching
-# how it already reaches `extract_seed_from_prompt`/`build_preview_ui_images`
-# here rather than reaching into `src/anima/` directly itself.
+# `resolve_save_stages`/`resolve_wired_stages`/`resolve_run_stage_labels` are
+# re-exported (unused directly in THIS module -- `build_preview_ui_images`
+# below only needs `split_preview_stages`) purely so `nodes/anima/preview.py`
+# can pull every pure decision it needs through this module's single import
+# line, matching how it already reaches
+# `extract_seed_from_prompt`/`build_preview_ui_images` here rather than
+# reaching into `src/anima/` directly itself.
 __all__ = [
-    "STAGE_TO_SOCKET",
     "build_preview_ui_images",
     "extract_seed_from_prompt",
+    "resolve_run_stage_labels",
     "resolve_save_stages",
     "resolve_wired_stages",
     "save_images",
@@ -109,21 +107,29 @@ def extract_seed_from_prompt(prompt: Any) -> Any:
     """Best-effort `%seed%` token value (design doc §7a) — the Preview node
     takes no `seed` input of its own (it's terminal; §7/§8's `preview_state`
     shape has no seed field), so this scans the hidden `PROMPT` payload
-    (the whole API-format graph) for an `AnimaGenerator` node's own `seed`
-    INPUT VALUE.
+    (the whole API-format graph) for an `AnimaContextBridge` node's own
+    `seed` INPUT VALUE.
 
-    Only works when the Generator's `seed` is a literal widget value, not a
-    wired link (ComfyUI represents a wired input as a 2-element
-    `[source_node_id, output_index]` list, which carries no literal seed to
-    read) — falls back to `0` in every other case (missing/garbage
-    `prompt`, no Generator node found, or its seed is a link). This is a
-    genuine design-doc gap, not a documented mechanism — see the build
+    **2026-07-28 reversal**: `seed` moved off `AnimaGenerator` entirely onto
+    `AnimaContextBridge` (this task's whole point) — so the scan target
+    changed to match. This does NOT close the underlying gap this function
+    always had, and arguably makes it a hair narrower: `AnimaContextBridge`
+    declares `seed` with `forceInput=True` (no widget), so in practice its
+    `inputs.seed` in the API-format graph is almost always a wired LINK
+    (typically from a Primitive INT node this function does not trace back
+    through), not a literal — meaning this still falls back to `0` in the
+    common case. Only works when the Bridge's `seed` is a literal widget
+    value, not a wired link (ComfyUI represents a wired input as a
+    2-element `[source_node_id, output_index]` list, which carries no
+    literal seed to read) — falls back to `0` in every other case
+    (missing/garbage `prompt`, no Bridge node found, or its seed is a
+    link). A genuine design gap, not a documented mechanism — see the build
     report.
     """
     if not isinstance(prompt, dict):
         return 0
     for node in prompt.values():
-        if not isinstance(node, dict) or node.get("class_type") != "AnimaGenerator":
+        if not isinstance(node, dict) or node.get("class_type") != "AnimaContextBridge":
             continue
         node_inputs = node.get("inputs")
         if not isinstance(node_inputs, dict):
@@ -178,7 +184,7 @@ def save_images(
 
     results: List[Dict[str, Any]] = []
     for stage in stages_to_save:
-        image_tensor = wired.get(STAGE_TO_SOCKET[stage])
+        image_tensor = wired.get(stage)
         if image_tensor is None:
             continue
         pil_images = _tensor_to_pil_images(image_tensor)
@@ -245,7 +251,7 @@ def write_temp_stage_images(wired: Dict[str, Optional[Any]], stages: List[str]) 
     temp_dir = folder_paths.get_temp_directory()
     results: List[Dict[str, Any]] = []
     for stage in stages:
-        image_tensor = wired.get(STAGE_TO_SOCKET[stage])
+        image_tensor = wired.get(stage)
         if image_tensor is None:
             continue
         pil_images = _tensor_to_pil_images(image_tensor)
