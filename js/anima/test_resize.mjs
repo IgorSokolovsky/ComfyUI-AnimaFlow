@@ -60,6 +60,18 @@
  *      from `node._anPreviewImages` (populated by `handleExecuted`, keyed by
  *      the `stage` field Python already resolved); a one-entry run degrades
  *      to a single-image view.
+ *   H. Socket self-healing — `computeNodeDefinition`/`healNodeSockets`
+ *      reconcile a restored instance's stale `inputs`/`outputs` against the
+ *      current `nodeData`: the real-world stale `AnimaGenerator` shape (11
+ *      dead inputs + duplicated outputs) heals to `[context]` /
+ *      `[images, latent, metadata_json]`; a link on a surviving socket is
+ *      retargeted (never dropped); a link on a removed socket is torn down;
+ *      survivors land in definition order (`AnimaContextBridge`); an
+ *      already-correct instance is left byte-identical (`changed: false`,
+ *      same array references, `removeInput`/`removeOutput` never even
+ *      called); missing/malformed `nodeData` never mutates anything; and a
+ *      static scan of `index.js` confirms healing is wired into
+ *      `onConfigure` only, never `onNodeCreated`.
  *
  * MANUAL-IN-COMFYUI CHECKLIST (this headless harness cannot confirm any of
  * this — the real `addDOMWidget`/legacy-litegraph runtime contract, actual
@@ -85,6 +97,17 @@
  *   [ ] Mouse wheel over the node body zooms the canvas, except while
  *       hovering the `.wtn-an-panel` itself once its content overflows the
  *       panel's OWN current height, or a popover's own `overflow: auto`.
+ *   [ ] VERIFY-IN-COMFYUI: the actual `beforeRegisterNodeDef` `nodeData`
+ *       shape for `AnimaGenerator`/`AnimaPreview`/`AnimaContextBridge` (this
+ *       file's `GENERATOR_NODE_DATA`/`PREVIEW_NODE_DATA`/`BRIDGE_NODE_DATA`
+ *       fixtures are hand-derived from the Python `INPUT_TYPES`/
+ *       `RETURN_TYPES`, not read off a live process); that `node.graph.links`
+ *       really is a plain `{id: LLink}` map at the point `onConfigure`'s
+ *       deferred callback runs; and that `removeInput`/`removeOutput` really
+ *       do shift a later slot's `target_slot`/`origin_slot` down by one the
+ *       way `healNodeSockets` assumes (this suite's own fake node
+ *       reimplements that contract to test against it, it doesn't observe
+ *       the real one).
  */
 
 import assert from "node:assert/strict";
@@ -142,6 +165,8 @@ import {
   installZoomPassthrough,
   teardownNode,
   closeActiveOverlay,
+  computeNodeDefinition,
+  healNodeSockets,
 } from "./interaction.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1296,6 +1321,396 @@ test("Preview: save/compare edits reach the preview_state widget", () => {
   const enabledField = findFieldByLabel(pop, "enabled");
   fire(enabledField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
   assert.equal(previewState(node).save.enabled, false);
+});
+
+// ===========================================================================
+// H. Socket self-healing -- `interaction.mjs`'s `healNodeSockets`/
+//    `computeNodeDefinition` reconcile an already-restored node's `inputs`/
+//    `outputs` against the CURRENT `nodeData` for its class. Never touches
+//    `window.LiteGraph` (`nodeData` IS the definition, captured directly in
+//    `beforeRegisterNodeDef`'s own closure -- see index.js), so no registry
+//    stub is needed here at all -- just the real `INPUT_TYPES`/
+//    `RETURN_TYPES` shape ComfyUI would hand it, mirrored below from
+//    `nodes/anima/generator.py`/`preview.py`/`context_bridge.py`.
+// ===========================================================================
+
+// Real `nodeData` shapes -- mirrors the CURRENT `INPUT_TYPES`/`RETURN_TYPES`
+// exactly (never the eleven-socket surface `d021c09` deleted).
+const GENERATOR_NODE_DATA = {
+  name: "AnimaGenerator",
+  input: {
+    required: {
+      context: ["ANIMA_CONTEXT", {}],
+      generation_settings: ["STRING", { default: "{}" }],
+    },
+    optional: {},
+    hidden: { unique_id: "UNIQUE_ID" },
+  },
+  output: ["IMAGE", "LATENT", "STRING"],
+  output_name: ["images", "latent", "metadata_json"],
+};
+
+const PREVIEW_NODE_DATA = {
+  name: "AnimaPreview",
+  input: {
+    required: {
+      preview_state: ["STRING", { default: "{}" }],
+    },
+    optional: {
+      images: ["IMAGE", {}],
+      metadata_json: ["STRING", { default: "" }],
+    },
+    hidden: { prompt: "PROMPT", extra_pnginfo: "EXTRA_PNGINFO" },
+  },
+  output: [],
+  output_name: [],
+};
+
+const BRIDGE_NODE_DATA = {
+  name: "AnimaContextBridge",
+  input: {
+    required: {},
+    optional: {
+      model: ["MODEL", {}],
+      clip: ["CLIP", {}],
+      vae: ["VAE", {}],
+      positive: ["CONDITIONING", {}],
+      negative: ["CONDITIONING", {}],
+      latent: ["LATENT", {}],
+      seed: ["INT", { forceInput: true }],
+      steps: ["INT", { forceInput: true }],
+      cfg: ["FLOAT", { forceInput: true }],
+      sampler_name: [["euler", "euler_ancestral"], { forceInput: true }],
+      scheduler: [["simple", "karras"], { forceInput: true }],
+    },
+  },
+  output: ["ANIMA_CONTEXT"],
+  output_name: ["context"],
+};
+
+/** A real-enough fake litegraph graph -- just the one thing
+ * `healNodeSockets`/`retargetSlot` actually reads: a plain `{id: LLink}`
+ * map. */
+function makeLinkGraph() {
+  return { links: {} };
+}
+function addLink(graph, id, originId, originSlot, targetId, targetSlot) {
+  graph.links[id] = { id, origin_id: originId, origin_slot: originSlot, target_id: targetId, target_slot: targetSlot };
+  return graph.links[id];
+}
+
+/** A fake node whose `removeInput`/`removeOutput` mirror litegraph's OWN
+ * documented bookkeeping (tear down the removed slot's own link(s); shift
+ * every LATER slot's `target_slot`/`origin_slot` down by one) rather than a
+ * bare splice -- so these tests actually exercise the "prefer the API
+ * methods" contract `healNodeSockets` is built around, not a stand-in that
+ * happens to pass regardless. */
+function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null } = {}) {
+  const node = {
+    id,
+    graph,
+    inputs: inputs.map((i) => ({ ...i })),
+    outputs: outputs.map((o) => ({ ...o, links: (o.links || []).slice() })),
+    removeInput(idx) {
+      const removed = node.inputs[idx];
+      if (removed && removed.link != null && node.graph) {
+        delete node.graph.links[removed.link];
+      }
+      node.inputs.splice(idx, 1);
+      node.inputs.forEach((inp, i) => {
+        if (i < idx) {
+          return;
+        }
+        if (inp.link != null && node.graph && node.graph.links[inp.link]) {
+          node.graph.links[inp.link].target_slot = i;
+        }
+      });
+    },
+    removeOutput(idx) {
+      const removed = node.outputs[idx];
+      if (removed && node.graph) {
+        (removed.links || []).forEach((lid) => delete node.graph.links[lid]);
+      }
+      node.outputs.splice(idx, 1);
+      node.outputs.forEach((out, i) => {
+        if (i < idx) {
+          return;
+        }
+        (out.links || []).forEach((lid) => {
+          if (node.graph && node.graph.links[lid]) {
+            node.graph.links[lid].origin_slot = i;
+          }
+        });
+      });
+    },
+  };
+  return node;
+}
+
+test("computeNodeDefinition: the real AnimaGenerator/AnimaPreview/AnimaContextBridge nodeData shapes resolve to their exact expected order", () => {
+  assert.deepEqual(computeNodeDefinition(GENERATOR_NODE_DATA), {
+    inputOrder: ["context", "generation_settings"],
+    outputs: [
+      { name: "images", type: "IMAGE" },
+      { name: "latent", type: "LATENT" },
+      { name: "metadata_json", type: "STRING" },
+    ],
+  });
+  assert.deepEqual(computeNodeDefinition(PREVIEW_NODE_DATA), {
+    inputOrder: ["preview_state", "images", "metadata_json"],
+    outputs: [],
+  });
+  assert.deepEqual(computeNodeDefinition(BRIDGE_NODE_DATA), {
+    inputOrder: ["model", "clip", "vae", "positive", "negative", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler"],
+    outputs: [{ name: "context", type: "ANIMA_CONTEXT" }],
+  });
+});
+
+test("computeNodeDefinition: missing/empty/malformed nodeData all resolve to null -- never a definition to heal against", () => {
+  assert.equal(computeNodeDefinition(undefined), null);
+  assert.equal(computeNodeDefinition(null), null);
+  assert.equal(computeNodeDefinition("AnimaGenerator"), null);
+  assert.equal(computeNodeDefinition({}), null);
+  assert.equal(computeNodeDefinition({ input: {}, output: [] }), null, "both input keys AND output empty -- indistinguishable from broken, must not heal");
+  assert.equal(computeNodeDefinition({ input: { required: "not-an-object" }, output: [] }), null);
+  assert.equal(computeNodeDefinition({ input: { required: {}, optional: [] }, output: [] }), null);
+  assert.equal(computeNodeDefinition({ input: {}, output: "not-an-array" }), null);
+  assert.equal(computeNodeDefinition({ input: {}, output: [], output_name: "nope" }), null);
+  // A REAL, non-empty definition with only inputs (AnimaPreview's own
+  // RETURN_TYPES == ()) or only outputs must NOT be refused.
+  assert.notEqual(computeNodeDefinition(PREVIEW_NODE_DATA), null);
+});
+
+test("healNodeSockets: missing/malformed nodeData leaves inputs/outputs completely untouched -- same array reference, same contents, changed:false", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 5, 10, 0, 1, 0);
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: 5 },
+      { name: "positive", type: "CONDITIONING", link: null },
+    ],
+    outputs: [{ name: "images", type: "IMAGE", links: [] }],
+  });
+  const originalInputs = node.inputs;
+  const originalOutputs = node.outputs;
+
+  [undefined, null, {}, { input: {}, output: [] }, "AnimaGenerator"].forEach((badNodeData) => {
+    const summary = healNodeSockets(node, badNodeData);
+    assert.equal(summary.changed, false);
+    assert.equal(node.inputs, originalInputs, "inputs array reference must be untouched");
+    assert.equal(node.outputs, originalOutputs, "outputs array reference must be untouched");
+  });
+  assert.deepEqual(node.inputs.map((i) => i.name), ["context", "positive"]);
+});
+
+test("healNodeSockets: the real-world stale AnimaGenerator shape (context + the eleven deleted sockets; images/latent/metadata_json each duplicated) heals to [context] / [images, latent, metadata_json]", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 100, 0, 1, 0); // context's own link
+  addLink(graph, 2, 1, 0, 200, 0); // images' own link
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: 1 },
+      { name: "positive", type: "CONDITIONING", link: null },
+      { name: "negative", type: "CONDITIONING", link: null },
+      { name: "model", type: "MODEL", link: null },
+      { name: "clip", type: "CLIP", link: null },
+      { name: "vae", type: "VAE", link: null },
+      { name: "latent", type: "LATENT", link: null },
+      { name: "seed", type: "INT", link: null },
+      { name: "steps", type: "INT", link: null },
+      { name: "cfg", type: "FLOAT", link: null },
+      { name: "sampler_name", type: "COMBO", link: null },
+      { name: "scheduler", type: "COMBO", link: null },
+    ],
+    outputs: [
+      { name: "images", type: "IMAGE", links: [2] },
+      { name: "latent", type: "LATENT", links: [] },
+      { name: "metadata_json", type: "STRING", links: [] },
+      { name: "latent", type: "LATENT", links: [] },
+      { name: "metadata_json", type: "STRING", links: [] },
+    ],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, true);
+  assert.deepEqual(node.inputs.map((i) => i.name), ["context"]);
+  assert.deepEqual(node.outputs.map((o) => o.name), ["images", "latent", "metadata_json"]);
+  assert.deepEqual(summary.removedInputs, [
+    "positive", "negative", "model", "clip", "vae", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler",
+  ]);
+  assert.deepEqual(summary.removedOutputs, ["latent", "metadata_json"]);
+
+  // The surviving `context` input's link is untouched (still slot 0).
+  assert.equal(node.inputs[0].link, 1);
+  assert.equal(graph.links[1].target_slot, 0);
+  // The surviving `images` output's link is untouched (still slot 0).
+  assert.deepEqual(node.outputs[0].links, [2]);
+  assert.equal(graph.links[2].origin_slot, 0);
+});
+
+test("healNodeSockets: duplicate outputs collapse to exactly one each, keeping the FIRST occurrence and its own link -- the duplicate's link is torn down, not left dangling", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 10, 1, 1, 50, 0); // the FIRST "latent" output's own link
+  addLink(graph, 11, 1, 3, 51, 0); // the DUPLICATE "latent" output's own (different) link
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    inputs: [{ name: "context", type: "ANIMA_CONTEXT", link: null }],
+    outputs: [
+      { name: "images", type: "IMAGE", links: [] },
+      { name: "latent", type: "LATENT", links: [10] },
+      { name: "metadata_json", type: "STRING", links: [] },
+      { name: "latent", type: "LATENT", links: [11] },
+    ],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.deepEqual(node.outputs.map((o) => o.name), ["images", "latent", "metadata_json"]);
+  assert.deepEqual(summary.removedOutputs, ["latent"]);
+  assert.deepEqual(node.outputs[1].links, [10], "the FIRST occurrence's own link survives");
+  assert.equal(graph.links[10].origin_slot, 1);
+  assert.equal(graph.links[11], undefined, "the duplicate's own link must be gone, not left dangling");
+});
+
+test("healNodeSockets: a link on a SURVIVING input is preserved and retargeted to its new slot index; a link on a REMOVED input is gone from the graph's own links table", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 5, 0, 1, 1); // stale "positive" input, wired
+  addLink(graph, 2, 6, 0, 1, 0); // "context" input, wired
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: 2 },
+      { name: "positive", type: "CONDITIONING", link: 1 },
+    ],
+    outputs: [],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.deepEqual(node.inputs.map((i) => i.name), ["context"]);
+  assert.equal(node.inputs[0].link, 2, "the surviving context input keeps its own link id");
+  assert.equal(graph.links[2].target_slot, 0, "and that link is retargeted to context's own (unchanged) index");
+  assert.equal(graph.links[1], undefined, "the removed positive input's own link must be gone");
+  assert.deepEqual(summary.removedInputs, ["positive"]);
+});
+
+test("healNodeSockets: surviving AnimaContextBridge inputs are reordered to the definition's own order, and every surviving link is RETARGETED to match (never left pointing at the old index)", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 10, 0, 1, 0); // "scheduler"'s own link, wired while scheduler sits at index 0
+  addLink(graph, 2, 11, 0, 1, 1); // "model"'s own link, wired while model sits at index 1
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    // Deliberately out of order versus OPTIONAL_KEY_ORDER (model, clip, vae,
+    // positive, negative, latent, seed, steps, cfg, sampler_name, scheduler).
+    inputs: [
+      { name: "scheduler", type: "COMBO", link: 1 },
+      { name: "model", type: "MODEL", link: 2 },
+      { name: "clip", type: "CLIP", link: null },
+    ],
+    outputs: [{ name: "context", type: "ANIMA_CONTEXT", links: [] }],
+  });
+
+  const summary = healNodeSockets(node, BRIDGE_NODE_DATA);
+
+  assert.deepEqual(node.inputs.map((i) => i.name), ["model", "clip", "scheduler"]);
+  assert.equal(summary.changed, true);
+  assert.deepEqual(summary.removedInputs, [], "nothing dead or duplicate here -- purely a reorder");
+  assert.equal(node.inputs[0].link, 2);
+  assert.equal(graph.links[2].target_slot, 0, "model is now index 0");
+  assert.equal(node.inputs[2].link, 1);
+  assert.equal(graph.links[1].target_slot, 2, "scheduler is now index 2, not the index it used to have");
+});
+
+test("healNodeSockets: an already-correct instance is left byte-identical -- same array references, same objects, changed:false, and removeInput/removeOutput are never even called", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 10, 0, 1, 0);
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    inputs: [{ name: "context", type: "ANIMA_CONTEXT", link: 1 }],
+    outputs: [
+      { name: "images", type: "IMAGE", links: [] },
+      { name: "latent", type: "LATENT", links: [] },
+      { name: "metadata_json", type: "STRING", links: [] },
+    ],
+  });
+  const originalInputs = node.inputs;
+  const originalOutputs = node.outputs;
+  const originalInputObj = node.inputs[0];
+  let removeInputCalled = false;
+  let removeOutputCalled = false;
+  const realRemoveInput = node.removeInput;
+  const realRemoveOutput = node.removeOutput;
+  node.removeInput = (...a) => {
+    removeInputCalled = true;
+    return realRemoveInput.apply(node, a);
+  };
+  node.removeOutput = (...a) => {
+    removeOutputCalled = true;
+    return realRemoveOutput.apply(node, a);
+  };
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, false);
+  assert.equal(node.inputs, originalInputs);
+  assert.equal(node.outputs, originalOutputs);
+  assert.equal(node.inputs[0], originalInputObj);
+  assert.equal(removeInputCalled, false);
+  assert.equal(removeOutputCalled, false);
+  assert.deepEqual(summary.removedInputs, []);
+  assert.deepEqual(summary.removedOutputs, []);
+});
+
+test("healNodeSockets: the fallback removal path (a node with no removeInput/removeOutput methods at all) still tears down the removed link and reindexes the survivor", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 10, 0, 1, 0); // context, wired
+  addLink(graph, 2, 11, 0, 1, 1); // stale positive, wired
+  const node = {
+    id: 1,
+    graph,
+    inputs: [
+      { name: "positive", type: "CONDITIONING", link: 2 },
+      { name: "context", type: "ANIMA_CONTEXT", link: 1 },
+    ],
+    outputs: [],
+  }; // deliberately no removeInput/removeOutput -- exercises the fallback branch
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.deepEqual(node.inputs.map((i) => i.name), ["context"]);
+  assert.equal(node.inputs[0].link, 1);
+  assert.equal(graph.links[1].target_slot, 0);
+  assert.equal(graph.links[2], undefined, "the removed positive input's own link must be gone");
+  assert.deepEqual(summary.removedInputs, ["positive"]);
+});
+
+test("index.js: socket healing (healNodeSockets) is wired into onConfigure only -- never onNodeCreated, so a freshly-created node is never healed (only a restored one)", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const createdIdx = indexSource.indexOf("nodeType.prototype.onNodeCreated = function");
+  const configureIdx = indexSource.indexOf("nodeType.prototype.onConfigure = function");
+  const afterConfigureIdx = indexSource.indexOf("if (!mountsUi)", configureIdx);
+  assert.ok(createdIdx >= 0, "onNodeCreated patch must exist");
+  assert.ok(configureIdx > createdIdx, "onConfigure patch must come after onNodeCreated");
+  assert.ok(afterConfigureIdx > configureIdx, "the mountsUi-only-hooks guard must come after onConfigure");
+
+  const onNodeCreatedBlock = indexSource.slice(createdIdx, configureIdx);
+  const onConfigureBlock = indexSource.slice(configureIdx, afterConfigureIdx);
+  // Match the actual CALL SITE (`healNodeSockets(`), not just the bare
+  // identifier -- the doc comment directly above `onConfigure` (still
+  // inside `onNodeCreatedBlock`, since that slice runs up to the next
+  // assignment) legitimately mentions `healNodeSockets` by name while
+  // explaining why it is NOT called from `onNodeCreated`.
+  assert.doesNotMatch(onNodeCreatedBlock, /healNodeSockets\(/, "onNodeCreated must never heal -- a fresh node is already correct");
+  assert.match(onConfigureBlock, /healNodeSockets\(/, "onConfigure must be the one place healing runs");
 });
 
 console.log(`\n${count - failures}/${count} passed`);

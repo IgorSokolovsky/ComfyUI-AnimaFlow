@@ -1,14 +1,33 @@
 /**
  * index.js — the ONLY auto-loaded `.js` for the Anima track (`.claude/
- * CLAUDE.md`'s JS download budget: this one file registers BOTH
- * `AnimaGenerator` and `AnimaPreview`). This is the file that takes the JS
+ * CLAUDE.md`'s JS download budget: this one file registers `AnimaGenerator`
+ * and `AnimaPreview` in full, plus — for socket self-healing only, see
+ * below — `AnimaContextBridge`). This is the file that takes the JS
  * download budget from 4 to 5 — see `.claude/CLAUDE.md`'s own note
- * predicting exactly this.
+ * predicting exactly this; a third class sharing the same one file doesn't
+ * change that count.
  *
  * Absolute `/scripts/app.js` import (this file is nested in `js/anima/` —
  * the frontend skill's gotcha #1: a relative `../../scripts/app.js`
  * resolves wrong from a subfolder and silently kills the whole extension).
  * That's the ONLY static import in this file, deliberately.
+ *
+ * ## Socket self-healing (why `AnimaContextBridge` is in this file at all)
+ *
+ * `AnimaGenerator`'s Python surface changed under it (`d021c09`, a
+ * deliberate breaking change — see `nodes/anima/generator.py`'s own
+ * docstring): an already-PLACED node keeps every socket its saved workflow
+ * remembers AND gains whatever the CURRENT class declares, since litegraph
+ * restores a node's `inputs`/`outputs` arrays verbatim from the workflow
+ * file. `interaction.mjs`'s `healNodeSockets` reconciles a restored
+ * instance against `nodeData` (the definition `beforeRegisterNodeDef` is
+ * handed for that EXACT class, captured in THIS closure — no
+ * `window.LiteGraph` registry lookup needed, unlike `js/controls/
+ * index.js`'s cross-class `readKnownLists`) and runs for all three classes'
+ * `onConfigure`, never `onNodeCreated` (a freshly-placed node is already
+ * built correctly by ComfyUI itself). `AnimaContextBridge` has no DOM UI of
+ * its own and never will just for this — it only needs the healing hook,
+ * so it's patched here with nothing else installed (see `mountsUi` below).
  *
  * ## `state.mjs`/`render.mjs`/`interaction.mjs` are LAZY, not static
  *
@@ -19,12 +38,16 @@
  * stack the moment this ONE already-auto-loaded file runs — exactly the
  * "shipped to users who don't need it" cost the JS download budget exists to
  * avoid. So `loadMods()` below only ever runs a guarded dynamic `import()`
- * (cached after the first call, since both node classes share it) the FIRST
- * TIME an actual node INSTANCE of either class is created or restored
- * (`onNodeCreated`/`onConfigure`) — a page with neither node anywhere never
- * fetches them at all. Matches `js/controls/index.js`'s `loadMods` exactly,
- * same reasoning, same trick of costing two node classes one auto-loaded
- * file.
+ * (cached after the first call, since all three node classes share it) the
+ * FIRST TIME an actual node INSTANCE of any of them is created or restored
+ * (`onNodeCreated`/`onConfigure`) — a page with none of the three anywhere
+ * never fetches them at all. `AnimaContextBridge`'s own `onConfigure` only
+ * ever NEEDS `healNodeSockets` off of `interaction.mjs`, but it rides the
+ * same shared import as the other two rather than a separate one — see this
+ * file's "Socket self-healing" section above for why that's an acceptable
+ * cost, not a budget violation. Matches `js/controls/index.js`'s `loadMods`
+ * exactly, same reasoning, same trick of costing multiple node classes one
+ * auto-loaded file.
  *
  * ## Widget contract (matches `nodes/anima/*.py`'s declared STRING widgets)
  *
@@ -41,7 +64,10 @@
  */
 import { app } from "/scripts/app.js";
 
-const NODE_CLASS_NAMES = ["AnimaGenerator", "AnimaPreview"];
+// `AnimaContextBridge` is included ONLY for socket self-healing (see this
+// file's top doc comment) -- `mountsUi` below is what actually gates every
+// DOM/UI hook so the Bridge never gets `setupNode`/`restoreNode` treatment.
+const NODE_CLASS_NAMES = ["AnimaGenerator", "AnimaPreview", "AnimaContextBridge"];
 
 // The two settings-blob-only STRING widgets, hidden-for-rendering-only on
 // EVERY node instance (each class carries only its own; `find` below is a
@@ -128,6 +154,32 @@ function buildCtx(mods) {
     getCanvasEl,
     havePackages: readHavePackages,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Socket self-healing -- see this file's top doc comment for WHY this hook
+// exists and why `AnimaContextBridge` is patched here too. The actual
+// reconciliation is `interaction.mjs`'s `healNodeSockets` (pure enough to be
+// unit-tested against a fake node/graph); this is just the one place that
+// logs it, once per healed node, so a surprised user can see what happened
+// rather than guessing why a wire vanished (task brief).
+// ---------------------------------------------------------------------------
+
+function logHealedSockets(node, nodeData, summary) {
+  const parts = [];
+  if (summary.removedInputs.length) {
+    parts.push(`removed input(s) [${summary.removedInputs.join(", ")}]`);
+  }
+  if (summary.removedOutputs.length) {
+    parts.push(`removed output(s) [${summary.removedOutputs.join(", ")}]`);
+  }
+  if (!parts.length) {
+    parts.push("reordered its surviving sockets to match the current definition");
+  }
+  console.info(
+    `[AnimaFlow Anima] healed "${nodeData.name}" #${node.id}: ${parts.join("; ")} -- ` +
+    "this node's saved sockets were stale against the currently registered definition.",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -261,30 +313,62 @@ app.registerExtension({
     }
     nodeType.prototype._wtnAnimaPatched = true;
     const isGenerator = nodeData.name === "AnimaGenerator";
+    // `AnimaContextBridge` has no DOM UI (this file's top doc comment) --
+    // `mountsUi` is the one gate deciding which hooks below actually do
+    // anything beyond the socket-healing `onConfigure` patch every one of
+    // the three classes gets.
+    const mountsUi = isGenerator || nodeData.name === "AnimaPreview";
 
-    const _created = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function (...args) {
-      const result = _created ? _created.apply(this, args) : undefined;
-      const node = this;
-      loadMods()
-        .then((mods) => setupNode(node, mods, isGenerator))
-        .catch((err) => {
-          console.error("[AnimaFlow Anima] failed to load js/anima modules:", err);
-        });
-      return result;
-    };
+    if (mountsUi) {
+      const _created = nodeType.prototype.onNodeCreated;
+      nodeType.prototype.onNodeCreated = function (...args) {
+        const result = _created ? _created.apply(this, args) : undefined;
+        const node = this;
+        loadMods()
+          .then((mods) => setupNode(node, mods, isGenerator))
+          .catch((err) => {
+            console.error("[AnimaFlow Anima] failed to load js/anima modules:", err);
+          });
+        return result;
+      };
+    }
 
+    // Socket self-healing (interaction.mjs's `healNodeSockets` -- see its
+    // own top doc comment for the full mechanism) runs for ALL THREE
+    // classes here, on the LOAD path only -- never inside `onNodeCreated`
+    // above, since a freshly-placed node is already built correctly by
+    // ComfyUI itself (task brief). `nodeData` is THIS class's own
+    // just-registered definition, captured once in this closure and reused
+    // for every instance's restore -- node defs don't change mid-session
+    // (same assumption `js/controls/index.js`'s `readKnownLists` cache
+    // makes). Deliberately deferred to the SAME `loadMods().then(...)`
+    // microtask `restoreNode` already rides, not run synchronously inside
+    // `onConfigure` itself -- see `healNodeSockets`'s own doc comment for
+    // why that timing matters (the graph's own `links` table isn't
+    // assembled yet at the point `onConfigure` synchronously runs).
     const _configure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (...args) {
       const result = _configure ? _configure.apply(this, args) : undefined;
       const node = this;
       loadMods()
-        .then((mods) => restoreNode(node, mods, isGenerator))
+        .then((mods) => {
+          const summary = mods.interaction.healNodeSockets(node, nodeData);
+          if (summary.changed) {
+            logHealedSockets(node, nodeData, summary);
+          }
+          if (mountsUi) {
+            restoreNode(node, mods, isGenerator);
+          }
+        })
         .catch((err) => {
           console.error("[AnimaFlow Anima] failed to load js/anima modules:", err);
         });
       return result;
     };
+
+    if (!mountsUi) {
+      return; // AnimaContextBridge: healing only -- no UI hooks below.
+    }
 
     // Refresh the Generator's "context-supplied" field badges (design doc
     // §5a -- `computeContextSupplied` walks the real litegraph link, so a

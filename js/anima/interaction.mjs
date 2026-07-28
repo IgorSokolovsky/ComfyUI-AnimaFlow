@@ -165,6 +165,286 @@ export function isInputWired(node, name) {
 }
 
 // ---------------------------------------------------------------------------
+// Socket self-healing (`AnimaGenerator`'s Python surface changed under it --
+// `d021c09`; an ALREADY-PLACED node keeps every old socket AND gains the new
+// ones, since litegraph restores a saved node's `inputs`/`outputs` arrays
+// verbatim from the workflow file, oblivious to whatever `INPUT_TYPES`/
+// `RETURN_TYPES` the CURRENT Python class declares). `healNodeSockets`
+// reconciles an already-restored instance against the definition
+// `beforeRegisterNodeDef` was just handed for THAT EXACT class (`nodeData`)
+// -- no `window.LiteGraph` registry lookup needed at all here, unlike
+// `js/controls/index.js`'s cross-class `readKnownLists` (KSampler's combo
+// lists, read from a DIFFERENT node's definition) -- this is always the SAME
+// class we were just handed the definition for.
+//
+// Three rules, matching the task brief exactly:
+//   1. A socket whose name isn't ANYWHERE in the current definition is
+//      DEAD -- its link (if any) points at something the backend no longer
+//      declares -- so it's removed outright.
+//   2. A duplicate name (the real-world trigger: re-registering a class
+//      hands a restored instance every NEW socket without touching the OLD
+//      ones already sitting in its saved `inputs`/`outputs` arrays) collapses
+//      to its FIRST occurrence.
+//   3. Whatever survives is reordered to the definition's own order, since
+//      litegraph indexes links POSITIONALLY (docs/control-panel-design.md
+//      §4's whole reasoning for keeping "slot" separate from display order)
+//      -- reordering an array of sockets without ALSO retargeting every
+//      surviving link's `target_slot`/`origin_slot` to its socket's NEW
+//      index would silently rewire the graph rather than heal it.
+//
+// `computeNodeDefinition` is the ONLY thing that reads `nodeData` --
+// everything past it works in plain socket-NAME terms, so a `STRING`
+// optional field a past workflow already converted from widget to input
+// (litegraph's own "convert to input" gesture) is treated exactly like any
+// other declared field: present in the definition => never removed just
+// because it isn't a type that renders as a socket BY DEFAULT. Matching by
+// NAME only (never by declared type) is deliberate -- this repo's own test
+// fixtures already assume `AnimaPreview.metadata_json` manifests as a real
+// litegraph input despite carrying no `forceInput`, exactly the case this
+// choice has to get right.
+// ---------------------------------------------------------------------------
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * `nodeData` -> `{ inputOrder: string[], outputs: [{name, type}] }`, or
+ * `null` for anything this function can't trust: missing/malformed shape
+ * (`nodeData`/`nodeData.input` not an object, `required`/`optional` present
+ * but not objects, `output`/`output_name` present but not arrays), OR a
+ * shape that passed every one of those checks yet still came out with NO
+ * inputs AND NO outputs -- indistinguishable from a broken definition this
+ * function's own type checks didn't catch, and every real node in this pack
+ * declares at least one of the two, so refusing to heal against it is
+ * strictly safer than risking a wipe of every socket on a real node against
+ * a definition this function got wrong (the task's explicit guard: never
+ * heal against an empty definition).
+ */
+export function computeNodeDefinition(nodeData) {
+  if (!isPlainObject(nodeData)) {
+    return null;
+  }
+  const input = nodeData.input;
+  if (input !== undefined && !isPlainObject(input)) {
+    return null;
+  }
+  const required = input ? input.required : undefined;
+  const optional = input ? input.optional : undefined;
+  if (required !== undefined && !isPlainObject(required)) {
+    return null;
+  }
+  if (optional !== undefined && !isPlainObject(optional)) {
+    return null;
+  }
+  const output = nodeData.output;
+  if (output !== undefined && !Array.isArray(output)) {
+    return null;
+  }
+  const outputName = nodeData.output_name;
+  if (outputName !== undefined && !Array.isArray(outputName)) {
+    return null;
+  }
+
+  // Required keys before optional keys, each in their own declared order --
+  // the append-only convention every `INPUT_TYPES` in this pack already
+  // follows (`.claude/CLAUDE.md`'s "widget order is append-only"), so this
+  // IS the definition's own canonical socket order.
+  const seen = new Set();
+  const inputOrder = [];
+  for (const key of Object.keys(required || {})) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      inputOrder.push(key);
+    }
+  }
+  for (const key of Object.keys(optional || {})) {
+    if (!seen.has(key)) {
+      seen.add(key);
+      inputOrder.push(key);
+    }
+  }
+
+  const outputTypes = output || [];
+  const outputs = outputTypes.map((type, i) => {
+    const name = Array.isArray(outputName) && typeof outputName[i] === "string" && outputName[i] ? outputName[i] : type;
+    return { name, type };
+  });
+
+  if (inputOrder.length === 0 && outputs.length === 0) {
+    return null;
+  }
+  return { inputOrder, outputs };
+}
+
+/** `node.graph.links[id]`, or `null` if the id/graph/table isn't there --
+ * every caller already tolerates `null` (a link that can't be found is
+ * simply left un-retargeted; the socket move itself still happens). */
+function findLink(node, linkId) {
+  if (linkId == null) {
+    return null;
+  }
+  const links = node.graph && node.graph.links;
+  return (links && links[linkId]) || null;
+}
+
+/** Point socket `item` (already sitting at `newIndex` in `node.inputs`/
+ * `node.outputs`) at its new position, on every `LLink` that still
+ * references it -- an input has at most one (`item.link`); an output can
+ * fan out to several (`item.links`). This is the manual half of rule 3
+ * above: there is no litegraph "move slot" API, so a reorder has to fix
+ * this bookkeeping itself, exactly as `removeInput`/`removeOutput` already
+ * do for the slots that shift down after something is removed. */
+function retargetSlot(node, item, newIndex, isOutput) {
+  if (isOutput) {
+    (item.links || []).forEach((linkId) => {
+      const link = findLink(node, linkId);
+      if (link) {
+        link.origin_slot = newIndex;
+      }
+    });
+  } else if (item.link != null) {
+    const link = findLink(node, item.link);
+    if (link) {
+      link.target_slot = newIndex;
+    }
+  }
+}
+
+/** Defensive fallback for a host with no `removeInput`/`removeOutput`
+ * (shouldn't occur against real litegraph -- see the build report) --
+ * splices the dead slot out and re-derives every SURVIVING slot's own
+ * index (`retargetSlot`), the same bookkeeping the real API would have
+ * done. */
+function fallbackRemoveSlot(node, key, idx, isOutput) {
+  const arr = node[key];
+  if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) {
+    return;
+  }
+  const removed = arr[idx];
+  const links = node.graph && node.graph.links;
+  if (isOutput) {
+    (removed.links || []).forEach((linkId) => {
+      if (links) {
+        delete links[linkId];
+      }
+    });
+  } else if (removed.link != null && links) {
+    delete links[removed.link];
+  }
+  arr.splice(idx, 1);
+  arr.forEach((item, i) => {
+    if (i >= idx) {
+      retargetSlot(node, item, i, isOutput);
+    }
+  });
+}
+
+/**
+ * Reconciles ONE socket array (`node.inputs` or `node.outputs`, per `key`)
+ * against `defNames` (the current definition's own names, IN ORDER).
+ * Removes anything not in `defNames`, and every duplicate past the first
+ * matching occurrence, via `node.removeInput`/`removeOutput` -- the API
+ * methods, so a removed slot's own link is properly torn down and every
+ * LATER slot's `target_slot`/`origin_slot` shifts down with it, per the
+ * task's explicit preference over a raw splice -- then reorders whatever
+ * survives to match `defNames` (manual -- see `retargetSlot`; no litegraph
+ * API does this). Never touches the array at all if it already matches
+ * (same names, same order): the no-op case this whole feature must get
+ * right, so an already-correct node reports `changed: false` and `node[key]`
+ * stays the EXACT SAME array reference -- no new array, no dirty flag.
+ */
+function reconcileSocketArray(node, key, defNames) {
+  const existing = Array.isArray(node[key]) ? node[key] : [];
+  if (existing.length === 0) {
+    return { changed: false, removedNames: [] };
+  }
+  const isOutput = key === "outputs";
+  const defSet = new Set(defNames);
+  const seenNames = new Set();
+  const removedIdx = [];
+  const removedNames = [];
+
+  existing.forEach((item, idx) => {
+    const name = item && item.name;
+    if (!defSet.has(name) || seenNames.has(name)) {
+      removedIdx.push(idx);
+      removedNames.push(name);
+      return;
+    }
+    seenNames.add(name);
+  });
+
+  if (removedIdx.length > 0) {
+    const removeFnName = isOutput ? "removeOutput" : "removeInput";
+    const removeFn = typeof node[removeFnName] === "function" ? node[removeFnName].bind(node) : null;
+    // Highest index first -- removing low-to-high would shift the indices
+    // of entries not yet processed out from under this loop.
+    removedIdx
+      .slice()
+      .sort((a, b) => b - a)
+      .forEach((idx) => {
+        if (removeFn) {
+          removeFn(idx);
+        } else {
+          fallbackRemoveSlot(node, key, idx, isOutput);
+        }
+      });
+  }
+
+  const survivors = Array.isArray(node[key]) ? node[key] : [];
+  const byName = new Map(survivors.map((item) => [item.name, item]));
+  const desired = defNames.filter((name) => byName.has(name)).map((name) => byName.get(name));
+  const alreadyInOrder = desired.length === survivors.length && desired.every((item, i) => item === survivors[i]);
+
+  if (!alreadyInOrder) {
+    node[key] = desired;
+    desired.forEach((item, i) => retargetSlot(node, item, i, isOutput));
+  }
+
+  return { changed: removedIdx.length > 0 || !alreadyInOrder, removedNames };
+}
+
+/**
+ * The one entry point `index.js` calls -- from the SAME deferred
+ * `onConfigure` callback `restoreNode` already runs in, deliberately NOT
+ * synchronously inside `onConfigure` itself. Litegraph's per-node
+ * `configure()` restores THIS node's own `inputs`/`outputs` arrays
+ * synchronously (matches this file's/`js/controls/index.js`'s existing
+ * "litegraph has already restored every widget's real saved value before
+ * either callback fires" doc note), but the GRAPH-level `links` table
+ * (`node.graph.links`, keyed by link id) is only assembled AFTER every node
+ * has been configured -- still inside that same synchronous
+ * `graph.configure()` call, but strictly after this function would have
+ * already returned if it ran eagerly inside `onConfigure`. Reordering
+ * survivors needs to retarget real `LLink` objects (`retargetSlot`) that
+ * plain don't exist yet at that point; deferring to a microtask (the
+ * `loadMods().then(...)` this rides on already does exactly that, since a
+ * Promise callback never runs before the CURRENT synchronous stack -- the
+ * entire graph-configure pass, links table included -- has finished
+ * unwinding) is what makes that safe.
+ *
+ * VERIFY-IN-COMFYUI: this ordering (every node configured, THEN the graph's
+ * own `links` table built, all synchronously within one `graph.configure()`
+ * call) is read from litegraph's documented deserialize sequence, not
+ * exercised against a live process (none installed in this dev
+ * environment).
+ */
+export function healNodeSockets(node, nodeData) {
+  const def = computeNodeDefinition(nodeData);
+  if (!def) {
+    return { changed: false, removedInputs: [], removedOutputs: [] };
+  }
+  const inputResult = reconcileSocketArray(node, "inputs", def.inputOrder);
+  const outputResult = reconcileSocketArray(node, "outputs", def.outputs.map((o) => o.name));
+  return {
+    changed: inputResult.changed || outputResult.changed,
+    removedInputs: inputResult.removedNames,
+    removedOutputs: outputResult.removedNames,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Context-bridge resolution -- see this module's top doc comment.
 // ---------------------------------------------------------------------------
 
