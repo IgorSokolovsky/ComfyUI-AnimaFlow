@@ -434,6 +434,30 @@ test("mkRow defaults renamed to false", () => {
   assert.equal(mkRow("auto").renamed, false);
 });
 
+test("mkRow defaults slotLabelOwned to false -- a fresh row's socket has never been user-renamed", () => {
+  assert.equal(mkRow("int").slotLabelOwned, false);
+  assert.equal(mkRow("sampler").slotLabelOwned, false);
+});
+
+test("normalizeState round-trips an explicit slotLabelOwned:true flag, defaulting to false when absent (same boolean-safety contract as renamed)", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { kind: "int", slot: 1, name: "steps", slotLabelOwned: true, value: 5, opts: {} },
+        { kind: "float", slot: 2, name: "cfg", value: 1, opts: {} }, // no slotLabelOwned key at all
+      ],
+    },
+    "control",
+  );
+  assert.equal(state.rows[0].slotLabelOwned, true);
+  assert.equal(state.rows[1].slotLabelOwned, false);
+});
+
+test("normalizeState never trusts a truthy-but-non-boolean slotLabelOwned value from a hand-edited payload", () => {
+  const state = normalizeState({ rows: [{ kind: "int", slot: 1, slotLabelOwned: "yes", value: 1, opts: {} }] }, "control");
+  assert.equal(state.rows[0].slotLabelOwned, false);
+});
+
 // =========================================================================
 // Row presets -- steps/cfg/denoise (pre-configured int/float rows, NOT new
 // kinds -- see rows.mjs's ROW_PRESETS doc comment / nodes/controls/
@@ -694,6 +718,15 @@ test("duplicateRow inserts right after the original with a NEW slot (never inher
   assert.equal(state.rows.indexOf(copy), state.rows.indexOf(original) + 1);
   assert.notEqual(copy.slot, original.slot);
   assert.equal(copy.value, "42"); // copies the VALUE, just not the slot
+});
+
+test("duplicateRow never inherits the original's slotLabelOwned claim -- the copy is a brand-new socket with no label of its own yet", () => {
+  const state = { version: 1, rows: [] };
+  const original = addRow(state, "seed", "control");
+  original.slotLabelOwned = true; // simulate a user-renamed socket on the ORIGINAL
+  const copy = duplicateRow(state, original.id, "control");
+  assert.equal(original.slotLabelOwned, true, "the original's own claim must be untouched");
+  assert.equal(copy.slotLabelOwned, false, "the copy's fresh slot starts unowned");
 });
 
 test("duplicateRow refuses past MAX_ROWS and for an unknown id", () => {

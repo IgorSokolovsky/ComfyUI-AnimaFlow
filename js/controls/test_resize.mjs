@@ -1276,6 +1276,172 @@ test("a slot number freed by one removed row and reused by a DIFFERENT new row g
   assert.equal(node.outputs[samplerRow.slot - 1].label, "sampler", "reused slot must adopt the NEW occupant's own label, not the old row's");
 });
 
+// ---------------------------------------------------------------------------
+// C2. Slot label ownership survives a RELOAD -- live bug report: a socket
+// renamed via litegraph's own Rename Slot dialog reverted (either to the
+// row's own name or to a zero-width blank) on the very first sync after a
+// page/workflow reload. Root cause (confirmed by the repro below, BEFORE the
+// fix): `index.js` runs `ensureState`+`syncRows` from `onNodeCreated`
+// (`setupNode`) and THEN, for a node restored from a saved workflow,
+// `restoreStateFromWidget`+`syncRows` AGAIN from `onConfigure`
+// (`restoreNode`) -- per that file's own top doc comment, by the time either
+// async `.then()` callback actually runs, litegraph's synchronous
+// `onConfigure` has ALREADY restored the widget's real saved value, so BOTH
+// calls parse the exact same saved JSON. `rows.mjs`'s `normalizeRow` mints a
+// BRAND-NEW `row.id` on EVERY parse, so the second parse's rows disagree on
+// `id` with the first parse's even though they describe the same logical
+// rows. The OLD `syncSlotLabel` tracked ownership in slot-keyed session Maps
+// keyed partly by `row.id` (`_ctrlSlotRowId`) and treated that id mismatch as
+// "this slot was just handed to a genuinely different row" -- a hard reset
+// that unconditionally overwrote `out.label` with the row's own default,
+// stomping the user's real rename. The fix moves ownership onto the ROW
+// itself (`rows.mjs`'s `slotLabelOwned`, a durable, SERIALIZED field), so it
+// no longer matters which `id` generation a row happens to carry this sync.
+// ---------------------------------------------------------------------------
+
+/** Reproduces index.js's real two-phase restore sequence against a FRESH
+ * node object (mirrors an actual page reload -- never the live node from
+ * before "save"). `node.outputs` is seeded from a deep-cloned snapshot of
+ * what litegraph would have restored on its own, independently of
+ * `panel_state` (a real workflow save serializes `node.outputs`, including
+ * `.label`, by itself -- never through this pack's widget at all). Returns
+ * the reloaded `{ node, ctx, doc }` after BOTH phases have run, i.e. exactly
+ * where a real page would be immediately after load. */
+function simulateReload(savedNode, panelConfig) {
+  const savedStateJSON = getStateWidget(savedNode).value;
+  const doc = makeDocStub();
+  const node = makeFakeNode(savedStateJSON);
+  node.outputs = savedNode.outputs.map((o) => ({ ...o }));
+  const ctx = makeCtx(doc, panelConfig);
+
+  // Phase 1 -- onNodeCreated's setupNode.
+  ensureState(node, ctx);
+  syncRows(node, ctx);
+
+  // Phase 2 -- onConfigure's restoreNode: forces a SECOND, independent parse
+  // of the identical saved JSON (restoreStateFromWidget's whole documented
+  // purpose), then syncs again. This is the moment the old session-Map
+  // heuristic saw every slot as "reassigned to a different row."
+  restoreStateFromWidget(node, ctx);
+  syncRows(node, ctx);
+
+  return { node, ctx, doc };
+}
+
+test("a slot label set directly on the socket, acknowledged before save, is written into the SERIALIZED panel_state (not just an in-memory session Map) and survives the two-phase reload sequence", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+  assert.equal(out.label, "sampler"); // still-owned default before any user edit
+
+  out.label = "custom_socket_name"; // the user's own litegraph rename
+  syncOutputs(node, ctx); // acknowledge/claim ownership -- must persist the claim, per the fix
+
+  const savedRow = JSON.parse(getStateWidget(node).value).rows[0];
+  assert.equal(savedRow.slotLabelOwned, true, "the socket rename must be a durable, SERIALIZED fact, not merely a session Map entry");
+
+  const { node: reloaded } = simulateReload(node, CONTROL_PANEL_CONFIG);
+  assert.equal(reloaded.outputs[row.slot - 1].label, "custom_socket_name", "the user's socket rename must survive the two-phase onNodeCreated -> onConfigure reload sequence");
+});
+
+test("a socket rename that was NEVER acknowledged by a sync before save (still ZW-prefixed, exactly what a live litegraph dump showed) still heals and claims ownership on the FIRST post-reload sync", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+
+  // The user renames the socket via litegraph's dialog and the workflow is
+  // saved in EXACTLY this state -- no intervening sync of ours ever runs in
+  // this session (a real ComfyUI serialize doesn't call our code at all).
+  out.label = `${ZW}sampler_name`;
+
+  const { node: reloaded } = simulateReload(node, CONTROL_PANEL_CONFIG);
+  assert.equal(reloaded.outputs[row.slot - 1].label, "sampler_name", "must heal AND stop reverting on the very first post-reload sync");
+  const savedRow = JSON.parse(getStateWidget(reloaded).value).rows[0];
+  assert.equal(savedRow.slotLabelOwned, true);
+});
+
+test("a user-renamed socket survives an arbitrary number of subsequent syncs, a row add, a row remove, and a ROW rename -- all AFTER a reload", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "sampler");
+  const out = node.outputs[row.slot - 1];
+  out.label = "custom_socket_name";
+  syncOutputs(node, ctx);
+
+  const { node: reloaded, ctx: reloadedCtx, doc: reloadedDoc } = simulateReload(node, CONTROL_PANEL_CONFIG);
+  const reloadedRow = ensureState(reloaded, reloadedCtx).rows[0];
+  const idx = reloadedRow.slot - 1;
+  assert.equal(reloaded.outputs[idx].label, "custom_socket_name");
+
+  syncOutputs(reloaded, reloadedCtx); // a bare repaint-equivalent call
+  assert.equal(reloaded.outputs[idx].label, "custom_socket_name");
+
+  const second = addRowAndSync(reloaded, reloadedCtx, "int"); // add -- a full structural resync
+  assert.equal(reloaded.outputs[idx].label, "custom_socket_name");
+
+  removeRowAndSync(reloaded, reloadedCtx, second.id); // remove -- another full resync
+  assert.equal(reloaded.outputs[idx].label, "custom_socket_name");
+
+  // Rename the ROW itself -- the socket label must still win (existing
+  // pre-reload contract at test line ~1235, now proven to also hold once
+  // `id` has churned across a reload).
+  makeWindowStub(reloadedDoc);
+  const entry = reloaded._ctrlRows.find((e) => e.id === reloadedRow.id);
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "renamed_row";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(entry.refs.row.name, "renamed_row"); // the ROW did rename
+  assert.equal(reloaded.outputs[idx].label, "custom_socket_name", "the SOCKET label must still win over a post-reload row rename");
+});
+
+test("a slot the user never touched still follows its row's name across a reload (id churn alone must not falsely claim ownership)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "float"); // never socket-renamed
+  assert.equal(node.outputs[row.slot - 1].label, "float");
+
+  const { node: reloaded, ctx: reloadedCtx, doc: reloadedDoc } = simulateReload(node, CONTROL_PANEL_CONFIG);
+  const reloadedRow = ensureState(reloaded, reloadedCtx).rows[0];
+  const idx = reloadedRow.slot - 1;
+  assert.equal(reloaded.outputs[idx].label, "float", "an untouched slot's label must survive the reload unchanged");
+
+  // A row rename must still propagate to the label post-reload -- proves the
+  // `raw === want` fallback (needed because the session `_ctrlLastLabel`
+  // cache is legitimately empty right after a reload) doesn't accidentally
+  // freeze a never-owned slot instead.
+  makeWindowStub(reloadedDoc);
+  const entry = reloaded._ctrlRows.find((e) => e.id === reloadedRow.id);
+  fire(entry.refs.name, "dblclick");
+  entry.refs.nameInput.value = "denoise";
+  fire(entry.refs.nameInput, "keydown", { key: "Enter" });
+  assert.equal(reloaded.outputs[idx].label, "denoise");
+});
+
+test("AnimaLoaderPanel shares the exact same fix -- a socket rename on a loader row survives the two-phase reload sequence too", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // unet/vae/clip, slots 1/2/3 -- defaultState(loader)
+  const unetRow = ensureState(node, ctx).rows.find((r) => r.kind === "unet");
+  const out = node.outputs[unetRow.slot - 1];
+  assert.equal(out.label, "unet");
+
+  out.label = "base_model"; // the user's own litegraph rename
+  syncOutputs(node, ctx); // acknowledge/claim + persist
+
+  const savedRow = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(savedRow.slotLabelOwned, true);
+
+  const { node: reloaded } = simulateReload(node, LOADER_PANEL_CONFIG);
+  assert.equal(reloaded.outputs[unetRow.slot - 1].label, "base_model", "AnimaLoaderPanel must not revert a socket rename on reload either -- same syncOutputs/syncSlotLabel code path as the Control Panel");
+});
+
 test("alignOutputsLegacy parks each row's dot at its OWN widget's Y, offset by margin + half a row", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();

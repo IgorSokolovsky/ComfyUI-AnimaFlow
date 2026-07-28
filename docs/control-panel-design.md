@@ -248,6 +248,28 @@ parsing it back in `onConfigure` *after* the original runs.
 
 ---
 
+> ### ⚠️ `row.id` is NOT stable across parses — never key durable state off it
+>
+> `id` is serialized into `panel_state` and *looks* durable. It isn't: `normalizeRow` never reads it
+> back, so every parse mints a fresh one from a module counter. The same row emerges as `id: 1` from
+> one parse and `id: 2` from the next.
+>
+> That matters because the load path parses **twice** — `onNodeCreated` materializes state, then
+> `onConfigure`'s `restoreStateFromWidget` force-re-parses the restored widget value. Any per-node
+> bookkeeping keyed on `row.id` therefore looks like it's describing different rows across those two
+> phases.
+>
+> This cost a real bug (found live 2026-07-28): slot-label ownership was tracked in a session
+> `Map` keyed by `row.id`, so a socket the user renamed via litegraph's Rename Slot dialog had its
+> ownership silently forgotten on **every** workflow load, and the next sync overwrote the name with
+> the row's default. The fix was to put ownership in the serialized row (`slotLabelOwned`) — a fact,
+> not an inference. `renamed` already worked this way for the row's display name.
+>
+> **Rule:** anything that must survive a reload goes in the serialized row state. `row.id` is a
+> within-parse handle for pairing DOM to rows, nothing more.
+
+---
+
 ## 5. Output typing — SETTLED (2026-07-27)
 
 Python is wildcard for every slot (`ANY` = a `str` subclass whose `__ne__` returns `False`; Pixaroma

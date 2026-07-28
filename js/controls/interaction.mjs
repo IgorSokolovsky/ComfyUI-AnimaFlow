@@ -1398,85 +1398,115 @@ export function syncRows(node, ctx) {
 
 /**
  * Write/preserve `out.label` for `row`'s slot -- the UE ("cg-use-everywhere")
- * name-disambiguation fix. Tracking is keyed by SLOT NUMBER (`row.slot`), not
- * row id -- a slot is the durable "wire identity" (`rows.mjs`'s module doc
- * comment), and `out.label` is a property of the OUTPUT OBJECT at that slot
- * index, which persists across `assignSlot` handing the same freed slot
- * number to a completely different row later in the same session (see the
- * "reassigned" branch below, and the regression test that caught this: two
- * `int` rows sharing a slot across a remove+re-add produced a spurious
- * "user-owned" label copied from the row that used to be there).
+ * name-disambiguation fix.
  *
- * Ownership rule (per `rows.mjs`'s `SLOT_LABEL_MODE` doc comment):
+ * ## History: this used to be a session-Map heuristic, and that was the bug
  *
- *  - This slot number was just handed to a DIFFERENT row than the one we
- *    last processed it for, WITHIN THIS SESSION (`node._ctrlSlotRowId`
- *    disagrees) -- a hard reset. Whatever text `out.label` currently
- *    carries belongs to whichever row vacated the slot, never to this one,
- *    so it is unconditionally overwritten with this row's own default,
- *    regardless of what it happens to look like.
- *  - Otherwise, `isBlankSlotLabel(out.label)` (a brand-new output with no
+ * An earlier version of this function tracked ownership in THREE plain
+ * node-instance fields (`_ctrlSlotRowId`/`_ctrlOwnedLabels`/`_ctrlLastLabel`,
+ * all keyed by SLOT NUMBER) that were deliberately never persisted. That
+ * missed something `rows.mjs`'s own module doc comment now calls out
+ * explicitly: `row.id` is NOT stable across a save/reload -- `normalizeRow`
+ * mints a fresh one on every parse of the saved `panel_state` widget value,
+ * and `index.js`'s `restoreStateFromWidget` FORCES exactly that reparse on
+ * every `onConfigure`, even though `onNodeCreated`'s own earlier
+ * `ensureState` call (same page load, moments before) already parsed the
+ * IDENTICAL saved JSON into a first generation of row objects and already
+ * ran a `syncOutputs` pass against them. So the old code's "this slot number
+ * was just handed to a DIFFERENT row than last time" check
+ * (`_ctrlSlotRowId.get(row.slot) !== row.id`) fired on literally every
+ * restored workflow -- not because the slot was genuinely reassigned to a
+ * new row, but because `restoreStateFromWidget`'s second parse of the SAME
+ * saved rows minted second-generation ids that disagreed with the first
+ * generation's. That "hard reset" branch then unconditionally overwrote
+ * `out.label` with `defaultSlotLabel(row)`, silently reverting ANY label the
+ * user had set directly on the socket (litegraph's own Rename Slot dialog)
+ * and saved -- the reported bug: a socket rename reverts, either to the
+ * row's own name or to a zero-width blank, on the very first sync after
+ * reload.
+ *
+ * ## The fix: ownership lives on the ROW, not a slot-keyed session Map
+ *
+ * `row.slotLabelOwned` (`rows.mjs`) is a durable, SERIALIZED fact -- it
+ * round-trips through `panel_state` (`_rows_helpers.py`'s `parse_state`
+ * passes it through untouched, same contract as `renamed`), so it survives
+ * regardless of which generation of ids this particular sync's row objects
+ * happen to carry. Once set, nothing in THIS module ever clears it again --
+ * not a reparse, not a reorder, not a row rename -- because it belongs to
+ * this exact row for as long as this exact row object exists, full stop.
+ * `node._ctrlLastLabel` (below) is now the ONLY still-session-only field, and
+ * it's keyed by `row.id` rather than slot; that's fine precisely because it
+ * is no longer load-bearing for ownership itself -- see its own comment.
+ *
+ * A removed row's `slotLabelOwned` flag disappears WITH the row object (it
+ * was never slot-keyed, so there is nothing left over for a slot to
+ * "inherit"), and `syncOutputs`'s `markSlotVacant` forces that freed slot's
+ * `out.label` to the bare `ZW` sentinel on every sync it sits unclaimed --
+ * so a brand-new row that later reuses the freed slot number always starts
+ * from a genuinely blank label, never the departed row's text OR its
+ * ownership claim. This is what test-covers the "slot reused by a new row
+ * must not inherit the old row's label" case with zero extra bookkeeping.
+ *
+ * ## Ownership rule (per `rows.mjs`'s `SLOT_LABEL_MODE` doc comment)
+ *
+ *  - `row.slotLabelOwned === true` -- permanently the user's. The only thing
+ *    still done to it is a one-time zero-width edge strip
+ *    (`stripZeroWidthEdges`), healing the `${ZW}typed text` case litegraph's
+ *    rename dialog produces when it pre-fills with our own ZW-sentinel'd
+ *    label (confirmed live); a label with no such edge is left byte-for-byte
+ *    alone. `applyResolvedKind`/a row rename never look at this flag and
+ *    never need to -- see the existing regression test asserting the socket
+ *    wins over a later row rename.
+ *  - Otherwise: `isBlankSlotLabel(out.label)` (a brand-new output with no
  *    label at all, an empty string, the bare `ZW` sentinel, or pure
- *    zero-width junk) OR exactly what we ourselves wrote on a PRIOR call
- *    (tracked in `node._ctrlLastLabel`) -- still OURS to manage. Stamp
- *    `defaultSlotLabel(row)`. This is the branch that makes a plain ROW
- *    RENAME keep updating the slot label on every subsequent sync
- *    (`defaultSlotLabel` re-derives from `row.name`, which just changed)
- *    rather than freezing after the very first write.
- *  - Anything else -- the user set this directly on the socket (litegraph's
- *    own rename-slot dialog; confirmed live to pre-fill with the CURRENT
- *    label, so renaming a ZW-sentinel'd or row-named slot lands as
- *    `${ZW}typed text` / `${oldName}typed text`) -- hand it to
- *    `node._ctrlOwnedLabels` PERMANENTLY for this session (a later row rename
- *    must never silently revert a user's UE-disambiguating name -- that
- *    reversion is the ORIGINAL bug report this function exists to fix). The
- *    only thing still done to it is a ONE-TIME zero-width edge strip
- *    (`stripZeroWidthEdges`), which is what heals the exact `${ZW}typed`
- *    case into a clean value UE can match by name; a label with no such edge
- *    is left byte-for-byte alone.
+ *    zero-width junk), OR it already equals `defaultSlotLabel(row)` (the
+ *    label we'd write anyway -- covers the FIRST sync after a reload, when
+ *    the restored `out.label` is legitimately our own still-unclaimed
+ *    default and `node._ctrlLastLabel` is a fresh, empty Map with nothing to
+ *    compare against yet), OR it equals exactly what we ourselves wrote on a
+ *    PRIOR call this session (tracked in `node._ctrlLastLabel`, needed for
+ *    the case `defaultSlotLabel(row)` no longer matches because the ROW was
+ *    just renamed) -- still OURS to manage. Stamp `defaultSlotLabel(row)`.
+ *    This is the branch that makes a plain row rename keep updating the slot
+ *    label on every subsequent sync.
+ *  - Anything else -- the user just set this directly on the socket for the
+ *    FIRST time (this session or ever) -- claim `row.slotLabelOwned = true`
+ *    permanently, returning `true` so `syncOutputs` knows to persist the
+ *    claim (a durable fact that only just became true MUST reach
+ *    `panel_state`, or it wouldn't survive the very reload it exists to
+ *    survive).
  *
- * `node._ctrlSlotRowId`/`_ctrlOwnedLabels`/`_ctrlLastLabel` are intentionally
- * NOT persisted (plain node-instance fields, reset every fresh page load) --
- * so on reload a slot with NO prior entry in `_ctrlSlotRowId` (the normal
- * "first sync of a fresh session" case, not a same-session reassignment) is
- * NOT hard-reset -- it falls through to the blank/last-written check above,
- * same as ever: a label that survived the save/reload round trip and
- * doesn't match a freshly-computed `defaultSlotLabel` is treated as the
- * user's, even if it was actually only our own never-touched default from a
- * prior session. That is the deliberately SAFE side to err on:
- * mis-classifying an untouched default as "user-owned" only costs a future
- * row-rename no longer propagating to a label nobody asked to keep in sync;
- * the alternative (mis-classifying a real user rename as still-ours) would
- * silently revert the user's UE-disambiguating name on the very next edit --
- * exactly the bug this function replaces.
+ * Returns whether ownership was just claimed for the first time this call
+ * (`syncOutputs` uses this to know whether a persist is needed).
  */
 function syncSlotLabel(node, row, out) {
-  const priorRowId = node._ctrlSlotRowId.get(row.slot);
-  const reassignedThisSession = priorRowId !== undefined && priorRowId !== row.id;
-  if (reassignedThisSession) {
-    node._ctrlOwnedLabels.delete(row.slot);
-    node._ctrlLastLabel.delete(row.slot);
-  }
-  node._ctrlSlotRowId.set(row.slot, row.id);
-
   const raw = out.label;
-  const stillOurs =
-    reassignedThisSession ||
-    (!node._ctrlOwnedLabels.has(row.slot) && (isBlankSlotLabel(raw) || raw === node._ctrlLastLabel.get(row.slot)));
 
+  if (row.slotLabelOwned) {
+    const cleaned = stripZeroWidthEdges(raw);
+    if (cleaned !== raw) {
+      out.label = cleaned;
+    }
+    return false;
+  }
+
+  const want = defaultSlotLabel(row);
+  const stillOurs = isBlankSlotLabel(raw) || raw === want || raw === node._ctrlLastLabel.get(row.id);
   if (stillOurs) {
-    const want = defaultSlotLabel(row);
     if (out.label !== want) {
       out.label = want;
     }
-    node._ctrlLastLabel.set(row.slot, want);
-    return;
+    node._ctrlLastLabel.set(row.id, want);
+    return false;
   }
-  node._ctrlOwnedLabels.add(row.slot);
+
+  row.slotLabelOwned = true;
+  node._ctrlLastLabel.delete(row.id);
   const cleaned = stripZeroWidthEdges(raw);
   if (cleaned !== raw) {
     out.label = cleaned;
   }
+  return true;
 }
 
 /**
@@ -1528,31 +1558,22 @@ export function syncOutputs(node, ctx) {
     }
   }
 
-  if (!node._ctrlSlotRowId) {
-    // slot number -> the row id we last processed THAT SLOT for -- lets
-    // `syncSlotLabel` detect "this slot number was just handed to a
-    // DIFFERENT row" (a freed slot reused by `assignSlot`) and hard-reset
-    // its label bookkeeping instead of misreading the vacated row's
-    // leftover text as this row's user-set label.
-    node._ctrlSlotRowId = new Map();
-  }
-  if (!node._ctrlOwnedLabels) {
-    // slot numbers whose label the USER set directly on the socket
-    // (litegraph's own rename-slot dialog) -- once a slot lands in here it
-    // stays forever for this session (until reassigned to a different row,
-    // see `syncSlotLabel` below).
-    node._ctrlOwnedLabels = new Set();
-  }
   if (!node._ctrlLastLabel) {
-    // slot number -> the label WE ourselves last wrote -- lets
-    // `syncSlotLabel` tell "the user changed this since we last looked"
+    // row id -> the label WE ourselves last wrote for that row's slot --
+    // lets `syncSlotLabel` tell "the user changed this since we last looked"
     // from "still exactly what we stamped it with" without needing to
-    // persist anything.
+    // persist anything. Keyed by ROW ID rather than slot number precisely
+    // because it is NOT load-bearing for ownership itself (see
+    // `syncSlotLabel`'s doc comment) -- a stale entry surviving under an old
+    // row's id after that row is removed is harmless: nothing ever reads it
+    // again (a brand-new row minted later, even one reusing the freed slot
+    // number, has a brand-new id).
     node._ctrlLastLabel = new Map();
   }
 
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
   const ownedSlots = new Set();
+  let claimedOwnership = false;
   state.rows.forEach((row) => {
     ownedSlots.add(row.slot);
     const idx = row.slot - 1;
@@ -1574,7 +1595,9 @@ export function syncOutputs(node, ctx) {
     if (out.name !== wantName) {
       out.name = wantName;
     }
-    syncSlotLabel(node, row, out);
+    if (syncSlotLabel(node, row, out)) {
+      claimedOwnership = true;
+    }
     const t = outputTypeForRow(row, lists);
     if (out.type !== t) {
       out.type = t;
@@ -1595,6 +1618,20 @@ export function syncOutputs(node, ctx) {
   }
 
   alignOutputsLegacy(node);
+
+  // A row's `slotLabelOwned` flag is part of the serialized row (`rows.mjs`)
+  // -- if `syncSlotLabel` just claimed it for the FIRST time this call, that
+  // durable fact must reach `panel_state` NOW, not whenever some unrelated
+  // future edit next happens to call `persistState`. Without this, the claim
+  // lives only on the in-memory row object: it correctly stops THIS session
+  // from reverting the label again, but a save that happens before any other
+  // edit would still miss it, and the very next reload would be back to
+  // square one (`isBlankSlotLabel`/`_ctrlLastLabel` both fresh, but the
+  // restored `out.label` no longer matches either since it's the user's real
+  // text -- exactly the scenario `syncSlotLabel`'s doc comment walks through).
+  if (claimedOwnership) {
+    persistState(node, ctx);
+  }
 }
 
 /**

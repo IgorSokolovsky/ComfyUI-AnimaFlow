@@ -12,18 +12,28 @@
  *
  * ## State shape (mirrors docs/control-panel-design.md §4 exactly)
  *
- *   { version: 1, rows: [ { id, slot, kind, name, value, opts, renamed } ] }
+ *   { version: 1, rows: [ { id, slot, kind, name, value, opts, renamed,
+ *                           slotLabelOwned } ] }
  *
  * `id` is a frontend-only bookkeeping key (never serialized by
- * Python — see `nodes/controls/_rows_helpers.py`'s contract); `slot` is the
+ * Python — see `nodes/controls/_rows_helpers.py`'s contract) and, unlike
+ * every other field here, NOT stable across a save/reload either:
+ * `normalizeRow` below mints a fresh one via `nextUid()` on every parse of
+ * the saved `panel_state` widget value, including the one `index.js`'s
+ * `restoreStateFromWidget` FORCES on every `onConfigure` even when
+ * `onNodeCreated`'s own earlier `ensureState` call already parsed the exact
+ * same JSON moments before. Never key ANY durable fact off `row.id` — that
+ * was the root cause of the slot-rename-reverts-on-reload bug `slotLabelOwned`
+ * below exists to fix; see `interaction.mjs`'s `syncSlotLabel`. `slot` is the
  * durable output-index label described below. `rows` is DISPLAY order.
- * `renamed` is a top-level row key (never nested in `opts`) rather than a
- * Python-side concern: `_rows_helpers.py`'s `parse_state` passes each row
- * dict through untouched (it only ever reads specific known keys off it —
- * `kind`/`opts`/`value`/`slot` — never rejects or strips an unrecognized
- * one), so this flag round-trips through a save/load with zero Python
- * changes. See `commitRename`/`applyResolvedKind` below for what sets/reads
- * it.
+ * `renamed` and `slotLabelOwned` are both top-level row keys (never nested in
+ * `opts`) rather than a Python-side concern: `_rows_helpers.py`'s
+ * `parse_state` passes each row dict through untouched (it only ever reads
+ * specific known keys off it — `kind`/`opts`/`value`/`slot` — never rejects or
+ * strips an unrecognized one), so both flags round-trip through a save/load
+ * with zero Python changes. See `commitRename`/`applyResolvedKind` below for
+ * what sets/reads `renamed`, and `interaction.mjs`'s `syncSlotLabel` for
+ * `slotLabelOwned`.
  *
  * ## Slot vs. display order — the mechanism drag-to-reorder depends on
  *
@@ -448,7 +458,10 @@ export function nextUid() {
  * (never wholesale-replaces it), so a caller can override e.g. just
  * `{opts: {min: 1}}` without having to restate every other option. */
 export function mkRow(kind, overrides = {}) {
-  const row = { id: nextUid(), kind, name: kind, value: undefined, opts: {}, renamed: false };
+  // `slotLabelOwned` starts `false` -- a fresh row's output slot has never
+  // had a user-set socket label, so it's still ours to manage (see
+  // `interaction.mjs`'s `syncSlotLabel`).
+  const row = { id: nextUid(), kind, name: kind, value: undefined, opts: {}, renamed: false, slotLabelOwned: false };
 
   if (kind === "seed") {
     row.value = "0";
@@ -627,6 +640,16 @@ function normalizeRow(raw, panelKind) {
     // fresh/never-renamed row (no `renamed` key at all) correctly stays
     // false so it keeps adopting a name on first auto-resolve connection.
     renamed: raw.renamed === true,
+    // Same boolean-safety contract as `renamed` immediately above, for the
+    // socket-label equivalent: a slot the user renamed directly (litegraph's
+    // own Rename Slot dialog) stays owned across THIS parse, no matter that
+    // `id` above just got a brand-new value -- see `interaction.mjs`'s
+    // `syncSlotLabel`, the one place that ever sets this to `true`. An old
+    // saved row with no `slotLabelOwned` key at all (every row saved before
+    // this fix existed) correctly starts `false`, same as a brand-new row --
+    // the first sync after upgrading re-derives ownership from the restored
+    // `out.label` itself, per that function's own fallback heuristic.
+    slotLabelOwned: raw.slotLabelOwned === true,
   };
 
   if (kind === "seed") {
@@ -777,6 +800,13 @@ export function duplicateRow(state, rowId, panelKind) {
   }
   const copy = { ...state.rows[idx], id: nextUid(), opts: { ...state.rows[idx].opts } };
   copy.slot = undefined;
+  // A duplicate's OUTPUT is a fresh socket (assignSlot below hands it a
+  // brand-new slot number) -- it starts with no label of its own, so it must
+  // never inherit the ORIGINAL's `slotLabelOwned` claim on a socket this copy
+  // doesn't even share. Explicit reset rather than relying on the spread
+  // above to have skipped it (it wouldn't have -- `slotLabelOwned` is a plain
+  // top-level key like every other field `{...}` copies verbatim).
+  copy.slotLabelOwned = false;
   assignSlot(state.rows, copy);
   state.rows.splice(idx + 1, 0, copy);
   return copy;
