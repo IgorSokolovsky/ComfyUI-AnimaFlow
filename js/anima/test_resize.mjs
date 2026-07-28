@@ -654,6 +654,79 @@ test("injectStyles is idempotent and guarded against a doc with no createElement
   assert.doesNotThrow(() => injectStyles({}));
 });
 
+// ---------------------------------------------------------------------------
+// docs/pixaroma-review-rounds-plan.md Tier 2 item 8 -- ported the same
+// defensive backstop to this track's own rows (.wtn-an-row/.wtn-an-stagerow
+// here, .wtn-fld-stepper/.wtn-fld-num-name/.wtn-fld-num-val in the shared
+// js/shared/fields.mjs primitives these panels are built from). Unlike the
+// Control Panel, nothing here has to survive an output dot living outside
+// its own box (this track has no per-row litegraph sockets at all -- one
+// static DOM widget per node), so overflow: hidden can sit straight on the
+// row with no row/body split needed. Same caveat as js/controls/
+// test_resize.mjs's equivalent tests: a crude CSS-text guard, not a real
+// layout check -- see the build report for the actual headless-Chrome
+// measurement this was verified against.
+// ---------------------------------------------------------------------------
+
+/** Same helper as js/controls/test_resize.mjs's cssRuleBody -- duplicated
+ * rather than imported, matching this pack's existing convention of each
+ * test file carrying its own self-contained stub (see this file's own top
+ * doc comment). Strips comments first so a preceding doc comment never gets
+ * swallowed into the next rule's selector capture. */
+function cssRuleBody(cssText, selector) {
+  const stripped = cssText.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const ruleRe = /([^{}]+)\{([^}]*)\}/g;
+  let match;
+  while ((match = ruleRe.exec(stripped))) {
+    const [, selectorList, body] = match;
+    const selectors = selectorList.split(",").map((s) => s.replace(/\s+/g, " ").trim());
+    if (selectors.includes(selector)) {
+      return body;
+    }
+  }
+  return null;
+}
+
+test("injected CSS: .wtn-an-row and .wtn-an-stagerow both clip their own children (overflow: hidden) -- the same item-8 backstop as the Control Panel, ported to this track", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  for (const selector of [".wtn-an-row", ".wtn-an-stagerow"]) {
+    const body = cssRuleBody(cssText, selector);
+    assert.ok(body, `expected a ${selector} rule in the injected CSS`);
+    assert.ok(body.includes("overflow: hidden"), `${selector} must clip its own children`);
+  }
+});
+
+test("injected CSS: .wtn-an-row's name (.wtn-an-nm) has no flex-grow (its sibling .wtn-an-val already pushes itself right via margin-left: auto -- a growable name would fight that and stretch across the row instead of hugging the left edge)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const nm = cssRuleBody(cssText, ".wtn-an-row .wtn-an-nm");
+  assert.ok(nm, "expected a .wtn-an-row .wtn-an-nm rule in the injected CSS");
+  const flexMatch = nm.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
+  assert.ok(flexMatch, ".wtn-an-nm must declare an explicit flex shorthand");
+  assert.equal(Number(flexMatch[1]), 0, "flex-grow must stay 0 -- margin-left: auto on .wtn-an-val owns the push-right job");
+  assert.ok(Number(flexMatch[2]) > 1, "flex-shrink should still exceed the default so a long name yields before the value does");
+});
+
+test("injected CSS (shared js/shared/fields.mjs primitives): .wtn-fld-stepper clips its own children, and .wtn-fld-stepper-name/.wtn-fld-num-name have no flex-grow either (same margin-left: auto sibling reasoning as .wtn-an-nm)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-fields-style").textContent;
+  const stepper = cssRuleBody(cssText, ".wtn-fld-stepper");
+  assert.ok(stepper, "expected a .wtn-fld-stepper rule in the injected CSS");
+  assert.ok(stepper.includes("overflow: hidden"));
+  for (const selector of [".wtn-fld-stepper-name", ".wtn-fld-num-name"]) {
+    const body = cssRuleBody(cssText, selector);
+    assert.ok(body, `expected a ${selector} rule in the injected CSS`);
+    const flexMatch = body.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
+    assert.ok(flexMatch, `${selector} must declare an explicit flex shorthand`);
+    assert.equal(Number(flexMatch[1]), 0, `${selector}: flex-grow must stay 0`);
+    assert.ok(body.includes("min-width: 0") && body.includes("text-overflow: ellipsis"), `${selector} must be able to shrink to nothing and ellipsize`);
+  }
+});
+
 test("buildSwitch/sectionLabel render expected text (shared js/shared/fields.mjs primitives)", () => {
   const doc = makeDocStub();
   const on = buildSwitch(doc, true);

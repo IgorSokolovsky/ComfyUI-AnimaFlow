@@ -79,23 +79,73 @@ const TOKENS = {
 };
 
 const CSS = `
+/* ── row = OUTER, unclipped, positioning context for the output dot only ──
+   .wtn-ctl-body = INNER, the actual visible rounded box (background/border/
+   padding/flex layout all live here now, not on .wtn-ctl-row) --
+   docs/pixaroma-review-rounds-plan.md Tier 2 item 8 ("rows overflow at
+   minimum node width"): the naive port of Pixaroma's fix -- overflow:
+   hidden straight on the row -- was VERIFIED (headless-Chrome measurement,
+   see js/controls/test_resize.mjs's "clips content, never the dot" tests)
+   to also clip .wtn-ctl-dot, since the dot is deliberately positioned
+   OUTSIDE the row's own box (right: -16px -- see that rule's own comment)
+   to sit in the socket gutter between the row and the node's real edge.
+   overflow: hidden on an element clips ANY descendant that visually
+   overflows its box, absolutely-positioned ones included, with no
+   exception for "but this one's on purpose" -- so clipping the escaping
+   furniture (mini buttons / gear) and preserving the dot are two different
+   elements' job, not one rule wearing both hats. .wtn-ctl-row stays exactly
+   the box every other module already depends on (same width/height, same
+   position: relative, same class name for state -- .wtn-ctl-open/-dragging/
+   -auto/-disabled/-slider toggle here unchanged, interaction.mjs untouched)
+   -- only .wtn-ctl-body is new. */
 .wtn-ctl-row {
+  position: relative; width: 100%; height: 30px; box-sizing: border-box;
+}
+.wtn-ctl-body {
   position: relative; display: flex; align-items: center; gap: 8px;
-  width: 100%; height: 30px; box-sizing: border-box; padding: 0 8px 0 10px;
+  width: 100%; height: 100%; box-sizing: border-box; padding: 0 8px 0 10px;
   border-radius: 7px; background: var(--wtn-console, ${TOKENS.console});
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
+  /* The actual clip -- see this block's own doc comment above. */
+  overflow: hidden;
 }
-.wtn-ctl-row.wtn-ctl-open { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-ctl-row.wtn-ctl-dragging { opacity: .5; border-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-ctl-row.wtn-ctl-auto { border-style: dashed; border-color: #2c3644; }
+.wtn-ctl-row.wtn-ctl-open .wtn-ctl-body { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+.wtn-ctl-row.wtn-ctl-dragging { opacity: .5; }
+.wtn-ctl-row.wtn-ctl-dragging .wtn-ctl-body { border-color: var(--wtn-accent, ${TOKENS.accent}); }
+.wtn-ctl-row.wtn-ctl-auto .wtn-ctl-body { border-style: dashed; border-color: #2c3644; }
 .wtn-ctl-row.wtn-ctl-auto .wtn-ctl-name { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 .wtn-ctl-row.wtn-ctl-disabled { opacity: .55; }
 
+/* .wtn-ctl-name / .wtn-ctl-val are the row's two VARIABLE-width parts (every
+   grip/mini-button/gear sibling is flex: none -- fixed furniture, asserted
+   by test_resize.mjs). Between the two, THE VALUE IS PREFERRED -- a row's
+   value is the thing the user is actually looking at (a seed, a resolution,
+   a picked file); the name is usually its unchanged default ("seed",
+   "latent"...) and only occasionally hand-renamed.
+
+   flex-shrink: 4 here (vs. .wtn-ctl-val's un-set, default 1) is what makes
+   that real, not just true "on average": flexbox distributes a width
+   deficit across shrinkable siblings WEIGHTED by shrink-factor * basis
+   size, all in ONE pass -- with equal shrink factors, a name that's
+   ARTIFICIALLY LONGER than the value (a long hand-typed rename sitting next
+   to a short value) would give up MORE absolute pixels than the value
+   despite both losing the same fraction of their own size, which reads as
+   "the value barely moved, the rename got hammered" -- backwards from the
+   design intent. Biasing name's shrink factor to 4x means name absorbs the
+   large majority of any deficit FIRST, hits its own min-width FLOOR
+   (54px) quickly, and only THEN (flexbox's own min-violation resolution:
+   an item pinned at its floor drops out and the remaining deficit
+   redistributes among what's left) does the rest of the deficit fall to
+   value -- verified with a headless-Chrome measurement of exactly this
+   adversarial case (a long rename NEXT TO a 20-digit seed at the panel's
+   MIN_W), not just reasoned about. A long RENAMED name still can't push
+   the gear out either: it ellipsizes at that same 54px floor rather than
+   growing past it. */
 .wtn-ctl-name {
   font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 54px;
+  overflow: hidden; text-overflow: ellipsis; flex: 1 4 auto; min-width: 54px;
 }
 /* Rename edit box -- swapped in for .wtn-ctl-name while a row's label is
    being renamed (double-click the label, or the row's right-click ->
@@ -113,6 +163,14 @@ const CSS = `
 .wtn-ctl-val {
   font-family: var(--wtn-font-mono, monospace); font-size: 12px; font-weight: 640;
   color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
+  /* min-width: 0 is the actual fix (see item 8 above) -- without it a
+     nowrap text node refuses to shrink below its own content width no
+     matter what flex-shrink says, which is exactly how a 20-digit seed
+     pushed the seed row's mode/N/reuse buttons + gear past the border.
+     overflow/text-overflow give the shrunk state an ellipsis instead of a
+     hard cut (belt-and-suspenders under .wtn-ctl-body's own overflow:
+     hidden, which would otherwise just guillotine the text with no "..."). */
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 .wtn-ctl-val .wtn-ctl-dim { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-weight: 500; margin-left: 4px; }
 
@@ -120,7 +178,13 @@ const CSS = `
    docs/control-panel-design.md's "traps already paid for" -- a bare
    .combo here would collide with litegraph's own .combo WIDGET class
    and inherit position:relative;display:flex, knocking the dot out of
-   absolute flow and eating ~19px of row width. */
+   absolute flow and eating ~19px of row width.
+
+   Positioned relative to .wtn-ctl-row (the OUTER, unclipped element --
+   buildRowElement appends the dot straight to rowEl, a SIBLING of
+   .wtn-ctl-body, never a descendant of it) precisely so .wtn-ctl-body's
+   overflow: hidden (item 8's fix, above) clips escaping row furniture
+   without also clipping this deliberately-outside-the-box element. */
 .wtn-ctl-dot {
   /* width/height/right below are EYEBALLED against the real litegraph
      output socket in a live ComfyUI (alignOutputsLegacy parks that socket
@@ -187,8 +251,14 @@ const CSS = `
    yet to reuse -- see paintRow's seed branch for the exact condition. */
 .wtn-ctl-mini.wtn-ctl-hidden { display: none; }
 
-/* ── numeric row: drag the row to set, inline fill shows range position ── */
-.wtn-ctl-row.wtn-ctl-slider { overflow: hidden; cursor: ew-resize; }
+/* ── numeric row: drag the row to set, inline fill shows range position ──
+   No overflow: hidden here any more -- .wtn-ctl-body's own rule already
+   clips every row, numeric ones included (previously THIS rule was the
+   row's only clip, which -- being on .wtn-ctl-row itself, before the
+   row/body split above -- silently clipped the numeric row's own output
+   dot too; verified live via the same headless-Chrome measurement as item
+   8's fix, not merely inferred). */
+.wtn-ctl-row.wtn-ctl-slider { cursor: ew-resize; }
 .wtn-ctl-fill {
   position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px 0 0 6px;
   background: linear-gradient(90deg, rgba(45,212,191,.30), rgba(45,212,191,.16));
@@ -382,22 +452,35 @@ function el(doc, tag, className) {
  */
 export function buildRowElement(doc, row, kindMeta, panelConfig) {
   const rowEl = el(doc, "div", "wtn-ctl-row wtn");
+  // .wtn-ctl-body is the clipped, visibly-bordered box -- every child that
+  // must never escape the row's rounded border (grip/name/value area/mini
+  // buttons/gear) is appended to BODY, never to rowEl directly. The dot is
+  // the one deliberate exception: appended straight to rowEl below, so
+  // .wtn-ctl-body's overflow: hidden (this module's CSS, item 8's fix)
+  // clips escaping furniture without also clipping the dot, which is
+  // positioned OUTSIDE the visible box on purpose (see .wtn-ctl-dot's own
+  // CSS comment). See this module's top CSS block comment for the full
+  // reasoning and the live-Chrome measurement that proves the naive
+  // "overflow: hidden straight on the row" fix would have killed the dot
+  // on every single row, not just seed's.
+  const body = el(doc, "div", "wtn-ctl-body");
+  rowEl.appendChild(body);
   if (row.kind === "auto") {
     rowEl.classList.add("wtn-ctl-auto");
   }
 
-  const refs = { root: rowEl, row, kindMeta };
+  const refs = { root: rowEl, body, row, kindMeta };
 
   if (panelConfig && panelConfig.reorder) {
     const grip = el(doc, "span", "wtn-ctl-grip");
     grip.title = "Drag to reorder -- does not move the output slot";
-    rowEl.appendChild(grip);
+    body.appendChild(grip);
     refs.grip = grip;
   }
 
   const name = el(doc, "div", "wtn-ctl-name");
   name.textContent = row.name || row.kind;
-  rowEl.appendChild(name);
+  body.appendChild(name);
   refs.name = name;
 
   if (row.kind === "auto") {
@@ -414,7 +497,7 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     stepper.appendChild(left);
     stepper.appendChild(combo);
     stepper.appendChild(right);
-    rowEl.appendChild(stepper);
+    body.appendChild(stepper);
     Object.assign(refs, { stepLeft: left, stepRight: right, combo, val, caret });
   } else if (row.kind === "seed") {
     const val = el(doc, "span", "wtn-ctl-val");
@@ -430,23 +513,23 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     const reuseBtn = el(doc, "span", "wtn-ctl-mini wtn-ctl-hidden");
     reuseBtn.textContent = "↺";
     reuseBtn.title = "Reuse the last used seed and hold it fixed";
-    rowEl.appendChild(val);
-    rowEl.appendChild(mode);
-    rowEl.appendChild(newBtn);
-    rowEl.appendChild(reuseBtn);
+    body.appendChild(val);
+    body.appendChild(mode);
+    body.appendChild(newBtn);
+    body.appendChild(reuseBtn);
     Object.assign(refs, { val, modeBtn: mode, newBtn, reuseBtn });
   } else if (row.kind === "int" || row.kind === "float") {
     rowEl.classList.add("wtn-ctl-slider");
     const fill = el(doc, "div", "wtn-ctl-fill");
-    rowEl.insertBefore(fill, name); // fill sits BEHIND name/value (z-index below via source order)
+    body.insertBefore(fill, name); // fill sits BEHIND name/value (z-index below via source order)
     const val = el(doc, "span", "wtn-ctl-val");
-    rowEl.appendChild(val);
+    body.appendChild(val);
     Object.assign(refs, { fill, val });
   } else if (row.kind === "latent") {
     const val = el(doc, "span", "wtn-ctl-val");
     const dim = el(doc, "span", "wtn-ctl-dim");
     val.appendChild(dim);
-    rowEl.appendChild(val);
+    body.appendChild(val);
     Object.assign(refs, { val, dim });
   } else {
     // Every catalog kind is handled above (picker kinds -- sampler/scheduler/
@@ -454,7 +537,7 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     // this only fires for a genuinely unexpected kind -- keep a safe fallback
     // so that never crashes render.
     const val = el(doc, "span", "wtn-ctl-val");
-    rowEl.appendChild(val);
+    body.appendChild(val);
     refs.val = val;
   }
 
@@ -462,10 +545,12 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     const gear = el(doc, "span", "wtn-ctl-gear");
     gear.textContent = "⚙";
     gear.title = `${(kindMeta.menu || row.kind)} settings`;
-    rowEl.appendChild(gear);
+    body.appendChild(gear);
     refs.gear = gear;
   }
 
+  // Direct child of rowEl (a SIBLING of body, never inside it) -- see this
+  // function's opening comment.
   const dot = el(doc, "div", "wtn-ctl-dot");
   rowEl.appendChild(dot);
   refs.dot = dot;

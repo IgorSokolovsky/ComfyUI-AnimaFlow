@@ -90,17 +90,28 @@ const CSS = `
 .wtn-fld-num-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px 0 0 6px;
   background: linear-gradient(90deg, rgba(45,212,191,.30), rgba(45,212,191,.16));
   border-right: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep}); pointer-events: none; }
-.wtn-fld-num-name { position: relative; z-index: 1; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; }
+/* Same shrink-priority convention as js/controls/render.mjs's
+   .wtn-ctl-name/.wtn-ctl-val (Tier 2 item 8, docs/pixaroma-review-rounds-
+   plan.md, extended to this track): the name gets a heavier shrink factor
+   so it gives way toward its min-width FIRST, the value is preferred.
+   .wtn-fld-num's own container already carries overflow: hidden (a few
+   lines up) as the backstop, and there's no output dot to protect here
+   (this track has no per-row litegraph sockets) -- no row/body split
+   needed, unlike the Control Panel's fix. */
+.wtn-fld-num-name { position: relative; z-index: 1; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
+  flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wtn-fld-num-val { position: relative; z-index: 1; margin-left: auto; font-family: var(--wtn-font-mono, monospace);
-  font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap; }
+  font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── ◀ [ value ▾ ] ▶ stepper row ── */
 .wtn-fld-stepper { position: relative; display: flex; align-items: center; gap: 8px; height: 25px;
   padding: 0 8px; border-radius: 6px; margin-bottom: 4px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  font-size: 11.5px; }
+  font-size: 11.5px; overflow: hidden; }
 .wtn-fld-stepper.wtn-fld-disabled { opacity: .55; }
-.wtn-fld-stepper-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; }
+.wtn-fld-stepper-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
+  flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wtn-fld-stepper-body { margin-left: auto; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .wtn-fld-arrow { width: 0; height: 0; flex: none; cursor: pointer; opacity: .92;
   border-top: 5px solid transparent; border-bottom: 5px solid transparent; }

@@ -943,6 +943,33 @@ test("formatNumericValue respects the step's decimal places", () => {
   assert.equal(formatNumericValue(mkRow("float", { value: 5, opts: { step: 0.1 } })), "5.0");
 });
 
+// docs/pixaroma-review-rounds-plan.md Tier 2 item 9: a range crossing zero
+// can hold a value that's genuinely negative but rounds to all-zeros at the
+// step's own display precision -- must never render with a leading "-".
+test('formatNumericValue never shows "-0.00" for a literal negative-zero float value (Number("-0.00") IS a real -0)', () => {
+  const row = mkRow("float", { value: -0, opts: { min: -1, max: 1, step: 0.01 } });
+  assert.equal(formatNumericValue(row), "0.00");
+  assert.notEqual(formatNumericValue(row), "-0.00");
+});
+
+test("formatNumericValue never shows a negative sign for tiny negative drift that rounds to zero at the step's decimals", () => {
+  const tiny = mkRow("float", { value: -0.00001, opts: { min: -10, max: 10, step: 0.01 } });
+  assert.equal(formatNumericValue(tiny), "0.00");
+  const tinier = mkRow("float", { value: -1e-10, opts: { min: -1, max: 1, step: 0.01 } });
+  assert.equal(formatNumericValue(tinier), "0.00");
+});
+
+test("formatNumericValue still shows a real negative value (not near zero) with its sign intact", () => {
+  const row = mkRow("float", { value: -5, opts: { min: -10, max: 10, step: 0.1 } });
+  assert.equal(formatNumericValue(row), "-5.0");
+});
+
+test('formatNumericValue: the zero-guard also holds for an "int" row (0 decimals) crossing zero', () => {
+  const row = mkRow("int", { value: -0, opts: { min: -10, max: 10, step: 1 } });
+  assert.equal(formatNumericValue(row), "0");
+  assert.notEqual(formatNumericValue(row), "-0");
+});
+
 test("numericPercent maps value across [min,max] to 0..100", () => {
   const row = mkRow("int", { value: 25, opts: { min: 0, max: 100, step: 1 } });
   assert.equal(numericPercent(row), 25);

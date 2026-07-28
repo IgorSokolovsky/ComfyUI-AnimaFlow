@@ -441,6 +441,133 @@ test("injectStyles's injected CSS is a real, non-empty stylesheet -- guards agai
   assert.ok(styleEl.textContent.includes(".wtn-ctl-name"), "expected selector missing from injected CSS");
 });
 
+// ---------------------------------------------------------------------------
+// docs/pixaroma-review-rounds-plan.md Tier 2 item 8 -- "rows overflow at
+// minimum node width". This harness has no real layout engine (a stub DOM,
+// per this file's own top doc comment), so it CANNOT catch the actual
+// visual overflow -- that was verified separately with a real headless-
+// Chrome render (measuring getBoundingClientRect() against the row's own
+// box; see the build report for that run's numbers). What it CAN pin down
+// forever, cheaply: the CSS text still carries the exact declarations the
+// fix depends on (a crude guard -- it fails if someone deletes them, it
+// can't verify layout), and the DOM shape those declarations assume never
+// regresses (the dot as a SIBLING of the clipped body, never inside it;
+// every fixed-furniture element still tagged flex: none).
+// ---------------------------------------------------------------------------
+
+/** The body text of `cssText`'s rule whose selector list has an entry that
+ * is EXACTLY `selector` (nothing else -- no descendant combinator, no
+ * compound class, no pseudo-class), or `null`. A naive "does `selector {`
+ * appear anywhere in the text" check is NOT enough: `.wtn-ctl-gear` is also
+ * the tail end of a comma-separated multi-selector rule
+ * (`.wtn-ctl-row.wtn-ctl-slider .wtn-ctl-val,\n.wtn-ctl-row.wtn-ctl-slider
+ * .wtn-ctl-gear { position: relative; z-index: 1; }`) that appears EARLIER
+ * in the stylesheet than this class's own base rule -- a substring match
+ * would silently grab that unrelated rule's body instead (caught by this
+ * very test file wrongly failing against a correct fix, while writing it). */
+function cssRuleBody(cssText, selector) {
+  // Strip /* ... */ comments first -- this codebase's CSS is heavily
+  // commented (a doc comment precedes nearly every rule), and a comment has
+  // no braces of its own, so left in place it gets swallowed into the NEXT
+  // rule's "selector" capture below, and a selector-list of "<giant comment
+  // text> .wtn-ctl-row" never exactly-equals ".wtn-ctl-row".
+  const stripped = cssText.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const ruleRe = /([^{}]+)\{([^}]*)\}/g;
+  let match;
+  while ((match = ruleRe.exec(stripped))) {
+    const [, selectorList, body] = match;
+    const selectors = selectorList.split(",").map((s) => s.replace(/\s+/g, " ").trim());
+    if (selectors.includes(selector)) {
+      return body;
+    }
+  }
+  return null;
+}
+
+test("injected CSS: .wtn-ctl-body (the clipped furniture box) carries overflow: hidden -- the actual item 8 fix", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  const body = cssRuleBody(cssText, ".wtn-ctl-body");
+  assert.ok(body, "expected a .wtn-ctl-body rule in the injected CSS");
+  assert.ok(body.includes("overflow: hidden"), ".wtn-ctl-body must clip its own children");
+});
+
+test("injected CSS: .wtn-ctl-row itself carries NO overflow: hidden -- that would also clip .wtn-ctl-dot, which sits OUTSIDE .wtn-ctl-body on purpose (verified live: this is what the naive port of Pixaroma's fix would have broken)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  const row = cssRuleBody(cssText, ".wtn-ctl-row");
+  assert.ok(row, "expected a .wtn-ctl-row rule in the injected CSS");
+  assert.ok(!row.includes("overflow"), ".wtn-ctl-row must not clip -- that lives on .wtn-ctl-body instead");
+});
+
+test("injected CSS: .wtn-ctl-val can shrink all the way to nothing (min-width: 0) and ellipsizes instead of a hard cut", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  const val = cssRuleBody(cssText, ".wtn-ctl-val");
+  assert.ok(val, "expected a .wtn-ctl-val rule in the injected CSS");
+  assert.ok(val.includes("min-width: 0"), ".wtn-ctl-val must have no content-based shrink floor");
+  assert.ok(val.includes("overflow: hidden") && val.includes("text-overflow: ellipsis"));
+});
+
+test("injected CSS: .wtn-ctl-name keeps its 54px floor and shrinks MORE eagerly than .wtn-ctl-val (value preferred, per this module's own CSS comment)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  const name = cssRuleBody(cssText, ".wtn-ctl-name");
+  assert.ok(name, "expected a .wtn-ctl-name rule in the injected CSS");
+  assert.ok(name.includes("min-width: 54px"));
+  const nameShrinkMatch = name.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
+  assert.ok(nameShrinkMatch, ".wtn-ctl-name must declare an explicit flex shorthand");
+  const nameShrink = Number(nameShrinkMatch[2]);
+  assert.ok(nameShrink > 1, `.wtn-ctl-name's shrink factor (${nameShrink}) must exceed the default so it gives way before .wtn-ctl-val does`);
+});
+
+test("buildRowElement: .wtn-ctl-row has exactly two children -- .wtn-ctl-body and .wtn-ctl-dot, the dot a SIBLING of body, never nested inside it (this is what lets .wtn-ctl-body clip furniture without clipping the dot)", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc, mkRow("seed"), KIND_META.seed, CONTROL_PANEL_CONFIG);
+  assert.equal(refs.root.children.length, 2);
+  assert.equal(refs.root.children[0], refs.body);
+  assert.equal(refs.root.children[1], refs.dot);
+  assert.equal(refs.dot.parentNode, refs.root);
+  assert.notEqual(refs.dot.parentNode, refs.body);
+  assert.ok(refs.body.classList.contains("wtn-ctl-body"));
+});
+
+test("buildRowElement: every seed-row child that must never escape the border (grip/name/val/mode/N/reuse/gear) lives inside .wtn-ctl-body, none directly on .wtn-ctl-row", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc, mkRow("seed"), KIND_META.seed, CONTROL_PANEL_CONFIG);
+  for (const key of ["grip", "name", "val", "modeBtn", "newBtn", "reuseBtn", "gear"]) {
+    assert.equal(refs[key].parentNode, refs.body, `refs.${key} must be a child of .wtn-ctl-body`);
+  }
+});
+
+test("buildRowElement: a numeric (int/float) row's .wtn-ctl-fill is inserted into .wtn-ctl-body (not .wtn-ctl-row), so it stays inset within the clipped box exactly as before the row/body split", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc, mkRow("int"), KIND_META.int, CONTROL_PANEL_CONFIG);
+  assert.equal(refs.fill.parentNode, refs.body);
+  assert.equal(refs.val.parentNode, refs.body);
+  // fill precedes name/val in source order (paints behind them, per render.mjs's
+  // own comment on this insertBefore call) -- still true one level deeper,
+  // inside body, regardless of whether a reorder grip sits before it too.
+  const children = refs.body.children;
+  assert.ok(children.indexOf(refs.fill) < children.indexOf(refs.name));
+  assert.ok(children.indexOf(refs.fill) < children.indexOf(refs.val));
+});
+
+test("buildRowElement: the fixed furniture (grip/mini buttons/gear) is genuinely flex: none in the injected CSS -- the whole shrink-priority scheme depends on ONLY .wtn-ctl-name/.wtn-ctl-val being flexible", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  for (const selector of [".wtn-ctl-grip", ".wtn-ctl-mini", ".wtn-ctl-gear"]) {
+    const body = cssRuleBody(cssText, selector);
+    assert.ok(body, `expected a ${selector} rule in the injected CSS`);
+    assert.ok(body.includes("flex: none"), `${selector} must be flex: none -- fixed furniture, never squeezed`);
+  }
+});
+
 test("buildRowElement: a combo row (sampler) gets a stepper + combo + caret + gear? no gear + dot", () => {
   const doc = makeDocStub();
   const row = mkRow("sampler", { value: "euler" });

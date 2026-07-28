@@ -113,19 +113,57 @@ Ours clamps to `2^64-1` in `clampSeedString`, and Python clamps to `SEED_MAX` in
 `coerce_seed` — **the same bound, so we're probably fine.** Verify the two agree exactly, including
 the gear popover's typed path (`commitSeed` was their miss).
 
-### 8. Rows overflow at minimum node width (`c125e5a`)
+### 8. Rows overflow at minimum node width (`c125e5a`) — **FIXED 2026-07-28**
 
 > "Combo and Seed rows could spill past their rounded border when the node is dragged toward its
 > minimum width (their fixed parts exceed it). Added `overflow:hidden` to the row containers and let
 > the value shrink/ellipsize."
 
-Our seed row now carries **three** mini buttons (`F/R/I/D`, `N`, `↺`) plus a gear and a dot — *more*
-fixed-width furniture than theirs had when this broke. **Drag our node narrow and look.**
+**Confirmed live before being fixed** — a real screenshot showed the seed row's ⚙ gear pushed past
+the row's rounded right edge, overlapping the area where litegraph draws the real output dot,
+triggered by a 20-digit seed (`16911058666109724423`, legitimate — seeds are `[0, 2^64-1]` strings)
+plus the row's `F/N/↺` mini buttons. Reproduced exactly with a headless-Chrome render of the real
+`buildRowElement` DOM against the real injected CSS at `MIN_W` (300px) before touching anything, and
+re-rendered after the fix to confirm it actually closes (both in the build report, not just reasoned
+about).
 
-### 9. `-0.00` from float drift (`c125e5a`)
+**The naive fix (`overflow: hidden` straight on `.wtn-ctl-row`) would have been a worse regression**
+than the bug it fixed: the SAME headless-Chrome measurement showed it also clips `.wtn-ctl-dot`,
+which is deliberately positioned *outside* the row's own box (`right: -16px`) in the socket gutter
+between the row and the node's real edge — `overflow: hidden` clips absolutely-positioned descendants
+with no exception for "but this one's on purpose." Worse, this ALSO turned out to already be a live
+bug: `.wtn-ctl-row.wtn-ctl-slider` (the numeric int/float rows) already carried `overflow: hidden`
+pre-fix, and the same measurement confirmed their output dot has been invisible in every real
+ComfyUI page all along — a second, previously-unknown bug this investigation caught as a side effect.
 
-A slider whose range crosses zero can display `-0.00`. Ours: `formatNumericValue` in `render.mjs`.
-One-line fix if present.
+**The actual fix**: split each row into an OUTER `.wtn-ctl-row` (unclipped, position: relative, holds
+only the body + the dot) and an INNER `.wtn-ctl-body` (the visibly-bordered, `overflow: hidden` box —
+background/border/padding/flex layout all moved here) — the dot stays a sibling of body, never a
+descendant, so body's clip protects the border without touching the dot. `.wtn-ctl-val` gained
+`min-width: 0` + `overflow: hidden` + `text-overflow: ellipsis` (the actual missing piece — it
+already had `flex-shrink: 1` by default, but a `white-space: nowrap` text node with no
+content-based-minimum override refuses to shrink below its own content width regardless of
+flex-shrink). `.wtn-ctl-name` keeps its existing 54px floor but now shrinks 4x as eagerly
+(`flex: 1 4 auto`) so it gives way toward that floor before the value loses any width — value
+preferred, per this file's own design question, verified against the adversarial case of a long
+hand-rename sitting next to a 20-digit seed, not just the common "short default name" case. Ported
+the same `overflow: hidden` backstop (no dot to protect there — this track has no per-row litegraph
+sockets) to `js/anima/`'s own rows (`.wtn-an-row`/`.wtn-an-stagerow`) and the shared
+`js/shared/fields.mjs` primitives they're built from (`.wtn-fld-stepper`/`.wtn-fld-num-*`) — see
+`js/controls/render.mjs`'s CSS comments for the full reasoning, and `js/controls/test_resize.mjs`/
+`js/anima/test_resize.mjs` for the regression tests (CSS-text + DOM-structure assertions; a stub-DOM
+harness can't assert real layout, so it can't replace the headless-Chrome measurement above — see
+those tests' own doc comments).
+
+### 9. `-0.00` from float drift (`c125e5a`) — **FIXED 2026-07-28**
+
+A slider whose range crosses zero can display `-0.00`. Ours: `formatNumericValue` in `rows.mjs`.
+Confirmed present (`formatNumericValue({value: -0.00001, opts: {step: 0.01}})` → `"-0.00"`, and a
+literal `-0` reproduces it too, since `Number("-0.00")` really is a negative zero). Fixed by checking
+whether the FORMATTED string is numerically zero and, if so, re-formatting from a plain `0` instead
+of the original (possibly negative-signed) number — covers both a true `-0` and any tiny negative
+drift that merely rounds to all-zeros at the step's own decimal count. Unit-tested directly in
+`js/controls/test_rows.mjs` (genuinely testable with no DOM at all).
 
 ### 10. Wheel-zoom passthrough on *every* DOM node (`f6ef861`)
 

@@ -1102,11 +1102,29 @@ export function formatLatentValue(row) {
   return { main: `${o.w} × ${o.h}`, dim: parts.join(" ") };
 }
 
-/** The numeric row's display text, decimal places implied by its step. */
+/** The numeric row's display text, decimal places implied by its step.
+ *
+ * Guards against `"-0.00"` (Pixaroma review-round item 9,
+ * docs/pixaroma-review-rounds-plan.md): a range that crosses zero can hold
+ * a value that's genuinely negative but rounds to zero AT THE STEP'S OWN
+ * DISPLAY PRECISION -- either a literal JS `-0` (`(-0.00001).toFixed(2)`
+ * still carries the minus sign: `"-0.00"`, and `Number("-0.00")` IS `-0`,
+ * a real negative-zero float, not merely a string artifact) or a tiny
+ * negative drift value that just happens to format to all zeros at this
+ * `step`'s decimal count. Checking the FORMATTED string's numeric value
+ * (rather than `row.value` itself, or a raw `=== 0`/`Object.is(n, -0)`
+ * check) catches both: it doesn't matter whether the underlying number is
+ * exactly `-0` or merely `-0.0000001` at 2 decimals -- if what's ABOUT TO
+ * BE SHOWN reads as zero, it must read as a plain, unsigned zero. */
 export function formatNumericValue(row) {
   const step = row.opts && row.opts.step;
   const n = Number(row.value);
-  return Number.isFinite(n) ? n.toFixed(decimalsOf(step)) : "0";
+  if (!Number.isFinite(n)) {
+    return "0";
+  }
+  const decimals = decimalsOf(step);
+  const formatted = n.toFixed(decimals);
+  return Number(formatted) === 0 ? (0).toFixed(decimals) : formatted;
 }
 
 /** 0..100 — how far across its own range the row's current value sits, for

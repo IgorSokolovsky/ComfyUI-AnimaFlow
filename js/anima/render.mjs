@@ -137,25 +137,38 @@ const CSS = `
 .wtn-an-sec:first-child { margin-top: 2px; }
 .wtn-an-sec .wtn-an-cnt { color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 
-/* ── generic clickable row ── */
+/* ── generic clickable row ──
+   overflow: hidden here (and on .wtn-an-stagerow below) is the same
+   defensive backstop as js/controls/render.mjs's .wtn-ctl-body (Tier 2
+   item 8, docs/pixaroma-review-rounds-plan.md) -- these rows have no
+   litegraph output dot living outside their own box (unlike a Control
+   Panel row: this track's nodes are single-DOM-widget panels, no
+   per-row addOutput/dot), so unlike THAT fix, no row/body split is
+   needed here -- overflow: hidden can go straight on the row. .wtn-an-nm
+   additionally gets min-width: 0 + ellipsis so a long hand-typed name
+   can't push .wtn-an-val (already shrinkable) or a trailing gear out
+   past the rounded border either. */
 .wtn-an-row { position: relative; display: flex; align-items: center; gap: 8px;
   height: 25px; margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  font-size: 11.5px; cursor: pointer; }
+  font-size: 11.5px; cursor: pointer; overflow: hidden; }
 .wtn-an-row:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 .wtn-an-row:hover .wtn-an-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-an-row.wtn-an-open { border-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-row .wtn-an-nm { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; }
+.wtn-an-row .wtn-an-nm { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
+  flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wtn-an-row .wtn-an-val { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 11px;
-  color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 
-/* ── stage row: toggle + name + summary + gear ── */
+/* ── stage row: toggle + name + summary + gear -- same backstop as
+   .wtn-an-row above (no dot to protect against clipping here either). ── */
 .wtn-an-stagerow { position: relative; display: flex; align-items: center; gap: 9px; height: 27px;
   margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
+  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  overflow: hidden; }
 .wtn-an-stagerow.wtn-an-off { opacity: .5; }
 .wtn-an-stagerow.wtn-an-dep { border-color: rgba(251,191,36,.35); }
-.wtn-an-stagerow .wtn-an-sn { font-size: 11.5px; font-weight: 550; }
+.wtn-an-stagerow .wtn-an-sn { font-size: 11.5px; font-weight: 550; flex: none; white-space: nowrap; }
 .wtn-an-stagerow .wtn-an-ss { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
