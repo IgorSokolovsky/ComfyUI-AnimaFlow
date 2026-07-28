@@ -108,10 +108,14 @@ Wired into both Prompt Rules panes via `js/prompt_rules/node/highlight_wiring.mj
 
 ---
 
-## 3. Control Panel + Loader Panel — designed, not built
+## 3. Control Panel + Loader Panel — built
 
-New track approved 2026-07-27. Full spec: [`control-panel-design.md`](control-panel-design.md);
-mockup: [`../playground/control-panel.html`](../playground/control-panel.html). **No code exists yet.**
+Track approved and shipped 2026-07-27/28. Full spec:
+[`control-panel-design.md`](control-panel-design.md); mockup:
+[`../playground/control-panel.html`](../playground/control-panel.html). Both nodes and their
+frontend exist (`nodes/controls/`, `js/controls/`). The three pack-wide changes below all landed.
+Live-session fixes since: seed after-generate actually firing, orphan output slots on row removal,
+and the output dot swallowing socket clicks.
 
 Two nodes (`AnimaFlow/Controls`): a value panel (sampler, scheduler, seed, int, float, empty latent)
 and a loader panel (unet, vae, clip), each row carrying its own output dot. Ported from Pixaroma's
@@ -128,11 +132,13 @@ Three things it changes pack-wide, so they land here rather than only in the spe
 - **The JS budget goes 3 → 4.** One `js/controls/index.js` registers *both* extensions and lazily
   imports the per-node `.mjs`, so two new nodes cost one auto-loaded file. Update the count in
   `.claude/CLAUDE.md` with that reason when built.
-- The theme skill still cites `js/anima_prompt/...` paths that became `js/prompt_rules/...` in
-  `e703dd2` — worth fixing while in there.
+- ~~The theme skill cites stale `js/anima_prompt/...` paths~~ — **done**, and its category list now
+  carries `Controls` and `Anima` with accurate build status.
 
-Open question that only a live ComfyUI settles (spec §5): what `output.type` a combo row must carry
-for legacy litegraph to accept a wire — `"COMBO"`, the joined option list, or fall back to `"*"`.
+~~Open question that only a live ComfyUI settles: what `output.type` a combo row must carry~~ —
+**settled 2026-07-27, verified live: `output.type = "COMBO"` works.** See
+`control-panel-design.md` §5, which also records that slot labels don't bleed through our DOM rows.
+Both fallbacks stay implemented; don't flip the constant while combos work.
 
 ---
 
