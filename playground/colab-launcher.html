@@ -388,7 +388,7 @@
       <div class="selectall"><input type="checkbox" id="models-all" checked> Select all missing</div>
       <div id="models-list"></div>
       <div class="row">
-        <input class="text" id="model-folder" list="folder-opts" placeholder="folder  (models/loras)" style="flex:1;min-width:150px">
+        <input class="text" id="model-folder" list="folder-opts" placeholder="folder  (loras)" style="flex:1;min-width:150px">
         <input class="text" id="model-file" placeholder="filename.safetensors" style="flex:1.4;min-width:170px">
       </div>
       <div class="row">
@@ -396,9 +396,9 @@
         <button class="btn ghost" id="model-add">Add model</button>
       </div>
       <datalist id="folder-opts">
-        <option value="models/checkpoints"><option value="models/loras"><option value="models/controlnet">
-        <option value="models/vae"><option value="models/ipadapter"><option value="models/clip_vision">
-        <option value="models/upscale_models"><option value="models/text_encoders"><option value="models/unet">
+        <option value="checkpoints"><option value="loras"><option value="controlnet">
+        <option value="vae"><option value="ipadapter"><option value="clip_vision">
+        <option value="upscale_models"><option value="text_encoders"><option value="unet">
       </datalist>
       <div class="row">
         <button class="btn" id="models-run">Download selected</button>
@@ -592,6 +592,17 @@
   ]);
   const mkey = (m) => m.folder + '/' + m.file;
   const isPresent = (m) => presentFiles.has(mkey(m));
+  // Mirrors normalize_model_folder() in colab_launcher_cells.py: the folder field
+  // takes a BARE subfolder ('loras'); anything not already rooted at models/ or a
+  // non-model Drive root gets the models/ prefix, or the file lands somewhere
+  // ComfyUI never reads and silently never shows up.
+  const NON_MODEL_ROOTS = ['custom_nodes', 'input', 'output', 'temp', 'user', 'my_workflows'];
+  const normFolder = (raw) => {
+    const f = raw.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!f) return 'models/checkpoints';
+    const root = f.split('/')[0];
+    return (root === 'models' || NON_MODEL_ROOTS.includes(root)) ? f : 'models/' + f;
+  };
   const SIZES = {
     'CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors': '2.5 GB',
     'ip-adapter-plus_sdxl_vit-h.safetensors': '850 MB',
@@ -784,7 +795,7 @@
     cfg.models.forEach(m => { if (!isPresent(m)) m.enabled = e.target.checked; }); save(); renderModels();
   });
   $('model-add').addEventListener('click', () => {
-    const folder = $('model-folder').value.trim() || 'models/checkpoints';
+    const folder = normFolder($('model-folder').value);
     const file = $('model-file').value.trim();
     const url = $('model-url').value.trim();
     if (!file || !url) {
@@ -792,6 +803,7 @@
       return;
     }
     cfg.models.push({ folder, file, url, enabled: true, custom: true });
+    logline($('models-log'), `+ ${folder}/${file}`);   // echo the resolved path
     $('model-folder').value = $('model-file').value = $('model-url').value = '';
     save(); renderModels();
   });

@@ -405,6 +405,23 @@ def install_extra_pip(text, log, force=False):
     log("✔ Done.")
 
 # ---- 04 Models --------------------------------------------------------------
+# The subfolders a model can land in, as ComfyUI names them (no "models/" prefix —
+# the Add-model field takes these bare, normalize_model_folder() puts the prefix back).
+MODEL_DIRS = [f.split("/", 1)[1] for f in REQUIRED_FOLDERS if f.startswith("models/")]
+NON_MODEL_ROOTS = {"custom_nodes", "input", "output", "temp", "user", "my_workflows"}
+
+def normalize_model_folder(raw):
+    """'loras' → 'models/loras'. A bare name is a MODEL folder — that's the whole
+    point of the field — so anything that isn't already rooted at models/ or at one
+    of the non-model Drive roots gets the prefix. Without this, typing 'loras' saved
+    to MyDrive/ComfyUI/loras/, a sibling of models/ that ComfyUI never reads: the
+    download succeeds, the row flips to 'present', and the model is simply invisible."""
+    f = raw.strip().strip("/").replace("\\", "/")
+    if not f:
+        return "models/checkpoints"
+    root = f.split("/", 1)[0]
+    return f if root == "models" or root in NON_MODEL_ROOTS else "models/" + f
+
 def model_present(m):
     return os.path.exists(os.path.join(GDRIVE_BASE, m["folder"], m["file"]))
 
@@ -873,7 +890,14 @@ sec_pip = widgets.VBox([widgets.HTML("<b>Free-form pip install → Drive deps (p
 # ---------- 04 Models ----------
 models_all = widgets.Checkbox(value=True, description="Select all missing", indent=False)
 models_box = widgets.VBox()
-model_folder = widgets.Text(placeholder="folder (models/loras)", layout={"width": "180px"})
+# Bare subfolder name — "loras", not "models/loras". Combobox suggests the known ones
+# while still accepting anything typed (ensure_option=False); it landed in ipywidgets
+# 7.5 and Colab ships 7.7, but fall back to a plain Text rather than let a missing
+# widget class blow up the whole panel cell.
+_Combobox = getattr(widgets, "Combobox", None)
+model_folder = (_Combobox(options=MODEL_DIRS, ensure_option=False,
+                          placeholder="loras", layout={"width": "180px"})
+                if _Combobox else widgets.Text(placeholder="loras", layout={"width": "180px"}))
 model_file   = widgets.Text(placeholder="filename.safetensors", layout={"flex": "1"})
 model_url    = widgets.Text(placeholder="https://…", layout={"flex": "1"})
 model_add    = widgets.Button(description="Add model", icon="plus")
@@ -921,8 +945,9 @@ def on_model_add(_):
     if not file or not url:
         models_log("⚠ Add needs both a filename and a URL.")
         return
-    folder = model_folder.value.strip() or "models/checkpoints"
+    folder = normalize_model_folder(model_folder.value)
     cfg["models"].append({"folder": folder, "file": file, "url": url, "enabled": True, "custom": True})
+    models_log(f"+ {folder}/{file}")   # echo the resolved path — the prefix was added for you
     model_folder.value = model_file.value = model_url.value = ""
     ui_save(); build_models()
 model_add.on_click(on_model_add)
