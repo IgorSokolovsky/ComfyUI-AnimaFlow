@@ -37,8 +37,16 @@
  * distinction is actually made at the call site; this module itself has no
  * opinion on fresh-vs-restore, it just paints unconditionally whenever
  * it's called.
+ *
+ * **"Themed node chrome" Settings-dialog toggle (`js/shared/settings.mjs`,
+ * default ON)** — read LIVE, on every call, via `getSetting`: when off, this
+ * function does nothing at all, not even the still-null check below. This is
+ * a plain relative import (`./settings.mjs` has zero `/scripts/app.js`/
+ * `window` reference at module scope), so it costs nothing to import here
+ * unconditionally, same as this file's existing `./theme.mjs` import.
  */
 import { TOKENS } from "./theme.mjs";
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "./settings.mjs";
 
 export const CHROME_BODY = TOKENS.surface;
 export const CHROME_TITLE = TOKENS.console;
@@ -46,6 +54,10 @@ export const CHROME_TITLE = TOKENS.console;
 export function applyNodeChrome(node) {
   if (!node) {
     return;
+  }
+  const enabled = getSetting(SETTING_IDS.NODE_CHROME, SETTING_DEFAULTS[SETTING_IDS.NODE_CHROME]);
+  if (!enabled) {
+    return; // themed chrome turned off -- leave the node at ComfyUI's own default colour
   }
   if (node.bgcolor == null) {
     node.bgcolor = CHROME_BODY;

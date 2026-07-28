@@ -426,15 +426,50 @@ function isSeedSentinel(raw) {
   return false;
 }
 
+/** Whether `raw` represents a negative number that ISN'T the `-1` sentinel --
+ * checked so `normalizeSeed` can floor it to `"0"` the way Python's
+ * `normalize_seed` does, WITHOUT changing `clampSeedString` itself
+ * (`js/controls/test_rows.mjs` asserts that helper's own sign-STRIPPING
+ * behaviour, `clampSeedString(-5) === "5"`, for the Controls track, and that
+ * must keep passing unchanged). Tolerant like `isSeedSentinel`: a genuine
+ * JS `number` (finite and `< 0`) or a numeric string with a leading `-`
+ * immediately followed by a digit (whitespace-tolerant); anything else
+ * (including a boolean -- `typeof true !== "number"`/`"string"`) is not
+ * treated as negative here, and falls through to `clampSeedString`'s own
+ * (already-correct) handling. */
+function isNegativeNonSentinelSeed(raw) {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw < 0;
+  }
+  if (typeof raw === "string") {
+    return /^-\s*\d/.test(raw.trim());
+  }
+  return false;
+}
+
 /** `raw` (an int, a numeric string, a float, or garbage) -> the canonical
  * STRING seed form -- JS twin of `src/anima/settings.py`'s `normalize_seed`,
  * MUST agree with it byte-for-byte for the same input (this module's top
- * doc comment). `-1` survives verbatim as the "random" sentinel; everything
- * else is `clampSeedString`'s job (already tolerant of garbage, `Infinity`/
- * `NaN`, negatives, and arbitrarily large digit strings). */
+ * doc comment).
+ *
+ * `-1` survives verbatim as the "random" sentinel. **Any OTHER negative
+ * value floors to `"0"`** (2026-07-29 fix, matching Python's own `if n < 0:
+ * n = 0` — previously this delegated straight to `clampSeedString`, whose
+ * digit-only regex STRIPS the sign instead of flooring, so `normalizeSeed(-5)`
+ * used to return `"5"` here while Python's `normalize_seed(-5)` already
+ * returned `"0"` — a real frontend/backend disagreement on a hostile-but-
+ * plausible input, not just a documented divergence). `clampSeedString`
+ * itself is UNCHANGED (its own sign-stripping behaviour is a tested contract
+ * for the Controls track's plain numeric-drag seed rows, which have no `-1`
+ * sentinel concept at all) — the floor happens HERE, one level up, before
+ * ever calling it. Everything else (huge digit strings, `Infinity`/`NaN`,
+ * non-numeric garbage) is still `clampSeedString`'s job, unchanged. */
 export function normalizeSeed(raw) {
   if (isSeedSentinel(raw)) {
     return "-1";
+  }
+  if (isNegativeNonSentinelSeed(raw)) {
+    return "0";
   }
   return clampSeedString(raw);
 }

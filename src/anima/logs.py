@@ -8,23 +8,46 @@ module in `src/anima/` (`.claude/CLAUDE.md`'s pure/impure rule: only
 actually calls `logging.getLogger(...).info(...)` with what these functions
 return).
 
-**Verbosity contract**: the DEFAULT (always-on) log a run produces is
-exactly four kinds of line — `format_run_header` (which stages are live vs.
-off, dependency-missing distinguished from plainly-disabled),
+**Verbosity contract, in THREE levels (`off`/`summary`/`debug` — the
+"Console logging" Settings-dialog combo, `js/shared/settings.mjs`)**:
+`summary` is exactly four kinds of line — `format_run_header` (which stages
+are live vs. off, dependency-missing distinguished from plainly-disabled),
 `format_sampler_provenance` (the five sampler scalars, context vs. settings
 — "the single most valuable line"), `format_model_files_line` (the resolved
 SAM3/upscale-model filenames the pre-flight check already verified), and one
-`format_stage_result` line per stage. Anything finer-grained (the full
-eleven-field context-supplied report, a stage's own resolved
-steps/cfg/sampler/scheduler/denoise) is gated behind `is_debug_enabled` —
-callers check that predicate themselves and skip the call entirely when it's
-`False`, rather than this module deciding what's "debug" internally.
+`format_stage_result`/`format_detailer_block_line` line per stage/block.
+`debug` adds the finer-grained lines (the full eleven-field context-supplied
+report, a stage's own resolved steps/cfg/sampler/scheduler/denoise). `off`
+silences ALL of it — callers check the resolved level themselves (`pipeline.
+py`'s `_log_level`/`_should_log`/`_debug_enabled`) and skip every call
+entirely when it says not to, rather than this module deciding what to print
+internally; this module's own job stays "build the string", never "decide
+whether to print it".
 
-**`ANIMAFLOW_DEBUG`** — set this env var to `1`/`true`/`yes`/`on`
-(case-insensitive) to also emit the finer-grained lines above. Read via
-`is_debug_enabled`, which takes a plain mapping (never reads `os.environ`
-itself) so it stays exactly as testable as everything else here; the actual
-`os.environ` read happens once, in `pipeline.py`.
+**Two ways to set the level, with a documented precedence**:
+
+1. **`ANIMAFLOW_DEBUG`** — set this env var to `1`/`true`/`yes`/`on`
+   (case-insensitive) to force the `debug` level, REGARDLESS of the
+   Settings-dialog value — the escape hatch for a headless run with no
+   browser attached (there is no `comfy.settings.json` to read a frontend
+   choice from in that case, and even if there were, an operator running
+   `ANIMAFLOW_DEBUG=1 python ...` clearly wants debug output). Read via
+   `is_debug_enabled`, which takes a plain mapping (never reads `os.environ`
+   itself) so it stays exactly as testable as everything else here.
+2. **The "Console logging" Settings-dialog value** (`src/anima/
+   frontend_settings.py` reads it from ComfyUI's own persisted
+   `comfy.settings.json`) — used whenever the env var ISN'T truthy. Defaults
+   to `off` if the file is missing/unreadable/malformed or the key was never
+   set (this module never touches that file itself; the caller passes the
+   already-resolved raw value in).
+
+`effective_log_level(env, setting_value)` below is the ONE function that
+combines these two into a single `"off"|"summary"|"debug"` result — the only
+thing every caller (`pipeline.py`'s `_log_level`, `preview.py`'s own copy)
+actually needs to call each time it wants to know "should I log, and how
+much". `normalize_log_level` is its pure "coerce whatever the settings file
+handed back into one of the three legal strings" half, exported separately
+so it's independently testable against garbage.
 
 **Fail-safe by construction**: every public function is wrapped (`_safe`,
 below) so a genuinely hostile/garbage input — the wrong type, a missing key,
@@ -76,6 +99,58 @@ def is_debug_enabled(env: Optional[Any] = None) -> bool:
         return str(value).strip().lower() in _TRUTHY_ENV_VALUES
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Three-level verbosity (module docstring's "Verbosity contract" section) --
+# the "Console logging" Settings-dialog combo, plus ANIMAFLOW_DEBUG as an
+# override.
+# ---------------------------------------------------------------------------
+
+# The id `src/anima/frontend_settings.py` reads from `comfy.settings.json`,
+# and the id `js/shared/settings.mjs`'s `SETTING_IDS.CONSOLE_LOGGING`
+# declares on the frontend side — the two literals MUST match byte-for-byte;
+# there is no shared module between the two languages, so this is duplicated
+# by necessity (same convention as `GENERATION_SETTINGS_SCHEMA` existing in
+# both `settings.py` and `state.mjs`). Exported so `pipeline.py` cites this
+# constant instead of a second hardcoded copy of the string.
+CONSOLE_LOGGING_SETTING_ID = "AnimaFlow.General.ConsoleLogging"
+
+# The three legal levels, in increasing verbosity order, and the default for
+# anything unset/garbage — mirrors `js/shared/settings.mjs`'s own
+# `SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING]`.
+LOG_LEVELS = ("off", "summary", "debug")
+DEFAULT_LOG_LEVEL = "off"
+
+
+def normalize_log_level(value: Any) -> str:
+    """Coerce whatever `comfy.settings.json` (or a hand-edited config) handed
+    back for the console-logging setting into one of `LOG_LEVELS`, falling
+    back to `DEFAULT_LOG_LEVEL` for anything else at all (`None`, the wrong
+    type, an unrecognised string, a `str()`/`.lower()` call that itself
+    raises) — never throws, matching this module's own fail-safe posture.
+    """
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        return DEFAULT_LOG_LEVEL
+    return text if text in LOG_LEVELS else DEFAULT_LOG_LEVEL
+
+
+def effective_log_level(env: Optional[Any] = None, setting_value: Any = None) -> str:
+    """The console-logging level a caller should actually use THIS call,
+    combining both inputs with the documented precedence (module docstring's
+    "Two ways to set the level" section): `ANIMAFLOW_DEBUG` truthy in `env`
+    forces `"debug"`, unconditionally, regardless of `setting_value` — the
+    override for a headless run with no browser attached. Otherwise,
+    `setting_value` (whatever the caller's own settings-file read handed
+    back, typically `frontend_settings.get_setting(CONSOLE_LOGGING_SETTING_ID,
+    DEFAULT_LOG_LEVEL)`) is normalized via `normalize_log_level` and used as-is.
+    Never raises — both halves already fail closed on their own.
+    """
+    if is_debug_enabled(env):
+        return "debug"
+    return normalize_log_level(setting_value)
 
 
 def _safe(fn: Callable[..., str]) -> Callable[..., str]:
@@ -320,7 +395,12 @@ format_preview_run_line = _safe(_format_preview_run_line_impl)
 
 __all__ = (
     "LOGGER_NAME",
+    "CONSOLE_LOGGING_SETTING_ID",
+    "LOG_LEVELS",
+    "DEFAULT_LOG_LEVEL",
     "is_debug_enabled",
+    "normalize_log_level",
+    "effective_log_level",
     "stage_status_text",
     "format_run_header",
     "format_sampler_provenance",

@@ -1929,6 +1929,62 @@ test("removeRowAndSync asks ctx.confirmRemove before dropping a row with a live 
 });
 
 // ---------------------------------------------------------------------------
+// index.js's OWN `confirmRemove` -- the "Confirm before removing a row"
+// setting (js/shared/settings.mjs, default ON). `index.js` carries a
+// top-level `/scripts/app.js` import (this file's own top doc comment), so
+// this is a source-level check, the same technique this file's own H2-style
+// section already uses for other un-instantiable `index.js` internals.
+// `interaction.mjs`'s own `removeRowAndSync`/`ctx.confirmRemove` contract is
+// UNCHANGED -- the two tests just above still cover it byte-for-byte; this
+// only asserts `index.js`'s `confirmRemove` gates on the LIVE setting before
+// ever reaching `window.confirm`.
+// ---------------------------------------------------------------------------
+
+test("index.js: confirmRemove reads the LIVE 'Confirm before removing a row' setting, via getSetting, BEFORE ever consulting window.confirm", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\s*\{\s*getSetting,\s*SETTING_IDS,\s*SETTING_DEFAULTS,\s*registerAnimaFlowSettings\s*\}\s*from\s*"\.\.\/shared\/settings\.mjs"/,
+    "must import getSetting/SETTING_IDS/SETTING_DEFAULTS/registerAnimaFlowSettings eagerly (not through loadMods())",
+  );
+
+  const fnIdx = indexSource.indexOf("function confirmRemove(row)");
+  assert.ok(fnIdx >= 0, "confirmRemove must exist");
+  const nextFnIdx = indexSource.indexOf("function ", fnIdx + 1);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx > fnIdx ? nextFnIdx : undefined);
+
+  const settingCheckIdx = fnBody.indexOf("getSetting(SETTING_IDS.CONFIRM_REMOVE_ROW");
+  assert.ok(settingCheckIdx >= 0, "confirmRemove must read the CONFIRM_REMOVE_ROW setting");
+  const confirmCallIdx = fnBody.indexOf("window.confirm(");
+  assert.ok(confirmCallIdx > settingCheckIdx, "the setting must be checked BEFORE window.confirm is ever reached");
+});
+
+test("index.js: registerAnimaFlowSettings is called from beforeRegisterNodeDef, unconditionally (like installQueuePromptHook)", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const beforeIdx = indexSource.indexOf("beforeRegisterNodeDef(nodeType, nodeData) {");
+  assert.ok(beforeIdx >= 0);
+  const panelConfigIdx = indexSource.indexOf("const panelConfig = CLASS_TO_PANEL[nodeData.name];", beforeIdx);
+  assert.ok(panelConfigIdx > beforeIdx, "panelConfig lookup (the class-specific gate) must come after the top of the function");
+  const preamble = indexSource.slice(beforeIdx, panelConfigIdx);
+  assert.match(preamble, /registerAnimaFlowSettings\(app\)/, "registerAnimaFlowSettings must be called BEFORE the class-specific gate, so it runs for every node type");
+});
+
+test("index.js/interaction.mjs: the Wheel quiet period setting is wired into BOTH installCanvasZoomPassthrough call sites via a live getLockMs, not a static lockMs", () => {
+  const src = readFileSync(path.join(__dirname, "interaction.mjs"), "utf8");
+  assert.match(
+    src,
+    /import\s*\{\s*getSetting,\s*SETTING_IDS,\s*SETTING_DEFAULTS\s*\}\s*from\s*"\.\.\/shared\/settings\.mjs"/,
+    "interaction.mjs must import getSetting/SETTING_IDS/SETTING_DEFAULTS",
+  );
+  assert.match(src, /getLockMs:\s*\(\)\s*=>\s*getSetting\(SETTING_IDS\.WHEEL_QUIET_PERIOD_MS/, "must resolve the lock ms live, via a getLockMs closure");
+  const installCalls = [...src.matchAll(/installCanvasZoomPassthrough\([^)]*\)/g)].map((m) => m[0]);
+  assert.ok(installCalls.length >= 2, "there are two installCanvasZoomPassthrough call sites (per-row and the add-row strip)");
+  for (const call of installCalls) {
+    assert.match(call, /WHEEL_LOCK_OPTIONS/, `every installCanvasZoomPassthrough call site must pass WHEEL_LOCK_OPTIONS: ${call}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // D0. Row presets -- steps/cfg/denoise (pre-configured int/float rows, NOT
 // new kinds; see rows.mjs's ROW_PRESETS doc comment).
 // ---------------------------------------------------------------------------

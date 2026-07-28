@@ -49,6 +49,58 @@ def test_debug_predicate_real_os_environ_shape_works():
 
 
 # ---------------------------------------------------------------------------
+# normalize_log_level / effective_log_level -- the three-level "Console
+# logging" contract (module docstring's "Verbosity contract" section) and
+# its documented precedence against ANIMAFLOW_DEBUG.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_log_level_accepts_the_three_legal_values_case_insensitively():
+    for value in ("off", "OFF", " Off "):
+        assert logs_mod.normalize_log_level(value) == "off", value
+    for value in ("summary", "SUMMARY", " Summary "):
+        assert logs_mod.normalize_log_level(value) == "summary", value
+    for value in ("debug", "DEBUG", " Debug "):
+        assert logs_mod.normalize_log_level(value) == "debug", value
+
+
+def test_normalize_log_level_falls_back_to_off_for_garbage():
+    for bad in [None, "", "garbage", 123, [], {}, object()]:
+        assert logs_mod.normalize_log_level(bad) == "off", bad
+
+
+def test_normalize_log_level_default_matches_the_documented_default():
+    assert logs_mod.DEFAULT_LOG_LEVEL == "off"
+    assert logs_mod.LOG_LEVELS == ("off", "summary", "debug")
+
+
+def test_effective_log_level_uses_the_setting_value_when_env_is_not_truthy():
+    assert logs_mod.effective_log_level(None, "off") == "off"
+    assert logs_mod.effective_log_level({}, "summary") == "summary"
+    assert logs_mod.effective_log_level({"ANIMAFLOW_DEBUG": "0"}, "debug") == "debug"
+
+
+def test_effective_log_level_env_var_forces_debug_regardless_of_the_setting():
+    for setting_value in ("off", "summary", "debug", None, "garbage"):
+        assert logs_mod.effective_log_level({"ANIMAFLOW_DEBUG": "1"}, setting_value) == "debug", setting_value
+
+
+def test_effective_log_level_defaults_to_off_when_neither_env_nor_setting_says_otherwise():
+    assert logs_mod.effective_log_level(None, None) == "off"
+    assert logs_mod.effective_log_level({}, None) == "off"
+
+
+def test_effective_log_level_never_raises_on_garbage_env_or_setting():
+    for env in [None, "not-a-mapping", 12345, object()]:
+        for setting_value in [None, "garbage", object()]:
+            assert logs_mod.effective_log_level(env, setting_value) in logs_mod.LOG_LEVELS
+
+
+def test_console_logging_setting_id_matches_the_documented_namespace():
+    assert logs_mod.CONSOLE_LOGGING_SETTING_ID == "AnimaFlow.General.ConsoleLogging"
+
+
+# ---------------------------------------------------------------------------
 # stage_status_text -- the dependency-missing vs. plainly-disabled distinction
 # (task brief: "detailer_is_live already distinguishes disabled from no
 # Impact pack -- surface that distinction").
@@ -318,6 +370,14 @@ ALL_TESTS = [
     test_debug_disabled_for_falsy_or_missing,
     test_debug_predicate_fails_closed_on_garbage_env,
     test_debug_predicate_real_os_environ_shape_works,
+    test_normalize_log_level_accepts_the_three_legal_values_case_insensitively,
+    test_normalize_log_level_falls_back_to_off_for_garbage,
+    test_normalize_log_level_default_matches_the_documented_default,
+    test_effective_log_level_uses_the_setting_value_when_env_is_not_truthy,
+    test_effective_log_level_env_var_forces_debug_regardless_of_the_setting,
+    test_effective_log_level_defaults_to_off_when_neither_env_nor_setting_says_otherwise,
+    test_effective_log_level_never_raises_on_garbage_env_or_setting,
+    test_console_logging_setting_id_matches_the_documented_namespace,
     test_stage_off_when_disabled_reads_plain_off,
     test_stage_off_because_dependency_missing_names_the_pack,
     test_disabled_and_dependency_missing_read_distinctly,

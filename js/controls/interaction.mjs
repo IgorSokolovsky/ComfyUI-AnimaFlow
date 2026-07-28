@@ -115,6 +115,21 @@ import {
 // module scope, so it's just as importable under plain `node` as
 // `rows.mjs`/`render.mjs` already are -- no 404 risk.
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
+// The "Wheel quiet period (ms)" setting (`js/shared/settings.mjs`) -- read
+// LIVE, on every wheel event, via `installCanvasZoomPassthrough`'s own
+// `options.getLockMs` (see that function's doc comment). Same "plain
+// relative import, zero app/window reference at module scope" reasoning as
+// the import right above it.
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
+
+// Shared `options` object for every `installCanvasZoomPassthrough` call in
+// this file (both below) -- `getLockMs` itself still resolves the setting
+// FRESH on every wheel event (it's a closure calling `getSetting` live,
+// never a captured value), so sharing this one object across installs costs
+// nothing and isn't a "captured once" shortcut.
+const WHEEL_LOCK_OPTIONS = {
+  getLockMs: () => getSetting(SETTING_IDS.WHEEL_QUIET_PERIOD_MS, SETTING_DEFAULTS[SETTING_IDS.WHEEL_QUIET_PERIOD_MS]),
+};
 
 // The single-overlay-at-a-time bookkeeping + toggle primitive (ownerKey) --
 // EXTRACTED to js/shared/overlay.mjs while building js/anima/ so both
@@ -1331,7 +1346,7 @@ function rebuildRowWidgets(node, ctx) {
       // element (one addDOMWidget per row -- see render.mjs's top doc
       // comment), so full coverage means one install per row. Torn down in
       // removeRowWidgets/teardownAllZoomPassthrough above.
-      const uninstallZoom = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl);
+      const uninstallZoom = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl, WHEEL_LOCK_OPTIONS);
       entries.push({ id: row.id, kind: row.kind, widget, refs, uninstallZoom });
     } catch (err) {
       console.error(`[AnimaFlow Controls] failed to build/wire row (kind=${row.kind}, id=${row.id}):`, err);
@@ -1354,7 +1369,7 @@ function rebuildRowWidgets(node, ctx) {
   addRefs.root.disabled = state.rows.length >= maxRows;
   wireAddRow(node, ctx, addRefs);
   node._ctrlAddWidget = addWidget;
-  node._ctrlAddZoomUninstall = installCanvasZoomPassthrough(addRefs.root, ctx.getCanvasEl);
+  node._ctrlAddZoomUninstall = installCanvasZoomPassthrough(addRefs.root, ctx.getCanvasEl, WHEEL_LOCK_OPTIONS);
 
   repaintRows(node, ctx);
 }

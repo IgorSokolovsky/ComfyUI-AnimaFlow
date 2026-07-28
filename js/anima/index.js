@@ -107,6 +107,17 @@ import { isGraphLoading } from "../shared/graph_loading.mjs";
 // be in place before the FIRST queue click, not after this pack's own lazy
 // `loadMods()` resolves.
 import { isSubmitting } from "../shared/submit_guard.mjs";
+// The "AnimaFlow" Settings-dialog section -- `js/shared/settings.mjs`'s own
+// top doc comment: "any entry point loading is enough to register it", and
+// this is the one thing in that module every entry point needs (every OTHER
+// setting is read directly by whichever module actually consumes it --
+// `fields.mjs`'s tooltip delay, `node_chrome.mjs`'s theme toggle,
+// `interaction.mjs`'s wheel-lock/persist-context-run, `render.mjs`'s own
+// font-scale -- none of them need this file to thread a value through). A
+// plain relative import with zero `/scripts/app.js`/`window` reference at
+// module scope, like `isGraphLoading`/`isSubmitting` above -- cheap enough
+// to import eagerly rather than riding this file's own lazy `loadMods()`.
+import { registerAnimaFlowSettings } from "../shared/settings.mjs";
 
 // `AnimaContextBridge` is included ONLY for socket self-healing (see this
 // file's top doc comment) -- `mountsUi` below is what actually gates every
@@ -631,6 +642,15 @@ app.registerExtension({
     // `app.queuePrompt` exists. Matches `js/controls/index.js`'s identical
     // placement/reasoning for its own seed-advance hook.
     installQueuePromptHook();
+    // Same "cheap + internally guarded, fires on the very first node type
+    // ComfyUI registers" placement for the "AnimaFlow" Settings-dialog
+    // section (`registerAnimaFlowSettings`'s own module-level guard) --
+    // registers on EVERY page, whether or not the user ever places one of
+    // this pack's nodes, since `beforeRegisterNodeDef` runs before any node
+    // instance exists at all. `js/controls/index.js` calls this too, so
+    // either track loading alone is enough (`settings.mjs`'s own doc
+    // comment).
+    registerAnimaFlowSettings(app);
 
     if (!NODE_CLASS_NAMES.includes(nodeData.name)) {
       return;

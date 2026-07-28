@@ -49,6 +49,7 @@ own docstrings for the rest of this contract.
 from __future__ import annotations
 
 import logging
+import os
 
 from ._preview_helpers import (
     build_preview_ui_images,
@@ -61,9 +62,11 @@ from ._preview_helpers import (
 try:
     # Real ComfyUI context -- same convention as `nodes/prompt_rules/
     # _rules_helpers.py`'s import of `src.prompt_rules.core`.
+    from ...src.anima import frontend_settings as frontend_settings_mod  # type: ignore
     from ...src.anima import logs as logs_mod  # type: ignore
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
+    from src.anima import frontend_settings as frontend_settings_mod
     from src.anima import logs as logs_mod
 
 CATEGORY = "AnimaFlow/Anima"
@@ -75,6 +78,19 @@ CATEGORY = "AnimaFlow/Anima"
 # still carries its own `[AnimaFlow]` prefix (see `src/anima/logs.py`'s own
 # docstring for why both).
 _logger = logging.getLogger(logs_mod.LOGGER_NAME)
+
+
+def _should_log() -> bool:
+    """Same three-level "Console logging" contract `src/anima/pipeline.py`'s
+    own `_should_log` uses (that module's own docstring has the full
+    precedence) -- `ANIMAFLOW_DEBUG` forces logging on; otherwise the
+    Settings-dialog value, defaulting to `logs.DEFAULT_LOG_LEVEL` ("off").
+    This node has no debug-only lines of its own (just the one summary line
+    below), so there is no separate `_debug_enabled()` here."""
+    setting_value = frontend_settings_mod.get_setting(
+        logs_mod.CONSOLE_LOGGING_SETTING_ID, logs_mod.DEFAULT_LOG_LEVEL,
+    )
+    return logs_mod.effective_log_level(os.environ, setting_value) != "off"
 
 
 def _unwrap_single(value, default=None):
@@ -192,10 +208,14 @@ class AnimaPreview:
         # which stage labels they resolved to, and -- per stage -- whether
         # it landed in a real output file (and where) or only a temp one.
         # Built from `ui_images` itself (already the authoritative routing
-        # result `split_preview_stages` produced), never re-derived.
-        _logger.info(logs_mod.format_preview_run_line(
-            image_count=len(images), stage_labels=labels, entries=ui_images,
-        ))
+        # result `split_preview_stages` produced), never re-derived. Gated on
+        # the "Console logging" setting/ANIMAFLOW_DEBUG (`_should_log`,
+        # above) -- "off" silences this the same way it silences every
+        # per-run line `pipeline.py` prints.
+        if _should_log():
+            _logger.info(logs_mod.format_preview_run_line(
+                image_count=len(images), stage_labels=labels, entries=ui_images,
+            ))
 
         # The key is `anima_stages`, deliberately NOT `images` -- this node
         # already draws its own preview (`js/anima/`'s DOM hover wipe), and

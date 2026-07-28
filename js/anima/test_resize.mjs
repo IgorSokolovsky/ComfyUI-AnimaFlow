@@ -149,6 +149,7 @@ import { scrollRegionWantsWheel } from "../shared/canvas_zoom.mjs";
 import * as fields from "../shared/fields.mjs";
 import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
 import { activeOverlayRef, closeActiveOverlay } from "../shared/overlay.mjs";
+import { SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 
 import {
   GENERATION_SETTINGS_SCHEMA,
@@ -815,8 +816,10 @@ test("normalizeSeed: -1 (number, string, or -1.0) stays exactly '-1', never clam
   assert.equal(normalizeSeed(-1.0), "-1");
 });
 
-test("normalizeSeed: out-of-range values clamp -- above 2**64-1 ceilings at the max; a negative-but-not-sentinel value stays non-negative (via clampSeedString's own tested digit-extraction, js/controls/test_rows.mjs's 'clampSeedString(-5) === \"5\"' -- NOT floored to 0 the way src/anima/settings.py's normalize_seed does; a known, accepted, contained divergence for this one hostile-input edge case, since reusing the already-tested clamp beats a second implementation)", () => {
-  assert.equal(normalizeSeed(-5), "5");
+test("normalizeSeed: out-of-range values clamp -- above 2**64-1 ceilings at the max; a negative-but-not-sentinel value FLOORS TO 0 (2026-07-29 fix -- matches src/anima/settings.py's normalize_seed exactly now; see the parity table below)", () => {
+  assert.equal(normalizeSeed(-5), "0");
+  assert.equal(normalizeSeed("-5"), "0");
+  assert.equal(normalizeSeed(-5.5), "0");
   const maxSeed = (2n ** 64n - 1n).toString();
   assert.equal(normalizeSeed(maxSeed + "0"), maxSeed); // one digit past the max
   assert.equal(normalizeSeed(maxSeed), maxSeed); // exactly the max survives
@@ -836,6 +839,46 @@ test("normalizeSeed reuses js/controls/rows.mjs's clampSeedString for the genera
   // re-derive). A non-numeric string with an embedded number exercises
   // clampSeedString's own digit-extraction behaviour.
   assert.equal(normalizeSeed("seed:42"), clampSeedString("seed:42"));
+});
+
+// ---------------------------------------------------------------------------
+// Parity table -- `normalizeSeed` (this file) vs. `src/anima/settings.py`'s
+// `normalize_seed` (the Python twin). The two can't share a runtime, so this
+// asserts the JS side against a table of EXPECTED outputs that mirror
+// Python's own, already-tested behaviour (`tests/test_anima_settings.py`'s
+// `test_normalize_seed_minus_one_stays_minus_one`/
+// `test_normalize_seed_out_of_range_clamps`/
+// `test_normalize_seed_integral_float_coerces_cleanly`/
+// `test_normalize_seed_garbage_falls_back_to_zero`/
+// `test_normalize_seed_bool_is_not_silently_accepted_as_0_or_1` cite the
+// SAME expected values for the SAME inputs) -- agreement "by construction",
+// since both suites are pinned to one shared table rather than each
+// inventing its own expectation.
+// ---------------------------------------------------------------------------
+
+const SEED_PARITY_TABLE = [
+  // [raw, expected, why]
+  [-1, "-1", "the sentinel, as a number"],
+  ["-1", "-1", "the sentinel, as a string"],
+  [-1.0, "-1", "the sentinel, as a float (JS has no separate float type)"],
+  [-5, "0", "negative-but-not-sentinel FLOORS to 0 -- the exact bug this fix closes"],
+  ["-5", "0", "same, as a string"],
+  [-5.5, "0", "a negative float floors to 0 too (Python: int(-5.5) == -5, still < 0)"],
+  [42.0, "42", "an integral float coerces cleanly"],
+  [123456789, "123456789", "a plain positive int survives verbatim"],
+  ["16963467365598029952", "16963467365598029952", "a huge 20-digit seed survives verbatim, no precision loss"],
+  ["not-a-seed", "0", "non-numeric garbage falls back to 0"],
+  [null, "0", "null falls back to 0"],
+  [NaN, "0", "NaN falls back to 0"],
+  [Infinity, "0", "a non-finite number falls back to 0"],
+  [true, "0", "bool is an int subclass in Python -- must NOT sneak through as 1"],
+  [false, "0", "same, for False -- must NOT sneak through as 0-via-int(False)"],
+];
+
+test("normalizeSeed parity table: agrees with src/anima/settings.py's normalize_seed for every shared input, including -5", () => {
+  for (const [raw, expected, why] of SEED_PARITY_TABLE) {
+    assert.equal(normalizeSeed(raw), expected, `${JSON.stringify(raw)} (${why})`);
+  }
 });
 
 test("randomSeedString (roll) produces an in-range, digit-only string every time", () => {
@@ -2120,6 +2163,92 @@ test("handleGeneratorExecuted: a payload with no anima_context key (e.g. only `i
 });
 
 // ---------------------------------------------------------------------------
+// "Keep post-run values across reload" setting (js/shared/settings.mjs,
+// default OFF) -- handleGeneratorExecuted persists to node.properties when
+// on; mountGeneratorUI restores from it when on. Off behaves exactly as the
+// two tests just above (in-memory node._anContextRun only).
+// ---------------------------------------------------------------------------
+
+test("handleGeneratorExecuted: setting OFF (default, no live app) -- node.properties is never touched", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  const payload = { supplied: { seed: true }, values: { seed: 42 } };
+  handleGeneratorExecuted(node, ctx, { anima_context: payload });
+  assert.deepEqual(node._anContextRun, payload);
+  assert.equal(node.properties, undefined, "the setting is off -- node.properties must never be created for this");
+});
+
+test("handleGeneratorExecuted: setting ON -- the payload is ALSO persisted to node.properties.anContextRun (never the settings/generation_settings widget)", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.PERSIST_CONTEXT_RUN ? true : undefined) } } } };
+  try {
+    const node = makeGeneratorNode();
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc);
+    mountGeneratorUI(node, ctx);
+
+    const payload = { supplied: { seed: true }, values: { seed: 42 } };
+    handleGeneratorExecuted(node, ctx, { anima_context: payload });
+    assert.deepEqual(node._anContextRun, payload);
+    assert.deepEqual(node.properties.anContextRun, payload);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("mountGeneratorUI: restores node._anContextRun from a persisted node.properties.anContextRun ONLY when the setting is on", () => {
+  const payload = { supplied: { seed: true }, values: { seed: 7 } };
+
+  // Setting OFF (default, no live app): a property left over from an
+  // earlier ON session must NOT be read back -- "behave exactly as now".
+  {
+    const node = makeGeneratorNode();
+    node.properties = { anContextRun: payload };
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc);
+    mountGeneratorUI(node, ctx);
+    assert.notDeepEqual(node._anContextRun, payload);
+  }
+
+  // Setting ON: the SAME persisted property must be read back on mount.
+  {
+    globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.PERSIST_CONTEXT_RUN ? true : undefined) } } } };
+    try {
+      const node = makeGeneratorNode();
+      node.properties = { anContextRun: payload };
+      const doc = makeDocStub();
+      makeWindowStub(doc);
+      const ctx = makeCtx(doc);
+      mountGeneratorUI(node, ctx);
+      assert.deepEqual(node._anContextRun, payload);
+    } finally {
+      delete globalThis.window;
+    }
+  }
+});
+
+test("clearContextRun also clears the persisted node.properties.anContextRun, if one exists -- an in-session rewire must not leave a stale persisted value behind either", () => {
+  const node = makeGeneratorNode();
+  node._anContextRun = { supplied: { seed: true }, values: { seed: 1 } };
+  node.properties = { anContextRun: { supplied: { seed: true }, values: { seed: 1 } } };
+  clearContextRun(node);
+  assert.equal(node._anContextRun, null);
+  assert.equal(node.properties.anContextRun, null);
+});
+
+test("clearContextRun never throws and never creates node.properties out of nowhere for a node that never had any", () => {
+  const node = makeGeneratorNode();
+  assert.doesNotThrow(() => clearContextRun(node));
+  assert.equal(node._anContextRun, null);
+  assert.equal(node.properties, undefined);
+});
+
+// ---------------------------------------------------------------------------
 // normalizeAnimaContextPayload -- the shape-tolerant unwrap fixing the
 // 2026-07-28 live bug: ComfyUI's executor accumulates a node's `ui` value
 // by EXTENDING a list with it, so a bare dict returned under `anima_context`
@@ -2920,6 +3049,63 @@ test("Detailer's section header carries NO ⚙ of its own (its only section-wide
 
 test("INFO_TIP_DELAY_MS is exported and is 250", () => {
   assert.equal(fields.INFO_TIP_DELAY_MS, 250);
+});
+
+// ---------------------------------------------------------------------------
+// "Tooltip delay (ms)" setting (js/shared/settings.mjs) -- read LIVE, on
+// every hover, never captured once (unlike "Node panel type size").
+// ---------------------------------------------------------------------------
+
+function makeRecordingWindowStub(doc) {
+  const calls = [];
+  const win = {
+    _listeners: {},
+    addEventListener(t, fn) {
+      (win._listeners[t] = win._listeners[t] || []).push(fn);
+    },
+    removeEventListener() {},
+    setTimeout(fn, delay) {
+      calls.push(delay);
+      fn();
+      return 0;
+    },
+  };
+  doc.defaultView = win;
+  return calls;
+}
+
+test("ⓘ hover tooltip: with no live setting (fallback), the timer uses INFO_TIP_DELAY_MS (250)", () => {
+  const doc = makeDocStub();
+  const calls = makeRecordingWindowStub(doc);
+  const icon = fields.buildInfoIcon(doc, "explains the field");
+  fire(icon, "mouseenter");
+  assert.equal(calls[0], fields.INFO_TIP_DELAY_MS);
+});
+
+test("ⓘ hover tooltip: honours the LIVE 'Tooltip delay (ms)' setting value", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.TOOLTIP_DELAY_MS ? 900 : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    const calls = makeRecordingWindowStub(doc);
+    const icon = fields.buildInfoIcon(doc, "explains the field");
+    fire(icon, "mouseenter");
+    assert.equal(calls[0], 900, "must use the live setting value, not the INFO_TIP_DELAY_MS default");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("ⓘ hover tooltip: a garbage/negative setting value falls back to INFO_TIP_DELAY_MS rather than scheduling a broken timer", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.TOOLTIP_DELAY_MS ? "not-a-number" : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    const calls = makeRecordingWindowStub(doc);
+    const icon = fields.buildInfoIcon(doc, "explains the field");
+    fire(icon, "mouseenter");
+    assert.equal(calls[0], fields.INFO_TIP_DELAY_MS);
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 test("buildInfoIcon sets no native `title` (would double up with the themed tooltip) -- it sets `aria-label` instead", () => {
@@ -4256,6 +4442,40 @@ test("applyNodeChrome is a no-op (never throws) against a null/undefined node", 
   assert.doesNotThrow(() => applyNodeChrome(undefined));
 });
 
+test("applyNodeChrome honours the LIVE 'Themed node chrome' setting: default (no live app) still paints, matching every test above", () => {
+  const node = makeGeneratorNode();
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_TITLE);
+});
+
+test("applyNodeChrome honours the LIVE 'Themed node chrome' setting: OFF paints nothing at all, even on a fresh (null/undefined) node", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.NODE_CHROME ? false : undefined) } } } };
+  try {
+    const node = makeGeneratorNode();
+    applyNodeChrome(node);
+    assert.equal(node.bgcolor, undefined, "setting is off -- must not fill in bgcolor");
+    assert.equal(node.color, undefined, "setting is off -- must not fill in color");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("applyNodeChrome honours the LIVE 'Themed node chrome' setting: turning it back ON (a later call) paints normally -- confirms this is read live, not captured once", () => {
+  const node = makeGeneratorNode();
+  globalThis.window = { app: { extensionManager: { setting: { get: () => false } } } };
+  try {
+    applyNodeChrome(node);
+    assert.equal(node.bgcolor, undefined);
+  } finally {
+    delete globalThis.window;
+  }
+  // Same node, setting now back to its default (on) -- no window.app at all.
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_TITLE);
+});
+
 test("index.js: node chrome is painted from the standalone setupNode() function only (the fresh-node path, reached via onNodeCreated), gated on !node._anConfiguring, and never from restoreNode()", () => {
   const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
   const setupIdx = indexSource.indexOf("function setupNode(node, mods, isGenerator)");
@@ -4286,6 +4506,141 @@ test("index.js: node chrome is painted from the standalone setupNode() function 
   const configureFnBody = indexSource.slice(configureIdx, indexSource.indexOf("loadMods()", configureIdx));
   assert.match(configureFnBody, /this\._anConfiguring\s*=\s*true/, "_anConfiguring must be set at the top of onConfigure, before loadMods()");
   assert.match(indexSource, /_anConfiguring\s*=\s*false/, "the restore path must clear _anConfiguring once mods have resolved (or failed)");
+});
+
+// ===========================================================================
+// J. "Node panel type size (px)" setting (js/shared/settings.mjs) --
+// `render.applyPanelFontScale`/`fields.applyFieldFontScale`. THESE TESTS MUST
+// STAY LAST IN THIS FILE: both functions mutate module-level `let` bindings
+// that every earlier test in this file (imported by NAME, e.g. bare
+// `BASE_FONT`/`PANEL_MIN_H` above) reads as a live ES-module binding -- so
+// scaling away from the 14px default here would retroactively change what
+// an EARLIER test saw, if this ran first. Each test below restores the
+// default (`applyPanelFontScale(14)`/`applyFieldFontScale(14)`) in a
+// `finally`, but the ordering itself is the real safety net.
+// ===========================================================================
+
+test("applyPanelFontScale(14) (the default/baseline) reproduces every original literal exactly -- calling it is a no-op in the common case", () => {
+  render.applyPanelFontScale(14);
+  try {
+    assert.equal(render.BASE_FONT, 14);
+    assert.equal(render.SHEAD_H, 32);
+    assert.equal(render.SHEAD_GLYPH_SIZE, 17);
+    assert.equal(render.PANEL_MIN_H, 256);
+    assert.equal(render.PREVIEW_IMG_MIN_H, 188);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 284);
+    assert.equal(render.PREVIEW_MIN_H, 364);
+  } finally {
+    render.applyPanelFontScale(14);
+  }
+});
+
+test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, proportionally, and the litegraph chrome addend (80) stays fixed", () => {
+  render.applyPanelFontScale(28); // exactly double the 14px baseline
+  try {
+    assert.equal(render.BASE_FONT, 28);
+    assert.equal(render.SHEAD_H, 64);
+    assert.equal(render.PANEL_MIN_H, 512);
+    assert.equal(render.PREVIEW_IMG_MIN_H, 376);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 568);
+    // The +80 chrome addend must NOT double along with everything else --
+    // this file's own PREVIEW_MIN_H doc comment ("litegraph's OWN native
+    // pixel geometry... deliberately NOT scaled").
+    assert.equal(render.PREVIEW_MIN_H, 568 + 80);
+    assert.equal(render.PREVIEW_MIN_H - render.PREVIEW_PANEL_MIN_H, 80);
+  } finally {
+    render.applyPanelFontScale(14);
+  }
+});
+
+test("applyPanelFontScale is idempotent -- calling it twice with the same value never compounds (derives from frozen defaults, not its own previous output)", () => {
+  render.applyPanelFontScale(21);
+  const firstPass = { BASE_FONT: render.BASE_FONT, PANEL_MIN_H: render.PANEL_MIN_H };
+  render.applyPanelFontScale(21);
+  try {
+    assert.equal(render.BASE_FONT, firstPass.BASE_FONT);
+    assert.equal(render.PANEL_MIN_H, firstPass.PANEL_MIN_H);
+  } finally {
+    render.applyPanelFontScale(14);
+  }
+});
+
+test("applyPanelFontScale falls back to the 14px baseline for garbage input (never NaN/negative/zero constants)", () => {
+  for (const bad of [0, -5, NaN, "not-a-number", null, undefined]) {
+    render.applyPanelFontScale(bad);
+    try {
+      assert.equal(render.BASE_FONT, 14, `bad input ${JSON.stringify(bad)} must fall back to the 14px baseline`);
+    } finally {
+      render.applyPanelFontScale(14);
+    }
+  }
+});
+
+test("applyFieldFontScale(14) (the default/baseline) reproduces every original FLD_* literal exactly", () => {
+  fields.applyFieldFontScale(14);
+  try {
+    assert.equal(fields.FLD_FONT, 13.5);
+    assert.equal(fields.FLD_MONO, 13);
+    assert.equal(fields.FLD_ROW_H, 29);
+    assert.equal(fields.FLD_ROW_GAP, 5);
+    assert.equal(fields.FLD_SWITCH_W, 30);
+    assert.equal(fields.FLD_SWITCH_H, 16);
+    assert.equal(fields.FLD_INFO_SIZE, 13);
+    assert.equal(fields.FLD_GEAR_SIZE, 17);
+    assert.equal(fields.FLD_GEAR_HIT, 22);
+  } finally {
+    fields.applyFieldFontScale(14);
+  }
+});
+
+test("applyFieldFontScale scales every FLD_* constant proportionally, and FLD_GEAR_SIZE/FLD_GEAR_HIT stay derived from the (now-scaled) FLD_FONT/FLD_GEAR_SIZE rather than drifting independently", () => {
+  fields.applyFieldFontScale(28); // double the 14px baseline
+  try {
+    assert.equal(fields.FLD_FONT, 27); // roundToHalf(13.5 * 2)
+    assert.equal(fields.FLD_MONO, 26);
+    assert.equal(fields.FLD_ROW_H, 58);
+    assert.equal(fields.FLD_GEAR_SIZE, Math.round(fields.FLD_FONT * 1.26));
+    assert.equal(fields.FLD_GEAR_HIT, Math.round(fields.FLD_GEAR_SIZE * 1.3));
+  } finally {
+    fields.applyFieldFontScale(14);
+  }
+});
+
+test("injectStyles applies the font scale ATOMICALLY with the injected CSS text, exactly once per doc -- a SECOND injectStyles call on the SAME doc never re-scales, even if the setting changed in between", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.NODE_PANEL_FONT_SIZE ? 28 : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    injectStyles(doc);
+    assert.equal(render.BASE_FONT, 28, "the setting must be applied on first injection");
+    const styleEl = doc.getElementById("wtn-anima-style");
+    assert.ok(styleEl.textContent.includes("font: 28px/1.4"), "the injected CSS itself must reflect the scaled BASE_FONT");
+    assert.ok(styleEl.textContent.includes(`min-height: ${render.PANEL_MIN_H}px`));
+
+    // The setting changes AFTER the first injection -- the already-injected
+    // stylesheet (and the JS-side floor constants) must NOT move; this is
+    // the documented "needs a page refresh to take effect" contract.
+    globalThis.window.app.extensionManager.setting.get = (id) => (id === SETTING_IDS.NODE_PANEL_FONT_SIZE ? 10 : undefined);
+    injectStyles(doc);
+    assert.equal(render.BASE_FONT, 28, "a second call on the SAME (already-styled) doc must not re-scale");
+  } finally {
+    delete globalThis.window;
+    render.applyPanelFontScale(14);
+    fields.applyFieldFontScale(14);
+  }
+});
+
+test("injectStyles with no live setting (fallback) scales to the 14px default -- byte-identical to every pre-existing injected-CSS test in this file", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  try {
+    assert.equal(render.BASE_FONT, 14);
+    assert.equal(render.PANEL_MIN_H, 256);
+    const styleEl = doc.getElementById("wtn-anima-style");
+    assert.ok(styleEl.textContent.includes("min-height: 256px"));
+  } finally {
+    render.applyPanelFontScale(14);
+    fields.applyFieldFontScale(14);
+  }
 });
 
 console.log(`\n${count - failures}/${count} passed`);

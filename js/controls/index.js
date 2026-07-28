@@ -72,6 +72,13 @@ import { app } from "/scripts/app.js";
 // the exact same race, just with a worse symptom (a collapsed row count
 // makes the HEIGHT collapse too, not just the width).
 import { isGraphLoading } from "../shared/graph_loading.mjs";
+// The "AnimaFlow" Settings-dialog section (`js/shared/settings.mjs`'s own
+// top doc comment: "any entry point loading is enough to register it") plus
+// the `getSetting` accessor `confirmRemove` below needs. A plain relative
+// import with zero `/scripts/app.js`/`window` reference at module scope,
+// like `isGraphLoading` above -- cheap enough to import eagerly rather than
+// riding this file's own lazy `loadMods()`.
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS, registerAnimaFlowSettings } from "../shared/settings.mjs";
 
 // CATEGORY is Title Case ("AnimaFlow/Controls") on the Python side; nothing
 // here needs to know that string, only the two class names.
@@ -210,6 +217,14 @@ function describeLinkTarget(link) {
 }
 
 function confirmRemove(row) {
+  // "Confirm before removing a row" setting (`js/shared/settings.mjs`,
+  // default ON) -- read LIVE, on every removal attempt. OFF removes a wired
+  // row (and its link) immediately, with no prompt at all; `interaction.mjs`'s
+  // own `removeRowAndSync` is UNCHANGED either way -- it only ever asks THIS
+  // function, whose answer is what changes.
+  if (!getSetting(SETTING_IDS.CONFIRM_REMOVE_ROW, SETTING_DEFAULTS[SETTING_IDS.CONFIRM_REMOVE_ROW])) {
+    return true;
+  }
   if (typeof window === "undefined" || typeof window.confirm !== "function") {
     return true; // no confirm surface available (e.g. under test) -- don't block removal
   }
@@ -489,6 +504,12 @@ app.registerExtension({
     // first time `beforeRegisterNodeDef` runs for anything at all after
     // `app.queuePrompt` exists.
     installQueuePromptHook();
+    // Same "cheap + internally guarded, fires on the very first node type
+    // ComfyUI registers" placement for the "AnimaFlow" Settings-dialog
+    // section (`registerAnimaFlowSettings`'s own module-level guard) --
+    // `js/anima/index.js` calls this too, so either track loading alone is
+    // enough (`settings.mjs`'s own doc comment).
+    registerAnimaFlowSettings(app);
 
     const panelConfig = CLASS_TO_PANEL[nodeData.name];
     if (!panelConfig) {

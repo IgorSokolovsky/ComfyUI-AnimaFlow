@@ -178,7 +178,7 @@
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
 import {
   injectFieldStyles, buildSwitch, buildInfoIcon, buildGearIcon,
-  FLD_ROW_H, FLD_ROW_GAP,
+  FLD_ROW_H, FLD_ROW_GAP, applyFieldFontScale,
 } from "../shared/fields.mjs";
 // Re-exported below (never redefined here) so `index.js` can reach it as
 // `mods.render.applyNodeChrome`, matching every other lazily-loaded helper
@@ -186,6 +186,7 @@ import {
 // constraints (single implementation shared with `js/controls/render.mjs`,
 // never-stomp-an-explicit-colour, fresh-node-path-only).
 import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 
 const STYLE_ID = "wtn-anima-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -220,9 +221,9 @@ const TOKENS = {
 // `FLD_ROW_GAP` (imported above) are `js/shared/fields.mjs`'s OWN already-
 // scaled row height/gap for `.wtn-fld-num`/`.wtn-fld-stepper` -- reused here
 // (not re-derived) for the same arithmetic reason.
-export const BASE_FONT = 14; // was ~12
-export const SHEAD_H = 32; // .wtn-an-shead height (was 27)
-export const SHEAD_GAP = 5; // header-to-next-section spacing (was 4)
+export let BASE_FONT = 14; // was ~12
+export let SHEAD_H = 32; // .wtn-an-shead height (was 27)
+export const SHEAD_GAP = 5; // header-to-next-section spacing (was 4) -- NOT part of the "Node panel type size" setting's scope (task brief names row heights/SHEAD_H/the *_MIN_H floors/FLD_*, not inter-row spacing), so this stays a fixed gap regardless of the chosen font size.
 
 // **2026-07-28 (chevron/gear legibility fix, live bug report: "like a
 // midget in a grass field")** -- the chevron used to sit at 10.5px (this
@@ -236,9 +237,16 @@ export const SHEAD_GAP = 5; // header-to-next-section spacing (was 4)
 // matching constant, derived from ITS OWN base, `FLD_FONT`) intentionally
 // lands on the SAME 17px -- both header glyphs read as one consistent size
 // even though they're derived from two different files' base constants.
-export const SHEAD_GLYPH_SIZE = Math.round(BASE_FONT * 1.21); // 17
+export let SHEAD_GLYPH_SIZE = Math.round(BASE_FONT * 1.21); // 17
 
-const CSS = `
+// A FUNCTION, not a module-level const string -- `applyPanelFontScale` (this
+// file's "Resize" section, further down) mutates `BASE_FONT`/`SHEAD_H`/
+// `SHEAD_GLYPH_SIZE`/the `*_MIN_H` floors this template interpolates, so the
+// CSS text must be built AFTER that scale is applied (`injectStyles` below
+// does exactly that), not frozen at whatever values happened to hold at
+// module-evaluation time.
+function buildCss() {
+  return `
 .wtn-an-root { display: flex; flex-direction: column; gap: 0; width: 100%; box-sizing: border-box;
   padding: 5px 2px 2px; font: ${BASE_FONT}px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
@@ -261,7 +269,7 @@ const CSS = `
 .wtn-an-panel { display: flex; flex-direction: column; gap: 5px; padding: 7px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
   background: var(--wtn-surface, ${TOKENS.surface});
-  flex: 1 1 auto; min-height: 256px; overflow-y: auto; overflow-x: hidden; }
+  flex: 1 1 auto; min-height: ${PANEL_MIN_H}px; overflow-y: auto; overflow-x: hidden; }
 
 .wtn-an-sec { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -539,10 +547,10 @@ const CSS = `
    MENU (this file's "the Preview's Save ROW" comment above), not an
    inline accordion body -- see \`PREVIEW_PANEL_MIN_H\`'s own arithmetic
    comment in this file's "Resize" section for the exact sum. ── */
-.wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: 284px; }
+.wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: ${PREVIEW_PANEL_MIN_H}px; }
 .wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-height: 0; }
 .wtn-an-panel-pv > .wtn-an-body > * { flex: none; }
-.wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: 188px; aspect-ratio: auto; }
+.wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: ${PREVIEW_IMG_MIN_H}px; aspect-ratio: auto; }
 
 .wtn-an-pvbar { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; }
 .wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -555,13 +563,31 @@ const CSS = `
 .wtn-an-seg button:last-child { border-radius: 0 5px 5px 0; border-right-width: 1px; }
 .wtn-an-seg button.wtn-an-on { background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
 `;
+}
 
 export function injectStyles(doc) {
   const targetDoc = doc || (typeof document !== "undefined" ? document : null);
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
   }
-  injectFieldStyles(targetDoc);
+  const alreadyInjected = typeof targetDoc.getElementById === "function" && !!targetDoc.getElementById(STYLE_ID);
+  if (!alreadyInjected) {
+    // Node panel type size (Settings dialog, `js/shared/settings.mjs`) --
+    // applied HERE, atomically with the CSS text built below, exactly once
+    // per page (this `alreadyInjected` guard) -- see `applyPanelFontScale`'s
+    // own doc comment (this file's "Resize" section) for why a later,
+    // per-mount re-read would let the JS-side floor constants and the
+    // already-injected stylesheet disagree ("half-applying" the setting). A
+    // change to this setting needs a page refresh to take effect -- the
+    // escape hatch the task itself allows for exactly this constant.
+    const fontPx = getSetting(SETTING_IDS.NODE_PANEL_FONT_SIZE, SETTING_DEFAULTS[SETTING_IDS.NODE_PANEL_FONT_SIZE]);
+    applyPanelFontScale(fontPx);
+    // Same fontPx handed straight through -- both files' scale must agree,
+    // and this avoids a second (redundant) getSetting call.
+    injectFieldStyles(targetDoc, fontPx);
+  } else {
+    injectFieldStyles(targetDoc); // still idempotent/cheap -- fields.mjs owns its own STYLE_ID guard
+  }
   // Guarded dynamic import -- see this module's top doc comment.
   if (typeof document !== "undefined") {
     import(THEME_URL)
@@ -571,12 +597,12 @@ export function injectStyles(doc) {
         // module's own CSS already falls back to hardcoded hex values.
       });
   }
-  if (typeof targetDoc.getElementById === "function" && targetDoc.getElementById(STYLE_ID)) {
+  if (alreadyInjected) {
     return;
   }
   const style = targetDoc.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = CSS;
+  style.textContent = buildCss();
   const host = targetDoc.head || targetDoc.body || targetDoc;
   if (host && typeof host.appendChild === "function") {
     host.appendChild(style);
@@ -883,7 +909,7 @@ export const PREVIEW_DEFAULT_H = 490; // was 420
 // Beyond this floor the panel scrolls internally (a node with several
 // detailer blocks, or every stage's summary text at once) rather than the
 // node growing to meet it -- the user drags taller instead, if they want to.
-export const PANEL_MIN_H = 256; // was 220
+export let PANEL_MIN_H = 256; // was 220
 
 // Generator floor -- the user asked for a min WIDTH explicitly, same
 // treatment as `PREVIEW_MIN_W` below. 374px is the narrowest a stage row
@@ -904,7 +930,7 @@ export const PREVIEW_MIN_W = 444; // was 380
 // mirrors `.wtn-an-panel`'s). 188px keeps the compare image legible (both
 // wipe layers, the divider, and both `.wtn-an-plab` corner labels) even at
 // the Preview's smallest possible height.
-export const PREVIEW_IMG_MIN_H = 188; // was 160
+export let PREVIEW_IMG_MIN_H = 188; // was 160
 
 // The Preview PANEL's own floor (`.wtn-an-panel.wtn-an-panel-pv`'s
 // `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
@@ -936,7 +962,7 @@ export const PREVIEW_IMG_MIN_H = 188; // was 160
 //                                                                 total    = 283
 // Rounded up to 284 for headroom (matches measureMinHeight's own
 // round-to-4px convention below).
-export const PREVIEW_PANEL_MIN_H = 284; // was 400
+export let PREVIEW_PANEL_MIN_H = 284; // was 400
 
 // The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
 // the DOM widget itself doesn't cover: the title bar (LiteGraph's default
@@ -953,7 +979,66 @@ export const PREVIEW_PANEL_MIN_H = 284; // was 400
 // VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
 // read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
 // widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
-export const PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(400) + 80
+export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(400) + 80
+
+// The litegraph-native chrome addend just above (80) -- frozen, NEVER
+// scaled by `applyPanelFontScale` (this constant's own doc comment).
+const _PREVIEW_CHROME_ADDEND = 80;
+
+// Frozen at their 14px-baseline values (this file's own `PANEL_MIN_H`/
+// `PREVIEW_IMG_MIN_H`/`PREVIEW_PANEL_MIN_H` literals above) --
+// `applyPanelFontScale` below always multiplies FROM these, never from a
+// constant's own (possibly already-scaled) current value, matching
+// `js/shared/fields.mjs`'s identical `applyFieldFontScale` contract
+// (idempotent, never compounding).
+const _PANEL_BASE_PX = 14;
+const _PANEL_DEFAULTS = {
+  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 284,
+};
+
+/** Round `x` to the nearest 4px -- matches `measureMinHeight`'s own
+ * round-to-4px convention (this file's "Resize" section), so a scaled floor
+ * lands on the same grid the un-scaled ones already do. */
+function roundTo4(x) {
+  return Math.round(x / 4) * 4;
+}
+
+/**
+ * Recompute `BASE_FONT`/`SHEAD_H`/`SHEAD_GLYPH_SIZE` and the `*_MIN_H`
+ * floors (`PANEL_MIN_H`/`PREVIEW_IMG_MIN_H`/`PREVIEW_PANEL_MIN_H`/
+ * `PREVIEW_MIN_H`) for a "Node panel type size (px)" setting value of `px` —
+ * the task's own explicit scope ("row heights, SHEAD_H, the *_MIN_H
+ * floors... in fields.mjs" — this is the render.mjs half; `applyFieldFontScale`
+ * in `js/shared/fields.mjs` is the other). `SHEAD_GAP`/`DEFAULT_W`/
+ * `DEFAULT_H`/`PREVIEW_DEFAULT_H`/`GENERATOR_MIN_W`/`PREVIEW_MIN_W` are
+ * deliberately OUTSIDE this scope (spacing and fresh-node/width floors, not
+ * named by the task) and stay fixed regardless of this setting.
+ *
+ * Same idempotent-by-construction contract as `applyFieldFontScale`: always
+ * derives from the frozen `_PANEL_DEFAULTS`/`_PANEL_BASE_PX`, so calling
+ * this twice with the same `px` (or never calling it at all) leaves every
+ * constant at exactly its original literal. `PREVIEW_MIN_H` re-adds the
+ * FIXED `_PREVIEW_CHROME_ADDEND` (80, litegraph's own native chrome — never
+ * scaled, see that constant's own doc comment) to the freshly-scaled
+ * `PREVIEW_PANEL_MIN_H`, never to a stale previous value.
+ *
+ * See `injectStyles`'s own doc comment for WHY this only ever runs once per
+ * page, atomically with the actual CSS build, rather than being re-applied
+ * on every mount.
+ */
+export function applyPanelFontScale(px) {
+  const n = Number(px);
+  const safePx = Number.isFinite(n) && n > 0 ? n : _PANEL_BASE_PX;
+  const ratio = safePx / _PANEL_BASE_PX;
+  BASE_FONT = Math.round(_PANEL_DEFAULTS.BASE_FONT * ratio);
+  SHEAD_H = Math.round(_PANEL_DEFAULTS.SHEAD_H * ratio);
+  SHEAD_GLYPH_SIZE = Math.round(BASE_FONT * 1.21);
+  PANEL_MIN_H = roundTo4(_PANEL_DEFAULTS.PANEL_MIN_H * ratio);
+  PREVIEW_IMG_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_IMG_MIN_H * ratio);
+  PREVIEW_PANEL_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_PANEL_MIN_H * ratio);
+  PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + _PREVIEW_CHROME_ADDEND;
+  return ratio;
+}
 
 function clampMinWidth(size, minW) {
   if (!Array.isArray(size) || size.length < 1) {
@@ -1066,3 +1151,10 @@ export { MAX_DETAILER_PASSES, isBuiltinDetailerBlock };
 // see this file's top import comment for why it's re-exported rather than
 // imported directly by `index.js`.
 export { applyNodeChrome, CHROME_BODY, CHROME_TITLE };
+
+// Re-export `js/shared/fields.mjs`'s own font-scale applier so `index.js`
+// can reach BOTH halves of the "Node panel type size" pass
+// (`mods.render.applyPanelFontScale`/`mods.render.applyFieldFontScale`)
+// through the one lazily-loaded module it already holds, without a second
+// static import of `fields.mjs` (`index.js` never imports it directly).
+export { applyFieldFontScale };

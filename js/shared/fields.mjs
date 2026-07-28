@@ -126,6 +126,7 @@
  */
 
 import { rangeOf, clampNumeric, decimalsOf, numericPercent, formatNumericValue } from "../controls/rows.mjs";
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "./settings.mjs";
 
 const STYLE_ID = "wtn-fields-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -159,13 +160,28 @@ const TOKENS = {
 // constant a moving target across a refactor), each is just written as the
 // concrete pixel this dispatch settled on.
 export const FLD_SCALE = 14 / 12;
-export const FLD_FONT = 13.5; // base field font (was 11.5)
-export const FLD_MONO = 13; // monospace value font (was 11)
-export const FLD_ROW_H = 29; // .wtn-fld-num / .wtn-fld-stepper height (was 25)
-export const FLD_ROW_GAP = 5; // row margin-bottom (was 4)
-export const FLD_SWITCH_W = 30; // pill switch width (was 26)
-export const FLD_SWITCH_H = 16; // pill switch height (was 14)
-export const FLD_INFO_SIZE = 13; // ⓘ glyph font-size (was 11)
+export let FLD_FONT = 13.5; // base field font (was 11.5)
+export let FLD_MONO = 13; // monospace value font (was 11)
+export let FLD_ROW_H = 29; // .wtn-fld-num / .wtn-fld-stepper height (was 25)
+export let FLD_ROW_GAP = 5; // row margin-bottom (was 4)
+export let FLD_SWITCH_W = 30; // pill switch width (was 26)
+export let FLD_SWITCH_H = 16; // pill switch height (was 14)
+export let FLD_INFO_SIZE = 13; // ⓘ glyph font-size (was 11)
+
+// Frozen at their 14px-baseline values (the numbers immediately above, as
+// literals) -- `applyFieldFontScale` below always multiplies FROM these,
+// never from its own previous output, so calling it twice with the same
+// input is idempotent (no compounding) and calling it with a DIFFERENT input
+// later fully replaces the previous scale rather than stacking on it.
+const _FLD_BASE_PX = 14; // the "Node panel type size" setting's own default/baseline
+const _FLD_DEFAULTS = {
+  FLD_FONT: 13.5, FLD_MONO: 13, FLD_ROW_H: 29, FLD_ROW_GAP: 5,
+  FLD_SWITCH_W: 30, FLD_SWITCH_H: 16, FLD_INFO_SIZE: 13,
+};
+
+function roundToHalf(x) {
+  return Math.round(x * 2) / 2;
+}
 
 // **2026-07-28 (chevron/gear legibility fix, live bug report: "like a midget
 // in a grass field")** -- the ⚙ used to share `FLD_INFO_SIZE` (13px) with the
@@ -179,7 +195,7 @@ export const FLD_INFO_SIZE = 13; // ⓘ glyph font-size (was 11)
 // `BASE_FONT`) intentionally lands on the SAME 17px -- see that file's own
 // comment for why the two glyphs must read as one consistent size even
 // though they're derived from two different files' base constants.
-export const FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26); // 17
+export let FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26); // 17
 // The gear is also a click target (unlike the chevron) -- `FLD_GEAR_HIT` is
 // the box the click actually lands in, deliberately bigger than the glyph
 // needs to look (a comfortable >=20px square, this dispatch's own ask),
@@ -188,9 +204,57 @@ export const FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26); // 17
 // `FLD_GEAR_SIZE` itself rather than a fifth independent guess. It fits
 // inside `js/anima/render.mjs`'s own `SHEAD_H` (32px header row) with room
 // to spare, so growing the hit area does not grow the row.
-export const FLD_GEAR_HIT = Math.round(FLD_GEAR_SIZE * 1.3); // 22
+export let FLD_GEAR_HIT = Math.round(FLD_GEAR_SIZE * 1.3); // 22
 
-const CSS = `
+/**
+ * Recompute every `FLD_*` constant above for a "Node panel type size (px)"
+ * setting value of `px` — the SAME proportional pass this dispatch's own
+ * doc comment describes ("every row height/glyph size scales with it"),
+ * just made re-runnable instead of hand-settled once. `ratio = px /
+ * _FLD_BASE_PX` (14, this file's own historical baseline); at `px === 14`
+ * (the setting's documented default, or anything unset/garbage — see the
+ * clamp below) every constant recomputes to EXACTLY its original literal
+ * above, so calling this is a no-op in the common case. Always derives from
+ * the FROZEN `_FLD_DEFAULTS`/`_FLD_BASE_PX` — never from the current (
+ * possibly already-scaled) value of the constant itself — so repeated calls
+ * are idempotent rather than compounding.
+ *
+ * `FLD_FONT`/`FLD_MONO` round to the nearest 0.5px (their own defaults, 13.5
+ * and 13, aren't whole numbers); everything else rounds to the nearest
+ * whole pixel. `FLD_GEAR_SIZE`/`FLD_GEAR_HIT` are NOT independently scaled —
+ * they're recomputed from the (now-scaled) `FLD_FONT`/`FLD_GEAR_SIZE` via
+ * their own existing formulas immediately above, so they never drift out of
+ * the ratio those formulas already encode.
+ *
+ * Called from `js/anima/render.mjs`'s `injectStyles` (which also owns the
+ * PANEL-side constants, `BASE_FONT`/`SHEAD_H`/the `*_MIN_H` floors) — see
+ * that module's own "type scale" doc comment for why this whole pass only
+ * ever runs once per page, atomically with the actual CSS build, rather
+ * than being re-applied live.
+ */
+export function applyFieldFontScale(px) {
+  const n = Number(px);
+  const safePx = Number.isFinite(n) && n > 0 ? n : _FLD_BASE_PX;
+  const ratio = safePx / _FLD_BASE_PX;
+  FLD_FONT = roundToHalf(_FLD_DEFAULTS.FLD_FONT * ratio);
+  FLD_MONO = roundToHalf(_FLD_DEFAULTS.FLD_MONO * ratio);
+  FLD_ROW_H = Math.round(_FLD_DEFAULTS.FLD_ROW_H * ratio);
+  FLD_ROW_GAP = Math.round(_FLD_DEFAULTS.FLD_ROW_GAP * ratio);
+  FLD_SWITCH_W = Math.round(_FLD_DEFAULTS.FLD_SWITCH_W * ratio);
+  FLD_SWITCH_H = Math.round(_FLD_DEFAULTS.FLD_SWITCH_H * ratio);
+  FLD_INFO_SIZE = Math.round(_FLD_DEFAULTS.FLD_INFO_SIZE * ratio);
+  FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26);
+  FLD_GEAR_HIT = Math.round(FLD_GEAR_SIZE * 1.3);
+  return ratio;
+}
+
+// A FUNCTION, not a module-level const string -- `applyFieldFontScale` (just
+// above) mutates the `FLD_*`/`TOKENS`-adjacent constants this template
+// interpolates, so the CSS text must be built AFTER that scale is applied
+// (`injectFieldStyles` below does exactly that), not frozen at whatever
+// values happened to hold at module-evaluation time.
+function buildCss() {
+  return `
 /* ── pill switch ── */
 .wtn-fld-switch { position: relative; width: ${FLD_SWITCH_W}px; height: ${FLD_SWITCH_H}px; flex: none; cursor: pointer;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 9px;
@@ -359,8 +423,22 @@ const CSS = `
 .wtn-fld-seed-roll:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-fld-seed.wtn-fld-disabled .wtn-fld-seed-roll { pointer-events: none; cursor: default; }
 `;
+}
 
-export function injectFieldStyles(doc) {
+/**
+ * `fontPx` (optional) — the "Node panel type size (px)" setting value to
+ * scale every `FLD_*` constant to (`applyFieldFontScale`, above). Omit it to
+ * have this function resolve the live setting itself (`getSetting`) — the
+ * path any caller OTHER than `js/anima/render.mjs`'s `injectStyles` takes;
+ * that one caller already resolved the setting itself (so both modules
+ * agree on the exact same px value) and passes it straight through instead.
+ * Applied atomically with the CSS text built below, guarded by the SAME
+ * `STYLE_ID`-existence check that already made this function idempotent —
+ * see `applyFieldFontScale`'s own doc comment for why a later, per-call
+ * re-read would let the JS-side `FLD_*` constants and the already-injected
+ * stylesheet disagree.
+ */
+export function injectFieldStyles(doc, fontPx) {
   const targetDoc = doc || (typeof document !== "undefined" ? document : null);
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
@@ -376,9 +454,13 @@ export function injectFieldStyles(doc) {
   if (typeof targetDoc.getElementById === "function" && targetDoc.getElementById(STYLE_ID)) {
     return;
   }
+  const resolvedFontPx = fontPx !== undefined
+    ? fontPx
+    : getSetting(SETTING_IDS.NODE_PANEL_FONT_SIZE, SETTING_DEFAULTS[SETTING_IDS.NODE_PANEL_FONT_SIZE]);
+  applyFieldFontScale(resolvedFontPx);
   const style = targetDoc.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = CSS;
+  style.textContent = buildCss();
   const host = targetDoc.head || targetDoc.body || targetDoc;
   if (host && typeof host.appendChild === "function") {
     host.appendChild(style);
@@ -401,11 +483,23 @@ export function buildSwitch(doc, on, small) {
   return el(doc, "span", `wtn-fld-switch${small ? " wtn-fld-sm" : ""}${on ? " wtn-fld-on" : ""}`);
 }
 
-/** Delay (ms) between a hover starting and the ⓘ's tooltip actually
+/** Default delay (ms) between a hover starting and the ⓘ's tooltip actually
  * appearing -- see this module's top doc comment for why this replaces the
  * native `title` attribute's unadjustable browser delay. Exported so it's
- * tunable from one place. */
+ * still directly referenceable (tests, the "Tooltip delay (ms)" Settings-
+ * dialog default); the LIVE value `wireInfoTip` actually schedules its
+ * timer with is `resolveInfoTipDelayMs()` below, which reads the Settings-
+ * dialog value fresh on every hover (never captured once at module load —
+ * a genuinely live setting, unlike "Node panel type size"). */
 export const INFO_TIP_DELAY_MS = 250;
+
+/** The delay `wireInfoTip`'s hover timer actually uses -- `getSetting` read
+ * live on every call, falling back to `INFO_TIP_DELAY_MS` for anything
+ * unset/garbage. */
+function resolveInfoTipDelayMs() {
+  const value = getSetting(SETTING_IDS.TOOLTIP_DELAY_MS, SETTING_DEFAULTS[SETTING_IDS.TOOLTIP_DELAY_MS]);
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : INFO_TIP_DELAY_MS;
+}
 
 function winOf(doc) {
   return (doc && doc.defaultView) || (typeof window !== "undefined" ? window : null);
@@ -541,7 +635,7 @@ function wireInfoTip(doc, icon, tooltip) {
           pendingToken = null;
           show();
         }
-      }, INFO_TIP_DELAY_MS);
+      }, resolveInfoTipDelayMs());
     } else {
       pendingToken = null;
       show();

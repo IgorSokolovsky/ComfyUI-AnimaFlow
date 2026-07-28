@@ -489,6 +489,95 @@ test("the existing two-argument call form still behaves exactly as before (no op
   }
 });
 
+// ---------------------------------------------------------------------------
+// options.getLockMs -- the LIVE variant of options.lockMs (wires the "Wheel
+// quiet period (ms)" Settings-dialog value, js/shared/settings.mjs).
+// ---------------------------------------------------------------------------
+
+test("options.getLockMs is called fresh on every wheel event (a live setting can change mid-session, unlike options.lockMs)", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    const clock = makeClock(0);
+    let currentLockMs = 100;
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, getLockMs: () => currentLockMs });
+
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 }); // consumed at t=0, arms the lock
+
+    clock.advance(50); // inside the CURRENT 100ms lock
+    let result = fireWheel(root, { deltaY: 100 });
+    assert.equal(result.prevented, false, "still inside the 100ms lock -- must not zoom yet");
+
+    // The setting changes LIVE, mid-session, to a shorter quiet period --
+    // this must take effect on the very next wheel event, no re-install.
+    currentLockMs = 10;
+    result = fireWheel(root, { deltaY: 100 }); // t is still only 50ms past the consumed event -- now past the NEW 10ms lock
+    assert.ok(result.prevented, "a shorter getLockMs() must apply immediately, without reinstalling");
+    assert.equal(canvas._dispatched.length, 1);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("options.getLockMs wins over options.lockMs when both are given", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    const clock = makeClock(0);
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, lockMs: 450, getLockMs: () => 10 });
+
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 }); // consumed at t=0
+
+    clock.advance(20); // past getLockMs()'s 10ms, well short of lockMs's 450ms
+    const { prevented } = fireWheel(root, { deltaY: 100 });
+    assert.ok(prevented, "getLockMs (10ms) must be the one honoured, not the stale lockMs (450ms)");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("a non-numeric options.getLockMs() return value falls back to options.lockMs/WHEEL_LOCK_MS rather than throwing", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    const clock = makeClock(0);
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, lockMs: 50, getLockMs: () => "garbage" });
+
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 });
+
+    clock.advance(10); // short of the 50ms fallback
+    let result = fireWheel(root, { deltaY: 100 });
+    assert.equal(result.prevented, false);
+
+    clock.advance(50); // now past it
+    result = fireWheel(root, { deltaY: 100 });
+    assert.ok(result.prevented);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exitCode = 1;

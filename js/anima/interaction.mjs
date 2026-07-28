@@ -124,6 +124,7 @@
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 import { buildNumericField, buildStepperField, buildSeedField, hideActiveInfoTip } from "../shared/fields.mjs";
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 // The overlay mechanism -- back in this track for ANCHORED MENUS only (this
 // module's top doc comment, "hybrid essentials/⚙ dispatch"). `js/controls/
 // interaction.mjs` uses the exact same three imports for its own option
@@ -1033,6 +1034,17 @@ export function resolveDownstreamGenerators(bridge) {
 export function clearContextRun(node) {
   if (node) {
     node._anContextRun = null;
+    // The persisted (node.properties) copy -- see `handleGeneratorExecuted`'s
+    // own doc comment for why this exists at all -- is cleared here too, so
+    // an in-session rewire invalidates it the same way it invalidates the
+    // in-memory one. Only staleness that survives an actual PAGE reload
+    // (edits made between a save and the next load, with no run in between)
+    // is the accepted cost the "Keep post-run values across reload" setting's
+    // tooltip names; a rewire that happens while the page is still open must
+    // not leave a stale value behind either way.
+    if (node.properties && node.properties.anContextRun !== undefined) {
+      node.properties.anContextRun = null;
+    }
   }
 }
 
@@ -2301,6 +2313,7 @@ export function mountGeneratorUI(node, ctx) {
   injectStyles(doc);
   const { root, panel } = buildPanelShell(doc);
   ensureGenState(node);
+  restoreContextRunIfEnabled(node);
   const body = buildGeneratorBody(doc, node, ctx);
   panel.appendChild(body);
   const refs = { doc, root, panel, body };
@@ -2389,6 +2402,19 @@ export function repaintGenerator(node, ctx) {
  * `normalizeAnimaContextPayload` (below) is the shape-tolerant fix, kept as
  * its own pure/exported function so the five payload shapes it must handle
  * are directly testable without mounting a node at all.
+ *
+ * **"Keep post-run values across reload" (`js/shared/settings.mjs`, default
+ * OFF)** — read LIVE, in `handleGeneratorExecuted` below: when on, the SAME
+ * payload is ALSO written to `node.properties.anContextRun` (node
+ * PROPERTIES, never the `generation_settings` widget/settings blob — this is
+ * run output, not a setting, matching this doc comment's own existing rule),
+ * which litegraph serializes into the saved workflow same as any other
+ * property. `mountGeneratorUI` (further down) reads it back on mount/restore
+ * when the setting is on, so `node._anContextRun` starts pre-seeded instead
+ * of `null` after a page reload. When the setting is off, this function
+ * behaves EXACTLY as before (in-memory `node._anContextRun` only) — the
+ * property is never written at all, so an already-off session leaves no
+ * trace in the saved workflow.
  */
 export function normalizeAnimaContextPayload(animaContext) {
   let payload = animaContext;
@@ -2413,7 +2439,37 @@ export function handleGeneratorExecuted(node, ctx, message) {
     return;
   }
   node._anContextRun = payload;
+  if (getSetting(SETTING_IDS.PERSIST_CONTEXT_RUN, SETTING_DEFAULTS[SETTING_IDS.PERSIST_CONTEXT_RUN])) {
+    node.properties = node.properties || {};
+    node.properties.anContextRun = payload;
+  }
   repaintGenerator(node, ctx);
+}
+
+/**
+ * Restores `node._anContextRun` from `node.properties.anContextRun` (this
+ * module's "Keep post-run values across reload" doc comment, above) when
+ * BOTH the setting is currently on AND a persisted value actually exists —
+ * a no-op otherwise, including for a brand-new node (no property yet) and
+ * for the setting being off (the property is simply never read, even if an
+ * old workflow saved one from a session where it WAS on — turning the
+ * setting off is meant to behave "exactly as now", this module's own top
+ * doc comment). Called once, from `mountGeneratorUI`, before the first
+ * paint — never overwrites an already-set `node._anContextRun` (a fresh run
+ * finishing before mount completes is not a realistic race, but this guard
+ * costs nothing and keeps the function safe to call more than once).
+ */
+function restoreContextRunIfEnabled(node) {
+  if (node._anContextRun != null) {
+    return;
+  }
+  if (!getSetting(SETTING_IDS.PERSIST_CONTEXT_RUN, SETTING_DEFAULTS[SETTING_IDS.PERSIST_CONTEXT_RUN])) {
+    return;
+  }
+  const persisted = node.properties && node.properties.anContextRun;
+  if (persisted) {
+    node._anContextRun = persisted;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2763,7 +2819,13 @@ export function installZoomPassthrough(node, ctx) {
   if (!refs || refs.zoomUninstall) {
     return;
   }
-  refs.zoomUninstall = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl);
+  // `getLockMs` -- the LIVE "Wheel quiet period (ms)" setting
+  // (`js/shared/settings.mjs`), re-read on every wheel event rather than
+  // resolved once at install time (`canvas_zoom.mjs`'s own doc comment on
+  // `options.getLockMs`).
+  refs.zoomUninstall = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl, {
+    getLockMs: () => getSetting(SETTING_IDS.WHEEL_QUIET_PERIOD_MS, SETTING_DEFAULTS[SETTING_IDS.WHEEL_QUIET_PERIOD_MS]),
+  });
 }
 
 /** Tears down everything this module mounted on `node` -- the zoom

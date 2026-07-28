@@ -185,6 +185,19 @@ function defaultGetCanvasEl() {
  * lives in THIS closure, one per call to this function — never module-level —
  * so installing it on two different nodes' roots never lets one node's
  * scrolling arm the other node's lock.
+ *
+ * `options.getLockMs` (optional, a zero-arg function) is the LIVE variant of
+ * `options.lockMs`: called fresh on every wheel event rather than resolved
+ * once at install time — this is what lets the "Wheel quiet period (ms)"
+ * Settings-dialog value (`js/shared/settings.mjs`) actually apply without a
+ * page refresh, unlike the "Node panel type size" setting (that one really
+ * can't be re-derived live once the CSS is on the page — see
+ * `js/anima/render.mjs`'s own doc comment). Every real caller in this pack
+ * (`js/anima/interaction.mjs`'s `installZoomPassthrough`, `js/controls/
+ * interaction.mjs`'s two call sites) passes `getLockMs`; `lockMs` stays a
+ * static fallback for callers (and every existing test in this file) that
+ * don't need a live-tunable value. `getLockMs` wins over `lockMs` when both
+ * are given.
  */
 export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
   if (!root || typeof root.addEventListener !== "function") {
@@ -192,7 +205,17 @@ export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
   }
   const resolveCanvas = typeof getCanvasEl === "function" ? getCanvasEl : defaultGetCanvasEl;
   const nowFn = options && typeof options.now === "function" ? options.now : () => Date.now();
-  const lockMs = options && typeof options.lockMs === "number" ? options.lockMs : WHEEL_LOCK_MS;
+  const getLockMsFn = options && typeof options.getLockMs === "function" ? options.getLockMs : null;
+  const staticLockMs = options && typeof options.lockMs === "number" ? options.lockMs : WHEEL_LOCK_MS;
+  const resolveLockMs = () => {
+    if (getLockMsFn) {
+      const value = getLockMsFn();
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+      }
+    }
+    return staticLockMs;
+  };
   let lastConsumedAt = -Infinity;
   const onWheel = (e) => {
     if (isVueNodes()) {
@@ -202,7 +225,7 @@ export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
       lastConsumedAt = nowFn(); // arms the quiet-period lock
       return; // a scrollable region still has room in this direction -- let it scroll
     }
-    if (nowFn() - lastConsumedAt < lockMs) {
+    if (nowFn() - lastConsumedAt < resolveLockMs()) {
       // The SAME continuing gesture just finished scrolling an internal
       // region to one of its ends -- don't let it zoom the canvas too. The
       // gesture simply ends here: no preventDefault, no dispatch.
