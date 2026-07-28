@@ -30,6 +30,18 @@
  * grow OR shrink `node.size` on a repaint or a workflow load — see this
  * module's "Resize" section for the full mechanism.
  *
+ * **2026-07-28, LATER the same day — the Preview's panel carves out an
+ * exception to "scrolls internally": it never scrolls at all.** Everything
+ * just above is still exactly how `.wtn-an-panel`/`GENERATOR` behaves. For
+ * the Preview specifically, `.wtn-an-panel-pv` (a modifier class,
+ * `buildPanelShell(doc, {preview: true})` below, applied ONLY by
+ * `mountPreviewUI`) overrides BOTH the scrollbar (`overflow: hidden`) and
+ * the floor (its own `PREVIEW_PANEL_MIN_H`, not `PANEL_MIN_H`) — see that
+ * class's own CSS comment (this file's "Preview node: hover wipe" section)
+ * and `PREVIEW_PANEL_MIN_H`'s own doc comment (this file's "Resize"
+ * section) for why that's safe: the floor is sized generously enough that
+ * there is never anything left to scroll in the first place.
+ *
  * The body is still rebuilt in full on every discrete action (see the old
  * version of this file's doc comment, carried forward): toggling a stage,
  * expanding/collapsing a section, editing a field, adding a detailer block
@@ -171,7 +183,11 @@ const CSS = `
    PANEL_MIN_H below (measureMinHeight's deterministic, testable half of the
    same floor) -- deliberately NO max-height: dragging the node taller must
    make this taller too, with no ceiling. Shrink the node below its content
-   and this scrolls internally (\`overflow-y: auto\`) rather than spill. ── */
+   and this scrolls internally (\`overflow-y: auto\`) rather than spill.
+   This is the GENERATOR's behaviour (and the shared default for both node
+   types) -- the Preview overrides both the scrollbar and the floor via
+   \`.wtn-an-panel-pv\` below (this file's "Preview node: hover wipe"
+   section), it does not scroll at all. ── */
 .wtn-an-panel { display: flex; flex-direction: column; gap: 4px; padding: 6px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
   background: var(--wtn-surface, ${TOKENS.surface});
@@ -245,18 +261,32 @@ const CSS = `
 .wtn-an-passtabs button:disabled { opacity: .4; cursor: default; }
 
 /* ── Preview node: hover wipe ──
-   Aspect-ratio choice for this dispatch's "panel fills the node" change:
-   the wipe keeps its OWN size (width: 100% of the panel, height locked to
-   it via aspect-ratio: 1/1) rather than trying to flex-fill whatever extra
-   node height the user drags in -- stretching a square compare image to a
-   tall node's non-square remaining space would either distort it or need
-   letterboxing, and neither reads as "resize the node" the way a taller
-   panel obviously does elsewhere in this pack. So the image area takes
-   exactly what it needs, the save/compare rows below it (.wtn-an-pvbar) are
-   their own fixed height, and \`.wtn-an-panel\`'s \`overflow-y: auto\` (this
-   module's CSS above) is what handles a node too short to show all of it --
-   the whole body scrolls, image included, same as every other section in
-   this pack's panel. */
+   2026-07-28, LATER the same day -- REVERSES the aspect-ratio call this
+   file's own panel-fills-the-node dispatch just made a few lines above
+   ("the wipe keeps its OWN size... aspect-ratio: 1/1... a node too short
+   scrolls, image included"). This IS an image-comparison node -- the
+   compare image is the entire point of placing it, everything else (Save,
+   the compare picker) is secondary chrome around it -- so the user asked
+   for the opposite: the image area fills whatever height the node is, and
+   the panel never scrolls it out of view. \`.wtn-an-panel-pv\` (this file's
+   panel-shell modifier -- \`buildPanelShell(doc, {preview: true})\`, applied
+   ONLY by \`mountPreviewUI\`; the Generator's panel is untouched by any of
+   this) carries the reversal: \`.wtn-an-panel-pv .wtn-an-wipe\` cancels the
+   \`aspect-ratio: 1/1\` above (\`aspect-ratio: auto\`) and flex-fills
+   (\`flex: 1 1 auto\`, floored at \`PREVIEW_IMG_MIN_H\`) whatever height
+   \`.wtn-an-panel-pv > .wtn-an-body\` has left once the Save section and the
+   compare row below take their own natural height (\`flex: none\`, the
+   rule after this one). A non-square wipe does NOT distort either image --
+   \`.wtn-an-layer img\`'s \`object-fit: contain\` (below, unchanged) already
+   letterboxes each layer to whatever box it's given, square or not -- so
+   this costs nothing visually, only gains the image actually using the
+   space a resize gave it. \`.wtn-an-panel-pv\` also drops the panel's own
+   scrollbar (\`overflow: hidden\`, not \`overflow-y: auto\`) with its OWN,
+   much taller floor, \`PREVIEW_PANEL_MIN_H\` (this file's "Resize" section
+   has the arithmetic) -- sized so the Save section fully EXPANDED plus the
+   compare row plus \`PREVIEW_IMG_MIN_H\` always fit with room to spare, so
+   there is never anything left TO scroll; unlike the Generator, this node
+   has no "shrink below content, scroll internally" escape hatch at all. */
 .wtn-an-wipe { position: relative; width: 100%; aspect-ratio: 1/1; overflow: hidden; border-radius: 8px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-console, ${TOKENS.console});
   cursor: col-resize; touch-action: none; }
@@ -273,6 +303,24 @@ const CSS = `
 .wtn-an-wipe .wtn-an-plab.wtn-an-r { right: 7px; }
 .wtn-an-wipe .wtn-an-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11px; }
+
+/* ── Preview-only panel modifier -- see the "Preview node: hover wipe"
+   comment above for the reversal this carries. \`.wtn-an-panel\` (two
+   classes, for specificity over the shared rule regardless of source
+   order) overrides the shared scrollbar/floor; the \`> .wtn-an-body\`
+   rule turns the body into its own flex column so the wipe below can
+   flex-fill it (\`min-height: 0\` is what lets a flex child shrink below
+   its content -- without it the wipe could never give height back to a
+   shrinking node); the universal \`> *\` rule floors the Save section and
+   the compare row at their natural height, and the more specific
+   \`.wtn-an-wipe\` rule after it (same specificity, later in the sheet --
+   the tie-break) is what lets the wipe alone override that back to
+   flex-fill. ── */
+.wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: 400px; }
+.wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; }
+.wtn-an-panel-pv > .wtn-an-body > * { flex: none; }
+.wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: 160px; aspect-ratio: auto; }
+
 .wtn-an-pvbar { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; }
 .wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
@@ -333,10 +381,18 @@ function text(doc, tag, className, str) {
 /** The panel shell -- ONE scrollable box (this module's top doc comment).
  * `root` is the DOM widget's actual root (what `index.js`'s `addDOMWidget`
  * mounts and what `installCanvasZoomPassthrough` installs on); `panel` is
- * the single bordered, scrollable child every section/row lives inside. */
-export function buildPanelShell(doc) {
+ * the single bordered child every section/row lives inside -- scrollable
+ * for the Generator, never for the Preview (see below).
+ *
+ * `{ preview: true }` adds `wtn-an-panel-pv` to `panel` -- the modifier
+ * class that drops the scrollbar and swaps in the Preview's own, taller
+ * floor (this file's "Preview node: hover wipe" CSS comment for the full
+ * reversal). `mountPreviewUI` passes it; `mountGeneratorUI` calls this with
+ * no second argument at all, so the Generator's panel is byte-identical to
+ * before this option existed. */
+export function buildPanelShell(doc, { preview } = {}) {
   const root = el(doc, "div", "wtn-an-root wtn");
-  const panel = el(doc, "div", "wtn-an-panel");
+  const panel = el(doc, "div", `wtn-an-panel${preview ? " wtn-an-panel-pv" : ""}`);
   root.appendChild(panel);
   return { root, panel };
 }
@@ -406,9 +462,11 @@ export function withInfoIcon(doc, fieldRoot, tooltip, warn) {
 
 // ---------------------------------------------------------------------------
 // Preview node -- wipe pane images. `nodes/anima/preview.py`'s
-// `"ui": {"images": [...]}}` payload (`build_preview_ui_images`, design doc
-// §7/§7a's fix) is `{filename, subfolder, type, stage}` per entry; these two
-// helpers turn ONE such entry into a real `<img>` the wipe can show.
+// `"ui": {"anima_stages": [...]}}` payload (`build_preview_ui_images`,
+// design doc §7/§7a's fix) is `{filename, subfolder, type, stage}` per
+// entry; these two helpers turn ONE such entry into a real `<img>` the wipe
+// can show. **The key is `anima_stages`, deliberately not `images`** --
+// see `interaction.mjs`'s `handleExecuted` doc comment for why.
 // ---------------------------------------------------------------------------
 
 /** ComfyUI's own `/view` endpoint URL for a UI image entry. `cacheBust` is
@@ -570,6 +628,61 @@ export const GENERATOR_MIN_W = 320;
 // measures ~340px, so a narrower node clips it.
 export const PREVIEW_MIN_W = 380;
 
+// The wipe's OWN floor -- see this file's "Preview node: hover wipe" CSS
+// comment for the reversal this backs (`.wtn-an-panel-pv .wtn-an-wipe`'s
+// `min-height`, mirrored here as a constant exactly like `PANEL_MIN_H`
+// mirrors `.wtn-an-panel`'s). 160px keeps the compare image legible (both
+// wipe layers, the divider, and both `.wtn-an-plab` corner labels) even at
+// the Preview's smallest possible height.
+export const PREVIEW_IMG_MIN_H = 160;
+
+// The Preview PANEL's own floor (`.wtn-an-panel.wtn-an-panel-pv`'s
+// `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
+// `.wtn-an-panel` rule) -- sized so the Save section fully EXPANDED (its
+// header + all 5 fields), the compare row, and `PREVIEW_IMG_MIN_H` ALL fit
+// inside a `overflow: hidden` panel with room to spare. Sizing for Save
+// EXPANDED (not collapsed) is the whole point: it is what lets this panel
+// never scroll, ever, with no auto-grow-on-repaint mechanism needed (this
+// dispatch deliberately does NOT reintroduce `refitNode`/`scheduleRefit` --
+// see this section's own top comment). Arithmetic, read off the CSS above
+// and `js/shared/fields.mjs`'s own field heights:
+//   Save header (.wtn-an-shead height 27 + margin-bottom 4)            =  31
+//   .wtn-an-sbody padding (2 top + 8 bottom)                           =  10
+//   .wtn-an-sbody gap (4px x 4 gaps between its 5 fields)              =  16
+//   which / extension (.wtn-fld-stepper: height 25 + margin-bottom 4,
+//     x2 -- both are buildStepperField rows)                          =  58
+//   path (.wtn-an-field: ~25 input + its own margin-bottom 2)          =  27
+//   filename (.wtn-an-field wrapped in .wtn-an-fieldrow for its ⓘ --
+//     the field's OWN margin is zeroed by
+//     ".wtn-an-fieldrow > *:first-child", the fieldrow's margin-bottom 4
+//     replaces it: ~25 + 4)                                            =  29
+//   embed workflow (.wtn-an-boolfield: ~16 content + margin-bottom 4)  =  20
+//   compare row (.wtn-an-pvbar margin-top 7 + ~19 content)             =  26
+//   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                    = 160
+//   .wtn-an-body's own gap (4px x 2 gaps between its 3 children -- the
+//     Save section, the wipe, and the compare row)                    =   8
+//   .wtn-an-panel's padding (6 top + 6 bottom)                        =  12
+//   .wtn-an-panel's border (1 top + 1 bottom)                         =   2
+//                                                             total   = 399
+// Rounded up to 400 for headroom (matches measureMinHeight's own
+// round-to-4px convention below).
+export const PREVIEW_PANEL_MIN_H = 400;
+
+// The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
+// the DOM widget itself doesn't cover: the title bar (LiteGraph's default
+// NODE_TITLE_HEIGHT, ~30px) + this node's two VISIBLE optional sockets
+// (`images`, `metadata_json`, each a standard ~20px litegraph input row
+// above the widget area -- the hidden `prompt`/`extra_pnginfo` carry no
+// socket dot and cost nothing) + ~10px of widget-area top margin before
+// the DOM widget itself begins. 30 + 2*20 + 10 = 80. (Mirrors
+// `js/prompt_rules/node/render.mjs`'s `CHROME = 52` title-bar-only
+// baseline, extended for the two extra socket rows this node has that that
+// one doesn't.)
+// VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
+// read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
+// widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
+export const PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80;
+
 function clampMinWidth(size, minW) {
   if (!Array.isArray(size) || size.length < 1) {
     return size;
@@ -581,34 +694,64 @@ function clampMinWidth(size, minW) {
   return size;
 }
 
+/** The Preview-only counterpart to `clampMinWidth` -- see `clampPreviewSize`
+ * below for why only the Preview needs this (the Generator's panel still
+ * scrolls past its own floor, so its node height never needs a matching
+ * clamp beyond what litegraph's own `getMinHeight` already enforces). */
+function clampMinHeight(size, minH) {
+  if (!Array.isArray(size) || size.length < 2) {
+    return size;
+  }
+  const h = size[1];
+  if (typeof h !== "number" || !Number.isFinite(h) || h < minH) {
+    size[1] = minH;
+  }
+  return size;
+}
+
 /** litegraph's `onResize(size)` contract: mutate `size` IN PLACE. Never
  * touches `size[1]` -- height has no clamp of its own beyond the floor
  * litegraph itself enforces from `getMinHeight`/`computeLayoutSize` (this
  * module's top "Resize" comment: there is no ceiling, and nothing here
- * rewrites height at all). */
+ * rewrites height at all). Unlike `clampPreviewSize` below, this is
+ * deliberately width-only -- the Generator's panel keeps scrolling past its
+ * own floor (`PANEL_MIN_H`), so there is no "never scrolls" contract here
+ * that would need a height floor to make safe. */
 export function clampGeneratorSize(size) {
   return clampMinWidth(size, GENERATOR_MIN_W);
 }
 
+/** `onResize(size)` for the Preview -- clamps BOTH axes, unlike
+ * `clampGeneratorSize`. The height half exists specifically so the floor
+ * litegraph enforces on a resize-DRAG (`PREVIEW_MIN_H`, wired to
+ * `getMinHeight`/`computeLayoutSize` via `measurePreviewMinHeight` in
+ * `index.js`) agrees with the floor this function enforces here, rather
+ * than the two contradicting each other -- see `PREVIEW_PANEL_MIN_H`'s own
+ * doc comment above for why the Preview needs a real height floor at all
+ * (its panel has `overflow: hidden`, never scrolls, so there is no shrink-
+ * and-scroll fallback below that floor the way the Generator has). */
 export function clampPreviewSize(size) {
-  return clampMinWidth(size, PREVIEW_MIN_W);
+  clampMinWidth(size, PREVIEW_MIN_W);
+  return clampMinHeight(size, PREVIEW_MIN_H);
 }
 
 /** The node-height FLOOR litegraph enforces on a resize-drag (legacy
  * `getMinHeight`, Nodes 2.0 `computeLayoutSize` -- `index.js` wires both to
  * this). Sum of `root`'s children's `offsetHeight` (skipping display:none),
- * substituting the FIXED `PANEL_MIN_H` for the `.wtn-an-panel` child's own
- * contribution instead of its real (CSS `flex: 1 1 auto`-stretched)
- * `offsetHeight` -- the same "a growing/shrinking flex-fill child reports a
- * fixed floor, not its live size" pattern the frontend skill documents (and
- * `../ComfyUI-Pixaroma/js/find_replace/render.mjs`'s `PREVIEW_MIN`
- * substitution mirrors), just with no matching ceiling substitution any
- * more -- there IS no ceiling. Because the panel is this root's only child,
- * this simplifies to a constant in practice, but the general sibling-sum
- * stays in case a fixed-content sibling is ever added alongside the panel. */
-export function measureMinHeight(root) {
+ * substituting the FIXED `panelFloor` (`PANEL_MIN_H` by default -- see
+ * `measurePreviewMinHeight` below for the Preview's own, taller floor) for
+ * the `.wtn-an-panel` child's own contribution instead of its real (CSS
+ * `flex: 1 1 auto`-stretched) `offsetHeight` -- the same "a growing/
+ * shrinking flex-fill child reports a fixed floor, not its live size"
+ * pattern the frontend skill documents (and `../ComfyUI-Pixaroma/js/
+ * find_replace/render.mjs`'s `PREVIEW_MIN` substitution mirrors), just with
+ * no matching ceiling substitution any more -- there IS no ceiling. Because
+ * the panel is this root's only child, this simplifies to a constant in
+ * practice, but the general sibling-sum stays in case a fixed-content
+ * sibling is ever added alongside the panel. */
+export function measureMinHeight(root, panelFloor = PANEL_MIN_H) {
   if (!root) {
-    return PANEL_MIN_H;
+    return panelFloor;
   }
   let h = 0;
   let count = 0;
@@ -618,7 +761,7 @@ export function measureMinHeight(root) {
     }
     count += 1;
     if (child.classList && child.classList.contains("wtn-an-panel")) {
-      h += PANEL_MIN_H;
+      h += panelFloor;
     } else {
       h += child.offsetHeight;
     }
@@ -629,7 +772,18 @@ export function measureMinHeight(root) {
     h += gap * (count - 1);
   }
   h += (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-  return Math.max(PANEL_MIN_H, Math.round(h / 4) * 4);
+  return Math.max(panelFloor, Math.round(h / 4) * 4);
+}
+
+/** The Preview's own `measureMinHeight` -- IDENTICAL mechanism (same "NO
+ * CEILING, never grows with the panel's real stretched `offsetHeight`"
+ * contract, same no-feedback-loop guarantee), just substituting
+ * `PREVIEW_PANEL_MIN_H` for `PANEL_MIN_H` so the floor litegraph enforces
+ * on a resize-drag (`index.js`'s `getMinHeight`/`computeLayoutSize` for the
+ * Preview specifically) agrees with `clampPreviewSize`'s own height clamp
+ * above, rather than the two fighting each other. */
+export function measurePreviewMinHeight(root) {
+  return measureMinHeight(root, PREVIEW_PANEL_MIN_H);
 }
 
 // Re-export the shared cap so callers only need one import for both the

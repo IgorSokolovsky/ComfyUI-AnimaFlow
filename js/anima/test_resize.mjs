@@ -154,7 +154,9 @@ import {
   injectStyles,
   buildSwitch,
   sectionLabel,
+  buildPanelShell,
   measureMinHeight,
+  measurePreviewMinHeight,
   buildPreviewImageUrl,
   clampGeneratorSize,
   clampPreviewSize,
@@ -162,6 +164,9 @@ import {
   GENERATOR_MIN_W,
   PREVIEW_MIN_W,
   PANEL_MIN_H,
+  PREVIEW_IMG_MIN_H,
+  PREVIEW_PANEL_MIN_H,
+  PREVIEW_MIN_H,
 } from "./render.mjs";
 
 import * as interactionModule from "./interaction.mjs";
@@ -846,6 +851,67 @@ test("injected CSS: .wtn-an-panel fills the node (flex grow, no max-height) with
   assert.ok(body.includes("overflow-y: auto"), ".wtn-an-panel must still scroll internally past its own height");
 });
 
+test("buildPanelShell: the Preview's panel carries wtn-an-panel-pv; the Generator's (no-arg call site) does not", () => {
+  const doc = makeDocStub();
+  const { panel: pvPanel } = buildPanelShell(doc, { preview: true });
+  assert.ok(hasClass(pvPanel, "wtn-an-panel"));
+  assert.ok(hasClass(pvPanel, "wtn-an-panel-pv"), "the Preview's panel must carry the modifier class");
+
+  const { panel: genPanel } = buildPanelShell(doc);
+  assert.ok(hasClass(genPanel, "wtn-an-panel"));
+  assert.ok(!hasClass(genPanel, "wtn-an-panel-pv"), "the Generator's panel (no second argument) must NOT carry it");
+
+  // `mountGeneratorUI`/`mountPreviewUI` themselves must agree with this --
+  // not just buildPanelShell in isolation.
+  const ctx = makeCtx(doc);
+  const genRefs = mountGeneratorUI(makeGeneratorNode(), ctx);
+  assert.ok(!hasClass(genRefs.panel, "wtn-an-panel-pv"));
+  const pvRefs = mountPreviewUI(makePreviewNode(), makeCtx(makeDocStub()));
+  assert.ok(hasClass(pvRefs.panel, "wtn-an-panel-pv"));
+});
+
+test("injected CSS: .wtn-an-panel.wtn-an-panel-pv drops the shared scrollbar (overflow: hidden) and swaps in the Preview's own, taller floor (PREVIEW_PANEL_MIN_H)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const body = cssRuleBody(cssText, ".wtn-an-panel.wtn-an-panel-pv");
+  assert.ok(body, "expected a .wtn-an-panel.wtn-an-panel-pv rule in the injected CSS");
+  assert.ok(body.includes("overflow: hidden"), ".wtn-an-panel-pv must drop the shared panel's scrollbar entirely");
+  assert.ok(body.includes(`min-height: ${PREVIEW_PANEL_MIN_H}px`), ".wtn-an-panel-pv's floor must match PREVIEW_PANEL_MIN_H, not the shared PANEL_MIN_H");
+});
+
+test("injected CSS: .wtn-an-panel-pv .wtn-an-wipe cancels the shared aspect-ratio: 1/1 and flex-fills the body instead, floored at PREVIEW_IMG_MIN_H", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const body = cssRuleBody(cssText, ".wtn-an-panel-pv .wtn-an-wipe");
+  assert.ok(body, "expected a .wtn-an-panel-pv .wtn-an-wipe rule in the injected CSS");
+  assert.match(body, /flex:\s*1\s+1\s+auto/, "the preview wipe must flex-fill its container");
+  assert.ok(body.includes("aspect-ratio: auto"), "the preview wipe must cancel the shared aspect-ratio: 1/1");
+  assert.ok(body.includes(`min-height: ${PREVIEW_IMG_MIN_H}px`), "the preview wipe's own floor must match PREVIEW_IMG_MIN_H");
+});
+
+test("measurePreviewMinHeight floors the Preview's widget at PREVIEW_PANEL_MIN_H, with the SAME no-ceiling contract as measureMinHeight (never scales up with the panel's real, stretched offsetHeight)", () => {
+  const root = makeDocStub().createElement("div");
+  const panel = makeDocStub().createElement("div");
+  panel.className = "wtn-an-panel wtn-an-panel-pv";
+  panel.offsetHeight = 10; // far below PREVIEW_PANEL_MIN_H
+  root.appendChild(panel);
+  assert.equal(measurePreviewMinHeight(root), PREVIEW_PANEL_MIN_H);
+
+  panel.offsetHeight = 5000; // a huge stretched height -- still just the floor
+  assert.equal(measurePreviewMinHeight(root), PREVIEW_PANEL_MIN_H);
+
+  // The Generator's own measureMinHeight is UNCHANGED by this -- still
+  // PANEL_MIN_H, not PREVIEW_PANEL_MIN_H, when called with no second arg.
+  assert.equal(measureMinHeight(root), PANEL_MIN_H);
+});
+
+test("index.js wires the Preview's widget floor to PREVIEW_PANEL_MIN_H (via measurePreviewMinHeight), agreeing with clampPreviewSize's own height clamp rather than contradicting it", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(indexSource, /measurePreviewMinHeight/, "index.js must reference measurePreviewMinHeight for the Preview's own floor");
+});
+
 test("the grow-biased auto-fit mechanism is gone from render.mjs entirely -- refitNode/scheduleRefit/scheduleInitialFit/setNodeHeight/PANEL_MAX_H no longer exist, so nothing can silently start fighting a manual resize again", () => {
   assert.equal(render.refitNode, undefined);
   assert.equal(render.scheduleRefit, undefined);
@@ -855,25 +921,49 @@ test("the grow-biased auto-fit mechanism is gone from render.mjs entirely -- ref
   assert.equal(render.CHROME, undefined);
 });
 
-test("clampGeneratorSize / clampPreviewSize raise size[0] up to each node's own floor, never touch size[1]", () => {
+test("clampGeneratorSize raises size[0] up to GENERATOR_MIN_W, and NEVER touches size[1] -- the Generator's panel still scrolls past its own floor, so its node height has no clamp of its own", () => {
   const size = [10, 999];
   clampGeneratorSize(size);
   assert.equal(size[0], GENERATOR_MIN_W);
-  assert.equal(size[1], 999);
-
-  const size2 = [10, 500];
-  clampPreviewSize(size2);
-  assert.equal(size2[0], PREVIEW_MIN_W);
-  assert.equal(size2[1], 500);
+  assert.equal(size[1], 999, "clampGeneratorSize must leave height completely untouched, even far below any floor");
 
   // A width already at/above the floor is left alone.
-  const size3 = [GENERATOR_MIN_W + 40, 100];
-  clampGeneratorSize(size3);
-  assert.equal(size3[0], GENERATOR_MIN_W + 40);
+  const size2 = [GENERATOR_MIN_W + 40, 100];
+  clampGeneratorSize(size2);
+  assert.equal(size2[0], GENERATOR_MIN_W + 40);
+  assert.equal(size2[1], 100);
 
   // Tolerant of a missing/non-numeric size.
   assert.doesNotThrow(() => clampGeneratorSize(null));
   assert.doesNotThrow(() => clampGeneratorSize(["nope"]));
+});
+
+test("clampPreviewSize raises size[0] up to PREVIEW_MIN_W AND size[1] up to PREVIEW_MIN_H -- unlike the Generator, the Preview's panel never scrolls (overflow: hidden), so its node height needs a real floor too", () => {
+  // Below the floor on BOTH axes -- both get raised.
+  const size = [10, 10];
+  clampPreviewSize(size);
+  assert.equal(size[0], PREVIEW_MIN_W);
+  assert.equal(size[1], PREVIEW_MIN_H);
+
+  // Width below, height already above -- only width moves.
+  const size2 = [10, PREVIEW_MIN_H + 500];
+  clampPreviewSize(size2);
+  assert.equal(size2[0], PREVIEW_MIN_W);
+  assert.equal(size2[1], PREVIEW_MIN_H + 500);
+
+  // Both already at/above the floor -- neither moves.
+  const size3 = [PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40];
+  clampPreviewSize(size3);
+  assert.deepEqual(size3, [PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40]);
+
+  // Tolerant of a missing/non-numeric size, on either axis.
+  assert.doesNotThrow(() => clampPreviewSize(null));
+  assert.doesNotThrow(() => clampPreviewSize(["nope"]));
+  assert.doesNotThrow(() => clampPreviewSize([100]));
+});
+
+test("PREVIEW_MIN_H >= PREVIEW_PANEL_MIN_H -- the node floor must always be at least as tall as the panel floor it wraps, plus whatever node chrome sits above the DOM widget", () => {
+  assert.ok(PREVIEW_MIN_H >= PREVIEW_PANEL_MIN_H);
 });
 
 // ===========================================================================
@@ -934,7 +1024,7 @@ test("a manual resize survives a Preview repaint too (save/compare toggles, hand
   node.setSize([node.size[0], 180]);
 
   handleExecuted(node, ctx, {
-    images: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
+    anima_stages: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
   });
   assert.deepEqual(node.size, [396, 180], "a run's onExecuted repaint must not touch node.size");
 
@@ -1453,7 +1543,7 @@ test("Preview: handleExecuted populates node._anPreviewImages keyed by Python-re
   mountPreviewUI(node, ctx);
 
   handleExecuted(node, ctx, {
-    images: [
+    anima_stages: [
       { filename: "base.png", subfolder: "AnimaFlow", type: "temp", stage: "base" },
       { filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" },
     ],
@@ -1465,6 +1555,25 @@ test("Preview: handleExecuted populates node._anPreviewImages keyed by Python-re
   assert.ok(!hasClass(wipe, "wtn-an-single"), "both default compare stages (base/final) are present -- dual pane");
 });
 
+test("Preview: handleExecuted IGNORES a legacy message.images payload -- only message.anima_stages populates node._anPreviewImages, no dual-key fallback", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+
+  handleExecuted(node, ctx, {
+    images: [
+      { filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" },
+      { filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" },
+    ],
+  });
+
+  assert.ok(!node._anPreviewImages, "a legacy 'images' key must never populate node._anPreviewImages (handleExecuted bails out entirely -- no anima_stages, no repaint)");
+  const wipe = node._anRefs.wipeEl;
+  const empty = queryAll(wipe, (n) => hasClass(n, "wtn-an-empty"))[0];
+  assert.ok(empty, "with nothing under anima_stages, the wipe stays on its placeholder rather than reviving the double-preview bug");
+});
+
 test("Preview: a ONE-entry run degrades to a single-image view, never a broken dual pane", () => {
   const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
   const doc = makeDocStub();
@@ -1472,7 +1581,7 @@ test("Preview: a ONE-entry run degrades to a single-image view, never a broken d
   mountPreviewUI(node, ctx);
 
   handleExecuted(node, ctx, {
-    images: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
+    anima_stages: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
   });
 
   const wipe = node._anRefs.wipeEl;

@@ -192,13 +192,21 @@ function logHealedSockets(node, nodeData, summary) {
 // widget (a single scrollable panel, not one widget per row/section — see
 // render.mjs's top doc comment for the 2026-07-28 rewrite) occupies the
 // body below them. `getMinHeight` (legacy, PRIMARY) / `computeLayoutSize`
-// (Nodes 2.0, forward-compat only) report ONLY a FLOOR
-// (`measureMinHeight`) -- everything ABOVE that floor is the panel filling
-// whatever height the node is (render.mjs's `.wtn-an-panel` CSS, `flex: 1 1
-// auto`), never something this file measures or reacts to. That is
-// deliberate: this dispatch removed the grow-biased node-auto-fit
-// (`refitNode`/`scheduleRefit`) that used to fight a manual resize -- the
-// node's height is the user's to set, full stop.
+// (Nodes 2.0, forward-compat only) report ONLY a FLOOR -- everything ABOVE
+// that floor is the panel filling whatever height the node is (render.mjs's
+// `.wtn-an-panel` CSS, `flex: 1 1 auto`), never something this file
+// measures or reacts to. That is deliberate: this dispatch removed the
+// grow-biased node-auto-fit (`refitNode`/`scheduleRefit`) that used to fight
+// a manual resize -- the node's height is the user's to set, full stop.
+//
+// The FLOOR itself is `mods.render.measureMinHeight` for the Generator, but
+// `mods.render.measurePreviewMinHeight` for the Preview -- a LATER dispatch
+// gave the Preview its own, much taller floor (`PREVIEW_PANEL_MIN_H`,
+// render.mjs's own doc comment for the arithmetic) so its panel could drop
+// its scrollbar entirely; using the wrong one here would report a floor to
+// litegraph that CONTRADICTS `clampPreviewSize`'s own height clamp
+// (render.mjs), so `measureFloor` below is picked once, per node type, and
+// used for both sizing hooks.
 // ---------------------------------------------------------------------------
 
 function mountNode(node, mods, isGenerator) {
@@ -215,18 +223,26 @@ function mountNode(node, mods, isGenerator) {
   const refs = isGenerator ? mods.interaction.mountGeneratorUI(node, ctx) : mods.interaction.mountPreviewUI(node, ctx);
   mods.interaction.installZoomPassthrough(node, ctx);
 
-  // Min-width clamp -- the user asked for one explicitly on the Generator
-  // too (previously Preview-only). Each node type has its own floor
-  // (`render.mjs`'s `GENERATOR_MIN_W`/`PREVIEW_MIN_W` doc comments).
-  // Installed here, right after `mods` resolves, so there is no lazy-load
-  // race with a user resize. CHAINS any pre-existing `node.onResize` rather
-  // than replacing it.
+  // Min-width (and, for the Preview, min-height too) clamp -- the user
+  // asked for a min-width explicitly on the Generator too (previously
+  // Preview-only), and later a min-HEIGHT on the Preview specifically. Each
+  // node type has its own floor (`render.mjs`'s `GENERATOR_MIN_W`/
+  // `PREVIEW_MIN_W`/`PREVIEW_MIN_H` doc comments; `clampGeneratorSize`
+  // stays width-only, `clampPreviewSize` clamps both axes). Installed here,
+  // right after `mods` resolves, so there is no lazy-load race with a user
+  // resize. CHAINS any pre-existing `node.onResize` rather than replacing
+  // it.
   const prevResize = node.onResize;
   const clampSize = isGenerator ? mods.render.clampGeneratorSize : mods.render.clampPreviewSize;
   node.onResize = function (size) {
     clampSize(size);
     return prevResize ? prevResize.apply(this, arguments) : undefined;
   };
+
+  // The floor-measuring function itself differs by node type -- see this
+  // file's "Legacy litegraph sizing" comment above for why using the wrong
+  // one would contradict `clampSize`'s own height clamp on the Preview.
+  const measureFloor = isGenerator ? mods.render.measureMinHeight : mods.render.measurePreviewMinHeight;
 
   let widget;
   if (typeof node.addDOMWidget === "function") {
@@ -238,7 +254,7 @@ function mountNode(node, mods, isGenerator) {
         serialize: false,
         // Legacy canvas renderer sizing path (PRIMARY) -- NOT computeSize/
         // getHeight (those fight node.setSize under the legacy renderer).
-        getMinHeight: () => mods.render.measureMinHeight(refs.root),
+        getMinHeight: () => measureFloor(refs.root),
       },
     );
   } else {
@@ -254,7 +270,7 @@ function mountNode(node, mods, isGenerator) {
   }
   // Nodes 2.0 (Vue/DOM renderer) sizing path -- forward-compat only.
   widget.computeLayoutSize = function () {
-    return { minHeight: mods.render.measureMinHeight(refs.root), minWidth: 1 };
+    return { minHeight: measureFloor(refs.root), minWidth: 1 };
   };
   refs.widget = widget;
 
@@ -265,7 +281,14 @@ function mountNode(node, mods, isGenerator) {
 
 function setupNode(node, mods, isGenerator) {
   mountNode(node, mods, isGenerator);
-  const defaultH = isGenerator ? mods.render.DEFAULT_H : mods.render.PREVIEW_DEFAULT_H;
+  // `Math.max(..., PREVIEW_MIN_H)` on the Preview -- its floor (`480`, see
+  // render.mjs's `PREVIEW_MIN_H` doc comment) is now taller than its own
+  // `PREVIEW_DEFAULT_H` (`420`, unchanged), and this node's panel is
+  // `overflow: hidden` (no scroll fallback), so a fresh node MUST start at
+  // or above its own floor or it opens already clipping its Save section.
+  // The Generator has no such gap (its panel still scrolls past its floor),
+  // so `DEFAULT_H` alone is untouched there.
+  const defaultH = isGenerator ? mods.render.DEFAULT_H : Math.max(mods.render.PREVIEW_DEFAULT_H, mods.render.PREVIEW_MIN_H);
   // Floor a freshly-created node's size UP (never down) to a comfortable
   // starting size -- mirrors `js/prompt_rules/node/index.js`'s
   // `ensureInitialFloor`. This is the ONLY sizing this module ever does for

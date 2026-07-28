@@ -571,18 +571,46 @@ mockup put the image box first, then the compare switch, then the `save` row, th
 `base|mid|final` **vs** `base|mid|final` pickers on a *fourth* row. Built and used, that read wrong
 twice over: `save` is the node's one *setting* and belongs above the thing it acts on rather than
 buried under it, and a whole row spent on two segmented groups pushed the switch that enables them
-away from them. Shipped order is now **`save` row → image box → one compare row**, where the compare
-row carries `[switch] compare` on the left and both pickers right-aligned on the same line
+away from them. Shipped order is now **Save section → image box → one compare row**, where the
+compare row carries `[switch] compare` on the left and both pickers right-aligned on the same line
 (`.wtn-an-segs`, `margin-left: auto`). That fold is what sets the node's **min width, 380px**
 (`render.mjs`'s `PREVIEW_MIN_W`, enforced Preview-only via an `onResize` clamp) — the switch + label
-+ both groups measure ~340px, and a narrower node clipped the right-hand group.
++ both groups measure ~340px, and a narrower node clipped the right-hand group. (The `save` *row*
+became the `Save` *section* in §12's inline-sections dispatch; its position in this order didn't
+change. Any older note here about popover geometry is void — there is no popover on this track any
+more.)
 
-**Popover geometry is the mockup's, not the port's.** `.pop` was signed off at **344px wide /
-460px max-height with border-box sizing** and a 116px field-label column
-(`playground/generator.html:247`, `:252`, `:271`). The first port shrank it to 268px/420px and
-108px, *and* lost border-box (popovers mount on `document.body`, so `.wtn-an-root *`'s box-sizing
-rule never reaches them) — which squeezed every value control to ~124px and visibly cut long values
-like the `filename` template. Restored to the signed-off numbers; don't re-shrink them.
+**The image fills the node, and this panel never scrolls — reverses §12's call, for this node
+only (2026-07-28, later the same day).** §12's dispatch gave both nodes one `.wtn-an-panel` that
+flex-fills the node's height and scrolls internally when the content doesn't fit, and decided the
+wipe should keep `aspect-ratio: 1/1` inside it — so a too-short node scrolled the image out of
+view. Wrong for *this* node: the compare image is the entire reason the node is on the canvas, and
+everything else is chrome around it. So `.wtn-an-panel-pv` (a modifier class applied only by
+`mountPreviewUI`) drops the scrollbar (`overflow: hidden`) and the wipe flex-fills whatever height
+is left (`aspect-ratio: auto`, floored at `PREVIEW_IMG_MIN_H`). The layers' `object-fit: contain`
+already letterboxes each image into whatever box it's given, so a non-square node distorts nothing.
+**The Generator's panel is untouched — it still scrolls.**
+
+Removing the scroll means the floor has to be honest, which is where the **min height** comes from:
+`PREVIEW_PANEL_MIN_H` (400px) is sized so the Save section fully *expanded* + the compare row +
+`PREVIEW_IMG_MIN_H` all fit with no scrollbar, and `PREVIEW_MIN_H` (480px) adds the title bar and
+the two socket rows on top. `clampPreviewSize` clamps **both** axes, and the Preview's
+`getMinHeight` reports `PREVIEW_PANEL_MIN_H` so litegraph's drag floor agrees with the clamp instead
+of contradicting it. Sizing for Save-expanded is what makes this work with **no auto-grow-on-repaint
+mechanism** — §12 deliberately deleted `refitNode`/`scheduleRefit`, and this does not bring them
+back.
+
+**The preview payload key is `anima_stages`, never `images` (2026-07-28).** `{"ui": {"images":
+[...]}}` is ComfyUI's own trigger for drawing a *native* image preview inside the node — so
+returning the stage entries under `images` while this node also draws its own wipe rendered the run
+**twice**, our wipe stacked above ComfyUI's native preview and its `1024 × 1024` caption. Fixed at
+the source by renaming the channel (`nodes/anima/preview.py` → `handleExecuted`, no dual-key
+fallback), rather than nulling `node.imgs` after the fact the way
+`../ComfyUI-Pixaroma/js/paint/index.js:44` does — that pattern suits a node whose images arrive
+once at creation, not an `OUTPUT_NODE` the frontend re-populates on every run. Accepted cost: the
+entries no longer appear in ComfyUI's outputs sidebar / queue-history thumbnails, which key off the
+same native mechanism. Cheap here — an unsaved stage was only ever a `temp` file, and a saved one is
+on disk under its `%stage%` name.
 
 ### 7a. Save — this node owns it
 

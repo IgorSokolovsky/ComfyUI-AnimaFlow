@@ -161,8 +161,12 @@ def save_images(
     `PROMPT`/`EXTRA_PNGINFO` this node declares (§9 divergence #3's fix) and
     filenames expanded through `format_filename`'s tokens.
 
-    -> a ComfyUI `"ui": {"images": [...]}`-shaped list, ready to return from
-    the node's `save`/`generate` method.
+    -> a list of `{filename, subfolder, type, stage}` entries, shaped like
+    (but NOT returned under) ComfyUI's own `"ui": {"images": [...]}}`
+    convention -- `build_preview_ui_images` below is what actually nests
+    these under `nodes/anima/preview.py`'s real key, `anima_stages`, NOT
+    `images` (see that module's own docstring for why the key itself is
+    deliberately not `images`).
 
     VERIFY-IN-COMFYUI: exercised by reading stock `SaveImage`'s own
     save-path conventions, not against a live ComfyUI process (none
@@ -283,14 +287,24 @@ def build_preview_ui_images(
     save_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     temp_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
-    """The ONE thing `nodes/anima/preview.py`'s `preview()` calls to get its
-    `"ui": {"images": [...]}}` payload. Routes each stage in `preview_stages`
-    (the always-every-wired PREVIEW set -- see `src/anima/preview_settings.
-    py`'s `resolve_wired_stages`) through `split_preview_stages` (the PURE
-    decision) to exactly one writer: `stages_to_save` -> a real output file
-    (`save_fn`, default `save_images`); everything else -> an ephemeral temp
-    file (`temp_fn`, default `write_temp_stage_images`). Never both for the
-    same stage in the same run.
+    """The ONE thing `nodes/anima/preview.py`'s `preview()` calls to get the
+    list it nests under its own `"ui": {"anima_stages": [...]}}` payload --
+    deliberately NOT `"images"`: this node draws its own DOM preview
+    (`js/anima/`'s hover wipe), and `"ui": {"images": [...]}}` is ComfyUI's
+    OWN frontend trigger for drawing a SECOND, native image preview inside
+    the node, which is exactly the duplicate-preview bug the rename fixes
+    (see `nodes/anima/preview.py`'s `preview()` for the full rationale and
+    its accepted cost). This function itself returns a plain list, agnostic
+    to whatever key its caller nests it under -- the rename lives entirely
+    in `preview.py`'s return statement, not here.
+
+    Routes each stage in `preview_stages` (the always-every-wired PREVIEW
+    set -- see `src/anima/preview_settings.py`'s `resolve_wired_stages`)
+    through `split_preview_stages` (the PURE decision) to exactly one
+    writer: `stages_to_save` -> a real output file (`save_fn`, default
+    `save_images`); everything else -> an ephemeral temp file (`temp_fn`,
+    default `write_temp_stage_images`). Never both for the same stage in
+    the same run.
 
     `save_fn`/`temp_fn` are dependency-injected (not just module-level calls)
     so `tests/test_anima_preview_images.py` can fake them (either by passing

@@ -170,7 +170,24 @@ class AnimaPreview:
             preview_settings=settings, seed=seed, prompt=prompt, extra_pnginfo=extra_pnginfo,
         )
 
-        return {"ui": {"images": ui_images}}
+        # The key is `anima_stages`, deliberately NOT `images` -- this node
+        # already draws its own preview (`js/anima/`'s DOM hover wipe), and
+        # `"ui": {"images": [...]}}` is ComfyUI's OWN frontend trigger for
+        # drawing a native image preview inside the node. Returning under
+        # `images` produced two stacked previews (our wipe AND ComfyUI's
+        # own, "1024 x 1024" caption included) -- the actual bug this
+        # rename fixes, at the source, rather than fighting the frontend's
+        # own rendering after the fact. `js/anima/interaction.mjs`'s
+        # `handleExecuted` reads this exact key, with no fallback to the
+        # old one.
+        #
+        # Accepted cost: these entries no longer show up in ComfyUI's
+        # outputs sidebar / queue-history thumbnails (both key off the same
+        # native `images` mechanism) -- acceptable because an unsaved stage
+        # was only ever a `temp` file to begin with, and a SAVED stage still
+        # lands on disk under its own `%stage%`-templated filename; nothing
+        # is actually lost, just not double-surfaced in that one UI.
+        return {"ui": {"anima_stages": ui_images}}
 
 
 NODE_CLASS_MAPPINGS = {"AnimaPreview": AnimaPreview}

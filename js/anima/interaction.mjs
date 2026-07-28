@@ -1165,7 +1165,9 @@ export function repaintGenerator(node, ctx) {
 // `resolve_run_stage_labels` -- this module never re-derives that mapping).
 // Before any run, that map is empty, so the wipe shows a "wired -- run to
 // preview" / "nothing wired yet" placeholder depending on whether `images`
-// itself is wired at all.
+// itself is wired at all. (`handleExecuted`'s own doc comment below reads
+// this data off `message.anima_stages`, NOT `message.images` -- see that
+// comment for why.)
 // ---------------------------------------------------------------------------
 
 export function buildPreviewBody(doc, node, ctx) {
@@ -1314,7 +1316,13 @@ export function mountPreviewUI(node, ctx) {
   }
   const doc = ctx.doc;
   injectStyles(doc);
-  const { root, panel } = buildPanelShell(doc);
+  // `{ preview: true }` -- the ONLY thing that ever passes it -- is what
+  // gives this node's panel `wtn-an-panel-pv` (render.mjs's "Preview node:
+  // hover wipe" CSS comment for the full reversal it carries: no scrollbar,
+  // a taller floor, the wipe flex-filling the body instead of staying
+  // square). `mountGeneratorUI` below calls `buildPanelShell(doc)` with no
+  // second argument, so its panel is unaffected.
+  const { root, panel } = buildPanelShell(doc, { preview: true });
   ensurePreviewState(node);
   const { body, wipeEl } = buildPreviewBody(doc, node, ctx);
   panel.appendChild(body);
@@ -1341,10 +1349,29 @@ export function repaintPreview(node, ctx) {
 }
 
 /**
- * `AnimaPreview`'s `onExecuted` handler -- `message.images` is
- * `nodes/anima/preview.py`'s own `"ui": {"images": [...]}}` payload: `{
- * filename, subfolder, type, stage}` per entry, ALWAYS one entry per
+ * `AnimaPreview`'s `onExecuted` handler -- `message.anima_stages` is
+ * `nodes/anima/preview.py`'s own `"ui": {"anima_stages": [...]}}` payload:
+ * `{filename, subfolder, type, stage}` per entry, ALWAYS one entry per
  * present stage regardless of `save.enabled` (design doc §7/§7a's fix).
+ *
+ * **The key is `anima_stages`, deliberately NOT `images`.** This node
+ * already draws its OWN preview (the DOM wipe); ComfyUI's frontend treats
+ * a `"ui": {"images": [...]}}` payload as ITS OWN "draw a native image
+ * preview in the node" trigger, so returning under `images` produced two
+ * stacked previews (this node's wipe AND ComfyUI's own, caption and all --
+ * the actual bug this rename fixes). Renaming the channel is what stops
+ * that at the source, on the Python side, rather than trying to suppress
+ * ComfyUI's own rendering from here. Accepted cost: a stage's entries no
+ * longer show up in ComfyUI's outputs sidebar / queue-history thumbnails
+ * (those are keyed off the same native `images` mechanism) -- acceptable
+ * because an unsaved stage was only ever a `temp` file anyway, and a SAVED
+ * stage still lands on disk under its own `%stage%`-templated filename, so
+ * nothing is actually lost, just not double-surfaced in that one UI.
+ *
+ * This function reads ONLY `anima_stages` -- no fallback to a legacy
+ * `message.images`. A stale frontend paired with this new backend (or vice
+ * versa) simply shows the placeholder rather than silently reviving the
+ * double-preview bug a fallback would keep alive.
  *
  * VERIFY-IN-COMFYUI: that `onExecuted`'s `message` argument really is the
  * node's own `ui` dict verbatim -- no live ComfyUI process in this dev
@@ -1353,12 +1380,12 @@ export function repaintPreview(node, ctx) {
  * `onExecuted`.
  */
 export function handleExecuted(node, ctx, message) {
-  if (!message || !Array.isArray(message.images)) {
+  if (!message || !Array.isArray(message.anima_stages)) {
     return;
   }
   const cacheBust = Date.now();
   const byStage = {};
-  for (const entry of message.images) {
+  for (const entry of message.anima_stages) {
     if (entry && typeof entry.stage === "string" && !(entry.stage in byStage)) {
       byStage[entry.stage] = { ...entry, _cacheBust: cacheBust };
     }

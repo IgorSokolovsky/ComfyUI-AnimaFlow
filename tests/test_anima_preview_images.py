@@ -1,7 +1,17 @@
-"""Plain-script tests for `AnimaPreview.preview()`'s actual `"ui": {"images":
-[...]}}` payload -- the contract fixed in the original build: saving OFF must
-not mean the frontend's hover wipe gets zero images, and every entry must
-carry a `stage` key so the wipe can tell which pane is which.
+"""Plain-script tests for `AnimaPreview.preview()`'s actual
+`"ui": {"anima_stages": [...]}}` payload -- the contract fixed in the
+original build: saving OFF must not mean the frontend's hover wipe gets zero
+images, and every entry must carry a `stage` key so the wipe can tell which
+pane is which.
+
+**2026-07-28, LATER the same day**: the payload's key was renamed from
+`images` to `anima_stages` -- `"ui": {"images": [...]}}` is ComfyUI's OWN
+frontend trigger for drawing a native image preview inside the node, and
+this node already draws its own (`js/anima/`'s DOM hover wipe), so returning
+under `images` produced two stacked previews. See `nodes/anima/preview.py`'s
+`preview()` for the full rationale and its accepted cost. This file asserts
+BOTH halves of that fix: the payload lands under `anima_stages`, AND `ui`
+carries no `images` key at all.
 
 **2026-07-28 reversal**: `image_a`/`image_b`/`image_c` are gone. This file
 now drives `preview()` through its real `images` LIST + `metadata_json`
@@ -78,6 +88,11 @@ def _images_from(state, images=None, metadata_labels=None):
     as "present" downstream). `metadata_labels`, if given, becomes this
     run's `metadata_json.stage_labels` -- omit it to exercise the positional
     (base/mid/final) fallback instead.
+
+    Reads the result back out from `result["ui"]["anima_stages"]` -- NOT
+    `result["ui"]["images"]` -- and asserts there is no `images` key at all,
+    every single call (see this module's own top doc comment for why that
+    absence is the whole point of the rename this fixture drives).
     """
     images = list(images) if images else []
     metadata_json = (
@@ -93,7 +108,11 @@ def _images_from(state, images=None, metadata_labels=None):
             prompt=[None],
             extra_pnginfo=[None],
         )
-        return result["ui"]["images"], calls
+        assert "images" not in result["ui"], (
+            "the ui dict must carry NO 'images' key -- that key is ComfyUI's own "
+            "native-preview trigger, and this node draws its own preview"
+        )
+        return result["ui"]["anima_stages"], calls
     finally:
         restore()
 
