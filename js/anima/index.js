@@ -493,10 +493,145 @@ function restoreNode(node, mods, isGenerator) {
   // this file's top "Legacy litegraph sizing" comment).
 }
 
+// ---------------------------------------------------------------------------
+// Queue hook: advance every AnimaGenerator's `sampler.seed` AFTER a run
+// (`state.mjs`'s re-exported `applyAfterGenerate` — stock-ComfyUI seed-
+// control semantics: the value present AT QUEUE TIME is the one that was
+// actually used, THEN it advances for next time). Mirrors `js/controls/
+// index.js`'s identical `installQueuePromptHook`/`advanceSeedsAfterRun` pair
+// byte-for-byte in SHAPE (same guard-flag/lazy-load/try-catch structure) —
+// this is a SEPARATE wrap of `app.queuePrompt`, composing with (not
+// replacing) `../shared/submit_guard.mjs`'s own wrap that this file already
+// installs eagerly above (`isSubmitting`'s own import). The two don't fight:
+// `submit_guard.mjs`'s guard exists to stop CHURN-triggered
+// `onConnectionsChange` handlers from clearing/repainting during a
+// Use-Everywhere connect/disconnect burst (this file's two
+// `onConnectionsChange` hooks above are gated on `!isSubmitting()` for
+// exactly that). The advance below is not one of those — it is a single,
+// deliberate action tied directly to a real queued prompt actually
+// resolving, not an incidental side effect of a connection-change event, so
+// it runs unconditionally (whether or not `isSubmitting()`'s trailing
+// window from THIS SAME queue call is still open makes no difference to
+// what it does: mutate `sampler.seed`, persist, repaint — nothing here
+// touches `_anContextRun`/`clearContextRun` or any socket).
+//
+// Unlike the Control Panel's own advance (which also records `opts.lastUsed`
+// for its ↺ reuse-last-seed button), this task does not add a reuse button
+// to the Generator, so there is nothing to persist beyond the advanced
+// `seed` itself — `applyAfterGenerate`'s `lastUsed` bookkeeping is exercised
+// for its pure mode maths only and discarded every call (never stored on
+// `sampler`), so `generation_settings` never grows an extra field this task
+// didn't ask for.
+// ---------------------------------------------------------------------------
+
+let _queuePromptWrapped = false;
+
+/** Every live `AnimaGenerator` node currently on the graph -- checks BOTH
+ * `comfyClass` and `.type` (ComfyUI graph internals vary across frontend
+ * versions/builds), same defensive pattern as `js/controls/index.js`'s
+ * `findControlPanelNodes`. */
+function findGeneratorNodes() {
+  const nodes = (app.graph && app.graph._nodes) || [];
+  return nodes.filter((n) => n && (n.comfyClass === "AnimaGenerator" || n.type === "AnimaGenerator"));
+}
+
+/** Advance every live Generator's seed, then persist + repaint each node
+ * that actually changed. A no-op if `loadMods()` has never even been kicked
+ * off (`_modsPromise` still null) -- if nothing has ever called
+ * `loadMods()`, no Generator instance has ever run `onNodeCreated`/
+ * `onConfigure` either, so there is provably nothing on the graph to advance
+ * (identical reasoning to `js/controls/index.js`'s own `advanceSeedsAfterRun`
+ * guard). */
+function advanceGeneratorSeedsAfterRun() {
+  if (!_modsPromise) {
+    return;
+  }
+  loadMods()
+    .then((mods) => {
+      for (const node of findGeneratorNodes()) {
+        try {
+          const genState = node._anGenState;
+          if (!node._anMods || !node._anCtx || !genState || !genState.sampler) {
+            continue; // this node's own setupNode/restoreNode hasn't run yet
+          }
+          const sampler = genState.sampler;
+          const previousSeed = sampler.seed;
+          // A throwaway row-shaped wrapper -- `applyAfterGenerate` is pure
+          // and row-shaped (`{value, opts:{after, lastUsed}}`); `lastUsed`
+          // is intentionally never read back (see this section's own top
+          // doc comment for why the Generator has no reuse-last-seed
+          // feature to serve it).
+          const rowLike = { value: sampler.seed, opts: { after: sampler.seed_after_generate, lastUsed: undefined } };
+          mods.state.applyAfterGenerate(rowLike);
+          if (rowLike.value !== previousSeed) {
+            sampler.seed = rowLike.value;
+            node._anMods.interaction.persistGenState(node);
+            if (node._anRefs) {
+              node._anMods.interaction.repaintGenerator(node, node._anCtx);
+            }
+          }
+        } catch (err) {
+          console.error(`[AnimaFlow Anima] failed to advance seed for Generator ${node.id}:`, err);
+        }
+      }
+    })
+    .catch((err) => {
+      console.error("[AnimaFlow Anima] failed to load js/anima modules for seed advance:", err);
+    });
+}
+
+/**
+ * Wrap `app.queuePrompt` exactly once, AFTER the original resolves -- so the
+ * seed a queued prompt actually carried is guaranteed to be the one
+ * `applyAfterGenerate` reads BEFORE advancing it for next time. Never wraps
+ * if `app.queuePrompt` isn't a function. Byte-for-byte the same shape as
+ * `js/controls/index.js`'s `installQueuePromptHook` -- see that function's
+ * own doc comment for why the original's return value/rejection is passed
+ * back UNMODIFIED and why a failure in our own advance step can never
+ * surface as (or suppress) a real queue error.
+ *
+ * VERIFY-IN-COMFYUI: confirm this actually fires on the live frontend build
+ * -- this repo's test suite is headless (no real `app`/`app.queuePrompt`),
+ * so "does wrapping `app.queuePrompt` here actually intercept a real Queue
+ * Prompt click" can only be confirmed in a live ComfyUI page.
+ */
+function installQueuePromptHook() {
+  if (_queuePromptWrapped) {
+    return;
+  }
+  if (typeof app.queuePrompt !== "function") {
+    return;
+  }
+  _queuePromptWrapped = true;
+  const original = app.queuePrompt;
+  app.queuePrompt = function (...args) {
+    const result = original.apply(this, args);
+    Promise.resolve(result)
+      .then(() => {
+        advanceGeneratorSeedsAfterRun();
+      })
+      .catch(() => {
+        // The original queuePrompt's own rejection already reached the real
+        // caller via `result` above -- this catch exists solely so a failed
+        // queue never also runs the advance step, and never produces an
+        // unhandled-rejection warning of its own doing so.
+      });
+    return result;
+  };
+}
+
 app.registerExtension({
   name: "webtoon.anima",
 
   beforeRegisterNodeDef(nodeType, nodeData) {
+    // Cheap + internally guarded (installQueuePromptHook's own
+    // `_queuePromptWrapped` flag) -- called on EVERY node type's
+    // registration, not just ours, so it only actually installs once, the
+    // first time `beforeRegisterNodeDef` runs for anything at all after
+    // `app.queuePrompt` exists. Matches `js/controls/index.js`'s identical
+    // placement/reasoning for its own seed-advance hook.
+    installQueuePromptHook();
+
     if (!NODE_CLASS_NAMES.includes(nodeData.name)) {
       return;
     }

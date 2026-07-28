@@ -116,7 +116,7 @@
     "denoise": 1.0,
     "sampler_name": "er_sde",
     "scheduler": "simple",
-    "seed": -1,
+    "seed": "-1",
     "seed_after_generate": "fixed",
     "shift": 3.0,
     "steps": 32

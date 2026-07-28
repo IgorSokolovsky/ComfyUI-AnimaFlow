@@ -216,6 +216,115 @@ def test_detailer_block_with_garbage_id_is_dropped_not_fatal():
     assert normalized["detailer"]["blocks"]["face"]["enabled"] is True
 
 
+# ---------------------------------------------------------------------------
+# Seed — a STRING in state (this task's whole reason for existing: a seed
+# past `Number.MAX_SAFE_INTEGER` must survive a JS round-trip verbatim).
+# ---------------------------------------------------------------------------
+
+
+def test_default_seed_is_the_string_random_sentinel():
+    defaults = s.default_generation_settings()
+    assert defaults["sampler"]["seed"] == "-1"
+    assert isinstance(defaults["sampler"]["seed"], str)
+
+
+def test_normalize_migrates_an_old_bare_int_seed_to_string():
+    # An old saved workflow's `generation_settings` JSON always carried a
+    # bare JSON int for `seed` -- `json.loads` hands that to Python as an
+    # `int`. It must keep working, migrated to the new string form.
+    raw = json.dumps({"sampler": {"seed": 123456789}})
+    normalized = s.normalize_generation_settings(raw)
+    assert normalized["sampler"]["seed"] == "123456789"
+    assert isinstance(normalized["sampler"]["seed"], str)
+
+
+def test_normalize_huge_20_digit_seed_survives_verbatim():
+    huge = "16963467365598029952"  # a real seed from the user's own run
+    raw = json.dumps({"sampler": {"seed": huge}})
+    normalized = s.normalize_generation_settings(raw)
+    assert normalized["sampler"]["seed"] == huge  # exact digits, no rounding
+
+
+def test_normalize_huge_seed_as_a_json_int_also_survives_verbatim():
+    # The same value, but arriving as a JSON NUMBER (a hand-edited API
+    # payload) rather than a pre-stringified one -- `json.loads` hands this
+    # to Python as an arbitrary-precision `int`.
+    huge = 16963467365598029952
+    raw = json.dumps({"sampler": {"seed": huge}})
+    normalized = s.normalize_generation_settings(raw)
+    assert normalized["sampler"]["seed"] == str(huge)
+
+
+def test_normalize_seed_minus_one_stays_minus_one():
+    for raw_seed in [-1, "-1", -1.0]:
+        raw = json.dumps({"sampler": {"seed": raw_seed}})
+        normalized = s.normalize_generation_settings(raw)
+        assert normalized["sampler"]["seed"] == "-1", raw_seed
+
+
+def test_normalize_seed_out_of_range_clamps():
+    # Below -1 clamps to 0 (only exactly -1 is the sentinel).
+    raw = json.dumps({"sampler": {"seed": -5}})
+    assert s.normalize_generation_settings(raw)["sampler"]["seed"] == "0"
+    # Above 2**64-1 clamps to the max.
+    too_big = json.dumps({"sampler": {"seed": str(s.MAX_SEED + 1000)}})
+    assert s.normalize_generation_settings(too_big)["sampler"]["seed"] == str(s.MAX_SEED)
+    # Exactly the max survives verbatim.
+    at_max = json.dumps({"sampler": {"seed": str(s.MAX_SEED)}})
+    assert s.normalize_generation_settings(at_max)["sampler"]["seed"] == str(s.MAX_SEED)
+
+
+def test_normalize_seed_integral_float_coerces_cleanly():
+    raw = json.dumps({"sampler": {"seed": 42.0}})
+    assert s.normalize_generation_settings(raw)["sampler"]["seed"] == "42"
+
+
+def test_normalize_seed_garbage_falls_back_to_zero():
+    for bad in ["not-a-seed", None, [1, 2], {"nested": True}, float("nan")]:
+        assert s.normalize_seed(bad) == "0", bad
+
+
+def test_normalize_seed_bool_is_not_silently_accepted_as_0_or_1():
+    # bool is an int subclass in Python -- must not sneak through as a seed.
+    assert s.normalize_seed(True) == "0"
+    assert s.normalize_seed(False) == "0"
+
+
+# ---------------------------------------------------------------------------
+# `resolve_seed_int` -- the boundary where the STRING form becomes the real
+# `int` `pipeline.py` hands to `KSampler` (design doc: "pipeline.py converts
+# to int once at the boundary").
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_seed_int_round_trips_2_64_minus_1_exactly():
+    raw = str(s.MAX_SEED)
+    assert s.resolve_seed_int(raw) == s.MAX_SEED
+    assert str(s.resolve_seed_int(raw)) == raw  # exact digits, both directions
+
+
+def test_resolve_seed_int_round_trips_a_20_digit_seed_exactly():
+    huge = "16963467365598029952"
+    assert s.resolve_seed_int(huge) == int(huge)
+
+
+def test_resolve_seed_int_minus_one_falls_back_to_zero():
+    # -1 ("random") resolution is NOT this function's job to randomize
+    # (settings.py's own docstring) -- it falls back to 0, matching the
+    # pre-existing pipeline.py behaviour this function centralizes.
+    assert s.resolve_seed_int("-1") == 0
+    assert s.resolve_seed_int(-1) == 0
+
+
+def test_resolve_seed_int_garbage_falls_back_to_zero():
+    for bad in ["not-a-seed", None, [1, 2], {}]:
+        assert s.resolve_seed_int(bad) == 0, bad
+
+
+def test_resolve_seed_int_accepts_a_real_int_unchanged():
+    assert s.resolve_seed_int(12345) == 12345
+
+
 ALL_TESTS = [
     test_default_generation_settings_has_five_stage_keys,
     test_every_stage_default_starts_disabled,
@@ -236,6 +345,20 @@ ALL_TESTS = [
     test_unknown_detailer_block_id_inherits_face_template,
     test_max_detailer_passes_cap_enforced,
     test_detailer_block_with_garbage_id_is_dropped_not_fatal,
+    test_default_seed_is_the_string_random_sentinel,
+    test_normalize_migrates_an_old_bare_int_seed_to_string,
+    test_normalize_huge_20_digit_seed_survives_verbatim,
+    test_normalize_huge_seed_as_a_json_int_also_survives_verbatim,
+    test_normalize_seed_minus_one_stays_minus_one,
+    test_normalize_seed_out_of_range_clamps,
+    test_normalize_seed_integral_float_coerces_cleanly,
+    test_normalize_seed_garbage_falls_back_to_zero,
+    test_normalize_seed_bool_is_not_silently_accepted_as_0_or_1,
+    test_resolve_seed_int_round_trips_2_64_minus_1_exactly,
+    test_resolve_seed_int_round_trips_a_20_digit_seed_exactly,
+    test_resolve_seed_int_minus_one_falls_back_to_zero,
+    test_resolve_seed_int_garbage_falls_back_to_zero,
+    test_resolve_seed_int_accepts_a_real_int_unchanged,
 ]
 
 

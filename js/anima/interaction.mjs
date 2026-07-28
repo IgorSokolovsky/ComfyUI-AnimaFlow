@@ -123,7 +123,7 @@
  */
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
-import { buildNumericField, buildStepperField, hideActiveInfoTip } from "../shared/fields.mjs";
+import { buildNumericField, buildStepperField, buildSeedField, hideActiveInfoTip } from "../shared/fields.mjs";
 // The overlay mechanism -- back in this track for ANCHORED MENUS only (this
 // module's top doc comment, "hybrid essentials/⚙ dispatch"). `js/controls/
 // interaction.mjs` uses the exact same three imports for its own option
@@ -161,6 +161,10 @@ import {
   removeDetailerBlock,
   moveDetailerBlock,
   isBuiltinDetailerBlock,
+  normalizeSeed,
+  randomSeedString,
+  applyAfterGenerate,
+  AFTER_MODES,
 } from "./state.mjs";
 
 import {
@@ -1432,10 +1436,29 @@ function buildSamplerField(doc, node, ctx, field, sampler, eff) {
     fieldRoot = buildAnStepper(doc, ctx, { label: field, value: displayValue, options, disabledReason }, {
       onChange: (v) => { sampler[field] = v; persistGenState(node); },
     }).root;
+  } else if (field === "seed") {
+    // Text entry + roll, NOT a drag row -- a seed runs to 2**64-1, past a
+    // drag row's usable precision (`js/shared/fields.mjs`'s `buildSeedField`
+    // doc comment). `normalizeSeed`/`randomSeedString` are `js/anima/
+    // state.mjs`'s re-exports of `js/controls/rows.mjs`'s own tested pure
+    // maths (this module's own top-of-file "cross-track import" note).
+    let seedRef;
+    seedRef = buildSeedField(doc, { label: field, value: displayValue, disabledReason }, {
+      onCommit: (raw) => {
+        sampler.seed = normalizeSeed(raw);
+        persistGenState(node);
+        seedRef.repaint(sampler.seed);
+      },
+      onRoll: () => {
+        sampler.seed = randomSeedString();
+        persistGenState(node);
+        seedRef.repaint(sampler.seed);
+      },
+    });
+    fieldRoot = seedRef.root;
   } else {
     const opts = field === "cfg" ? { min: 0, max: 30, step: 0.1 }
-      : field === "steps" ? { min: 1, max: 150, step: 1 }
-        : { min: -1, max: 2147483647, step: 1 }; // seed
+      : { min: 1, max: 150, step: 1 }; // steps
     const kind = field === "cfg" ? "float" : "int";
     fieldRoot = buildNumericField(doc, {
       label: field, kind, opts, disabledReason,
@@ -1472,6 +1495,30 @@ function summaryFieldText(field, eff, sampler, format) {
   return fmt(sampler[field]);
 }
 
+/** The seed row's sibling: `sampler.seed_after_generate`'s own mode picker
+ * (task item 3 -- "expose the mode... whatever set `applyAfterGenerate`
+ * supports, read it, don't invent modes"). `AFTER_MODES` is `js/controls/
+ * rows.mjs`'s own real list (`fixed`/`increment`/`decrement`/`randomize`),
+ * re-exported through `state.mjs` -- the exact modes `applyAfterGenerate`
+ * (this module's queue-hook advance, below) actually implements, nothing
+ * invented here. Disabled under the SAME reason as the seed field itself:
+ * if the context supplies `seed`, there is nothing here for a mode to
+ * advance. Not itself part of `SAMPLER_FIELDS` (it has no context-bridge
+ * socket of its own -- it's a UI-only sibling setting), so it's built
+ * separately rather than through `buildSamplerField`'s own per-field loop. */
+function buildSeedAfterGenerateField(doc, node, sampler, eff) {
+  const isSupplied = !!eff.supplied.seed;
+  const disabledReason = isSupplied
+    ? "The seed itself is supplied by the Context Bridge upstream — there is nothing here for this mode to advance."
+    : undefined;
+  const fieldRoot = buildStepperField(doc, {
+    label: "seed_after_generate", value: sampler.seed_after_generate, options: AFTER_MODES, disabledReason,
+  }, {
+    onChange: (v) => { sampler.seed_after_generate = v; persistGenState(node); },
+  }).root;
+  return withInfoIcon(doc, fieldRoot, disabledReason, true);
+}
+
 function buildSamplerSection(doc, node, ctx, state) {
   const expanded = !!state.ui_expanded.sampler;
   const sampler = state.sampler;
@@ -1504,6 +1551,9 @@ function buildSamplerSection(doc, node, ctx, state) {
     buildBody: (body) => {
       SAMPLER_FIELDS.forEach((field) => {
         body.appendChild(buildSamplerField(doc, node, ctx, field, sampler, eff));
+        if (field === "seed") {
+          body.appendChild(buildSeedAfterGenerateField(doc, node, sampler, eff));
+        }
       });
       body.appendChild(buildNumericField(doc, {
         label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },

@@ -333,6 +333,31 @@ const CSS = `
   border-top: 6px solid var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-fld-combo:hover .wtn-fld-combo-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-fld-combo:hover .wtn-fld-caret { border-top-color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+
+/* ── seed row: text entry + roll -- NOT a drag row (a seed runs to
+   2**64-1; a slider over that range is unusable, and holding it as a JS
+   number rounds past Number.MAX_SAFE_INTEGER -- see js/anima/state.mjs's
+   own doc comment). Same box/height/font as .wtn-fld-num so it sits flush
+   with every other row in the same section, but the interaction is direct
+   text entry (clamped on commit by the CALLER -- this module has no
+   opinion on the -1 "random" sentinel) plus a roll button, never a drag. ── */
+.wtn-fld-seed { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
+  padding: 0 9px; border-radius: 6px; margin-bottom: ${FLD_ROW_GAP}px;
+  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  font-size: ${FLD_FONT}px; }
+.wtn-fld-seed.wtn-fld-disabled { opacity: .55; }
+.wtn-fld-seed-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; flex: none; }
+/* min-width: 0 -- same reasoning as .wtn-fld-num-val: a 20-digit seed must
+   be free to shrink/scroll inside the box rather than blowing out the row. */
+.wtn-fld-seed-input { flex: 1 1 auto; min-width: 0; margin-left: auto; text-align: right;
+  font-family: var(--wtn-font-mono, monospace); font-size: ${FLD_MONO}px; color: var(--wtn-ink, ${TOKENS.ink});
+  background: transparent; border: none; outline: none; padding: 0; }
+.wtn-fld-seed-input::placeholder { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+.wtn-fld-seed.wtn-fld-disabled .wtn-fld-seed-input { pointer-events: none; }
+.wtn-fld-seed-roll { flex: none; cursor: pointer; font-size: ${FLD_MONO}px; line-height: 1;
+  color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-fld-seed-roll:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
+.wtn-fld-seed.wtn-fld-disabled .wtn-fld-seed-roll { pointer-events: none; cursor: default; }
 `;
 
 export function injectFieldStyles(doc) {
@@ -757,5 +782,89 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   }
 
   return { root, val, comboEl: combo, repaint, getValue: () => currentValue };
+}
+
+// ---------------------------------------------------------------------------
+// Seed row -- text entry + roll, replacing a drag-to-set numeric row for a
+// value that runs to 2**64-1 (`js/anima/state.mjs`'s own doc comment has the
+// full "why": a slider over that range is unusable, and holding it as a JS
+// number rounds past `Number.MAX_SAFE_INTEGER`). This module stays agnostic
+// of Anima's own `-1` "random" sentinel -- `onCommit` receives the RAW typed
+// text and the CALLER clamps it (`js/anima/state.mjs`'s `normalizeSeed`),
+// same split of responsibility `buildNumericField`/`buildStepperField` above
+// already have (this module owns DOM + wiring, the caller owns value
+// semantics).
+// ---------------------------------------------------------------------------
+
+/**
+ * `spec`: `{ label, value, disabledReason }`. `value` is stringified as-is
+ * for display (a seed is already a string in state by the time this is
+ * called — `js/anima/state.mjs`'s own contract — but this accepts a number
+ * too, so a run-reported value can be handed straight through without the
+ * caller stringifying it first). `onCommit(rawTypedText)` fires on `change`
+ * (native blur-with-a-different-value) and on Enter; `onRoll()` fires when
+ * the roll glyph is clicked. Returns `{ root, input, roll, repaint(value) }`.
+ */
+export function buildSeedField(doc, spec, { onCommit, onRoll } = {}) {
+  const { label, value, disabledReason } = spec;
+  const root = el(doc, "div", `wtn-fld-seed${disabledReason ? " wtn-fld-disabled" : ""}`);
+  if (disabledReason) {
+    root.title = disabledReason;
+  }
+  const name = el(doc, "span", "wtn-fld-seed-name");
+  name.textContent = label;
+  root.appendChild(name);
+
+  const input = el(doc, "input", "wtn-fld-seed-input");
+  input.type = "text";
+  if (typeof input.setAttribute === "function") {
+    input.setAttribute("inputmode", "numeric");
+  }
+  input.value = value == null ? "" : String(value);
+  input.disabled = !!disabledReason;
+  root.appendChild(input);
+
+  // A roll button, not letter-glyph text -- ⟳ reads as "generate a fresh
+  // one" without needing its own label; `aria-label` carries the same
+  // meaning for assistive tech.
+  const roll = el(doc, "span", "wtn-fld-seed-roll");
+  roll.textContent = "⟳";
+  roll.setAttribute("role", "button");
+  roll.setAttribute("aria-label", "Roll a new seed");
+  root.appendChild(roll);
+
+  const repaint = (v) => {
+    input.value = v == null ? "" : String(v);
+  };
+
+  if (!disabledReason) {
+    const commit = () => {
+      if (typeof onCommit === "function") {
+        onCommit(input.value);
+      }
+    };
+    input.addEventListener("change", commit);
+    // Enter commits immediately rather than waiting for a blur that may
+    // never come (the field can stay focused) -- `preventDefault` guards
+    // against a host page treating Enter as a form submission.
+    input.addEventListener("keydown", (e) => {
+      if (e && e.key === "Enter") {
+        if (typeof e.preventDefault === "function") {
+          e.preventDefault();
+        }
+        commit();
+      }
+    });
+    roll.addEventListener("click", (e) => {
+      if (typeof e.stopPropagation === "function") {
+        e.stopPropagation();
+      }
+      if (typeof onRoll === "function") {
+        onRoll();
+      }
+    });
+  }
+
+  return { root, input, roll, repaint };
 }
 

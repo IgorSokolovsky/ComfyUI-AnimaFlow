@@ -84,7 +84,32 @@
  * Settings` carries no such step, and `DEFAULT_EXPANDED_PREVIEW_SECTIONS`
  * (which used to exist for exactly this) is deleted, not left as a dead
  * always-`{}` shape.
+ *
+ * **`sampler.seed` is a STRING (seed-is-a-string task, `docs/control-panel-
+ * design.md` §4's "seed is a STRING in state" note, extended to this
+ * track)** — a real seed runs past `Number.MAX_SAFE_INTEGER` (2**53-1), so a
+ * numeric seed silently rounds at the top of the range on EVERY JSON
+ * round-trip this module's own `persistGenState` does (every edit, not just
+ * save). `normalizeSeed` below is the JS twin of `src/anima/settings.py`'s
+ * `normalize_seed` and MUST agree with it byte-for-byte (same fixture-parity
+ * contract as every other normalizer here) — it reuses `js/controls/
+ * rows.mjs`'s already-tested `clampSeedString` for the general `[0,
+ * 2**64-1]` clamp rather than writing a second one (that cross-track import
+ * is already established: `js/shared/fields.mjs` imports pure maths from the
+ * same module), wrapped in a `-1`-sentinel check `clampSeedString` itself
+ * has no concept of (`js/controls/` has no "-1 == random" semantics at all —
+ * its own seed rows always hold a concrete value and advance via `after`
+ * modes instead, never a resolve-at-runtime sentinel) — `clampSeedString`'s
+ * digit-only regex would otherwise turn `"-1"` into `"1"` (it ignores the
+ * sign), silently turning "random" into "always seed 1".
  */
+
+import { clampSeedString, randomSeedString, applyAfterGenerate, AFTER_MODES } from "../controls/rows.mjs";
+
+// Re-exported so `interaction.mjs`/`render.mjs` never need their own direct
+// `js/controls/rows.mjs` import just for the seed row (this module's top doc
+// comment: reuse the already-tested pure maths, don't re-derive it).
+export { clampSeedString, randomSeedString, applyAfterGenerate, AFTER_MODES };
 
 // ---------------------------------------------------------------------------
 // Schema / version — mirrors src/anima/settings.py exactly.
@@ -195,7 +220,10 @@ export const DEFAULT_GENERATION_SETTINGS = {
   schema: GENERATION_SETTINGS_SCHEMA,
   version: GENERATION_SETTINGS_VERSION,
   sampler: {
-    seed: -1,
+    // A STRING (this module's top doc comment) -- -1 == "random"; resolving
+    // that into a real seed at run time is `pipeline.py`'s job, not this
+    // normalizer's concern (mirrors `src/anima/settings.py`'s own comment).
+    seed: "-1",
     seed_after_generate: "fixed",
     steps: 32,
     cfg: 5.0,
@@ -380,6 +408,46 @@ export function migrateVersion(rawVersion, currentVersion) {
   return version;
 }
 
+/** Whether `raw` is the seed-is-a-string task's "random" sentinel, `-1` --
+ * checked BEFORE `clampSeedString`'s general `[0, 2**64-1]` clamp (this
+ * module's top doc comment: that helper has no notion of the sentinel and
+ * would otherwise floor a `"-1"` to `"1"`, since its digit-only regex
+ * ignores the sign). Accepts a number (`-1` or `-1.0` -- JS has no separate
+ * float type) or a numeric string (whitespace-tolerant); anything else
+ * (including a boolean, which JS -- unlike Python -- does NOT consider a
+ * number here since `typeof true === "boolean"`) is not the sentinel. */
+function isSeedSentinel(raw) {
+  if (typeof raw === "number") {
+    return raw === -1;
+  }
+  if (typeof raw === "string") {
+    return raw.trim() === "-1";
+  }
+  return false;
+}
+
+/** `raw` (an int, a numeric string, a float, or garbage) -> the canonical
+ * STRING seed form -- JS twin of `src/anima/settings.py`'s `normalize_seed`,
+ * MUST agree with it byte-for-byte for the same input (this module's top
+ * doc comment). `-1` survives verbatim as the "random" sentinel; everything
+ * else is `clampSeedString`'s job (already tolerant of garbage, `Infinity`/
+ * `NaN`, negatives, and arbitrarily large digit strings). */
+export function normalizeSeed(raw) {
+  if (isSeedSentinel(raw)) {
+    return "-1";
+  }
+  return clampSeedString(raw);
+}
+
+/** The one thing the generic merge can't do for `sampler` on its own: coerce
+ * `seed` to the canonical STRING form (`normalizeSeed` above) -- port of
+ * settings.py's `_fixup_sampler`. */
+function fixupSampler(rawSampler) {
+  const sampler = isPlainObject(rawSampler) ? rawSampler : {};
+  sampler.seed = normalizeSeed(sampler.seed);
+  return sampler;
+}
+
 /** Two things the generic merge can't do alone for `detailer.blocks` -- port
  * of settings.py's `_fixup_detailer`: an unknown block id merges against the
  * FACE template (not verbatim), and `MAX_DETAILER_PASSES` caps `order` (its
@@ -442,6 +510,7 @@ export function normalizeGenerationSettings(raw) {
   }
 
   const merged = deepMergeDefaults(DEFAULT_GENERATION_SETTINGS, parsed);
+  merged.sampler = fixupSampler(merged.sampler);
   merged.detailer = fixupDetailer(merged.detailer);
   merged.schema = GENERATION_SETTINGS_SCHEMA;
   merged.version = migrateVersion(parsed.version, GENERATION_SETTINGS_VERSION);

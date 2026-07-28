@@ -299,14 +299,28 @@ def run_first_pass(
     """
     resolved_sampler = resources_mod.resolve_sampler_inputs(settings.get("sampler", {}), wired_sampler)
     resolved_sampler = dict(resolved_sampler)
-    seed = resolved_sampler.get("seed")
-    if not isinstance(seed, int) or seed < 0:
-        # VERIFY-IN-COMFYUI: -1 ("random") resolution -- ComfyUI's own
-        # frontend normally resolves a random seed into a concrete int
-        # BEFORE the prompt reaches the node (control_after_generate), so in
-        # practice this node should never actually see -1. Falling back to 0
-        # here rather than raising keeps a hand-edited API payload alive.
-        seed = 0
+    # `settings.sampler.seed` is now a STRING (`settings_mod.normalize_seed` --
+    # seeds run past `Number.MAX_SAFE_INTEGER`, so the JS side keeps it a
+    # string end-to-end; see that module's own "Seed" section). A wired
+    # value (from the context bridge's own `seed` socket) may instead be a
+    # real `int`. `resolve_seed_int` is the ONE place either form becomes the
+    # real `int` `run_ksampler` needs -- Python ints are arbitrary-precision,
+    # so nothing is lost converting even a 2**64-1 seed here.
+    #
+    # VERIFY-IN-COMFYUI: -1 ("random") resolution -- ComfyUI's own frontend
+    # normally resolves a random seed into a concrete int BEFORE the prompt
+    # reaches the node (control_after_generate), so in practice this node
+    # should never actually see -1. `resolve_seed_int` falls back to `0` for
+    # that (and for anything else that doesn't parse to a non-negative int)
+    # rather than raising, keeping a hand-edited API payload alive -- this is
+    # the SAME fallback this function always had, only centralized as a pure
+    # function per `settings.py`'s own pure/impure contract, not a behaviour
+    # change.
+    seed = settings_mod.resolve_seed_int(resolved_sampler.get("seed"))
+    # Stored back so later stages (`run_highres`/`run_detailer`/`run_upscale`,
+    # each reading `base_sampler.get("seed", 0)`) inherit the already-resolved
+    # `int`, not the string form.
+    resolved_sampler["seed"] = seed
 
     patched_model = patch_shift(model, settings.get("sampler", {}).get("shift", 3.0))
     patched_model = apply_mod_guidance(patched_model, clip, positive, negative, settings.get("mod_guidance", {}))

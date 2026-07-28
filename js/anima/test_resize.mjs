@@ -167,6 +167,11 @@ import {
   removeDetailerBlock,
   moveDetailerBlock,
   isBuiltinDetailerBlock,
+  normalizeSeed,
+  clampSeedString,
+  randomSeedString,
+  applyAfterGenerate,
+  AFTER_MODES,
 } from "./state.mjs";
 
 import * as render from "./render.mjs";
@@ -507,10 +512,10 @@ function openGearMenu(header) {
 function findFieldByLabel(root, label) {
   const containers = queryAll(root, (n) =>
     hasClass(n, "wtn-fld-num") || hasClass(n, "wtn-fld-stepper") || hasClass(n, "wtn-an-boolfield")
-    || hasClass(n, "wtn-an-field"));
+    || hasClass(n, "wtn-an-field") || hasClass(n, "wtn-fld-seed"));
   return containers.find((f) => {
     const nameEl = f.children.find((c) =>
-      hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name"))
+      hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name") || hasClass(c, "wtn-fld-seed-name"))
       || f.children[0];
     return nameEl && nameEl.textContent === label;
   });
@@ -777,6 +782,74 @@ test("Detailer block helpers: add respects MAX_DETAILER_PASSES, face/eye are unr
   moveDetailerBlock(detailer, "eye", -1);
   assert.notDeepEqual(detailer.order, before);
   void id2;
+});
+
+// ===========================================================================
+// A2. Seed-is-a-string task — `normalizeSeed`/`resolveSeed` parity with
+// `src/anima/settings.py`'s `normalize_seed`, and `applyAfterGenerate`'s
+// modes as the ONE source of truth for the seed row's mode picker.
+// ===========================================================================
+
+test("normalizeGenerationSettings: default seed is the STRING '-1' sentinel, not the number -1", () => {
+  const normalized = normalizeGenerationSettings("{}");
+  assert.equal(normalized.sampler.seed, "-1");
+  assert.equal(typeof normalized.sampler.seed, "string");
+});
+
+test("normalizeSeed: an old bare-int seed (a pre-existing saved workflow) migrates to the string form", () => {
+  assert.equal(normalizeSeed(123456789), "123456789");
+  const normalized = normalizeGenerationSettings(JSON.stringify({ sampler: { seed: 123456789 } }));
+  assert.equal(normalized.sampler.seed, "123456789");
+});
+
+test("normalizeSeed: a huge 20-digit seed survives verbatim -- the exact regression this task exists for", () => {
+  const huge = "16963467365598029952"; // a real seed from the user's own run, > Number.MAX_SAFE_INTEGER
+  assert.equal(normalizeSeed(huge), huge);
+  const normalized = normalizeGenerationSettings(JSON.stringify({ sampler: { seed: huge } }));
+  assert.equal(normalized.sampler.seed, huge, "no precision loss through the JSON round-trip");
+});
+
+test("normalizeSeed: -1 (number, string, or -1.0) stays exactly '-1', never clamped to 0", () => {
+  assert.equal(normalizeSeed(-1), "-1");
+  assert.equal(normalizeSeed("-1"), "-1");
+  assert.equal(normalizeSeed(-1.0), "-1");
+});
+
+test("normalizeSeed: out-of-range values clamp -- above 2**64-1 ceilings at the max; a negative-but-not-sentinel value stays non-negative (via clampSeedString's own tested digit-extraction, js/controls/test_rows.mjs's 'clampSeedString(-5) === \"5\"' -- NOT floored to 0 the way src/anima/settings.py's normalize_seed does; a known, accepted, contained divergence for this one hostile-input edge case, since reusing the already-tested clamp beats a second implementation)", () => {
+  assert.equal(normalizeSeed(-5), "5");
+  const maxSeed = (2n ** 64n - 1n).toString();
+  assert.equal(normalizeSeed(maxSeed + "0"), maxSeed); // one digit past the max
+  assert.equal(normalizeSeed(maxSeed), maxSeed); // exactly the max survives
+});
+
+test("normalizeSeed: a float and garbage both normalize sanely rather than throwing", () => {
+  assert.equal(normalizeSeed(42.0), "42");
+  for (const bad of ["not-a-seed", null, undefined, [1, 2], {}, NaN, Infinity]) {
+    assert.doesNotThrow(() => normalizeSeed(bad));
+    assert.equal(typeof normalizeSeed(bad), "string");
+  }
+});
+
+test("normalizeSeed reuses js/controls/rows.mjs's clampSeedString for the general clamp -- not a second implementation", () => {
+  // Any input that ISN'T the -1 sentinel must delegate byte-for-byte to
+  // clampSeedString (this module's own top doc comment: reuse, don't
+  // re-derive). A non-numeric string with an embedded number exercises
+  // clampSeedString's own digit-extraction behaviour.
+  assert.equal(normalizeSeed("seed:42"), clampSeedString("seed:42"));
+});
+
+test("randomSeedString (roll) produces an in-range, digit-only string every time", () => {
+  const maxSeed = 2n ** 64n - 1n;
+  for (let i = 0; i < 20; i += 1) {
+    const s = randomSeedString();
+    assert.match(s, /^\d+$/, "must be digits only");
+    const n = BigInt(s);
+    assert.ok(n >= 0n && n <= maxSeed, `roll must stay in [0, 2**64-1]: got ${s}`);
+  }
+});
+
+test("the seed row's mode picker offers EXACTLY applyAfterGenerate's real modes -- fixed/increment/decrement/randomize, nothing invented", () => {
+  assert.deepEqual(AFTER_MODES, ["fixed", "increment", "decrement", "randomize"]);
 });
 
 // ===========================================================================
@@ -1361,8 +1434,8 @@ test("a context-supplied sampler field renders as the SAME field shape, genuinel
   assert.ok(body, "Sampler must be expanded by default");
 
   const seedField = findFieldByLabel(body, "seed");
-  assert.ok(seedField && hasClass(seedField, "wtn-fld-num") && hasClass(seedField, "wtn-fld-disabled"),
-    "seed is context-supplied -- must render as the SAME numeric field shape, genuinely disabled");
+  assert.ok(seedField && hasClass(seedField, "wtn-fld-seed") && hasClass(seedField, "wtn-fld-disabled"),
+    "seed is context-supplied -- must render as the SAME seed field shape, genuinely disabled");
   const seedWrap = seedField.parentNode;
   assert.ok(hasClass(seedWrap, "wtn-an-fieldrow"), "a disabled field is paired with its ⓘ inside a .wtn-an-fieldrow wrapper");
   const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
@@ -1396,7 +1469,102 @@ test("no Context Bridge resolved -- every sampler field renders editable, and th
   const body = sectionBodyOf(header);
   assert.ok(!queryAll(body, (n) => hasClass(n, "wtn-fld-disabled")).length, "nothing should render disabled with no bridge resolved");
   const seedField = findFieldByLabel(body, "seed");
-  assert.ok(seedField && hasClass(seedField, "wtn-fld-num") && !hasClass(seedField, "wtn-fld-disabled"));
+  assert.ok(seedField && hasClass(seedField, "wtn-fld-seed") && !hasClass(seedField, "wtn-fld-disabled"));
+});
+
+test("the seed row renders as TEXT + ROLL (js/shared/fields.mjs's buildSeedField), never the old drag row -- no .wtn-fld-num anywhere near it", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(seedField, "seed field must exist");
+  assert.ok(hasClass(seedField, "wtn-fld-seed"), "must be the seed field shape");
+  assert.ok(!hasClass(seedField, "wtn-fld-num"), "must NOT be the old numeric drag row");
+
+  const input = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  assert.ok(input, "must carry a real text input, not a canvas-style drag fill");
+  assert.equal(input.tagName, "input");
+  assert.equal(input.type, "text");
+  assert.ok(!seedField.children.some((c) => hasClass(c, "wtn-fld-num-fill")), "no drag fill bar -- this is not a slider");
+
+  const roll = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-roll"));
+  assert.ok(roll, "must carry a roll control");
+
+  // The seed_after_generate mode picker is its OWN row, immediately after
+  // the seed row, rendered as the shared stepper (not invented DOM).
+  const modeField = findFieldByLabel(body, "seed_after_generate");
+  assert.ok(modeField && hasClass(modeField, "wtn-fld-stepper"), "the mode picker must exist as a stepper row");
+});
+
+test("typing a 20-digit seed into the field persists it VERBATIM into the serialized generation_settings widget -- no precision loss", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const huge = "16963467365598029952"; // past Number.MAX_SAFE_INTEGER
+  const seedField = findFieldByLabel(body, "seed");
+  const input = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  input.value = huge;
+  fire(input, "change");
+
+  const widget = getGenSettingsWidget(node);
+  const persisted = JSON.parse(widget.value);
+  assert.equal(persisted.sampler.seed, huge, "the widget's own serialized JSON must hold the exact digits, not a rounded double");
+});
+
+test("clicking the roll button writes an in-range seed and persists it to the widget", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const seedField = findFieldByLabel(body, "seed");
+  const roll = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-roll"));
+  fire(roll, "click");
+
+  const maxSeed = 2n ** 64n - 1n;
+  const widget = getGenSettingsWidget(node);
+  const persisted = JSON.parse(widget.value);
+  assert.match(persisted.sampler.seed, /^\d+$/);
+  const n = BigInt(persisted.sampler.seed);
+  assert.ok(n >= 0n && n <= maxSeed);
+
+  const input = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  assert.equal(input.value, persisted.sampler.seed, "the input must repaint to the freshly-rolled value");
+});
+
+test("cycling the seed_after_generate stepper writes and persists the new mode", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  const modeField = findFieldByLabel(body, "seed_after_generate");
+  const before = genState(node).sampler.seed_after_generate;
+  assert.equal(before, "fixed");
+  const rightArrow = modeField.children.find((c) => c.children && c.children.length
+    && c.children.some((cc) => hasClass(cc, "wtn-fld-arrow") && hasClass(cc, "wtn-fld-right")));
+  const arrow = (rightArrow || modeField).children.find
+    ? queryAll(modeField, (n) => hasClass(n, "wtn-fld-arrow") && hasClass(n, "wtn-fld-right"))[0]
+    : null;
+  assert.ok(arrow, "the stepper's right arrow must exist");
+  fire(arrow, "click");
+
+  const widget = getGenSettingsWidget(node);
+  const persisted = JSON.parse(widget.value);
+  assert.notEqual(persisted.sampler.seed_after_generate, before, "cycling the arrow must move the mode and persist it");
+  assert.ok(AFTER_MODES.includes(persisted.sampler.seed_after_generate));
 });
 
 test("fail-closed cases (context unwired, wired to a non-bridge, wired through a Reroute-shaped dead end, a cycle) all render every sampler field editable; even when a Reroute DOES resolve to a real bridge, a field the bridge itself doesn't wire stays editable", () => {
@@ -2029,8 +2197,8 @@ test("handleGeneratorExecuted: a list-wrapped stash makes computeEffectiveContex
   const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
   const seedField = findFieldByLabel(body, "seed");
   assert.ok(hasClass(seedField, "wtn-fld-disabled"), "run-supplied via a list-wrapped payload -- must render disabled");
-  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
-  assert.equal(val.textContent, "777", "must show the RUN's own value from the list-wrapped payload");
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  assert.equal(val.value, "777", "must show the RUN's own value from the list-wrapped payload");
 });
 
 test("computeEffectiveContextSupplied: LIVE-only supplied (bridge wired, no run yet)", () => {
@@ -2118,8 +2286,8 @@ test("a run-supplied sampler field's disabled value is the RUN's own number, not
   const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
   const seedField = findFieldByLabel(body, "seed");
   assert.ok(hasClass(seedField, "wtn-fld-disabled"), "run-supplied -- must render disabled");
-  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
-  assert.equal(val.textContent, "777", "must show the RUN's value, not the settings tree's default seed");
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  assert.equal(val.value, "777", "must show the RUN's value, not the settings tree's default seed");
 
   const seedWrap = seedField.parentNode;
   const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
@@ -2139,8 +2307,8 @@ test("a run that reported supplied with NO value falls back to rendering the set
   const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
   const seedField = findFieldByLabel(body, "seed");
   assert.ok(hasClass(seedField, "wtn-fld-disabled"));
-  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
-  assert.equal(val.textContent, String(settingsSeed), "no run value -- must show the settings tree's own value, never invent one");
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  assert.equal(val.value, String(settingsSeed), "no run value -- must show the settings tree's own value, never invent one");
 
   const seedWrap = seedField.parentNode;
   const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
@@ -3695,6 +3863,75 @@ test("index.js: BOTH onConnectionsChange hooks (the Bridge's forward-walk one, a
   // on the Bridge's context sockets, never the Preview's own images/
   // metadata_json, so its repaint must still fire unconditionally.
   assert.match(genHookBody, /repaintPreview\(this, this\._anCtx\)/);
+});
+
+// ===========================================================================
+// H5. seed_after_generate advance-on-queue (seed-is-a-string task, item 3) --
+//     `index.js` can't be imported directly here (top-level absolute
+//     `/scripts/app.js` import, same H4 constraint above), so the QUEUE-HOOK
+//     WIRING is covered by a static source scan (same technique as H4) and
+//     the underlying PURE advance maths (`applyAfterGenerate`, reused from
+//     `js/controls/rows.mjs` via `state.mjs`) is exercised directly, matching
+//     this file's own established split for un-instantiable `index.js` glue.
+// ===========================================================================
+
+test("index.js: wraps app.queuePrompt a SECOND time (composing with submit_guard.mjs's own wrap, not replacing it) to advance every Generator's seed AFTER the real queuePrompt resolves", () => {
+  const src = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(src, /function installQueuePromptHook/);
+  assert.match(src, /_queuePromptWrapped/, "must guard against double-wrapping (hot reload)");
+  assert.match(src, /app\.queuePrompt\s*=\s*function/, "must actually reassign app.queuePrompt");
+  assert.match(src, /installQueuePromptHook\(\)/, "must actually be called somewhere (beforeRegisterNodeDef)");
+
+  const hookIdx = src.indexOf("function installQueuePromptHook");
+  const hookBody = src.slice(hookIdx, hookIdx + 900);
+  assert.match(hookBody, /const result = original\.apply\(this, args\);/, "must call the ORIGINAL queuePrompt (whatever it already is -- composes with submit_guard.mjs's own wrap)");
+  assert.match(hookBody, /Promise\.resolve\(result\)/, "must wait for the ORIGINAL call to resolve before advancing -- documented order: the value present AT QUEUE TIME is the one that ran, THEN it advances");
+  assert.match(hookBody, /advanceGeneratorSeedsAfterRun\(\);/);
+  assert.match(hookBody, /return result;/, "the original's own return value/rejection must reach the real caller UNMODIFIED");
+});
+
+test("index.js: advanceGeneratorSeedsAfterRun reads sampler.seed/seed_after_generate, calls applyAfterGenerate, and only persists+repaints when the value actually moved", () => {
+  const src = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = src.indexOf("function advanceGeneratorSeedsAfterRun");
+  assert.ok(fnIdx >= 0);
+  const fnBody = src.slice(fnIdx, fnIdx + 1800);
+  assert.match(fnBody, /findGeneratorNodes\(\)/, "must enumerate every live AnimaGenerator node");
+  assert.match(fnBody, /mods\.state\.applyAfterGenerate\(rowLike\)/, "must reuse applyAfterGenerate's pure logic, not reimplement per-mode maths");
+  assert.match(fnBody, /sampler\.seed_after_generate/, "the mode driving the advance must be the row's OWN seed_after_generate, not an invented mode");
+  assert.match(fnBody, /if \(rowLike\.value !== previousSeed\)/, "must only persist/repaint when the seed actually moved (fixed mode: no-op)");
+  assert.match(fnBody, /persistGenState\(node\)/);
+  assert.match(fnBody, /repaintGenerator\(node, node\._anCtx\)/);
+});
+
+test("applyAfterGenerate (the pure maths index.js's queue hook reuses): fixed leaves the value untouched; randomize/increment/decrement each advance it, in range", () => {
+  const fixedRow = { value: "12345", opts: { after: "fixed" } };
+  applyAfterGenerate(fixedRow);
+  assert.equal(fixedRow.value, "12345", "fixed must never move the value");
+
+  const randRow = { value: "12345", opts: { after: "randomize" } };
+  applyAfterGenerate(randRow);
+  assert.notEqual(randRow.value, "12345");
+  assert.match(randRow.value, /^\d+$/);
+
+  const incRow = { value: "100", opts: { after: "increment" } };
+  applyAfterGenerate(incRow);
+  assert.equal(incRow.value, "101");
+
+  const decRow = { value: "100", opts: { after: "decrement" } };
+  applyAfterGenerate(decRow);
+  assert.equal(decRow.value, "99");
+
+  // Documented order, simulated end-to-end without a real app/window: the
+  // value present when a prompt is queued is read FIRST (capturing
+  // `queuedSeed`), and only AFTER that does the advance happen -- so a
+  // downstream consumer that read the seed at queue time never sees the
+  // advanced value, only the next run does.
+  const row = { value: "500", opts: { after: "increment" } };
+  const queuedSeed = row.value; // "the value present AT QUEUE TIME"
+  applyAfterGenerate(row); // "THEN it advances"
+  assert.equal(queuedSeed, "500");
+  assert.equal(row.value, "501");
+  assert.notEqual(row.value, queuedSeed, "the row must have moved past what was actually queued");
 });
 
 // ===========================================================================

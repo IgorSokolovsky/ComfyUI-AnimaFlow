@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,88 @@ GENERATION_SETTINGS_VERSION = 1
 # May grow later, must never shrink (same append-only spirit as
 # `nodes/controls/control_panel.py`'s `MAX_ROWS`, `BACKLOG.md` §4).
 MAX_DETAILER_PASSES = 4
+
+# ---------------------------------------------------------------------------
+# Seed — a STRING in state (`control-panel-design.md` §4's "seed is a STRING
+# in state" note, extended to this track): seeds run to 2**64-1, past JS's
+# `Number.MAX_SAFE_INTEGER` (2**53-1), so a numeric seed silently rounds at
+# the top of the range on every JSON round-trip through the frontend (that
+# round-trip happens on EVERY edit, not just save — see `state.mjs`'s mirror
+# of this same rule). Keeping it a string end-to-end through the JS/JSON
+# layer is what makes a 20-digit seed survive verbatim; `resolve_seed_int`
+# below is the ONE place it becomes a real `int` again, at the boundary
+# where `pipeline.py` hands it to `KSampler`.
+# ---------------------------------------------------------------------------
+
+MAX_SEED = 2 ** 64 - 1
+
+
+def normalize_seed(value: Any) -> str:
+    """A hand-edited payload's/old workflow's/frontend's seed value -> the
+    canonical STRING form this settings tree carries. Accepts an `int`, a
+    `float` that is integral (or at least finite — `int()` truncates a
+    fractional one rather than raising, since a seed was never meant to be
+    fractional to begin with), or a `str` (an old saved workflow's seed was
+    a bare JSON int; `json.loads` hands that to us as a Python `int`
+    already, so the `str` branch below mainly serves an already-frontend-
+    normalized value or a hand-typed API payload).
+
+    `-1` is preserved VERBATIM as the "random" sentinel (this module's own
+    `DEFAULT_GENERATION_SETTINGS` comment: resolving it into a real seed at
+    run time is `pipeline.py`'s job, not this function's) — checked BEFORE
+    the general clamp below, since `[0, MAX_SEED]` would otherwise floor it
+    to `0` and silently turn "random" into "always seed 0". Anything else
+    clamps to `[0, MAX_SEED]`; a value this can't make sense of at all
+    (`None`, `NaN`, non-numeric garbage) falls back to `"0"` rather than
+    raising, matching this module's own hostile-input contract.
+    """
+    if isinstance(value, bool):
+        # `bool` is an `int` subclass in Python — reject before the `int`
+        # branch below can silently accept `True`/`False` as `1`/`0`.
+        return "0"
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return "0"
+        value = int(value)
+    if isinstance(value, int):
+        n = value
+    else:
+        try:
+            n = int(str(value).strip())
+        except (TypeError, ValueError):
+            return "0"
+    if n == -1:
+        return "-1"
+    if n < 0:
+        n = 0
+    elif n > MAX_SEED:
+        n = MAX_SEED
+    return str(n)
+
+
+def resolve_seed_int(value: Any) -> int:
+    """The final `int` `pipeline.py` hands to `KSampler` for a seed field —
+    the ONE boundary where the STRING form `normalize_seed` produces (or
+    any other value a hand-edited/wired payload might carry) becomes a real
+    `int` again. Python ints are arbitrary-precision, so a 2**64-1 seed
+    round-trips through this exactly.
+
+    Mirrors the pre-existing fallback (`pipeline.py`'s own, unchanged, now
+    just centralized here as a pure function per this module's own
+    pure/impure contract): anything that doesn't parse to a non-negative
+    int — including the `-1` "random" sentinel itself — becomes `0`.
+    ComfyUI's own frontend normally resolves "random" into a concrete int
+    via `control_after_generate` before the prompt ever reaches this node,
+    so this is a hand-edited-payload safety net, not the actual
+    randomization path (VERIFY-IN-COMFYUI, unchanged from before this
+    seed-is-a-string task).
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if n >= 0 else 0
+
 
 # ---------------------------------------------------------------------------
 # Per-block detailer defaults — upstream's face/eye blocks verbatim
@@ -147,9 +230,10 @@ DEFAULT_GENERATION_SETTINGS: Dict[str, Any] = {
     "schema": GENERATION_SETTINGS_SCHEMA,
     "version": GENERATION_SETTINGS_VERSION,
     "sampler": {
-        # -1 == "random"; resolving that into a real seed at run time is
-        # `pipeline.py`'s job, not a settings-normalization concern.
-        "seed": -1,
+        # A STRING (module's own "Seed" section above) — -1 == "random";
+        # resolving that into a real seed at run time is `pipeline.py`'s
+        # job (`resolve_seed_int`), not a settings-normalization concern.
+        "seed": "-1",
         "seed_after_generate": "fixed",
         "steps": 32,
         "cfg": 5.0,
@@ -331,6 +415,24 @@ def migrate_version(raw_version: Any, current_version: int = GENERATION_SETTINGS
 _migrate_version = migrate_version
 
 
+def _fixup_sampler(sampler: Any) -> Dict[str, Any]:
+    """The one thing the generic dict-merge above can't do for `sampler` on
+    its own: coerce `seed` to the canonical STRING form (this module's own
+    "Seed" section, `normalize_seed`). The generic merge only validates
+    SHAPE — an old workflow's bare JSON `int` seed, or a hand-edited
+    payload's float/garbage, passes through untouched as far as that merge
+    is concerned, since `seed`'s DEFAULT is itself a scalar (a string) and
+    the merge's own scalar rule is "value if given, else default" with no
+    type coercion. Mirrors `_fixup_detailer`'s role for the same reason:
+    the fixture-tested defaults tree can't own a special case, this one
+    function does.
+    """
+    if not isinstance(sampler, dict):
+        sampler = {}
+    sampler["seed"] = normalize_seed(sampler.get("seed"))
+    return sampler
+
+
 def _fixup_detailer(detailer: Any) -> Dict[str, Any]:
     """Two things the generic dict-merge above can't do on its own for
     `detailer.blocks`:
@@ -397,6 +499,7 @@ def normalize_generation_settings(raw: Any) -> Dict[str, Any]:
         parsed = {}
 
     merged = _deep_merge_defaults(DEFAULT_GENERATION_SETTINGS, parsed)
+    merged["sampler"] = _fixup_sampler(merged.get("sampler"))
     merged["detailer"] = _fixup_detailer(merged.get("detailer"))
     merged["schema"] = GENERATION_SETTINGS_SCHEMA
     merged["version"] = _migrate_version(parsed.get("version"))
