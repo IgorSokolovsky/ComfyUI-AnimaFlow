@@ -29,6 +29,7 @@ the projects below, whose notices are reproduced here as their licenses require.
 | `src/anima/settings.py` (defaults tree) | `easyuse_anima/aio/generation_defaults.py`'s `AIO_GENERATION_DEFAULT_SETTINGS`, trimmed to the five stages this pack ships, with the two `guide_size_for`/`noise_mask_feather` divergences already fixed in the defaults themselves |
 | `src/anima/sampler.py` | `easyuse_anima/aio/sampling.py:378-436`'s `inherit_sampler_settings` field-coverage semantics |
 | `src/anima/pipeline.py` | call shapes read from `easyuse_anima/aio/model_preparation.py` (`ModelSamplingAuraFlow`/`LoraLoader` invocation), `easyuse_anima/prompt/conditioning.py:85-138` (`AnimaModGuidance.patch()`'s defensive old/new-signature probe), and `easyuse_anima/image/sam3.py` + `easyuse_anima/nodes/{sam3_nodes,impact_detailer_nodes}.py` (the per-block `SAM3_Detect` -> `MaskToSEGS` -> `DetailerForEach` chain, including the `_call_impact_detailer`-style kwargs-filtering call) |
+| `src/anima/resources.py` (`UNET_NAME_CANDIDATES`/`CLIP_NAME_CANDIDATES`/`VAE_NAME_CANDIDATES`, `preferred_name_default`) | `easyuse_anima/aio/input_defaults.py:6-15`'s candidate tuples, verbatim, and `easyuse_anima/aio/resources.py:114-128`'s `_preferred_name_default` semantics (exact match, then basename-insensitive fallback, then `names[0]`) -- reimplemented rather than copy-pasted, normalizing basenames toward forward slash instead of upstream's backslash, same net effect |
 
 ```
 MIT License

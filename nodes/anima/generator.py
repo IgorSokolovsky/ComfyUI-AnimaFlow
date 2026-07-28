@@ -81,6 +81,34 @@ class AnimaGenerator:
 
     @classmethod
     def INPUT_TYPES(cls):
+        try:
+            # Same real-ComfyUI-vs-plain-script-test import dance as
+            # `generate()` below (see its comment) -- `INPUT_TYPES` is a
+            # classmethod, but the two-context problem is identical.
+            from ...src.anima.resources import (
+                CLIP_NAME_CANDIDATES,
+                UNET_NAME_CANDIDATES,
+                VAE_NAME_CANDIDATES,
+                preferred_name_default,
+            )
+        except ImportError:
+            from src.anima.resources import (
+                CLIP_NAME_CANDIDATES,
+                UNET_NAME_CANDIDATES,
+                VAE_NAME_CANDIDATES,
+                preferred_name_default,
+            )
+
+        # Resolved once so the SAME list backs both the picker's options and
+        # its computed `default` -- `clip_type` already gets a fixed default
+        # ("qwen_image") because its options are a small static enum; these
+        # three don't have that luxury, since the option list itself is the
+        # user's live models folder (BACKLOG-worthy gap this task exists to
+        # close: no `default` here means ComfyUI's combo convention silently
+        # picks list entry `[0]`, i.e. whatever sorts first on disk).
+        unet_list = unet_names()
+        clip_list = clip_names()
+        vae_list = vae_names()
         return {
             "required": {
                 "positive": ("CONDITIONING", {"tooltip": "Positive conditioning, already encoded upstream (e.g. by Prompt Rules (CLIP))."}),
@@ -112,10 +140,10 @@ class AnimaGenerator:
                         ),
                     },
                 ),
-                "unet_name": (unet_names(), {"tooltip": "Diffusion model to load internally. Only used when use_internal_loaders is on."}),
-                "clip_name": (clip_names(), {"tooltip": "CLIP/text encoder to load internally. Only used when use_internal_loaders is on."}),
+                "unet_name": (unet_list, {"default": preferred_name_default(unet_list, UNET_NAME_CANDIDATES), "tooltip": "Diffusion model to load internally. Only used when use_internal_loaders is on."}),
+                "clip_name": (clip_list, {"default": preferred_name_default(clip_list, CLIP_NAME_CANDIDATES), "tooltip": "CLIP/text encoder to load internally. Only used when use_internal_loaders is on."}),
                 "clip_type": (clip_type_options(), {"default": "qwen_image", "tooltip": "CLIP type for the internal CLIP loader -- defaults to qwen_image for Anima. Only used when use_internal_loaders is on."}),
-                "vae_name": (vae_names(), {"tooltip": "VAE to load internally. Only used when use_internal_loaders is on."}),
+                "vae_name": (vae_list, {"default": preferred_name_default(vae_list, VAE_NAME_CANDIDATES), "tooltip": "VAE to load internally. Only used when use_internal_loaders is on."}),
             },
             "optional": {
                 "model": ("MODEL", {"tooltip": "Diffusion model. Required when use_internal_loaders is off; ignored when it's on."}),
