@@ -2076,12 +2076,47 @@ export function repaintGenerator(node, ctx) {
  * valid for as long as the wiring it described hasn't changed (cleared only
  * on an actual connection change, never on "this run happened to be
  * cached").
+ *
+ * **2026-07-28, live bug**: the probe above also caught the report NEVER
+ * reaching `node._anContextRun` at all, despite the server log proving the
+ * Generator built the payload every run. Cause: ComfyUI's executor
+ * accumulates each node's OWN `ui` dict values into a LIST across the
+ * executions the node underwent this queue -- a value that's ALREADY a
+ * list is concatenated onto the accumulator in place (this is exactly why
+ * `ui.images`/this node's own `anima_stages` are always arrays, whether one
+ * entry or many), but a value that ISN'T a list -- like this dict --
+ * still goes through the SAME accumulator, so it arrives wrapped as a
+ * single-element array, `[{supplied, values}]`. This function used to
+ * REJECT any array outright (a guard added to be defensive about payload
+ * shape) -- which silently discarded the real payload on every single run,
+ * invisibly, because the guard *looked* correct.
+ * `normalizeAnimaContextPayload` (below) is the shape-tolerant fix, kept as
+ * its own pure/exported function so the five payload shapes it must handle
+ * are directly testable without mounting a node at all.
  */
+export function normalizeAnimaContextPayload(animaContext) {
+  let payload = animaContext;
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) {
+      return null; // an empty accumulator -- nothing reported this run
+    }
+    // A later report supersedes an earlier one (the multi-execution case
+    // this accumulator exists FOR at all, e.g. a node inside a loop) --
+    // take the LAST entry, not the first.
+    payload = payload[payload.length - 1];
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null; // still not a bare object (nested array, string, null, ...)
+  }
+  return payload;
+}
+
 export function handleGeneratorExecuted(node, ctx, message) {
-  if (!message || !message.anima_context || typeof message.anima_context !== "object" || Array.isArray(message.anima_context)) {
+  const payload = normalizeAnimaContextPayload(message && message.anima_context);
+  if (!payload) {
     return;
   }
-  node._anContextRun = message.anima_context;
+  node._anContextRun = payload;
   repaintGenerator(node, ctx);
 }
 
@@ -2347,14 +2382,40 @@ export function repaintPreview(node, ctx) {
  * environment to confirm against; matches every other node in this repo's
  * `../ComfyUI-Pixaroma` sibling that reads `message.<key>` straight off
  * `onExecuted`.
+ *
+ * **2026-07-28, checked for the mirror-image bug (`handleGeneratorExecuted`'s
+ * own doc comment above): this channel is SAFE BY CONSTRUCTION, not just by
+ * luck.** ComfyUI's executor accumulates a node's `ui` value by EXTENDING an
+ * accumulator list with it (`list.extend(value)`), which requires `value` to
+ * already be a list -- `build_preview_ui_images` (`nodes/anima/
+ * _preview_helpers.py`) is typed `-> List[Dict[str, Any]]` and always
+ * returns a plain list (possibly empty), never a bare dict, so this channel
+ * never hits the "dict flattened to its own key names" trap `anima_context`
+ * did. `normalizeAnimaStagesPayload` below still accepts a bare object (one
+ * entry, not wrapped) as cheap extra tolerance for a payload shape ComfyUI's
+ * own contract shouldn't ever produce -- but a genuinely malformed payload
+ * (null, a string, an array of non-objects) is still rejected exactly as
+ * before, matching `normalizeAnimaContextPayload`'s own "don't loosen it to
+ * accept anything" contract.
  */
+export function normalizeAnimaStagesPayload(animaStages) {
+  if (Array.isArray(animaStages)) {
+    return animaStages;
+  }
+  if (animaStages && typeof animaStages === "object") {
+    return [animaStages]; // a bare single entry -- not the shape Python sends, but cheap to tolerate
+  }
+  return null;
+}
+
 export function handleExecuted(node, ctx, message) {
-  if (!message || !Array.isArray(message.anima_stages)) {
+  const entries = normalizeAnimaStagesPayload(message && message.anima_stages);
+  if (!entries) {
     return;
   }
   const cacheBust = Date.now();
   const byStage = {};
-  for (const entry of message.anima_stages) {
+  for (const entry of entries) {
     if (entry && typeof entry.stage === "string" && !(entry.stage in byStage)) {
       byStage[entry.stage] = { ...entry, _cacheBust: cacheBust };
     }

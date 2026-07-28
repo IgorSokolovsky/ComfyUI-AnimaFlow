@@ -210,6 +210,8 @@ import {
   wipeXFromEvent,
   handleExecuted,
   handleGeneratorExecuted,
+  normalizeAnimaContextPayload,
+  normalizeAnimaStagesPayload,
   installZoomPassthrough,
   teardownNode,
   computeNodeDefinition,
@@ -1540,6 +1542,88 @@ test("handleGeneratorExecuted: a payload with no anima_context key (e.g. only `i
   assert.equal(node._anContextRun, before, "a falsy message is ignored too");
 });
 
+// ---------------------------------------------------------------------------
+// normalizeAnimaContextPayload -- the shape-tolerant unwrap fixing the
+// 2026-07-28 live bug: ComfyUI's executor accumulates a node's `ui` value
+// by EXTENDING a list with it, so a bare dict returned under `anima_context`
+// arrived flattened to its own key names (`{"anima_context": ["supplied",
+// "values"]}`, proven live) -- an `Array.isArray` REJECTION (the original
+// guard) discarded the real, correctly-LIST-WRAPPED payload just as badly.
+// ---------------------------------------------------------------------------
+
+test("normalizeAnimaContextPayload: a bare object is used as-is", () => {
+  const payload = { supplied: { seed: true }, values: { seed: 42 } };
+  assert.deepEqual(normalizeAnimaContextPayload(payload), payload);
+});
+
+test("normalizeAnimaContextPayload: a single-element array is unwrapped -- THE real-world shape (ComfyUI's list.extend accumulator)", () => {
+  const payload = { supplied: { seed: true }, values: { seed: 42 } };
+  assert.deepEqual(normalizeAnimaContextPayload([payload]), payload);
+});
+
+test("normalizeAnimaContextPayload: a multi-element array -- the LAST entry wins (a later report supersedes an earlier one)", () => {
+  const first = { supplied: { seed: true }, values: { seed: 1 } };
+  const second = { supplied: { cfg: true }, values: { cfg: 9.5 } };
+  assert.deepEqual(normalizeAnimaContextPayload([first, second]), second);
+});
+
+test("normalizeAnimaContextPayload: an empty array is ignored", () => {
+  assert.equal(normalizeAnimaContextPayload([]), null);
+});
+
+test("normalizeAnimaContextPayload: THE PROVEN-LIVE REGRESSION -- a dict flattened to its own key names, [\"supplied\", \"values\"], is ignored, not half-accepted", () => {
+  // This exact shape was captured live off a raw `executed`-message probe
+  // BEFORE the Python-side fix (nodes/anima/generator.py wrapping the
+  // payload in a list): `{"anima_context": ["supplied", "values"]}`. The
+  // frontend must never treat the string "values" as if it were the
+  // payload object.
+  assert.equal(normalizeAnimaContextPayload(["supplied", "values"]), null);
+});
+
+test("normalizeAnimaContextPayload: a non-object payload (string/null/number) is ignored", () => {
+  assert.equal(normalizeAnimaContextPayload(null), null);
+  assert.equal(normalizeAnimaContextPayload(undefined), null);
+  assert.equal(normalizeAnimaContextPayload("nope"), null);
+  assert.equal(normalizeAnimaContextPayload(42), null);
+  assert.equal(normalizeAnimaContextPayload([null]), null, "a single-element array whose element isn't an object");
+  assert.equal(normalizeAnimaContextPayload([["nested", "array"]]), null, "a nested array element is still not a plain object");
+});
+
+test("handleGeneratorExecuted: THE REGRESSION -- stashes from a LIST-WRAPPED payload ([{supplied, values}]), the shape ComfyUI's executor actually sends", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  const payload = { supplied: { seed: true }, values: { seed: 42 } };
+  handleGeneratorExecuted(node, ctx, { anima_context: [payload] });
+  assert.deepEqual(node._anContextRun, payload, "the OLD Array.isArray-rejecting guard would leave this null -- this must fail against that code");
+});
+
+test("handleGeneratorExecuted: a list-wrapped stash makes computeEffectiveContextSupplied report run-supplied fields true, and a numeric sampler field renders disabled with the RUN's value", () => {
+  const node = makeGeneratorNode({ contextLink: null }); // no live bridge at all -- run report is the ONLY signal
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  const payload = { supplied: { seed: true }, values: { seed: 777 } };
+  handleGeneratorExecuted(node, ctx, { anima_context: [payload] });
+
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.supplied.seed, true, "run-supplied seed must read true off the list-wrapped stash");
+  assert.equal(eff.runSupplied.seed, true);
+  assert.equal(eff.values.seed, 777);
+
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(hasClass(seedField, "wtn-fld-disabled"), "run-supplied via a list-wrapped payload -- must render disabled");
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
+  assert.equal(val.textContent, "777", "must show the RUN's own value from the list-wrapped payload");
+});
+
 test("computeEffectiveContextSupplied: LIVE-only supplied (bridge wired, no run yet)", () => {
   const bridge = makeBridgeNode(2, ["seed"]);
   const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
@@ -2478,6 +2562,42 @@ test("Preview: handleExecuted IGNORES a legacy message.images payload -- only me
   const wipe = node._anRefs.wipeEl;
   const empty = queryAll(wipe, (n) => hasClass(n, "wtn-an-empty"))[0];
   assert.ok(empty, "with nothing under anima_stages, the wipe stays on its placeholder rather than reviving the double-preview bug");
+});
+
+// ---------------------------------------------------------------------------
+// normalizeAnimaStagesPayload -- the mirror-image check `handleGeneratorExecuted`'s
+// bug prompted (this module's own doc comment): `anima_stages` is SAFE BY
+// CONSTRUCTION (`build_preview_ui_images` is always a real list), so these
+// are cheap extra tolerance, not a regression fix.
+// ---------------------------------------------------------------------------
+
+test("normalizeAnimaStagesPayload: a real array (the normal, safe-by-construction shape) passes through untouched", () => {
+  const entries = [{ filename: "base.png", stage: "base" }];
+  assert.equal(normalizeAnimaStagesPayload(entries), entries);
+});
+
+test("normalizeAnimaStagesPayload: a bare single-entry object is wrapped into a one-element array (cheap extra tolerance, not the shape Python actually sends)", () => {
+  const entry = { filename: "base.png", stage: "base" };
+  assert.deepEqual(normalizeAnimaStagesPayload(entry), [entry]);
+});
+
+test("normalizeAnimaStagesPayload: null/undefined/a string are still rejected -- tolerance doesn't mean 'accept anything'", () => {
+  assert.equal(normalizeAnimaStagesPayload(null), null);
+  assert.equal(normalizeAnimaStagesPayload(undefined), null);
+  assert.equal(normalizeAnimaStagesPayload("nope"), null);
+});
+
+test("Preview: handleExecuted also stashes from a bare-object anima_stages payload (mirror-image tolerance)", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+
+  handleExecuted(node, ctx, {
+    anima_stages: { filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" },
+  });
+
+  assert.ok(node._anPreviewImages && node._anPreviewImages.base, "a bare-object anima_stages entry must still populate node._anPreviewImages");
 });
 
 test("Preview: a ONE-entry run degrades to a single-image view, never a broken dual pane", () => {

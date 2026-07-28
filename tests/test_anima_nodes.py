@@ -210,7 +210,40 @@ def test_generator_ui_context_payload_matches_build_context_ui_payload():
         node = AnimaGenerator()
         context = build_context({"model": "M", "seed": 7, "cfg": 6.0})
         payload = node.generate(context=context, generation_settings="{}")
-        assert payload["ui"]["anima_context"] == build_context_ui_payload(context)
+        # `payload["ui"]["anima_context"]` is a ONE-ELEMENT LIST wrapping the
+        # dict, not the dict itself -- see
+        # `test_generator_ui_context_payload_is_a_list_not_a_bare_dict` below
+        # for why this wrapping is load-bearing, not incidental.
+        assert payload["ui"]["anima_context"] == [build_context_ui_payload(context)]
+
+    _with_faked_pipeline(run)
+
+
+def test_generator_ui_context_payload_is_a_list_not_a_bare_dict():
+    # THE REGRESSION GUARD (2026-07-28 live bug): ComfyUI's executor
+    # accumulates each node's OWN `ui` dict values by EXTENDING an
+    # accumulator list with them -- i.e. `list.extend(value)`, which
+    # REQUIRES `value` to already be a list. Handing it a bare dict makes
+    # the executor iterate the dict, which yields its KEY NAMES -- proven
+    # live via a raw `executed`-message probe:
+    # `{"anima_context": ["supplied", "values"]}`. The frontend received
+    # only the two key strings, never the payload, on every single run.
+    # This test must FAIL against the pre-fix code (a bare dict, not a
+    # one-element list).
+    from src.anima.context import build_context, build_context_ui_payload
+
+    def run():
+        node = AnimaGenerator()
+        context = build_context({"model": "M", "seed": 7, "cfg": 6.0})
+        payload = node.generate(context=context, generation_settings="{}")
+        ui_value = payload["ui"]["anima_context"]
+        assert isinstance(ui_value, list), (
+            "anima_context must be a LIST (ComfyUI's ui-value contract), "
+            "never a bare dict -- a bare dict gets flattened to its own "
+            "key names by the executor's list.extend accumulator"
+        )
+        assert len(ui_value) == 1
+        assert ui_value[0] == build_context_ui_payload(context)
 
     _with_faked_pipeline(run)
 
@@ -311,6 +344,7 @@ ALL_TESTS = [
     test_generator_generation_settings_is_a_real_string_widget_not_hidden,
     test_generator_generate_returns_a_ui_result_dict_not_a_bare_tuple,
     test_generator_ui_context_payload_matches_build_context_ui_payload,
+    test_generator_ui_context_payload_is_a_list_not_a_bare_dict,
     test_generator_missing_context_field_raises_readable_error_not_attributeerror,
     test_preview_is_an_output_node,
     test_preview_declares_input_is_list,

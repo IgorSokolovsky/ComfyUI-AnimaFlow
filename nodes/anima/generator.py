@@ -177,8 +177,24 @@ class AnimaGenerator:
         # (`interaction.mjs`'s `computeEffectiveContextSupplied` falls back
         # to the live litegraph-link walk, and whatever was stashed from an
         # earlier run stays valid for unchanged wiring).
+        #
+        # **2026-07-28, live bug**: ComfyUI's executor accumulates each
+        # node's OWN `ui` dict values by EXTENDING an accumulator list with
+        # them -- i.e. it always does `list.extend(value)`, which REQUIRES
+        # `value` to already be a list (that's the actual contract `images`
+        # relies on, not a convention). Handing it a bare dict here made the
+        # executor iterate the dict, which yields its KEY NAMES -- proven
+        # live via a raw `executed`-message probe:
+        # `{"anima_context": ["supplied", "values"]}`. The frontend received
+        # only the two key strings, never the payload, on every single run.
+        # Fix: wrap the payload in a single-element list, exactly like
+        # `nodes/anima/preview.py`'s `anima_stages` already does (that
+        # channel was never broken -- `build_preview_ui_images` already
+        # returns a list). `js/anima/interaction.mjs`'s
+        # `normalizeAnimaContextPayload` unwraps this one-element list (or
+        # tolerates a bare object, for robustness) on the way back in.
         return {
-            "ui": {"anima_context": build_context_ui_payload(context)},
+            "ui": {"anima_context": [build_context_ui_payload(context)]},
             "result": (images, latent_out, metadata_json),
         }
 
