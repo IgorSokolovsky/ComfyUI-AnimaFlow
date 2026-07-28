@@ -224,6 +224,20 @@ export const BASE_FONT = 14; // was ~12
 export const SHEAD_H = 32; // .wtn-an-shead height (was 27)
 export const SHEAD_GAP = 5; // header-to-next-section spacing (was 4)
 
+// **2026-07-28 (chevron/gear legibility fix, live bug report: "like a
+// midget in a grass field")** -- the chevron used to sit at 10.5px (this
+// file's unrelated `.wtn-an-sec` micro-label size, never meant for a glyph
+// carrying this much visual weight) on `--wtn-ink-faint`, both too small AND
+// too dim next to `SHEAD_H`'s own 13.5px `.wtn-an-shead-nm` label. `▸`/`▾`
+// carry heavy internal whitespace inside their own em box, so matching body
+// text still reads tiny -- this needs to sit noticeably ABOVE it. Derived
+// from `BASE_FONT` (this file's own type-scale anchor) rather than a fourth
+// independent guess. `js/shared/fields.mjs`'s `FLD_GEAR_SIZE` (the gear's
+// matching constant, derived from ITS OWN base, `FLD_FONT`) intentionally
+// lands on the SAME 17px -- both header glyphs read as one consistent size
+// even though they're derived from two different files' base constants.
+export const SHEAD_GLYPH_SIZE = Math.round(BASE_FONT * 1.21); // 17
+
 const CSS = `
 .wtn-an-root { display: flex; flex-direction: column; gap: 0; width: 100%; box-sizing: border-box;
   padding: 5px 2px 2px; font: ${BASE_FONT}px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -259,27 +273,43 @@ const CSS = `
 /* ── expandable SECTION header (2026-07-28 inline-sections dispatch) --
    replaces every popover-opening row this track used to have.
 
-   **NO-JUMP INVARIANT (2026-07-28, wheel/header-order dispatch) -- DOM
-   order is FIXED: chevron -> switch (if any) -> label -> ⓘ (if any) ->
-   ⚙ (if any) -> summary. Every one of those first five is \`flex: none\`
-   (pinned, never resized); the summary is the ONLY element with
-   \`margin-left: auto\` + ellipsis (\`overflow: hidden; text-overflow:
-   ellipsis; white-space: nowrap; min-width: 0\`), so it is the ONLY thing
-   whose width ever varies, and it varies into the empty space on the right
-   -- nothing else ever shifts position when a section is turned on/off or
-   its summary text changes length. Do NOT reorder these back to
-   chevron/label/summary/ⓘ/switch (the pre-dispatch order): that let the
-   ⓘ and the switch slide left/right depending on whether a summary
-   existed, which read as the row jittering every time "enabled" flipped.
-   If you add a new header child, decide up front whether it's a FIXED
-   affordance (append it before the summary, \`flex: none\`) or content
-   that should ellipsize (there should only ever be one of those: the
-   summary). **2026-07-28 (hybrid essentials/⚙ dispatch): the ⚙ is the one
-   new fixed slot, appended right after the ⓘ and before the summary --
-   exactly the same "fixed affordance, never the thing that ellipsizes"
-   rule, so a section gaining/losing its ⚙ (only Highres/Upscale/Detailer
-   have one; Sampler/Mod Guidance/Postprocess don't) never shifts anything
-   but the summary either.**
+   **NO-JUMP INVARIANT (2026-07-28, wheel/header-order dispatch; reordered
+   again 2026-07-28, chevron/gear legibility fix) -- DOM order is FIXED:
+   chevron -> switch (if any) -> label -> ⓘ (if any) -> summary (if any) ->
+   ⚙ (if any). The first four are \`flex: none\` (pinned, never resized) and
+   never move. The summary is the one flexible middle: \`flex: 1 1 auto\`
+   (it grows to fill whatever space is left, so it never needs its own
+   content width to reach the ⚙) PLUS ellipsis (\`overflow: hidden;
+   text-overflow: ellipsis; white-space: nowrap; min-width: 0\`) so it's the
+   ONLY thing whose CONTENT ever varies, shrinking/growing into the space
+   between the fixed-left group and the ⚙. The ⚙ is \`flex: none\` like the
+   left group, but pinned to the row's absolute right edge via its own
+   \`margin-left: auto\` (\`.wtn-an-shead .wtn-fld-gear\` below) -- **that
+   margin only ever does work when the summary is ABSENT**: whenever the
+   summary exists, its own \`flex: 1 1 auto\` already consumes every pixel of
+   free space during flex resolution (CSS flexbox: flexible-length
+   resolution happens before auto-margin distribution), so the ⚙'s auto
+   margin has nothing left to absorb and it simply sits flush against the
+   summary's own (space-filling) box -- which itself sits flush against the
+   container's right edge. Either way the ⚙ lands in the exact same spot:
+   its position is provably identical whether the summary is present,
+   absent, or any length in between -- see this file's own
+   \`buildSectionHeader\` doc comment and \`js/anima/test_resize.mjs\`'s
+   header-order tests for the regression this specifically guards. Do NOT
+   reorder these back to chevron/label/summary/ⓘ/switch (the pre-dispatch
+   order): that let the ⓘ and the switch slide left/right depending on
+   whether a summary existed, which read as the row jittering every time
+   "enabled" flipped. If you add a new header child, decide up front
+   whether it's a FIXED affordance pinned to the LEFT (append it before the
+   summary, \`flex: none\`), a FIXED affordance pinned to the RIGHT (append
+   it after the summary, \`flex: none\` + its own \`margin-left: auto\` so it
+   still lands in the same spot with or without a summary, exactly like the
+   ⚙), or content that should ellipsize (there should only ever be one of
+   those: the summary). **2026-07-28 (hybrid essentials/⚙ dispatch): the ⚙
+   is the one such right-pinned slot, present only on sections that carry
+   one (Highres/Upscale/Detailer; not Sampler/Mod Guidance/Postprocess) --
+   never shifts the left group or the summary's own ellipsis behaviour
+   either way.**
 
    As of the inline-sections-expand-is-the-switch's-job dispatch (this same
    day, later), clicking \`.wtn-an-shead\` itself only toggles expand/collapse
@@ -308,10 +338,40 @@ const CSS = `
    border colour continues below -- see that block's own comment. ── */
 .wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-accent, ${TOKENS.accent});
   border-radius: 8px 8px 0 0; margin-bottom: 0; }
-.wtn-an-shead .wtn-an-chev { flex: none; width: 12px; font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+/* Pure state indicator, never a click target of its own (the whole header
+   is), so it gets NO hit-area treatment -- just size + contrast, matching
+   \`js/shared/fields.mjs\`'s \`FLD_GEAR_SIZE\` (see \`SHEAD_GLYPH_SIZE\`'s own
+   doc comment above for why both glyphs land on the same 17px). \`text-align:
+   center\` keeps the glyph centred inside its own fixed width regardless of
+   which of \`▸\`/\`▾\` is showing. Colour moved off \`--wtn-ink-faint\`
+   ("placeholders, disabled, idle" per \`docs/THEME.md\` -- the wrong
+   vocabulary for a live state indicator) onto \`--wtn-ink-dim\` ("secondary
+   text, labels" -- the token that actually reads against \`--wtn-surface-2\`),
+   the same swap \`js/shared/fields.mjs\`'s \`.wtn-fld-gear\` gets for the same
+   reason. */
+.wtn-an-shead .wtn-an-chev { flex: none; width: ${SHEAD_GLYPH_SIZE}px; text-align: center;
+  font-size: ${SHEAD_GLYPH_SIZE}px; line-height: 1; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-an-shead .wtn-an-shead-nm { font-size: 13.5px; font-weight: 550; flex: none; white-space: nowrap; }
-.wtn-an-shead .wtn-an-shead-sum { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 11px;
+/* \`flex: 1 1 auto\` is the 2026-07-28 (chevron/gear legibility fix) addition
+   -- see this file's \`.wtn-an-shead\` CSS comment above for why the summary
+   now needs to actively CONSUME the row's free space (not just get pushed
+   into it via \`margin-left: auto\` alone) for the ⚙'s own pin-right margin
+   (below) to land in the same spot whether a summary exists or not.
+   \`margin-left: auto\` stays too -- harmless once \`flex: 1 1 auto\` already
+   claims the free space, and it's what keeps this element flush right on
+   its OWN when no ⚙ follows it (Sampler, Mod Guidance, Postprocess). */
+.wtn-an-shead .wtn-an-shead-sum { flex: 1 1 auto; margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 11px;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* The ⚙'s pin-right -- scoped to THIS header context only (a descendant
+   selector on the shared \`.wtn-fld-gear\` class, not a change to that
+   class's own base rule in \`js/shared/fields.mjs\`), because the Detailer
+   BLOCK's own ⚙ (\`interaction.mjs\`'s per-block \`.wtn-an-passtabs\` row, a
+   completely different layout) must not be pushed to that row's far right
+   -- see this file's \`.wtn-an-shead\` CSS comment above for why this margin
+   only ever does real work when there is no summary; when there is one,
+   the summary's own \`flex: 1 1 auto\` has already consumed the free space
+   this margin would otherwise absorb. */
+.wtn-an-shead .wtn-fld-gear { margin-left: auto; }
 .wtn-an-shead.wtn-an-dep { border-color: rgba(251,191,36,.35); }
 
 /* ── section body -- CARD treatment attached to its own header (task item 1,
@@ -584,11 +644,20 @@ export { buildSwitch, buildInfoIcon, buildGearIcon };
  * caller keeps the default.
  *
  * **DOM child order is fixed: chevron (if any) -> switch (if any) -> label
- * -> ⓘ (if any) -> ⚙ (if any) -> summary (if any)** -- see this file's
- * `.wtn-an-shead` CSS comment for the no-jump invariant this preserves
- * (only the summary's width ever varies, and only into empty space on the
- * right; every other child never moves regardless of which optional pieces
- * are present or how long the summary text is). Returns `{ root, chev,
+ * -> ⓘ (if any) -> summary (if any) -> ⚙ (if any)** (reordered 2026-07-28,
+ * chevron/gear legibility fix -- the ⚙ used to sit before the summary; the
+ * user asked for it at the row's absolute right end instead) -- see this
+ * file's `.wtn-an-shead` CSS comment for the no-jump invariant this
+ * preserves. The first four never move (`flex: none`). The summary is the
+ * one CONTENT-flexible child (`flex: 1 1 auto` + ellipsis) -- it grows to
+ * fill whatever space sits between the fixed-left group and the ⚙, so its
+ * own width is deterministic (bounded by that space), only its ellipsized
+ * CONTENT varies. The ⚙ is `flex: none` like the left group, pinned to the
+ * row's absolute right edge via its own `margin-left: auto` -- provably in
+ * the SAME spot whether the summary is present, absent, or any length,
+ * because whichever of the two is first to claim the row's free space
+ * (the summary's `flex: 1 1 auto` if it exists, otherwise the ⚙'s own auto
+ * margin) ends up consuming all of it either way. Returns `{ root, chev,
  * sumEl, infoEl, switchEl, gearEl }` -- any of the optional ones may be
  * `null`. The gear's own click handler is the CALLER's job (`interaction.mjs`'s
  * `openAdvancedMenu`) -- this function only builds the icon
@@ -620,16 +689,19 @@ export function buildSectionHeader(doc, spec) {
     infoEl = buildInfoIcon(doc, infoTooltip, infoWarn);
     header.appendChild(infoEl);
   }
-  let gearEl = null;
-  if (hasGear) {
-    gearEl = buildGearIcon(doc, gearTooltip, onGearClick, gearActive);
-    header.appendChild(gearEl);
-  }
   let sumEl = null;
   if (summary) {
     sumEl = el(doc, "span", "wtn-an-shead-sum");
     sumEl.textContent = summary;
     header.appendChild(sumEl);
+  }
+  // Right-pinned, appended LAST -- see this function's own doc comment above
+  // for why it always lands in the same spot regardless of whether `sumEl`
+  // exists.
+  let gearEl = null;
+  if (hasGear) {
+    gearEl = buildGearIcon(doc, gearTooltip, onGearClick, gearActive);
+    header.appendChild(gearEl);
   }
   return { root: header, chev, sumEl, infoEl, switchEl, gearEl };
 }

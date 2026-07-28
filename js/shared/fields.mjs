@@ -167,6 +167,29 @@ export const FLD_SWITCH_W = 30; // pill switch width (was 26)
 export const FLD_SWITCH_H = 16; // pill switch height (was 14)
 export const FLD_INFO_SIZE = 13; // ⓘ glyph font-size (was 11)
 
+// **2026-07-28 (chevron/gear legibility fix, live bug report: "like a midget
+// in a grass field")** -- the ⚙ used to share `FLD_INFO_SIZE` (13px) with the
+// ⓘ, but the ⚙/▸ glyphs both render with heavy internal whitespace inside
+// their own em box, so matching body text still read as tiny -- they need to
+// sit noticeably ABOVE the row's 14px body text, not merely equal to it.
+// `FLD_GEAR_SIZE` is derived from this file's own `FLD_FONT` (its 14px-scale
+// counterpart) rather than a fourth independent guess, so it moves in step
+// if the type scale ever changes again. `js/anima/render.mjs`'s own
+// `SHEAD_GLYPH_SIZE` (the chevron's matching constant, derived from ITS base,
+// `BASE_FONT`) intentionally lands on the SAME 17px -- see that file's own
+// comment for why the two glyphs must read as one consistent size even
+// though they're derived from two different files' base constants.
+export const FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26); // 17
+// The gear is also a click target (unlike the chevron) -- `FLD_GEAR_HIT` is
+// the box the click actually lands in, deliberately bigger than the glyph
+// needs to look (a comfortable >=20px square, this dispatch's own ask),
+// built via `display:inline-flex` + explicit width/height rather than
+// padding so the (still small) glyph centers exactly inside it. Derived from
+// `FLD_GEAR_SIZE` itself rather than a fifth independent guess. It fits
+// inside `js/anima/render.mjs`'s own `SHEAD_H` (32px header row) with room
+// to spare, so growing the hit area does not grow the row.
+export const FLD_GEAR_HIT = Math.round(FLD_GEAR_SIZE * 1.3); // 22
+
 const CSS = `
 /* ── pill switch ── */
 .wtn-fld-switch { position: relative; width: ${FLD_SWITCH_W}px; height: ${FLD_SWITCH_H}px; flex: none; cursor: pointer;
@@ -192,11 +215,30 @@ const CSS = `
 /* ── ⚙ gear icon -- the ⓘ's sibling affordance for the long-tail "advanced
    fields" menu (task item 3 / \`js/anima/render.mjs\`'s \`buildSectionHeader\`).
    Same click-stops-propagation contract as \`buildInfoIcon\` (never toggles
-   the header it lives in), same neutral-by-default colouring so it doesn't
-   compete visually with the switch/ⓘ. ── */
-.wtn-fld-gear { flex: none; font-size: ${FLD_INFO_SIZE}px; line-height: 1; cursor: pointer;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
-.wtn-fld-gear:hover, .wtn-fld-gear.wtn-fld-gear-active { color: var(--wtn-accent, ${TOKENS.accent}); }
+   the header it lives in).
+
+   **2026-07-28 (chevron/gear legibility fix)**: this used to sit at
+   \`FLD_INFO_SIZE\` (13px, matching the ⓘ) on \`--wtn-ink-faint\` -- both too
+   small AND too dim next to 14px body text (live bug report). Two changes,
+   see \`FLD_GEAR_SIZE\`/\`FLD_GEAR_HIT\`'s own doc comments above for the
+   sizing rationale: (1) the glyph itself grows to \`FLD_GEAR_SIZE\`, larger
+   than body text on purpose; (2) the colour moves off \`--wtn-ink-faint\`
+   (\`docs/THEME.md\`: "placeholders, disabled, idle" -- the wrong vocabulary
+   for a live click target) onto \`--wtn-ink-dim\` ("secondary text, labels"
+   -- the token that actually reads against \`--wtn-surface-2\`), the same
+   swap \`js/anima/render.mjs\`'s \`.wtn-an-chev\` gets for the same reason.
+   The click box itself is now \`FLD_GEAR_HIT\`, built via
+   \`display:inline-flex\` + explicit width/height (not padding) so the glyph
+   centers exactly inside a box bigger than it needs to look; a subtle hover
+   background (mirrors \`js/shared/theme.css\`'s own \`.wtn-btn--icon:hover\`
+   convention) makes that bigger hit area itself perceptible on hover, not
+   just the glyph's own colour change. ── */
+.wtn-fld-gear { flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: ${FLD_GEAR_HIT}px; height: ${FLD_GEAR_HIT}px; border-radius: 6px;
+  font-size: ${FLD_GEAR_SIZE}px; line-height: 1; cursor: pointer;
+  color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-fld-gear:hover, .wtn-fld-gear.wtn-fld-gear-active { color: var(--wtn-accent, ${TOKENS.accent});
+  background: rgba(45,212,191,.12); }
 
 /* ── ⓘ hover tooltip -- this module's own fallback for js/shared/theme.css's
    \`.wtn-tip\` (this pack's convention: theme.css may not have landed). The

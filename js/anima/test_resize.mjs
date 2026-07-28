@@ -846,6 +846,49 @@ test("injected CSS: .wtn-an-shead's own name (.wtn-an-shead-nm) never shrinks or
   assert.ok(sum.includes("min-width: 0") && sum.includes("text-overflow: ellipsis"), ".wtn-an-shead-sum must be able to shrink to nothing and ellipsize");
 });
 
+test("⚙ pin-right mechanism (chevron/gear legibility fix, task item 2): .wtn-an-shead-sum ALSO carries flex: 1 1 auto (not just margin-left: auto) so it actively consumes the row's free space, and .wtn-an-shead .wtn-fld-gear carries its own margin-left: auto -- together these are what put the ⚙ in the exact same spot whether a summary exists or not (see .wtn-an-shead's own CSS comment for the flex-resolution-before-auto-margins reasoning)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+
+  const sum = cssRuleBody(cssText, ".wtn-an-shead .wtn-an-shead-sum");
+  assert.ok(sum, "expected a .wtn-an-shead .wtn-an-shead-sum rule in the injected CSS");
+  assert.match(sum, /flex:\s*1\s+1\s+auto/, ".wtn-an-shead-sum must grow AND shrink to fill the space between the fixed-left group and the ⚙ -- this is what makes the ⚙'s own position independent of the summary's presence/length");
+
+  const gearPin = cssRuleBody(cssText, ".wtn-an-shead .wtn-fld-gear");
+  assert.ok(gearPin, "expected a .wtn-an-shead .wtn-fld-gear rule (the header-scoped pin-right, distinct from .wtn-fld-gear's own base rule in js/shared/fields.mjs)");
+  assert.match(gearPin, /margin-left:\s*auto/, "the ⚙ must pin itself to the row's right edge when there is no summary to already claim the free space");
+});
+
+test("chevron glyph CSS (chevron/gear legibility fix): .wtn-an-chev's font-size matches SHEAD_GLYPH_SIZE (bigger than 14px body text, not merely equal to it) and its colour is no longer --wtn-ink-faint", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const chev = cssRuleBody(cssText, ".wtn-an-shead .wtn-an-chev");
+  assert.ok(chev, "expected a .wtn-an-shead .wtn-an-chev rule in the injected CSS");
+  assert.match(chev, new RegExp(`font-size:\\s*${render.SHEAD_GLYPH_SIZE}px`), ".wtn-an-chev's font-size must match SHEAD_GLYPH_SIZE exactly");
+  assert.ok(render.SHEAD_GLYPH_SIZE > render.BASE_FONT, "SHEAD_GLYPH_SIZE must be strictly larger than the row's own body font -- the glyph reads smaller than its font-size suggests");
+  assert.ok(!/--wtn-ink-faint/.test(chev), ".wtn-an-chev must not use --wtn-ink-faint any more (docs/THEME.md: that token is for placeholders/disabled/idle, not a visible state indicator)");
+  assert.match(chev, /--wtn-ink-dim/, ".wtn-an-chev must use --wtn-ink-dim, the token that actually reads against --wtn-surface-2");
+});
+
+test("gear glyph CSS (chevron/gear legibility fix, shared js/shared/fields.mjs primitive): .wtn-fld-gear's font-size matches FLD_GEAR_SIZE, its colour is no longer --wtn-ink-faint, and it has a real (>=20px square) hit area sized to FLD_GEAR_HIT", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-fields-style").textContent;
+  const gear = cssRuleBody(cssText, ".wtn-fld-gear");
+  assert.ok(gear, "expected a .wtn-fld-gear rule in the injected CSS");
+  assert.match(gear, new RegExp(`font-size:\\s*${fields.FLD_GEAR_SIZE}px`), ".wtn-fld-gear's font-size must match FLD_GEAR_SIZE exactly");
+  assert.ok(fields.FLD_GEAR_SIZE > fields.FLD_FONT, "FLD_GEAR_SIZE must be strictly larger than the row's own body font -- the glyph reads smaller than its font-size suggests");
+  assert.ok(!/--wtn-ink-faint/.test(gear), ".wtn-fld-gear must not use --wtn-ink-faint any more");
+  assert.match(gear, /--wtn-ink-dim/, ".wtn-fld-gear must use --wtn-ink-dim, matching the chevron's own contrast fix");
+
+  assert.match(gear, new RegExp(`width:\\s*${fields.FLD_GEAR_HIT}px`), ".wtn-fld-gear must declare an explicit hit-area width (FLD_GEAR_HIT)");
+  assert.match(gear, new RegExp(`height:\\s*${fields.FLD_GEAR_HIT}px`), ".wtn-fld-gear must declare an explicit hit-area height (FLD_GEAR_HIT)");
+  assert.ok(fields.FLD_GEAR_HIT >= 20, "the gear's own hit area must be a comfortable >=20px square");
+  assert.ok(fields.FLD_GEAR_HIT < render.SHEAD_H, "the hit area must still fit inside the header's own row height (SHEAD_H) without growing the row");
+});
+
 test("injected CSS (shared js/shared/fields.mjs primitives): .wtn-fld-stepper clips its own children, and .wtn-fld-num-name still gives way first (Tier 2 item 8's numeric-row priority, untouched by the stepper-combo overflow fix below)", () => {
   const doc = makeDocStub();
   injectStyles(doc);
@@ -2241,10 +2284,14 @@ test("a SWITCHLESS section (Sampler) still expands/collapses on a header click -
 });
 
 // ===========================================================================
-// Header child order -- the no-jump invariant (task 2). chevron -> switch
-// (if any) -> label -> ⓘ (if any) -> summary (if any), regardless of which
-// optional pieces are present, so turning a section on/off never shifts
-// anything but the summary itself.
+// Header child order -- the no-jump invariant (task 2; reordered again
+// 2026-07-28, chevron/gear legibility fix -- the ⚙ moved from before the
+// summary to after it, at the row's absolute right end). chevron -> switch
+// (if any) -> label -> ⓘ (if any) -> summary (if any) -> ⚙ (if any),
+// regardless of which optional pieces are present, so turning a section
+// on/off (or a summary appearing/disappearing) never shifts the pinned-left
+// group, and the ⚙ never moves either -- see the "⚙ position is stable"
+// tests below for that specific regression.
 // ===========================================================================
 
 /** The real ORDER of a header's own direct children, as short class-derived
@@ -2262,23 +2309,23 @@ function headerChildKinds(header) {
   });
 }
 
-test("header child order is chevron -> switch -> label -> ⓘ -> ⚙ (no summary while disabled -- Highres always carries an ⓘ, a switch, AND a ⚙ -- task item 3)", () => {
+test("header child order is chevron -> switch -> label -> ⓘ -> ⚙ (no summary while disabled -- Highres always carries an ⓘ, a switch, AND a ⚙ -- task item 3): with no summary in the DOM at all, the ⚙ is simply the next thing appended after ⓘ, and it's still the LAST child", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   const header = findSectionHeader(refs.body, "Highres"); // starts disabled -> summary is null
-  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "gear"], "no summary while disabled -- but the first five never move");
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "gear"], "no summary while disabled -- the pinned-left group never moves, and the ⚙ is still the LAST child");
 });
 
-test("header child order is the SAME (chevron -> switch -> label -> ⓘ -> ⚙) once a summary appears -- enabling only APPENDS the summary, never reorders anything else", () => {
+test("header child order is chevron -> switch -> label -> ⓘ -> summary -> ⚙ once a summary appears -- enabling only INSERTS the summary BEFORE the ⚙, never reorders the pinned-left group, and the ⚙ is STILL the last child in both cases (the no-jump regression, chevron/gear legibility fix: the ⚙ moved from before the summary to after it)", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // enable -> gets a summary
   const header = findSectionHeader(refs.body, "Highres");
-  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "gear", "summary"], "chevron/switch/label/ⓘ/⚙ must be in the EXACT same order as the disabled case above, with the summary appended at the end");
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "summary", "gear"], "chevron/switch/label/ⓘ must be in the EXACT same order as the no-summary case above, the summary now sits between ⓘ and the ⚙, and the ⚙ is still the LAST child either way");
 });
 
 test("header child order for a SWITCHLESS section (Sampler): chevron -> label -> ⓘ -> summary -- switch AND ⚙ are simply absent (Sampler isn't in item 3's restructured table), nothing else shifts", () => {

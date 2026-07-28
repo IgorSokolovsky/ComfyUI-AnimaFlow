@@ -262,6 +262,36 @@ Prompt text is **not** an input, unaffected by this reversal. Conditioning comes
 encoded (now via the context's `positive`/`negative` fields), so prompt editing stays upstream in
 the Rule Builder / Prompt Studio line. Upstream made the same call and it is right.
 
+### 5a-0. What the frontend can and cannot see about a supplied field (probed live 2026-07-28)
+
+The panel greys out a sampler field the context supplies. Three separate mechanisms feed that, with
+genuinely different reach — worth stating plainly, because two of them were mistaken for bugs:
+
+1. **The edit-time link walk** (`resolveContextBridge`) follows real litegraph links from `context`
+   back to the Bridge, tolerating single-input pass-throughs. Cheap, instant, and blind to anything
+   that isn't a real link.
+2. **The post-run report** (`{"ui": {"anima_context": [payload]}}` → `handleGeneratorExecuted`) is the
+   authoritative one: the backend knows exactly which fields arrived, however they arrived. It's keyed
+   by node id, so it is **boundary-agnostic** — it works across subgraphs where the walk can't. It
+   only exists after an execution, and a **cached** node emits nothing, so "no report this run" is a
+   normal state, not a failure.
+3. **Use Everywhere is invisible to (1) and visible to (2).** UE materializes real links only at
+   submit time and removes them again, so at edit time `input.link` is null while the backend still
+   receives the value. Server-side truth and frontend-visible truth genuinely disagree, and only the
+   run report closes the gap.
+
+**Subgraphs (the boundary case).** With the Bridge inside a subgraph and the Generator outside, the
+`context` link's origin is the **subgraph node**, not the Bridge: `isVirtualNode: true`, a `subgraph`
+property, and `type` set to the subgraph's UUID rather than a class name. Its `inputs` are the Bridge's
+own sockets **promoted to the boundary** (`clip, model, vae, latent, seed, steps, cfg, sampler_name,
+scheduler`), with names matching `CONTEXT_FIELDS` — so the wiring state is readable straight off the
+boundary node; descending into the subgraph is only needed to confirm a real Bridge is in there (which
+is what makes the section ⓘ's wording honest). The harder half is the repaint TRIGGER: wiring a
+promoted input from outside fires `onConnectionsChange` on the subgraph node, and a subgraph node's
+type is a per-instance UUID, so it can't be patched through `beforeRegisterNodeDef` — it needs an
+instance-level hook installed when the walk first resolves that boundary. Failing OPEN (nothing
+disabled) stays the rule whenever any of this can't be determined: a wrong grey-out is worse than none.
+
 ### 5a. Sampler values — still per-field wins, now via the context
 
 `seed`, `steps`, `cfg`, `sampler_name` and `scheduler` are still each independently overridable,
