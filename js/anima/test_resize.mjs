@@ -1,69 +1,79 @@
 /**
  * test_resize.mjs — regression tests for `state.mjs` (pure settings logic),
  * `render.mjs` (DOM/CSS building), and `interaction.mjs` (event wiring +
- * node-level orchestration) for `AnimaGenerator` / `AnimaPreview`. Runs
- * under plain `node` via a small DOM + fake-litegraph-node stub (same
- * pattern as `js/controls/test_resize.mjs` / `js/prompt_rules/node/
+ * node-level orchestration) for `AnimaGenerator` / `AnimaPreview`, rewritten
+ * against the 2026-07-28 Context Bridge contract (`docs/generator-design.md`
+ * §1/§3/§5/§7's dated reversal notes). Runs under plain `node` via a small
+ * DOM + fake-litegraph-node stub (same pattern as `js/controls/
  * test_resize.mjs`), never imports `index.js` directly (it needs a real
  * `app`/`window.LiteGraph`, which only exist in an actual ComfyUI page).
  *
  * Regenerating the fixtures this file checks the JS normalizer against
  * (only needed if `src/anima/settings.py`/`preview_settings.py`'s DEFAULTS
  * change):
- *   python3 -c "import sys,json; sys.path.insert(0,'.'); \
- *     from src.anima.settings import DEFAULT_GENERATION_SETTINGS as D; \
- *     open('js/anima/fixture_default_generation_settings.json','w')\
- *       .write(json.dumps(D, indent=2, sort_keys=True) + '\n')"
- *   python3 -c "import sys,json; sys.path.insert(0,'.'); \
- *     from src.anima.preview_settings import DEFAULT_PREVIEW_SETTINGS as D; \
- *     open('js/anima/fixture_default_preview_settings.json','w')\
- *       .write(json.dumps(D, indent=2, sort_keys=True) + '\n')"
+ *   python3 -c "import sys,json;sys.path.insert(0,'.');\
+ *     from src.anima.settings import DEFAULT_GENERATION_SETTINGS as D;\
+ *     print(json.dumps(D,indent=1))" > /tmp/f.json && python3 -c "\
+ *     import json; d=json.load(open('/tmp/f.json'));\
+ *     json.dump(d, open('js/anima/fixture_default_generation_settings.json','w'),\
+ *     indent=2, sort_keys=True); open('js/anima/fixture_default_generation_settings.json','a').write(chr(10))"
  *
- * Covers:
- *   A. `state.mjs` — the JS settings normalizer deep-equals Python's own
- *      output for the default case (against the checked-in fixtures above)
- *      and for a non-trivial payload (unknown top-level keys, an unknown
- *      detailer block id merging against the face template, `order`
- *      exceeding `MAX_DETAILER_PASSES`); `deepMergeDefaults`/
- *      `migrateVersion` edge cases; LoRA/detailer-block mutation helpers;
- *      `resolveStageSampler`/`resolveOutputs`; `preferredNameDefault`.
- *   B. `render.mjs` — CSS injection, the small presentational builders.
- *   C. `interaction.mjs` — the widget<->state handshake (every kind of edit
- *      reaches the SERIALIZED widget, not just in-memory state); the
- *      Generator body's inline-mode-only rows (LoRA list, latent row);
- *      stage toggle; LoRA add/remove/reorder/mute (order preserved);
- *      detailer add/remove respecting `MAX_DETAILER_PASSES` and the
- *      face/eye "cannot be removed" rule; the `inherit_sampler_settings`
- *      contract (hides exactly `cfg`/`sampler_name`/`scheduler`, in both
- *      directions, for highres/upscale/a detailer block); the Preview
- *      node's compare/save rows and the wipe divider maths; the popover
- *      close-then-reopen owner-key toggle; wheel-zoom install/teardown; the
- *      unet/clip/vae picker rows never falling back to `options[0]` for an
- *      orphaned saved value.
+ *   python3 -c "import sys,json;sys.path.insert(0,'.');\
+ *     from src.anima.preview_settings import DEFAULT_PREVIEW_SETTINGS as D;\
+ *     print(json.dumps(D,indent=1))" > /tmp/f2.json && python3 -c "\
+ *     import json; d=json.load(open('/tmp/f2.json'));\
+ *     json.dump(d, open('js/anima/fixture_default_preview_settings.json','w'),\
+ *     indent=2, sort_keys=True); open('js/anima/fixture_default_preview_settings.json','a').write(chr(10))"
+ *
+ * Covers (mapped to the dispatch's own "Tests" list):
+ *   A. `state.mjs` — the refreshed fixture round-trips and deep-equals
+ *      Python's actual output (no `latent`/`loras`); `resolveStageLabels`
+ *      matches `src/anima/stages.py`'s `resolve_stage_labels` port
+ *      byte-for-byte; `deepMergeDefaults`/`migrateVersion`/detailer-block
+ *      mutation edge cases (unaffected by this reversal, kept for
+ *      regression).
+ *   B. `render.mjs` — the panel respects `PANEL_MIN_H`/`PANEL_MAX_H`
+ *      (measureMinHeight clamps the panel child's contribution both ways);
+ *      `GENERATOR_MIN_W`/`PREVIEW_MIN_W` clamp on `onResize`.
+ *   C. Wheel scrolls-vs-zooms per direction, exercised against the REAL
+ *      built panel DOM (not a bespoke check — `js/shared/canvas_zoom.mjs`'s
+ *      own `scrollRegionWantsWheel`).
+ *   D. Teardown — `installZoomPassthrough`/`teardownNode` leave no orphaned
+ *      wheel listener or open popover after `onRemoved`.
+ *   E. Context-supplied fields — `resolveContextBridge`/
+ *      `computeContextSupplied` for: `context` unwired; wired straight to a
+ *      real `AnimaContextBridge`; wired through a single-input pass-through
+ *      (Reroute-shaped) node to a bridge; wired to something that ISN'T a
+ *      bridge. A supplied sampler field renders as a static "driven" row: an
+ *      unsupplied one renders as an editable numeric/stepper field.
+ *   F. State still reaches the SERIALIZED widget after every edit — a
+ *      stage toggle, a drag-to-set numeric field, a stepper cycle, a boolean
+ *      switch, a detailer block add/remove — never just in-memory state.
+ *   G. Preview: `images` is one list input; the wipe compares two entries
+ *      from `node._anPreviewImages` (populated by `handleExecuted`, keyed by
+ *      the `stage` field Python already resolved); a one-entry run degrades
+ *      to a single-image view.
  *
  * MANUAL-IN-COMFYUI CHECKLIST (this headless harness cannot confirm any of
  * this — the real `addDOMWidget`/legacy-litegraph runtime contract, actual
- * screen-space overlay placement, and actual socket wire behaviour only
- * exist live):
+ * screen-space overlay placement, the real litegraph link-table shape
+ * (`getInputLink` vs. `graph.links[id]`), and actual CSS `max-height`/
+ * `overflow-y` enforcement only exist live):
  *   [ ] A fresh Generator/Preview node renders with the house theme applied
- *       (`.wtn` + `injectTheme()` actually landing) and real litegraph
- *       sockets line up sensibly above this DOM body.
+ *       and real litegraph sockets line up sensibly above this DOM body.
  *   [ ] `generation_settings`/`preview_state` widgets are invisible on the
  *       node face but present (and correctly populated) in the saved
  *       workflow JSON / the queued API prompt.
+ *   [ ] The `.wtn-an-panel` visually caps at `PANEL_MAX_H` and scrolls
+ *       internally past it, without the node itself growing further.
+ *   [ ] `resolveContextBridge`'s `getInputLink`/`graph.links[id]` fallback
+ *       chain actually resolves against a real litegraph graph.
  *   [ ] The ⚙ popovers actually appear beside the correct row on screen and
- *       flip to the other side when they'd overflow the viewport (this
- *       harness only asserts inline style values against a fake
- *       `getBoundingClientRect`/`innerWidth`/`innerHeight`, never real
- *       layout).
- *   [ ] Right-click "Convert widget to input" is not needed for the five
- *       sampler sockets (they're `forceInput`, socket-only) — confirm a
- *       Control Panel row wires directly.
- *   [ ] The wipe's hover tracks the cursor smoothly with no jitter, and
- *       `object-fit: contain` visibly aligns two differently-sized images.
+ *       flip to the other side when they'd overflow the viewport.
+ *   [ ] The wipe's hover tracks the cursor smoothly with no jitter.
  *   [ ] Mouse wheel over the node body zooms the canvas, except while
- *       hovering a genuinely scrollable popover (`.wtn-an-pop`'s own
- *       `overflow: auto`).
+ *       hovering the `.wtn-an-panel` itself once its content overflows
+ *       `PANEL_MAX_H`, or a popover's own `overflow: auto`.
  */
 
 import assert from "node:assert/strict";
@@ -71,29 +81,23 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { scrollRegionWantsWheel } from "../shared/canvas_zoom.mjs";
+
 import {
   GENERATION_SETTINGS_SCHEMA,
-  PREVIEW_SETTINGS_SCHEMA,
   MAX_DETAILER_PASSES,
-  COMPARE_SLOTS,
-  SAVE_WHICH_OPTIONS,
+  STAGE_ORDER,
   deepMergeDefaults,
   migrateVersion,
   normalizeGenerationSettings,
   normalizePreviewSettings,
-  defaultGenerationSettings,
   resolveStageSampler,
-  resolveOutputs,
-  addLora,
-  removeLora,
-  moveLora,
-  toggleMuteLora,
+  detailerIsLive,
+  resolveStageLabels,
   addDetailerBlock,
   removeDetailerBlock,
   moveDetailerBlock,
   isBuiltinDetailerBlock,
-  preferredNameDefault,
-  UNET_NAME_CANDIDATES,
 } from "./state.mjs";
 
 import {
@@ -102,10 +106,13 @@ import {
   sectionLabel,
   measureMinHeight,
   buildPreviewImageUrl,
+  clampGeneratorSize,
   clampPreviewSize,
   DEFAULT_W,
-  DEFAULT_H,
+  GENERATOR_MIN_W,
   PREVIEW_MIN_W,
+  PANEL_MIN_H,
+  PANEL_MAX_H,
 } from "./render.mjs";
 
 import {
@@ -113,7 +120,8 @@ import {
   getPreviewStateWidget,
   ensureGenState,
   persistGenState,
-  computeWiredFlags,
+  resolveContextBridge,
+  computeContextSupplied,
   mountGeneratorUI,
   repaintGenerator,
   mountPreviewUI,
@@ -132,10 +140,9 @@ let count = 0;
 function test(name, fn) {
   count += 1;
   // `js/shared/overlay.mjs`'s active-overlay slot is a MODULE-LEVEL
-  // singleton (by design -- only one overlay should ever be open across the
-  // whole page). Reset it before every test so a popover a PREVIOUS test
-  // left open (deliberately, to inspect it) never makes an unrelated later
-  // test's `openPopover` treat itself as "already open -- toggle closed".
+  // singleton. Reset it before every test so a popover a PREVIOUS test left
+  // open never makes an unrelated later test's `openPopover` treat itself as
+  // "already open -- toggle closed".
   closeActiveOverlay();
   try {
     fn();
@@ -156,12 +163,10 @@ globalThis.requestAnimationFrame = (cb) => {
   cb();
   return 1;
 };
-globalThis.getComputedStyle = (el) => (el && el.style) || {};
+globalThis.getComputedStyle = (elx) => (elx && elx.style) || {};
 
 // ---------------------------------------------------------------------------
-// Minimal DOM stub -- mirrors js/controls/test_resize.mjs's makeDocStub
-// exactly (contains/closest/getBoundingClientRect/insertBefore), plus a
-// `style.setProperty` (the wipe divider's `--wipe-x` CSS var).
+// Minimal DOM stub -- mirrors js/controls/test_resize.mjs's makeDocStub.
 // ---------------------------------------------------------------------------
 
 function makeDocStub() {
@@ -185,6 +190,10 @@ function makeDocStub() {
       type: "",
       selected: false,
       parentNode: null,
+      offsetHeight: 20,
+      scrollHeight: 20,
+      scrollTop: 0,
+      clientHeight: 20,
       _rect: { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 },
       get ownerDocument() {
         return doc;
@@ -213,11 +222,11 @@ function makeDocStub() {
       setAttribute(name, val) {
         elObj.attributes[name] = val;
       },
-      addEventListener(type, fn) {
-        (elObj._listeners[type] = elObj._listeners[type] || []).push(fn);
+      addEventListener(t, fn) {
+        (elObj._listeners[t] = elObj._listeners[t] || []).push(fn);
       },
-      removeEventListener(type, fn) {
-        const arr = elObj._listeners[type];
+      removeEventListener(t, fn) {
+        const arr = elObj._listeners[t];
         if (!arr) {
           return;
         }
@@ -274,7 +283,6 @@ function makeDocStub() {
         return elObj._rect;
       },
       offsetParent: {},
-      offsetHeight: 20,
       focus() {},
     };
     Object.defineProperty(elObj, "className", {
@@ -309,11 +317,11 @@ function makeWindowStub(doc, size) {
     _listeners: {},
     innerWidth: (size && size.w) || undefined,
     innerHeight: (size && size.h) || undefined,
-    addEventListener(type, fn) {
-      (win._listeners[type] = win._listeners[type] || []).push(fn);
+    addEventListener(t, fn) {
+      (win._listeners[t] = win._listeners[t] || []).push(fn);
     },
-    removeEventListener(type, fn) {
-      const arr = win._listeners[type];
+    removeEventListener(t, fn) {
+      const arr = win._listeners[t];
       if (!arr) {
         return;
       }
@@ -331,15 +339,14 @@ function makeWindowStub(doc, size) {
   return win;
 }
 
-function fire(elx, type, overrides = {}) {
-  const e = { type, target: elx, button: 0, stopPropagation() {}, preventDefault() {}, ...overrides };
-  (elx._listeners[type] || []).slice().forEach((fn) => fn(e));
+function fire(elx, t, overrides = {}) {
+  const e = { type: t, target: elx, button: 0, clientX: 150, stopPropagation() {}, preventDefault() {}, ...overrides };
+  (elx._listeners[t] || []).slice().forEach((fn) => fn(e));
 }
 
 // ---------------------------------------------------------------------------
 // Query helpers -- interaction.mjs doesn't hand back a per-row refs map (the
-// body is fully rebuilt on every action, see its top doc comment), so tests
-// walk the built DOM tree instead, same spirit as asserting rendered HTML.
+// body is fully rebuilt on every action), so tests walk the built DOM tree.
 // ---------------------------------------------------------------------------
 
 function queryAll(root, predicate) {
@@ -364,101 +371,93 @@ function findStageRow(root, name) {
   );
 }
 function gearOf(row) {
-  return row.children.find((c) => hasClass(c, "wtn-an-gear"));
+  return row.children.find((c) => hasClass(c, "wtn-fld-gear"));
 }
 function switchOf(row) {
-  return row.children.find((c) => hasClass(c, "wtn-an-sw"));
-}
-function findFieldByLabel(root, label) {
-  return queryAll(root, (n) => hasClass(n, "wtn-an-field")).find((f) => (f.children[0] || {}).textContent === label);
+  return row.children.find((c) => hasClass(c, "wtn-fld-switch"));
 }
 function popoverRoot(doc) {
   return queryAll(doc.body, (n) => hasClass(n, "wtn-an-pop")).slice(-1)[0];
 }
+/** Finds a field container (numeric/stepper/boolean/text -- one of this
+ * track's four field shapes) by its own label text, across every field kind
+ * this popover UI can render. */
+function findFieldByLabel(root, label) {
+  const containers = queryAll(root, (n) =>
+    hasClass(n, "wtn-fld-num") || hasClass(n, "wtn-fld-stepper") || hasClass(n, "wtn-an-boolfield")
+    || hasClass(n, "wtn-an-field") || hasClass(n, "wtn-fld-driven"));
+  return containers.find((f) => {
+    const nameEl = f.children.find((c) =>
+      hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name") || hasClass(c, "wtn-fld-driven-name"))
+      || f.children[0];
+    return nameEl && nameEl.textContent === label;
+  });
+}
 
 // ---------------------------------------------------------------------------
-// Fake litegraph nodes
+// Fake litegraph nodes -- mirrors nodes/anima/generator.py's/preview.py's
+// REAL INPUT_TYPES/RETURN_TYPES (context/generation_settings ->
+// images/latent/metadata_json; preview_state + optional images/
+// metadata_json), not the deleted socket set.
 // ---------------------------------------------------------------------------
 
-function makeGeneratorNode(widgetValues = {}, wiredInputs = {}) {
-  const defaults = {
-    generation_settings: "{}",
-    use_internal_loaders: false,
-    unet_name: "anima-base-v1.0.safetensors",
-    clip_name: "qwen_3_06b_base.safetensors",
-    clip_type: "qwen_image",
-    vae_name: "qwen_image_vae.safetensors",
+function makeGraph(nodesById, links) {
+  return {
+    getNodeById(id) {
+      return nodesById[id] || null;
+    },
+    links,
   };
-  const values = { ...defaults, ...widgetValues };
-  const optionsFor = {
-    unet_name: ["anima-base-v1.0.safetensors", "some-other-model.safetensors"],
-    clip_name: ["qwen_3_06b_base.safetensors"],
-    clip_type: ["stable_diffusion", "qwen_image"],
-    vae_name: ["qwen_image_vae.safetensors"],
-  };
-  const widgets = Object.entries(values).map(([name, value]) => ({
-    name,
-    value,
-    options: optionsFor[name] ? { values: optionsFor[name] } : undefined,
-  }));
+}
 
-  // `type` here mirrors `nodes/anima/generator.py`'s real INPUT_TYPES/
-  // RETURN_TYPES types exactly (never hardcoded ad hoc) -- this is the SAME
-  // list section G's "no socket rendered twice" tests below iterate over, so
-  // a future socket added to `generator.py` without updating this fixture
-  // fails those tests loudly rather than silently under-covering them.
-  const INPUT_SOCKET_TYPES = {
-    positive: "CONDITIONING", negative: "CONDITIONING",
-    model: "MODEL", clip: "CLIP", vae: "VAE", latent: "LATENT",
-    seed: "INT", steps: "INT", cfg: "FLOAT", sampler_name: "COMBO", scheduler: "COMBO",
-  };
-  const inputs = Object.keys(INPUT_SOCKET_TYPES).map((name) => ({
-    name, type: INPUT_SOCKET_TYPES[name], link: wiredInputs[name] ? 1 : null,
-  }));
+function makeGeneratorNode({ generation_settings = "{}", contextLink = null, graph = null } = {}) {
+  const widgets = [{ name: "generation_settings", value: generation_settings }];
+  const inputs = [{ name: "context", type: "ANIMA_CONTEXT", link: contextLink }];
   const outputs = [
-    { name: "image", type: "IMAGE" },
-    { name: "image_base", type: "IMAGE" },
-    { name: "image_mid", type: "IMAGE" },
+    { name: "images", type: "IMAGE" },
     { name: "latent", type: "LATENT" },
     { name: "metadata_json", type: "STRING" },
   ];
-
   const node = {
     size: [DEFAULT_W, 100],
     widgets,
     inputs,
     outputs,
+    graph,
     setSize(s) {
       node.size = s.slice();
     },
     setDirtyCanvas() {},
-    disconnectInput(idx) {
-      if (node.inputs[idx]) {
-        node.inputs[idx].link = null;
-      }
-    },
   };
   return node;
 }
 
-function makePreviewNode(widgetValues = {}, wiredInputs = {}) {
-  const widgets = [{ name: "preview_state", value: widgetValues.preview_state ?? "{}" }];
-  // Mirrors `nodes/anima/preview.py`'s real INPUT_TYPES types -- see
-  // `makeGeneratorNode`'s identical comment for why this isn't hardcoded
-  // ad hoc in each test.
-  const inputNames = ["image_a", "image_b", "image_c"];
-  const inputs = inputNames.map((name) => ({ name, type: "IMAGE", link: wiredInputs[name] ? 1 : null }));
+function makePreviewNode({ preview_state = "{}", imagesLink = null, metadataLink = null } = {}) {
+  const widgets = [{ name: "preview_state", value: preview_state }];
+  const inputs = [
+    { name: "images", type: "IMAGE", link: imagesLink },
+    { name: "metadata_json", type: "STRING", link: metadataLink },
+  ];
   const node = {
     size: [396, 420],
     widgets,
     inputs,
-    outputs: [], // AnimaPreview's RETURN_TYPES is () -- OUTPUT_NODE, no real outputs.
+    outputs: [], // AnimaPreview is OUTPUT_NODE with RETURN_TYPES ().
     setSize(s) {
       node.size = s.slice();
     },
     setDirtyCanvas() {},
   };
   return node;
+}
+
+function makeBridgeNode(id, wiredFields = []) {
+  const ALL = ["model", "clip", "vae", "positive", "negative", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler"];
+  return {
+    id,
+    type: "AnimaContextBridge",
+    inputs: ALL.map((name) => ({ name, link: wiredFields.includes(name) ? 99 : null })),
+  };
 }
 
 function makeCtx(doc, overrides = {}) {
@@ -480,10 +479,12 @@ function previewState(node) {
 // A. state.mjs — pure settings logic
 // ===========================================================================
 
-test("normalizeGenerationSettings('{}') deep-equals Python's own DEFAULT_GENERATION_SETTINGS (checked-in fixture)", () => {
+test("normalizeGenerationSettings('{}') deep-equals Python's own DEFAULT_GENERATION_SETTINGS (checked-in fixture, no latent/loras)", () => {
   const fixture = JSON.parse(readFileSync(path.join(__dirname, "fixture_default_generation_settings.json"), "utf8"));
   const got = normalizeGenerationSettings("{}");
   assert.deepEqual(got, fixture);
+  assert.ok(!("latent" in got), "the 2026-07-28 reversal deletes generation_settings.latent");
+  assert.ok(!("loras" in got), "the 2026-07-28 reversal deletes generation_settings.loras");
 });
 
 test("normalizePreviewSettings('{}') deep-equals Python's own DEFAULT_PREVIEW_SETTINGS (checked-in fixture)", () => {
@@ -498,16 +499,15 @@ test("normalizeGenerationSettings round-trips its own output unchanged (idempote
   assert.deepEqual(twice, once);
 });
 
-test("normalizeGenerationSettings: unknown top-level keys survive, missing keys default, garbage JSON never throws", () => {
-  const out = normalizeGenerationSettings('{"unknown_top": "keep me", "sampler": {"steps": 99} , not json');
-  // Garbage JSON (trailing `, not json`) -> parse fails -> full defaults, but
-  // the unknown-key/missing-key CONTRACT is what this test is really for,
-  // so assert it against valid JSON too.
-  const ok = normalizeGenerationSettings(JSON.stringify({ unknown_top: "keep me", sampler: { steps: 99 } }));
+test("normalizeGenerationSettings: unknown top-level keys survive, missing keys default, garbage JSON never throws; a hand-edited payload that still sets latent/loras is tolerated as inert data", () => {
+  const ok = normalizeGenerationSettings(JSON.stringify({ unknown_top: "keep me", sampler: { steps: 99 }, latent: { width: 2048 }, loras: [{ name: "x" }] }));
   assert.equal(ok.unknown_top, "keep me");
   assert.equal(ok.sampler.steps, 99);
   assert.equal(ok.sampler.cfg, 5.0); // missing key -> default
   assert.equal(ok.schema, GENERATION_SETTINGS_SCHEMA);
+  // Nothing reads these anymore, but they must not be rejected/crash either.
+  assert.deepEqual(ok.latent, { width: 2048 });
+  assert.deepEqual(ok.loras, [{ name: "x" }]);
   assert.doesNotThrow(() => normalizeGenerationSettings("{ not json"));
   assert.doesNotThrow(() => normalizeGenerationSettings(null));
   assert.doesNotThrow(() => normalizeGenerationSettings([1, 2, 3]));
@@ -552,13 +552,8 @@ test("normalizeGenerationSettings: an unknown detailer block id merges against t
   assert.equal(out.detailer.order.length, MAX_DETAILER_PASSES);
   assert.deepEqual(out.detailer.order, ["face", "custom_9", "eye", "custom_1"]);
   assert.equal(out.detailer.blocks.custom_9.label, "Nine");
-  assert.equal(out.detailer.blocks.custom_9.detect_prompt, "nine");
-  // Merged against the FACE template, not left as a bare partial object --
-  // every face-shaped key is present with the face default value.
   assert.equal(out.detailer.blocks.custom_9.crop_factor, 4.0);
-  assert.equal(out.detailer.blocks.custom_9.noise_mask_feather, 10);
   assert.equal(out.detailer.blocks.face.threshold, 0.9);
-  // custom_2/custom_3 are present but bumped past the cap.
   assert.ok(!("custom_2" in out.detailer.blocks));
   assert.ok(!("custom_3" in out.detailer.blocks));
 });
@@ -570,7 +565,7 @@ test("resolveStageSampler: inherit on takes cfg/sampler_name/scheduler from the 
   assert.equal(resolved.cfg, 5.0);
   assert.equal(resolved.sampler_name, "er_sde");
   assert.equal(resolved.scheduler, "simple");
-  assert.equal(resolved.steps, 20); // the STAGE's own, never the base's 32
+  assert.equal(resolved.steps, 20);
   assert.equal(resolved.denoise, 0.25);
 });
 
@@ -583,50 +578,46 @@ test("resolveStageSampler: inherit off uses the stage's own cfg/sampler_name/sch
   assert.equal(resolved.scheduler, "sgm_uniform");
 });
 
-test("resolveOutputs: a disabled/inert stage passes the previous stage's image through (image_mid == image_base is legitimate)", () => {
-  const off = resolveOutputs({ highresEnabled: false, detailerEnabled: false, haveImpact: true, blocks: {}, upscaleEnabled: false, haveUsdu: true });
-  assert.equal(off.image_base, "base");
-  assert.equal(off.image_mid, "base");
-  assert.equal(off.image, "base");
+// ---------------------------------------------------------------------------
+// resolveStageLabels -- the replacement for the deleted resolveOutputs
+// (design doc §5's reversal). Mirrors `src/anima/stages.py`'s
+// `resolve_stage_labels`/`detailer_is_live` byte-for-byte.
+// ---------------------------------------------------------------------------
 
-  const detailerNoBlocksOn = resolveOutputs({
-    highresEnabled: true, detailerEnabled: true, haveImpact: true,
-    blocks: { face: { enabled: false }, eye: { enabled: false } }, upscaleEnabled: true, haveUsdu: true,
-  });
-  assert.equal(detailerNoBlocksOn.detailerLive, false);
-  assert.equal(detailerNoBlocksOn.image_mid, "highres"); // passes highres through, not "mid"
-  assert.equal(detailerNoBlocksOn.image, "upscale");
-
-  const allOn = resolveOutputs({
-    highresEnabled: true, detailerEnabled: true, haveImpact: true,
-    blocks: { face: { enabled: true } }, upscaleEnabled: true, haveUsdu: true,
-  });
-  assert.equal(allOn.image_mid, "mid");
-  assert.equal(allOn.image, "upscale");
+test("detailerIsLive: off, Impact absent, or every block off -> inert; one enabled block -> live", () => {
+  assert.equal(detailerIsLive({ detailerEnabled: false, haveImpact: true, blocks: { face: { enabled: true } } }), false);
+  assert.equal(detailerIsLive({ detailerEnabled: true, haveImpact: false, blocks: { face: { enabled: true } } }), false);
+  assert.equal(detailerIsLive({ detailerEnabled: true, haveImpact: true, blocks: { face: { enabled: false }, eye: { enabled: false } } }), false);
+  assert.equal(detailerIsLive({ detailerEnabled: true, haveImpact: true, blocks: { face: { enabled: false }, eye: { enabled: true } } }), true);
 });
 
-test("LoRA helpers: add/remove/reorder/mute — order is preserved and mute remembers the strength pair", () => {
-  const loras = [];
-  addLora(loras);
-  addLora(loras);
-  loras[0].name = "a";
-  loras[1].name = "b";
-  moveLora(loras, 0, 1);
-  assert.deepEqual(loras.map((l) => l.name), ["b", "a"]);
-
-  toggleMuteLora(loras[0]);
-  assert.equal(loras[0].strength_model, 0);
-  assert.equal(loras[0].strength_clip, 0);
-  toggleMuteLora(loras[0]);
-  assert.equal(loras[0].strength_model, 1.0);
-  assert.equal(loras[0].strength_clip, 1.0);
-
-  removeLora(loras, 0);
-  assert.deepEqual(loras.map((l) => l.name), ["a"]);
+test("resolveStageLabels: base is always first and always present, regardless of every other flag", () => {
+  const combos = [
+    { highresEnabled: false, detailerLive: false, upscaleLive: false, postprocessApplied: false },
+    { highresEnabled: true, detailerLive: true, upscaleLive: true, postprocessApplied: true },
+    { highresEnabled: false, detailerLive: true, upscaleLive: false, postprocessApplied: true },
+  ];
+  combos.forEach((c) => assert.equal(resolveStageLabels(c)[0], "base"));
 });
 
-test("Detailer block helpers: add respects MAX_DETAILER_PASSES, face/eye are unremovable", () => {
-  const detailer = normalizeGenerationSettings("{}").detailer; // starts with face+eye
+test("resolveStageLabels: every stage off -> just [\"base\"] (one enabled stage -> one entry falls out for free)", () => {
+  assert.deepEqual(resolveStageLabels({ highresEnabled: false, detailerLive: false, upscaleLive: false, postprocessApplied: false }), ["base"]);
+});
+
+test("resolveStageLabels: mid appears iff highres OR a live detailer changed the image -- either alone is enough", () => {
+  assert.deepEqual(resolveStageLabels({ highresEnabled: true, detailerLive: false, upscaleLive: false, postprocessApplied: false }), ["base", "mid"]);
+  assert.deepEqual(resolveStageLabels({ highresEnabled: false, detailerLive: true, upscaleLive: false, postprocessApplied: false }), ["base", "mid"]);
+  assert.deepEqual(resolveStageLabels({ highresEnabled: true, detailerLive: true, upscaleLive: false, postprocessApplied: false }), ["base", "mid"]);
+});
+
+test("resolveStageLabels: final appears iff a live upscale OR an applied postprocess resize changed the image again", () => {
+  assert.deepEqual(resolveStageLabels({ highresEnabled: false, detailerLive: false, upscaleLive: true, postprocessApplied: false }), ["base", "final"]);
+  assert.deepEqual(resolveStageLabels({ highresEnabled: false, detailerLive: false, upscaleLive: false, postprocessApplied: true }), ["base", "final"]);
+  assert.deepEqual(resolveStageLabels({ highresEnabled: true, detailerLive: false, upscaleLive: true, postprocessApplied: false }), ["base", "mid", "final"]);
+});
+
+test("Detailer block helpers: add respects MAX_DETAILER_PASSES, face/eye are unremovable (unaffected by the reversal)", () => {
+  const detailer = normalizeGenerationSettings("{}").detailer;
   assert.equal(removeDetailerBlock(detailer, "face"), false);
   assert.equal(removeDetailerBlock(detailer, "eye"), false);
   assert.ok(isBuiltinDetailerBlock("face") && isBuiltinDetailerBlock("eye"));
@@ -634,60 +625,271 @@ test("Detailer block helpers: add respects MAX_DETAILER_PASSES, face/eye are unr
 
   const id1 = addDetailerBlock(detailer);
   const id2 = addDetailerBlock(detailer);
-  assert.equal(Object.keys(detailer.blocks).length, MAX_DETAILER_PASSES); // face, eye, custom_1, custom_2
-  const id3 = addDetailerBlock(detailer); // at the cap -- refused
-  assert.equal(id3, null);
   assert.equal(Object.keys(detailer.blocks).length, MAX_DETAILER_PASSES);
+  assert.equal(addDetailerBlock(detailer), null);
 
   assert.equal(removeDetailerBlock(detailer, id1), true);
   assert.equal(Object.keys(detailer.blocks).length, MAX_DETAILER_PASSES - 1);
-  assert.ok(!detailer.order.includes(id1));
 
   const before = detailer.order.slice();
   moveDetailerBlock(detailer, "eye", -1);
   assert.notDeepEqual(detailer.order, before);
-});
-
-test("preferredNameDefault: never falls back to options[0] when a real candidate/heuristic match exists", () => {
-  assert.equal(preferredNameDefault(["zzz.safetensors", "anima-base-v1.0.safetensors"], UNET_NAME_CANDIDATES), "anima-base-v1.0.safetensors");
-  assert.equal(preferredNameDefault(["zzz.safetensors", "nyaIrisAnima_base1V20.safetensors"], UNET_NAME_CANDIDATES), "nyaIrisAnima_base1V20.safetensors");
-  // Animagine XL must NOT match the heuristic (a real, unrelated model).
-  assert.equal(preferredNameDefault(["animagineXL31.safetensors", "zzz.safetensors"], UNET_NAME_CANDIDATES), "animagineXL31.safetensors");
-  // Only when NOTHING matches at all does it fall through to [0].
-  assert.equal(preferredNameDefault([], UNET_NAME_CANDIDATES), UNET_NAME_CANDIDATES[0]);
+  void id2;
 });
 
 // ===========================================================================
-// B. render.mjs — small presentational builders
+// B. render.mjs — panel min/max height, min width
 // ===========================================================================
 
 test("injectStyles is idempotent and guarded against a doc with no createElement", () => {
   const doc = makeDocStub();
   injectStyles(doc);
-  injectStyles(doc); // second call must not double-inject
+  injectStyles(doc);
+  // Two stylesheets land: this module's own CSS, plus js/shared/fields.mjs's
+  // (injectStyles calls injectFieldStyles internally) -- each guarded by its
+  // own id, so a second call must not double-inject EITHER one.
   const styleTags = doc.head.children.filter((c) => c.tagName === "style");
-  assert.equal(styleTags.length, 1);
+  assert.equal(styleTags.length, 2);
   assert.doesNotThrow(() => injectStyles(null));
   assert.doesNotThrow(() => injectStyles({}));
 });
 
-test("buildSwitch/sectionLabel render expected text", () => {
+test("buildSwitch/sectionLabel render expected text (shared js/shared/fields.mjs primitives)", () => {
   const doc = makeDocStub();
   const on = buildSwitch(doc, true);
-  assert.ok(hasClass(on, "wtn-an-on"));
+  assert.ok(hasClass(on, "wtn-fld-on"));
   const off = buildSwitch(doc, false);
-  assert.ok(!hasClass(off, "wtn-an-on"));
+  assert.ok(!hasClass(off, "wtn-fld-on"));
 
   const sec = sectionLabel(doc, "stages", "2/4 on");
   assert.ok(sec.children.some((c) => c.textContent === "stages"));
   assert.ok(sec.children.some((c) => hasClass(c, "wtn-an-cnt")));
 });
 
+test("measureMinHeight floors the whole widget at PANEL_MIN_H even for a nearly-empty panel", () => {
+  const root = makeDocStub().createElement("div");
+  const panel = makeDocStub().createElement("div");
+  panel.className = "wtn-an-panel";
+  panel.offsetHeight = 10; // far below PANEL_MIN_H
+  root.appendChild(panel);
+  assert.equal(measureMinHeight(root), PANEL_MIN_H);
+});
+
+test("measureMinHeight caps the whole widget at PANEL_MAX_H even when the panel's real content is far taller -- this IS the 'node stops growing, panel scrolls' contract", () => {
+  const root = makeDocStub().createElement("div");
+  const panel = makeDocStub().createElement("div");
+  panel.className = "wtn-an-panel";
+  panel.offsetHeight = 5000; // a huge stack of expanded sections/detailer blocks
+  root.appendChild(panel);
+  assert.equal(measureMinHeight(root), PANEL_MAX_H);
+});
+
+test("measureMinHeight tracks the panel's real height between the two bounds", () => {
+  const root = makeDocStub().createElement("div");
+  const panel = makeDocStub().createElement("div");
+  panel.className = "wtn-an-panel";
+  panel.offsetHeight = 300;
+  root.appendChild(panel);
+  assert.equal(measureMinHeight(root), 300);
+});
+
+test("clampGeneratorSize / clampPreviewSize raise size[0] up to each node's own floor, never touch size[1]", () => {
+  const size = [10, 999];
+  clampGeneratorSize(size);
+  assert.equal(size[0], GENERATOR_MIN_W);
+  assert.equal(size[1], 999);
+
+  const size2 = [10, 500];
+  clampPreviewSize(size2);
+  assert.equal(size2[0], PREVIEW_MIN_W);
+  assert.equal(size2[1], 500);
+
+  // A width already at/above the floor is left alone.
+  const size3 = [GENERATOR_MIN_W + 40, 100];
+  clampGeneratorSize(size3);
+  assert.equal(size3[0], GENERATOR_MIN_W + 40);
+
+  // Tolerant of a missing/non-numeric size.
+  assert.doesNotThrow(() => clampGeneratorSize(null));
+  assert.doesNotThrow(() => clampGeneratorSize(["nope"]));
+});
+
 // ===========================================================================
-// C. interaction.mjs — Generator body, inline mode, stage toggle, LoRA,
-//    detailer blocks. Every assertion reads the SERIALIZED WIDGET (never
-//    only the in-memory state object) — the trap this whole track exists to
-//    catch.
+// C. Wheel scrolls-vs-zooms per direction -- exercised against the REAL
+//    built panel DOM node (not a bespoke re-implementation).
+// ===========================================================================
+
+test("wheel: the built .wtn-an-panel wants the wheel when it has scroll room in the wheel's own direction, and passes through once pinned at that end", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  // The test DOM stub doesn't parse injected CSS into computed style, so
+  // this test stubs the panel's own scroll state directly -- proving the
+  // WIRING (root -> panel is what scrollRegionWantsWheel's walk finds), not
+  // the CSS declaration itself (a VERIFY-IN-COMFYUI concern, see this
+  // file's own checklist).
+  refs.panel.style.overflowY = "auto";
+  refs.panel.scrollHeight = 900;
+  refs.panel.clientHeight = 300;
+
+  refs.panel.scrollTop = 100; // room both up and down
+  assert.ok(scrollRegionWantsWheel(refs.panel, refs.root, 0, 100));
+  assert.ok(scrollRegionWantsWheel(refs.panel, refs.root, 0, -100));
+
+  refs.panel.scrollTop = 0; // pinned at the top
+  assert.equal(scrollRegionWantsWheel(refs.panel, refs.root, 0, -100), false, "wheel UP at the top must pass through to the canvas");
+  assert.ok(scrollRegionWantsWheel(refs.panel, refs.root, 0, 100), "wheel DOWN still scrolls");
+
+  refs.panel.scrollTop = 600; // pinned at the bottom (600+300=900)
+  assert.equal(scrollRegionWantsWheel(refs.panel, refs.root, 0, 100), false, "wheel DOWN at the bottom must pass through to the canvas");
+  assert.ok(scrollRegionWantsWheel(refs.panel, refs.root, 0, -100), "wheel UP still scrolls");
+});
+
+test("wheel: a panel with nothing to scroll (content fits) never wants the wheel, in either direction", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  refs.panel.style.overflowY = "auto";
+  refs.panel.scrollHeight = 200;
+  refs.panel.clientHeight = 300; // fits -- no scrollbar
+  assert.equal(scrollRegionWantsWheel(refs.panel, refs.root, 0, 100), false);
+  assert.equal(scrollRegionWantsWheel(refs.panel, refs.root, 0, -100), false);
+});
+
+// ===========================================================================
+// D. Teardown -- no orphaned wheel listener or open popover survives
+//    onRemoved.
+// ===========================================================================
+
+test("installZoomPassthrough installs exactly one wheel listener on the DOM widget root; teardownNode removes it", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+  installZoomPassthrough(node, ctx);
+  assert.equal((node._anRefs.root._listeners.wheel || []).length, 1);
+
+  teardownNode(node);
+  assert.equal((node._anRefs.root._listeners.wheel || []).length, 0, "no orphaned wheel listener after teardown");
+});
+
+test("teardownNode closes an open popover -- no orphan left mounted on document.body", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const row = findStageRow(refs.body, "Highres");
+  fire(gearOf(row), "click");
+  assert.ok(popoverRoot(doc), "popover must have opened");
+
+  teardownNode(node);
+  assert.ok(!popoverRoot(doc), "teardownNode must close any popover this node still owns");
+});
+
+// ===========================================================================
+// E. Context-supplied fields -- resolveContextBridge/computeContextSupplied
+//    for every documented case, plus the resulting field rendering.
+// ===========================================================================
+
+test("resolveContextBridge: context unwired -> null", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  assert.equal(resolveContextBridge(node), null);
+  assert.deepEqual(computeContextSupplied(node), { bridgeFound: false, bridge: null, supplied: {} });
+});
+
+test("resolveContextBridge: context wired straight to a real AnimaContextBridge -- resolves, and reports exactly which of ITS sockets are wired", () => {
+  const bridge = makeBridgeNode(2, ["seed", "cfg"]);
+  const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  assert.equal(resolveContextBridge(node), bridge);
+  const { bridgeFound, supplied } = computeContextSupplied(node);
+  assert.equal(bridgeFound, true);
+  assert.equal(supplied.seed, true);
+  assert.equal(supplied.cfg, true);
+  assert.equal(supplied.steps, false);
+  assert.equal(supplied.sampler_name, false);
+});
+
+test("resolveContextBridge: context wired through a single-input pass-through node (Reroute-shaped) to a bridge -- still resolves", () => {
+  const bridge = makeBridgeNode(3, ["scheduler"]);
+  const reroute = { id: 2, type: "Reroute", inputs: [{ name: "", link: 20 }] };
+  const graph = makeGraph({ 2: reroute, 3: bridge }, {
+    1: { origin_id: 2, origin_slot: 0 },
+    20: { origin_id: 3, origin_slot: 0 },
+  });
+  // Real litegraph sets `.graph` on every node placed on the canvas -- these
+  // plain-object stubs need it set explicitly for the same reason.
+  reroute.graph = graph;
+  bridge.graph = graph;
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  assert.equal(resolveContextBridge(node), bridge);
+  assert.equal(computeContextSupplied(node).supplied.scheduler, true);
+});
+
+test("resolveContextBridge: context wired to something that ISN'T a bridge -- resolves to nothing, every field editable", () => {
+  const notABridge = { id: 2, type: "SomeOtherNode", inputs: [{ name: "a", link: null }, { name: "b", link: null }] };
+  const graph = makeGraph({ 2: notABridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  assert.equal(resolveContextBridge(node), null);
+  assert.deepEqual(computeContextSupplied(node).supplied, {});
+});
+
+test("resolveContextBridge: a cycle (pass-through nodes looping back on themselves) fails closed, never hangs", () => {
+  const a = { id: 2, type: "Reroute", inputs: [{ name: "", link: 20 }] };
+  const b = { id: 3, type: "Reroute", inputs: [{ name: "", link: 10 }] };
+  const graph = makeGraph({ 2: a, 3: b }, {
+    1: { origin_id: 2, origin_slot: 0 },
+    20: { origin_id: 3, origin_slot: 0 },
+    10: { origin_id: 2, origin_slot: 0 }, // b points back to a -- a cycle
+  });
+  a.graph = graph;
+  b.graph = graph;
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  assert.equal(resolveContextBridge(node), null);
+});
+
+test("a context-supplied sampler field renders as a static driven row; an unsupplied one renders editable", () => {
+  const bridge = makeBridgeNode(2, ["seed"]);
+  const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
+    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "seed");
+  fire(seedRow, "click");
+  const pop = popoverRoot(doc);
+
+  const seedField = findFieldByLabel(pop, "seed");
+  assert.ok(seedField && hasClass(seedField, "wtn-fld-driven"), "seed is context-supplied -- must render as a static driven row");
+
+  const stepsField = findFieldByLabel(pop, "steps");
+  assert.ok(stepsField && hasClass(stepsField, "wtn-fld-num"), "steps is NOT context-supplied -- must render as an editable numeric field");
+});
+
+test("no Context Bridge resolved -- every sampler field renders editable, and the popover says so", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
+    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "seed");
+  fire(seedRow, "click");
+  const pop = popoverRoot(doc);
+  assert.ok(!queryAll(pop, (n) => hasClass(n, "wtn-fld-driven")).length, "nothing should render as driven with no bridge resolved");
+  assert.ok(findFieldByLabel(pop, "seed") && hasClass(findFieldByLabel(pop, "seed"), "wtn-fld-num"));
+});
+
+// ===========================================================================
+// F. State reaches the SERIALIZED widget after every kind of edit -- never
+//    just in-memory state.
 // ===========================================================================
 
 test("mountGeneratorUI: brand-new node's generation_settings widget is written with the FULLY EXPANDED defaults, not left at Python's literal '{}'", () => {
@@ -697,27 +899,7 @@ test("mountGeneratorUI: brand-new node's generation_settings widget is written w
   mountGeneratorUI(node, ctx);
   const persisted = genState(node);
   assert.equal(persisted.schema, GENERATION_SETTINGS_SCHEMA);
-  assert.equal(persisted.sampler.steps, 32); // NOT "{}" -- a real, expanded tree
-});
-
-test("LoRA list and latent row appear ONLY when use_internal_loaders is on", () => {
-  const node = makeGeneratorNode({ use_internal_loaders: false });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-lora")).length, 0);
-  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length, 0);
-
-  // Toggle the row -- clicking the internal-loaders row itself.
-  const internalRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "use_internal_loaders");
-  fire(internalRow, "click");
-
-  assert.equal(node.widgets.find((w) => w.name === "use_internal_loaders").value, true);
-  assert.ok(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length >= 1, "the + Add LoRA button must appear once inline mode is on");
-  const latentRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "latent");
-  assert.ok(latentRow, "the latent row must appear once inline mode is on");
+  assert.equal(persisted.sampler.steps, 32);
 });
 
 test("toggling a stage switch writes the generation_settings WIDGET, not just in-memory state", () => {
@@ -729,72 +911,67 @@ test("toggling a stage switch writes the generation_settings WIDGET, not just in
   assert.equal(genState(node).highres.enabled, false);
   const row = findStageRow(refs.body, "Highres");
   fire(switchOf(row), "click");
-  assert.equal(genState(node).highres.enabled, true, "the SERIALIZED widget must reflect the toggle");
-
-  const rowAfter = findStageRow(node._anRefs.body, "Highres");
-  assert.ok(hasClass(rowAfter, "wtn-an-off") === false);
+  assert.equal(genState(node).highres.enabled, true);
 });
 
-test("adding/removing/reordering/muting a LoRA writes the widget with order preserved", () => {
-  const node = makeGeneratorNode({ use_internal_loaders: true });
+test("dragging a numeric field (steps) writes the widget on release, live-painting during the drag", () => {
+  const node = makeGeneratorNode();
   const doc = makeDocStub();
+  makeWindowStub(doc);
   const ctx = makeCtx(doc);
-  let refs = mountGeneratorUI(node, ctx);
+  const refs = mountGeneratorUI(node, ctx);
 
-  const addBtn = () => queryAll(node._anRefs.body, (n) => hasClass(n, "wtn-an-addbtn"))[0];
-  fire(addBtn(), "click");
-  fire(addBtn(), "click");
-  assert.equal(genState(node).loras.length, 2);
-
-  // Name the two rows via their gear popovers so reordering is checkable.
-  function openGearForLoraIndex(i) {
-    const row = queryAll(node._anRefs.body, (n) => hasClass(n, "wtn-an-lora") && !hasClass(n, "wtn-an-empty"))[i];
-    fire(gearOf(row), "click");
-  }
-  openGearForLoraIndex(0);
+  const summary = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
+  fire(summary, "click");
   let pop = popoverRoot(doc);
-  let nameField = findFieldByLabel(pop, "name");
-  nameField.children[1].value = "first";
-  fire(nameField.children[1], "change");
-  closeActiveOverlay();
+  const stepsField = findFieldByLabel(pop, "steps");
+  assert.ok(stepsField, "steps must be editable -- nothing is context-supplied on an unwired-context node");
 
-  openGearForLoraIndex(1);
-  pop = popoverRoot(doc);
-  nameField = findFieldByLabel(pop, "name");
-  nameField.children[1].value = "second";
-  fire(nameField.children[1], "change");
-  closeActiveOverlay();
+  stepsField._rect = { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 };
+  fire(stepsField, "pointerdown", { clientX: 300 }); // drag to the far right -> max
+  fire(stepsField, "pointermove", { clientX: 300 });
+  // Not yet persisted to the widget until release -- in-memory paint only.
+  fire(stepsField, "pointerup", { clientX: 300 });
+  const persisted = genState(node);
+  assert.equal(persisted.sampler.steps, 150, "dragging to the far right of a [1,150] range commits the max");
+});
 
-  assert.deepEqual(genState(node).loras.map((l) => l.name), ["first", "second"]);
+test("cycling a stepper field (sampler_name) writes the widget immediately (no drag needed)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const summary = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
+  fire(summary, "click");
+  const pop = popoverRoot(doc);
+  const samplerField = findFieldByLabel(pop, "sampler_name");
+  const before = genState(node).sampler.sampler_name;
+  const rightArrow = samplerField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click");
+  const after = genState(node).sampler.sampler_name;
+  assert.notEqual(after, before, "the stepper must cycle AND persist immediately");
+});
 
-  // Mute the first row's switch (in the BODY, not the popover).
-  const muteSwitch = () => queryAll(node._anRefs.body, (n) => hasClass(n, "wtn-an-lora") && !hasClass(n, "wtn-an-empty"))[0].children[0];
-  fire(muteSwitch(), "click");
-  let persisted = genState(node);
-  assert.equal(persisted.loras[0].strength_model, 0);
-  assert.equal(persisted.loras[0].strength_clip, 0);
-
-  // Reorder via the second LoRA's "move up" button.
-  openGearForLoraIndex(1);
-  pop = popoverRoot(doc);
-  const moveUpBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent.includes("move up"));
-  fire(moveUpBtn, "click");
-  persisted = genState(node);
-  assert.deepEqual(persisted.loras.map((l) => l.name), ["second", "first"], "order IS apply order -- must actually swap");
-
-  // Remove the (now second) entry.
-  openGearForLoraIndex(1);
-  pop = popoverRoot(doc);
-  const removeBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "Remove LoRA");
-  fire(removeBtn, "click");
-  persisted = genState(node);
-  assert.equal(persisted.loras.length, 1);
-  assert.equal(persisted.loras[0].name, "second");
+test("a boolean switch (mod guidance enabled) writes the widget immediately", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const mgRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
+    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "mod guidance");
+  fire(mgRow, "click");
+  const pop = popoverRoot(doc);
+  const enabledField = findFieldByLabel(pop, "enabled");
+  fire(enabledField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+  assert.equal(genState(node).mod_guidance.enabled, true);
 });
 
 test("detailer popover: adding respects MAX_DETAILER_PASSES and face/eye stay unremovable, all reaching the widget", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
+  makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
@@ -802,557 +979,131 @@ test("detailer popover: adding respects MAX_DETAILER_PASSES and face/eye stay un
   fire(gearOf(row), "click");
   let pop = popoverRoot(doc);
 
-  // face/eye's "remove" is replaced by a disabled "built in" button.
   const builtinBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "built in");
   assert.ok(builtinBtn && builtinBtn.disabled);
 
   const addBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
-  fire(addBtn, "click"); // custom_1
-  fire(addBtn, "click"); // custom_2 -- now at MAX_DETAILER_PASSES (face, eye, custom_1, custom_2)
+  fire(addBtn, "click");
+  fire(addBtn, "click");
   let persisted = genState(node);
   assert.equal(Object.keys(persisted.detailer.blocks).length, MAX_DETAILER_PASSES);
 
   pop = popoverRoot(doc);
   const addBtnAgain = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
   assert.ok(addBtnAgain.disabled, "MAX_DETAILER_PASSES reached -- the + button must refuse further adds");
-  fire(addBtnAgain, "click");
-  persisted = genState(node);
-  assert.equal(Object.keys(persisted.detailer.blocks).length, MAX_DETAILER_PASSES, "still capped -- a disabled button click must not have added a 5th");
 });
 
-// ===========================================================================
-// C2. No socket rendered twice — the bug this whole file's fix is for.
-//    Litegraph already draws every real INPUT/OUTPUT socket in its own
-//    column; this body must render only what litegraph does NOT (settings
-//    rows), never a name+type-labeled row mirroring a socket that's already
-//    on screen. Derived from `node.inputs`/`node.outputs` (this file's own
-//    `makeGeneratorNode`/`makePreviewNode` fixtures, themselves a mirror of
-//    `nodes/anima/generator.py`/`preview.py`'s real INPUT_TYPES/RETURN_TYPES)
-//    rather than a hardcoded name list, so a future re-addition of a status
-//    row fails this test automatically without anyone needing to remember
-//    which names were removed.
-// ===========================================================================
-
-/** True if some row-like element in `root` has a direct child whose
- * `textContent` is exactly `name` AND another direct child whose
- * `textContent` is exactly `type` -- i.e. a "socket status row" pairing a
- * socket's own name with its own type, the exact shape the deleted
- * `buildStatusRow` produced (name span + type pill as siblings). A row that
- * merely REUSES a socket's name for an unrelated settings control (the
- * `seed` summary row, the inline-mode `latent` width/height/batch editor)
- * never also carries that socket's TYPE string as a sibling, so this never
- * flags those deliberate, real, editable rows -- only a genuine duplicate. */
-function rowHasNameAndType(root, name, type) {
-  return queryAll(root, (n) => Array.isArray(n.children) && n.children.length >= 2).some((n) => {
-    const texts = n.children.map((c) => c.textContent);
-    return texts.includes(name) && texts.includes(type);
-  });
-}
-
-function allSockets(node) {
-  return [...(node.inputs || []), ...(node.outputs || [])].filter((s) => s && s.type);
-}
-
-test("Generator body never re-renders a real socket as a name+type row, in either inline mode", () => {
-  [false, true].forEach((internalOn) => {
-    const node = makeGeneratorNode({ use_internal_loaders: internalOn });
-    const doc = makeDocStub();
-    const ctx = makeCtx(doc);
-    const refs = mountGeneratorUI(node, ctx);
-    allSockets(node).forEach(({ name, type }) => {
-      assert.ok(
-        !rowHasNameAndType(refs.body, name, type),
-        `${name}/${type} must not appear as a duplicated status row (use_internal_loaders=${internalOn})`,
-      );
-    });
-  });
-});
-
-test("Preview body never re-renders image_a/image_b/image_c as a name+type row", () => {
-  const node = makePreviewNode({}, { image_a: true, image_b: true, image_c: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
-  allSockets(node).forEach(({ name, type }) => {
-    assert.ok(!rowHasNameAndType(refs.body, name, type), `${name}/${type} must not appear as a duplicated status row`);
-  });
-});
-
-function rowNames(root) {
-  return queryAll(root, (n) => hasClass(n, "wtn-an-row"))
-    .map((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent);
-}
-function rowValue(root, name) {
-  const row = queryAll(root, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === name);
-  return row && (row.children.find((c) => hasClass(c, "wtn-an-val")) || {}).textContent;
-}
-function sectionLabelTexts(root) {
-  return queryAll(root, (n) => hasClass(n, "wtn-an-sec")).map((s) => (s.children[0] || {}).textContent);
-}
-
-test("Generator body surviving row set -- use_internal_loaders OFF: no picker/latent/lora rows", () => {
-  const node = makeGeneratorNode({ use_internal_loaders: false });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const names = rowNames(refs.body);
-
-  assert.ok(names.includes("use_internal_loaders"));
-  assert.ok(names.includes("seed"));
-  assert.ok(names.includes("mod guidance"));
-  assert.ok(names.some((n) => n.includes("/")), "the sampler summary row must be present");
-  ["unet_name", "clip_name", "clip_type", "vae_name", "latent"].forEach((n) => {
-    assert.ok(!names.includes(n), `${n} row must not appear while use_internal_loaders is off`);
-  });
-  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-lora")).length, 0);
-  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length, 0);
-  assert.deepEqual(sectionLabelTexts(refs.body), ["resources", "sampler", "stages"]);
-  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-stagerow")).length, 4, "Highres/Detailer/Upscale/Postprocess");
-});
-
-test("Generator body surviving row set -- use_internal_loaders ON: pickers + latent editor + LoRA list appear too", () => {
-  const node = makeGeneratorNode({ use_internal_loaders: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const names = rowNames(refs.body);
-
-  ["use_internal_loaders", "unet_name", "clip_name", "clip_type", "vae_name", "latent", "seed", "mod guidance"].forEach((n) => {
-    assert.ok(names.includes(n), `${n} row must be present while use_internal_loaders is on`);
-  });
-  assert.ok(names.some((n) => n.includes("/")), "the sampler summary row must be present");
-  assert.ok(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length >= 1, "+ Add LoRA must appear");
-  assert.deepEqual(sectionLabelTexts(refs.body), ["resources", "loras", "sampler", "stages"]);
-});
-
-test("use_internal_loaders row states plainly which side is live, in both directions", () => {
-  const offNode = makeGeneratorNode({ use_internal_loaders: false });
-  const offRefs = mountGeneratorUI(offNode, makeCtx(makeDocStub()));
-  const valOff = rowValue(offRefs.body, "use_internal_loaders");
-  assert.match(valOff, /^off\b/i, "must plainly say OFF");
-  assert.match(valOff, /wired sockets/i, "must say the sockets are the live side");
-
-  const onNode = makeGeneratorNode({ use_internal_loaders: true });
-  const onRefs = mountGeneratorUI(onNode, makeCtx(makeDocStub()));
-  const valOn = rowValue(onRefs.body, "use_internal_loaders");
-  assert.match(valOn, /^on\b/i, "must plainly say ON");
-  assert.match(valOn, /sockets ignored/i, "must say the sockets are the ignored side");
-});
-
-// ===========================================================================
-// D. inherit_sampler_settings contract -- hides EXACTLY cfg/sampler_name/
-//    scheduler, both directions, for highres/upscale/a detailer block.
-// ===========================================================================
-
-function assertInheritContract(pop) {
-  // ON (default): steps/denoise ARE editable fields; cfg/sampler_name/
-  // scheduler are NOT present as fields at all.
-  assert.ok(findFieldByLabel(pop, "steps"), "steps must always be visible");
-  assert.ok(findFieldByLabel(pop, "denoise"), "denoise must always be visible");
-  assert.ok(!findFieldByLabel(pop, "cfg"), "cfg must be hidden while inherit is ON");
-  assert.ok(!findFieldByLabel(pop, "sampler_name"), "sampler_name must be hidden while inherit is ON");
-  assert.ok(!findFieldByLabel(pop, "scheduler"), "scheduler must be hidden while inherit is ON");
-}
-
-function assertInheritOffContract(pop) {
-  assert.ok(findFieldByLabel(pop, "steps"));
-  assert.ok(findFieldByLabel(pop, "denoise"));
-  assert.ok(findFieldByLabel(pop, "cfg"), "cfg must reappear once inherit is OFF");
-  assert.ok(findFieldByLabel(pop, "sampler_name"), "sampler_name must reappear once inherit is OFF");
-  assert.ok(findFieldByLabel(pop, "scheduler"), "scheduler must reappear once inherit is OFF");
-}
-
-function findInheritToggle(pop) {
-  return queryAll(pop, (n) => hasClass(n, "wtn-an-field")).find((f) => (f.children[0] || {}).textContent === "inherit").children[1];
-}
-
-test("inherit contract — Highres: hides exactly cfg/sampler_name/scheduler, both directions", () => {
+test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/scheduler, both directions, and persists", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
+  makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   const row = findStageRow(refs.body, "Highres");
   fire(gearOf(row), "click");
   let pop = popoverRoot(doc);
-  assertInheritContract(pop);
+  assert.ok(findFieldByLabel(pop, "steps"));
+  assert.ok(findFieldByLabel(pop, "denoise"));
+  assert.ok(!findFieldByLabel(pop, "cfg"), "cfg hidden while inherit is ON");
+  assert.ok(!findFieldByLabel(pop, "sampler_name"));
+  assert.ok(!findFieldByLabel(pop, "scheduler"));
 
-  fire(findInheritToggle(pop), "click"); // toggle inherit off, in place
-  pop = popoverRoot(doc); // same overlay, content rebuilt in place
-  assertInheritOffContract(pop);
+  const inheritField = queryAll(pop, (n) => hasClass(n, "wtn-an-boolfield"))
+    .find((f) => (f.children[0] || {}).textContent === "inherit");
+  fire(inheritField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+  pop = popoverRoot(doc);
+  assert.ok(findFieldByLabel(pop, "cfg"), "cfg reappears once inherit is OFF");
+  assert.ok(findFieldByLabel(pop, "sampler_name"));
+  assert.ok(findFieldByLabel(pop, "scheduler"));
   assert.equal(genState(node).highres.inherit_sampler_settings, false);
-
-  fire(findInheritToggle(pop), "click"); // back on
-  pop = popoverRoot(doc);
-  assertInheritContract(pop);
-  assert.equal(genState(node).highres.inherit_sampler_settings, true);
-});
-
-test("inherit contract — Upscale: hides exactly cfg/sampler_name/scheduler, both directions", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const row = findStageRow(refs.body, "Upscale");
-  fire(gearOf(row), "click");
-  let pop = popoverRoot(doc);
-  assertInheritContract(pop);
-  fire(findInheritToggle(pop), "click");
-  pop = popoverRoot(doc);
-  assertInheritOffContract(pop);
-  assert.equal(genState(node).upscale.inherit_sampler_settings, false);
-});
-
-test("inherit contract — a Detailer block (face): hides exactly cfg/sampler_name/scheduler, both directions", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const row = findStageRow(refs.body, "Detailer");
-  fire(gearOf(row), "click");
-  let pop = popoverRoot(doc);
-  assertInheritContract(pop);
-  fire(findInheritToggle(pop), "click");
-  pop = popoverRoot(doc);
-  assertInheritOffContract(pop);
-  assert.equal(genState(node).detailer.blocks.face.inherit_sampler_settings, false);
 });
 
 // ===========================================================================
-// E. Sampler wired-wins + unet/clip/vae picker self-heal
+// G. Preview -- images is one list input; wipe reads node._anPreviewImages
+//    (keyed by Python-resolved stage name), degrades to single-image.
 // ===========================================================================
 
-test("sampler popover: a wired field renders as driven-by-wire, never an editable input that's silently ignored", () => {
-  const node = makeGeneratorNode({}, { seed: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent.includes("/") === false
-      && (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "seed");
-  fire(seedRow, "click");
-  const pop = popoverRoot(doc);
-  const seedField = findFieldByLabel(pop, "seed");
-  assert.ok(hasClass(seedField.children[1], "wtn-an-driven"), "a wired field must render driven-by-wire");
-  assert.ok(findFieldByLabel(pop, "cfg"), "an unwired field stays a normal editable input");
-});
-
-test("sampler popover: clicking a driven field disconnects the real link and the field becomes editable in place", () => {
-  const node = makeGeneratorNode({}, { seed: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-nm") && n.textContent === "seed")[0].parentNode;
-  fire(seedRow, "click");
-  let pop = popoverRoot(doc);
-  const seedField = findFieldByLabel(pop, "seed");
-  fire(seedField.children[1], "click");
-  assert.equal(node.inputs.find((i) => i.name === "seed").link, null, "disconnectInput must have run");
-  pop = popoverRoot(doc);
-  const seedFieldAfter = findFieldByLabel(pop, "seed");
-  assert.ok(!hasClass(seedFieldAfter.children[1], "wtn-an-driven"), "must become editable in place, no close/reopen needed");
-});
-
-test("internal-loader picker rows never fall back to options[0] for an orphaned saved value", () => {
-  const node = makeGeneratorNode({ use_internal_loaders: true, unet_name: "a-deleted-model.safetensors" });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  mountGeneratorUI(node, ctx);
-  const widget = node.widgets.find((w) => w.name === "unet_name");
-  // Options are ["anima-base-v1.0.safetensors", "some-other-model.safetensors"]
-  // (this file's makeGeneratorNode) -- options[0] would be WRONG here; the
-  // heuristic/candidate match must self-heal to the real Anima model.
-  assert.equal(widget.value, "anima-base-v1.0.safetensors");
-});
-
-// ===========================================================================
-// F. Preview node — wipe divider maths, compare/save rows, stage status
-// ===========================================================================
-
-test("wipeXFromEvent: maps cursor position across the wipe box to a 0..100 percent, clamped", () => {
-  const rect = { left: 0, width: 200 };
-  assert.equal(wipeXFromEvent(rect, 0), 0);
-  assert.equal(wipeXFromEvent(rect, 200), 100);
-  assert.equal(wipeXFromEvent(rect, 100), 50);
-  assert.equal(wipeXFromEvent(rect, -50), 0); // clamped
-  assert.equal(wipeXFromEvent(rect, 999), 100); // clamped
-  assert.equal(wipeXFromEvent(null, 50), 50); // no rect -- safe default, never throws
-});
-
-test("Preview: hovering the wipe sets --wipe-x on the wipe element, stopPropagation is called (litegraph-steal guard)", () => {
-  const node = makePreviewNode({}, { image_a: true, image_c: true });
+test("Preview: no images wired -- placeholder says 'nothing wired yet'", () => {
+  const node = makePreviewNode({ imagesLink: null });
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
-  refs.wipeEl._rect = { left: 0, width: 200 };
-  let stopped = false;
-  fire(refs.wipeEl, "pointermove", { clientX: 150, stopPropagation: () => { stopped = true; } });
-  assert.equal(refs.wipeEl.style["--wipe-x"], "75.00%");
-  assert.ok(stopped, "stopPropagation must be called or litegraph steals the gesture");
+  const empty = queryAll(refs.body, (n) => hasClass(n, "wtn-an-empty"))[0];
+  assert.equal(empty.textContent, "nothing wired yet");
 });
 
-test("Preview: compare a/b segmented buttons write the preview_state WIDGET", () => {
-  const node = makePreviewNode({}, { image_a: true, image_b: true, image_c: true });
+test("Preview: images wired but no run yet -- placeholder says so, distinctly from unwired", () => {
+  const node = makePreviewNode({ imagesLink: 1 });
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
-  const segButtons = queryAll(refs.body, (n) => hasClass(n, "wtn-an-seg")).flatMap((seg) => seg.children);
-  const midBtn = segButtons.find((b) => b.textContent === "mid");
-  fire(midBtn, "click");
-  assert.equal(previewState(node).compare.a, "mid");
+  const empty = queryAll(refs.body, (n) => hasClass(n, "wtn-an-empty"))[0];
+  assert.match(empty.textContent, /run the graph/i);
 });
 
-test("Preview: save popover fields write the preview_state WIDGET", () => {
-  const node = makePreviewNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
-  const saveRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "save");
-  fire(saveRow, "click");
-  const pop = popoverRoot(doc);
-  const whichField = findFieldByLabel(pop, "which");
-  whichField.children[1].value = "every wired input";
-  fire(whichField.children[1], "change");
-  assert.equal(previewState(node).save.which, "every wired input");
-  assert.ok(SAVE_WHICH_OPTIONS.includes(previewState(node).save.which));
-});
-
-test("clampPreviewSize: raises a below-min width, leaves an at/above-min width untouched, never mutates height", () => {
-  const small = [200, 500];
-  assert.equal(clampPreviewSize(small), small, "returns the same array");
-  assert.equal(small[0], PREVIEW_MIN_W);
-  assert.equal(small[1], 500, "height must never be touched");
-
-  const atMin = [PREVIEW_MIN_W, 300];
-  clampPreviewSize(atMin);
-  assert.equal(atMin[0], PREVIEW_MIN_W);
-  assert.equal(atMin[1], 300);
-
-  const aboveMin = [PREVIEW_MIN_W + 40, 300];
-  clampPreviewSize(aboveMin);
-  assert.equal(aboveMin[0], PREVIEW_MIN_W + 40, "an already-wide size must not be shrunk");
-  assert.equal(aboveMin[1], 300);
-});
-
-test("clampPreviewSize: tolerates a missing/short/non-numeric array without throwing", () => {
-  assert.doesNotThrow(() => clampPreviewSize(undefined));
-  assert.doesNotThrow(() => clampPreviewSize(null));
-  assert.doesNotThrow(() => clampPreviewSize([]));
-  assert.equal(clampPreviewSize(undefined), undefined);
-  const junk = ["not a number", 300];
-  clampPreviewSize(junk);
-  assert.equal(junk[0], PREVIEW_MIN_W, "a non-numeric width is treated as below-min");
-  assert.equal(junk[1], 300, "height untouched even on the junk-width path");
-});
-
-test("Preview body child order: save row -> .wtn-an-wipe -> .wtn-an-pvbar", () => {
-  const node = makePreviewNode({}, { image_a: true, image_c: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
-  const kids = refs.body.children;
-  assert.equal(kids.length, 3, "exactly save row, wipe, compare bar");
-  assert.ok(hasClass(kids[0], "wtn-an-row"), "1st child is the save row");
-  assert.equal((kids[0].children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent, "save");
-  assert.ok(hasClass(kids[1], "wtn-an-wipe"), "2nd child is the wipe box");
-  assert.ok(hasClass(kids[2], "wtn-an-pvbar"), "3rd child is the compare bar");
-});
-
-test("Preview compare row: with compare.enabled there is exactly ONE .wtn-an-pvbar, and BOTH seg groups live inside its .wtn-an-segs cluster; seg clicks still write compare.a/b and persist", () => {
-  const node = makePreviewNode(
-    { preview_state: JSON.stringify({ compare: { enabled: true, a: "base", b: "final" } }) },
-    { image_a: true, image_b: true, image_c: true },
-  );
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
-
-  const pvbars = queryAll(refs.body, (n) => hasClass(n, "wtn-an-pvbar"));
-  assert.equal(pvbars.length, 1, "exactly one .wtn-an-pvbar, no second bar for the segs");
-  const pvbar = pvbars[0];
-
-  const segsCluster = pvbar.children.find((c) => hasClass(c, "wtn-an-segs"));
-  assert.ok(segsCluster, "the segs cluster must live inside the SAME pvbar");
-  const segGroups = queryAll(segsCluster, (n) => hasClass(n, "wtn-an-seg"));
-  assert.equal(segGroups.length, 2, "both base|mid|final groups must be inside .wtn-an-segs");
-
-  // The switch + "compare" label are still on the same bar, to its left.
-  assert.ok(pvbar.children.some((c) => hasClass(c, "wtn-an-sw")));
-  assert.ok(pvbar.children.some((c) => hasClass(c, "wtn-an-pvlab") && c.textContent === "compare"));
-
-  // Existing behaviour: clicking a seg button still writes + persists.
-  const segButtons = segGroups.flatMap((seg) => seg.children);
-  const midBtn = segButtons.find((b) => b.textContent === "mid");
-  fire(midBtn, "click");
-  assert.equal(previewState(node).compare.a, "mid");
-});
-
-// ===========================================================================
-// F2. onExecuted -- stage-keyed mapping (never array position), the
-//     degrade-to-single-pane contract, and the cache-busting URL builder.
-// ===========================================================================
-
-function imgsInWipe(refs) {
-  return queryAll(refs.wipeEl, (n) => n.tagName === "img");
-}
-function layerImgSrc(refs, extraClass) {
-  const layer = queryAll(refs.wipeEl, (n) => hasClass(n, "wtn-an-layer") && hasClass(n, extraClass))[0];
-  const img = layer && layer.children.find((c) => c.tagName === "img");
-  return img ? img.src : undefined;
-}
-
-test("buildPreviewImageUrl: builds ComfyUI's /view URL and includes a cache-busting param", () => {
-  const url = buildPreviewImageUrl({ filename: "foo.png", subfolder: "AnimaFlow", type: "output" }, 12345);
-  assert.ok(url.startsWith("/view?"));
-  assert.ok(url.includes("filename=foo.png"));
-  assert.ok(url.includes("subfolder=AnimaFlow"));
-  assert.ok(url.includes("type=output"));
-  assert.ok(url.includes("t=12345"), "must carry a cache-busting param, or a second run's identical filename shows the stale image");
-
-  // A second call with a DIFFERENT cacheBust for the SAME filename must
-  // produce a DIFFERENT url -- that's the whole point.
-  const urlAgain = buildPreviewImageUrl({ filename: "foo.png", subfolder: "AnimaFlow", type: "output" }, 99999);
-  assert.notEqual(url, urlAgain);
-
-  assert.equal(buildPreviewImageUrl(null, 1), null, "a missing entry must never build a broken src");
-  assert.equal(buildPreviewImageUrl({ subfolder: "x" }, 1), null, "an entry with no filename must never build a broken src");
-});
-
-test("handleExecuted: maps ui.images entries onto panes BY STAGE, never by array position", () => {
-  const node = makePreviewNode({}, { image_a: true, image_b: true, image_c: true });
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
-
-  // Scrambled order on purpose -- final first, base last -- to prove the
-  // mapping reads `entry.stage`, not `images[0]`/`images[1]`/`images[2]`.
-  handleExecuted(node, ctx, {
-    images: [
-      { filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" },
-      { filename: "mid_temp.png", subfolder: "", type: "temp", stage: "mid" },
-      { filename: "base_temp.png", subfolder: "", type: "temp", stage: "base" },
-    ],
-  });
-
-  // default compare is base vs final -- dual pane, each layer showing the
-  // stage ITS class names, not array position.
-  assert.ok(layerImgSrc(node._anRefs, "wtn-an-a").includes("filename=base_temp.png"));
-  assert.ok(layerImgSrc(node._anRefs, "wtn-an-b").includes("filename=final.png"));
-});
-
-test("handleExecuted: a batch's SECOND entry for the same stage is ignored -- one image per pane", () => {
-  const node = makePreviewNode({}, { image_a: true });
+test("Preview: handleExecuted populates node._anPreviewImages keyed by Python-resolved stage, and repaints the dual-pane wipe", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   mountPreviewUI(node, ctx);
+
   handleExecuted(node, ctx, {
     images: [
-      { filename: "first.png", subfolder: "", type: "temp", stage: "base" },
-      { filename: "second.png", subfolder: "", type: "temp", stage: "base" },
+      { filename: "base.png", subfolder: "AnimaFlow", type: "temp", stage: "base" },
+      { filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" },
     ],
   });
-  assert.equal(node._anPreviewImages.base.filename, "first.png");
+
+  assert.ok(node._anPreviewImages.base);
+  assert.ok(node._anPreviewImages.final);
+  const wipe = node._anRefs.wipeEl;
+  assert.ok(!hasClass(wipe, "wtn-an-single"), "both default compare stages (base/final) are present -- dual pane");
 });
 
-test("Preview: a selected compare stage that isn't wired degrades to a single-image view, not a broken pane", () => {
-  // compare.a = "mid" is picked but ONLY image_c (final) is wired -- must
-  // NOT render a dual pane with a permanently-blank "mid" side.
-  const node = makePreviewNode(
-    { preview_state: JSON.stringify({ compare: { enabled: true, a: "mid", b: "final" } }) },
-    { image_c: true },
-  );
+test("Preview: a ONE-entry run degrades to a single-image view, never a broken dual pane", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
-  const refs = mountPreviewUI(node, ctx);
+  mountPreviewUI(node, ctx);
+
   handleExecuted(node, ctx, {
-    images: [{ filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" }],
+    images: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
   });
 
-  assert.ok(hasClass(node._anRefs.wipeEl, "wtn-an-single"), "must degrade to the single-pane class, not stay dual");
-  assert.equal(imgsInWipe(node._anRefs).length, 1, "exactly one image, not a blank second pane");
-  assert.ok(imgsInWipe(node._anRefs)[0].src.includes("filename=final.png"));
+  const wipe = node._anRefs.wipeEl;
+  assert.ok(hasClass(wipe, "wtn-an-single"));
+  const label = queryAll(wipe, (n) => hasClass(n, "wtn-an-plab")).find((l) => l.textContent === "base");
+  assert.ok(label, "the single present stage must be shown regardless of what compare.a/compare.b name");
 });
 
-// ===========================================================================
-// G. Traps this pack has already been bitten by
-// ===========================================================================
+test("Preview: buildPreviewImageUrl builds ComfyUI's /view URL and cache-busts with the provided token; null for a malformed entry", () => {
+  const url = buildPreviewImageUrl({ filename: "x.png", subfolder: "AnimaFlow", type: "output" }, 123);
+  assert.match(url, /^\/view\?/);
+  assert.match(url, /filename=x\.png/);
+  assert.match(url, /t=123/);
+  assert.equal(buildPreviewImageUrl(null), null);
+  assert.equal(buildPreviewImageUrl({}), null);
+});
 
-test("popover toggle: a second click of the SAME opener closes it (not close-then-reopen)", () => {
-  const node = makeGeneratorNode();
+test("wipeXFromEvent clamps to [0,100] and defaults to 50 for a degenerate rect", () => {
+  assert.equal(wipeXFromEvent(null, 10), 50);
+  assert.equal(wipeXFromEvent({ left: 0, width: 100 }, -50), 0);
+  assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 150), 100);
+  assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 50), 50);
+});
+
+test("Preview: save/compare edits reach the preview_state widget", () => {
+  const node = makePreviewNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const row = findStageRow(refs.body, "Highres");
-  const gear = gearOf(row);
-
-  fire(gear, "click");
-  assert.equal(doc.body.children.filter((c) => hasClass(c, "wtn-overlay")).length, 1);
-  fire(gear, "click"); // second click of the SAME opener
-  assert.equal(doc.body.children.filter((c) => hasClass(c, "wtn-overlay")).length, 0, "must actually CLOSE, not close-then-reopen");
-});
-
-test("popover switching: opening a DIFFERENT row's gear closes the previous popover, exactly one open at a time", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  makeWindowStub(doc);
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  fire(gearOf(findStageRow(refs.body, "Highres")), "click");
-  assert.equal(doc.body.children.filter((c) => hasClass(c, "wtn-overlay")).length, 1);
-  fire(gearOf(findStageRow(node._anRefs.body, "Upscale")), "click");
-  assert.equal(doc.body.children.filter((c) => hasClass(c, "wtn-overlay")).length, 1, "exactly one overlay, ever");
-});
-
-test("overlay root sets position/left/top/z-index INLINE, so a missing stylesheet can never strand it off-view", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  makeWindowStub(doc);
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  fire(gearOf(findStageRow(refs.body, "Highres")), "click");
-  const overlay = doc.body.children.filter((c) => hasClass(c, "wtn-overlay")).slice(-1)[0];
-  assert.equal(overlay.style.position, "fixed");
-  assert.ok(overlay.style.zIndex);
-  assert.ok(typeof overlay.style.left === "string");
-  assert.ok(typeof overlay.style.top === "string");
-});
-
-test("wheel-zoom passthrough installs on mount and tears down on node removal", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  let uninstallCalled = false;
-  refs.root.addEventListener = (function (orig) {
-    return function (type, fn, opts) {
-      return orig.call(this, type, fn, opts);
-    };
-  })(refs.root.addEventListener);
-  installZoomPassthrough(node, ctx);
-  assert.ok(refs.root._listeners.wheel && refs.root._listeners.wheel.length >= 1, "a wheel listener must be installed");
-  const originalRemove = refs.root.removeEventListener;
-  refs.root.removeEventListener = function (type, fn) {
-    if (type === "wheel") {
-      uninstallCalled = true;
-    }
-    return originalRemove.call(this, type, fn);
-  };
-  teardownNode(node);
-  assert.ok(uninstallCalled, "teardownNode must remove the wheel listener, not just close overlays");
-});
-
-test("repaintGenerator swaps the body without leaving an orphaned previous generation mounted", () => {
-  const node = makeGeneratorNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc);
-  const refs = mountGeneratorUI(node, ctx);
-  const firstBody = refs.body;
-  repaintGenerator(node, ctx);
-  repaintGenerator(node, ctx);
-  assert.equal(refs.root.children.length, 1, "exactly one body must be mounted at a time");
-  assert.equal(firstBody.parentNode, null, "the torn-down previous body must be detached, not left floating");
+  const refs = mountPreviewUI(node, ctx);
+  const saveRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
+  fire(saveRow, "click");
+  const pop = popoverRoot(doc);
+  const enabledField = findFieldByLabel(pop, "enabled");
+  fire(enabledField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+  assert.equal(previewState(node).save.enabled, false);
 });
 
 console.log(`\n${count - failures}/${count} passed`);

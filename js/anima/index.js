@@ -32,24 +32,21 @@
  * each hidden for RENDERING only (never `serialize = false` — they must
  * keep reaching the backend) and mirrored from `node._anGenState`/
  * `node._anPreviewState` after every mutation (`interaction.mjs`'s
- * `persistGenState`/`persistPreviewState`). `AnimaGenerator`'s
- * `use_internal_loaders`/`unet_name`/`clip_name`/`clip_type`/`vae_name` are
- * ALSO hidden-and-mirrored (they're real Python-declared widgets carrying
- * real values, not settings-blob data — see `interaction.mjs`'s
- * `getLoaderWidgets` doc comment for why they need the same treatment as
- * `js/prompt_rules/node/index.js`'s `profile` combo).
+ * `persistGenState`/`persistPreviewState`). **2026-07-28 (Context Bridge
+ * dispatch)**: the internal-loader widgets (`use_internal_loaders`/
+ * `unet_name`/`clip_name`/`clip_type`/`vae_name`) are GONE from
+ * `AnimaGenerator`'s Python side along with `use_internal_loaders` mode
+ * itself (`docs/generator-design.md` §3/§5) — there is nothing left to hide
+ * for them here.
  */
 import { app } from "/scripts/app.js";
 
 const NODE_CLASS_NAMES = ["AnimaGenerator", "AnimaPreview"];
 
-// The three settings-blob-only STRING widgets, hidden-for-rendering-only on
-// EVERY node instance (both classes carry `generation_settings`/
-// `preview_state`? No -- each carries only its own; `find` below is a no-op
-// for the one that doesn't apply). The four internal-loader widgets are
-// Generator-only.
+// The two settings-blob-only STRING widgets, hidden-for-rendering-only on
+// EVERY node instance (each class carries only its own; `find` below is a
+// no-op for the one that doesn't apply).
 const HIDDEN_STATE_WIDGETS = ["generation_settings", "preview_state"];
-const HIDDEN_LOADER_WIDGETS = ["use_internal_loaders", "unet_name", "clip_name", "clip_type", "vae_name"];
 
 // ---------------------------------------------------------------------------
 // Lazy module loading -- see this file's top doc comment.
@@ -83,7 +80,7 @@ function hideWidget(w) {
 }
 
 function hideNativeWidgets(node) {
-  [...HIDDEN_STATE_WIDGETS, ...HIDDEN_LOADER_WIDGETS].forEach((name) => {
+  HIDDEN_STATE_WIDGETS.forEach((name) => {
     hideWidget((node.widgets || []).find((w) => w.name === name));
   });
 }
@@ -135,12 +132,15 @@ function buildCtx(mods) {
 
 // ---------------------------------------------------------------------------
 // Legacy litegraph sizing -- per the dynamic-node-frontend skill: this node
-// has real litegraph INPUT/OUTPUT sockets (conditioning, resources, sampler
-// fields, three image outputs, ...), so `node.widgets_start_y` is left at
-// its default (unlike js/controls/, this node's sockets AREN'T parked on
-// per-row DOM widgets — see render.mjs's top doc comment) and the DOM
-// widget just occupies the body below them, sized via `getMinHeight`
-// (legacy, PRIMARY) / `computeLayoutSize` (Nodes 2.0, forward-compat only).
+// has real litegraph INPUT/OUTPUT sockets (`context`/`generation_settings`
+// on the Generator; `images`/`metadata_json` on the Preview, plus the
+// hidden `prompt`/`extra_pnginfo`), so `node.widgets_start_y` is left at its
+// default (unlike js/controls/, this node's sockets AREN'T parked on
+// per-row DOM widgets — see render.mjs's top doc comment) and the ONE DOM
+// widget (a single scrollable panel, not one widget per row/section — see
+// render.mjs's top doc comment for the 2026-07-28 rewrite) occupies the
+// body below them, sized via `getMinHeight` (legacy, PRIMARY) /
+// `computeLayoutSize` (Nodes 2.0, forward-compat only).
 // ---------------------------------------------------------------------------
 
 function mountNode(node, mods, isGenerator) {
@@ -157,17 +157,18 @@ function mountNode(node, mods, isGenerator) {
   const refs = isGenerator ? mods.interaction.mountGeneratorUI(node, ctx) : mods.interaction.mountPreviewUI(node, ctx);
   mods.interaction.installZoomPassthrough(node, ctx);
 
-  // Preview-only min-width clamp (`render.mjs`'s `PREVIEW_MIN_W` doc comment
-  // for why 380) -- installed here, right after `mods` resolves, so there is
-  // no lazy-load race with a user resize. Chains any pre-existing
-  // `node.onResize` rather than replacing it.
-  if (!isGenerator) {
-    const prevResize = node.onResize;
-    node.onResize = function (size) {
-      mods.render.clampPreviewSize(size);
-      return prevResize ? prevResize.apply(this, arguments) : undefined;
-    };
-  }
+  // Min-width clamp -- the user asked for one explicitly on the Generator
+  // too (previously Preview-only). Each node type has its own floor
+  // (`render.mjs`'s `GENERATOR_MIN_W`/`PREVIEW_MIN_W` doc comments).
+  // Installed here, right after `mods` resolves, so there is no lazy-load
+  // race with a user resize. CHAINS any pre-existing `node.onResize` rather
+  // than replacing it.
+  const prevResize = node.onResize;
+  const clampSize = isGenerator ? mods.render.clampGeneratorSize : mods.render.clampPreviewSize;
+  node.onResize = function (size) {
+    clampSize(size);
+    return prevResize ? prevResize.apply(this, arguments) : undefined;
+  };
 
   let widget;
   if (typeof node.addDOMWidget === "function") {
@@ -213,9 +214,10 @@ function setupNode(node, mods, isGenerator) {
   // `ensureInitialFloor`.
   const curW = Array.isArray(node.size) && typeof node.size[0] === "number" ? node.size[0] : 0;
   const curH = Array.isArray(node.size) && typeof node.size[1] === "number" ? node.size[1] : 0;
-  // Preview gets its own, taller floor (PREVIEW_MIN_W) -- the Generator has
-  // no compare-row segs cluster, so it keeps plain DEFAULT_W.
-  const wFloor = isGenerator ? mods.render.DEFAULT_W : Math.max(mods.render.DEFAULT_W, mods.render.PREVIEW_MIN_W);
+  // Each node type has its own width floor (render.mjs's `GENERATOR_MIN_W`/
+  // `PREVIEW_MIN_W` doc comments) -- Preview's is taller (the compare row's
+  // segmented groups need more room than any Generator row does).
+  const wFloor = Math.max(mods.render.DEFAULT_W, isGenerator ? mods.render.GENERATOR_MIN_W : mods.render.PREVIEW_MIN_W);
   const w = Math.max(curW, wFloor);
   const h = Math.max(curH, defaultH);
   if (w !== curW || h !== curH) {
@@ -280,9 +282,11 @@ app.registerExtension({
       return result;
     };
 
-    // Refresh the sampler-socket "wired" badges (design doc §5a) / the
-    // Preview node's image_a/b/c "shown" badges the instant a link is made
-    // or broken -- gated on `!_anConfiguring`-equivalent isn't needed here
+    // Refresh the Generator's "context-supplied" field badges (design doc
+    // §5a -- `computeContextSupplied` walks the real litegraph link, so a
+    // link made/broken anywhere upstream of `context` must repaint) / the
+    // Preview's own wired-vs-not placeholder, the instant a link is made or
+    // broken -- gated on `!_anConfiguring`-equivalent isn't needed here
     // (unlike Controls' auto-row-kind resolution, refreshing a read-only
     // badge on a workflow's own link replay is harmless and correct).
     const _conn = nodeType.prototype.onConnectionsChange;

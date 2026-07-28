@@ -1,13 +1,13 @@
 /**
  * state.mjs — PURE settings-tree logic for `js/anima/`: defaults, the
- * tolerant/additive normalizer, and the small mutation helpers the row UI
- * needs (LoRA add/remove/reorder/mute, detailer block add/remove/reorder).
- * No `document`/`window`/`node` reference anywhere in this file — it must
- * stay importable and testable under plain `node`, mirroring the
- * `src/anima/` pure/impure split this whole track is built on
- * (`.claude/CLAUDE.md`: "In `src/anima/` the pure/impure boundary is
- * absolute... Don't put a decision in `pipeline.py`" — the JS analogue is
- * "don't put a decision in `interaction.mjs`/`index.js`").
+ * tolerant/additive normalizer, and the small mutation helpers the popover
+ * UI needs (detailer block add/remove/reorder). No `document`/`window`/
+ * `node` reference anywhere in this file — it must stay importable and
+ * testable under plain `node`, mirroring the `src/anima/` pure/impure split
+ * this whole track is built on (`.claude/CLAUDE.md`: "In `src/anima/` the
+ * pure/impure boundary is absolute... Don't put a decision in `pipeline.py`"
+ * — the JS analogue is "don't put a decision in `interaction.mjs`/
+ * `index.js`").
  *
  * This is a byte-for-byte PORT of `src/anima/settings.py` (defaults tree +
  * `normalize_generation_settings`/`_deep_merge_defaults`/`_fixup_detailer`/
@@ -19,14 +19,32 @@
  * (`fixture_default_generation_settings.json` / `fixture_default_preview_
  * settings.json` in this folder) rather than re-deriving it, since spawning
  * `python3` from a headless `node` test is avoidable ceremony for a value
- * that only needs regenerating when `settings.py`'s defaults change — see
- * this folder's own regen command in `test_resize.mjs`'s header comment.
+ * that only needs regenerating when `settings.py`'s defaults change. To
+ * regenerate:
  *
- * Also home to `src/anima/stages.py`'s `resolve_outputs`/`detailer_is_live`
- * (the "what does each output socket carry right now" resolver the node
- * body's summary rows read) and `src/anima/sampler.py`'s
- * `resolve_stage_sampler` (`inherit_sampler_settings` resolution, design doc
- * §6b) — both pure, both ported line-for-line from their Python twin.
+ *   python3 -c "import sys,json;sys.path.insert(0,'.');\
+ *     from src.anima.settings import DEFAULT_GENERATION_SETTINGS as D;\
+ *     print(json.dumps(D,indent=1))" > /tmp/f.json && python3 -c "\
+ *     import json; d=json.load(open('/tmp/f.json'));\
+ *     json.dump(d, open('js/anima/fixture_default_generation_settings.json','w'),\
+ *     indent=2, sort_keys=True)"
+ *
+ * (and the equivalent for `src.anima.preview_settings.DEFAULT_PREVIEW_SETTINGS`
+ * -> `fixture_default_preview_settings.json`).
+ *
+ * **2026-07-28 reversal (Context Bridge dispatch)** — `use_internal_loaders`,
+ * the four internal-loader picker rows, the inline LoRA list, and the inline
+ * `latent` row are ALL GONE from the Python contract (`docs/generator-
+ * design.md` §3/§5/§8's dated notes), so `generation_settings.latent`/
+ * `.loras` are deleted from the defaults tree below and every mutation
+ * helper that only ever served them (`addLora`/`removeLora`/`moveLora`/
+ * `toggleMuteLora`, `preferredNameDefault`/`UNET_NAME_CANDIDATES`/
+ * `CLIP_NAME_CANDIDATES`/`VAE_NAME_CANDIDATES`) is deleted too, not left
+ * unreferenced. `resolveOutputs`/`STAGE_HIGHRES`/`STAGE_DETAILER`/
+ * `STAGE_UPSCALE` (the old three-fixed-socket resolver) are replaced by
+ * `resolveStageLabels`, a byte-for-byte port of `src/anima/stages.py`'s
+ * `resolve_stage_labels` (the new `images` LIST's position -> stage-label
+ * resolver).
  */
 
 // ---------------------------------------------------------------------------
@@ -45,11 +63,31 @@ export const MAX_DETAILER_PASSES = 4;
 export const PREVIEW_SETTINGS_SCHEMA = "animaflow.anima_preview.preview_state";
 export const PREVIEW_SETTINGS_VERSION = 1;
 
-export const COMPARE_SLOTS = ["base", "mid", "final"];
+// The three labels a run's `images` list can carry, in the order they always
+// appear when present -- mirrors `src/anima/stages.py`'s `STAGE_ORDER`.
+export const STAGE_BASE = "base";
+export const STAGE_MID = "mid";
+export const STAGE_FINAL = "final";
+export const STAGE_ORDER = [STAGE_BASE, STAGE_MID, STAGE_FINAL];
+export const COMPARE_SLOTS = STAGE_ORDER;
+
 export const SAVE_WHICH_OPTIONS = ["shown", "both compared", "every wired input"];
 
-// The five sampler sockets that are wired-wins independently, per field, no
-// flag (design doc §5a) — mirrors `src/anima/resources.py`'s `SAMPLER_FIELDS`.
+// The Anima Context Bridge's own field order (`nodes/anima/context_bridge.py`'s
+// `OPTIONAL_KEY_ORDER` / `src/anima/context.py`'s `CONTEXT_FIELDS`) --
+// display/iteration order only (matches Python: "it has no append-only
+// obligation the way a node's INPUT_TYPES does, since this is a plain dict
+// shape"), used by `interaction.mjs` to walk the bridge's own sockets when
+// resolving which of them are wired.
+export const CONTEXT_FIELDS = [
+  "model", "clip", "vae", "positive", "negative", "latent",
+  "seed", "steps", "cfg", "sampler_name", "scheduler",
+];
+
+// The five sampler scalars, independently wired-wins, no flag (design doc
+// §5a) -- mirrors `src/anima/resources.py`'s `SAMPLER_FIELDS`. A SUBSET of
+// `CONTEXT_FIELDS`, kept as its own export because it's the list
+// `buildSamplerSection` actually iterates.
 export const SAMPLER_FIELDS = ["seed", "steps", "cfg", "sampler_name", "scheduler"];
 
 // ---------------------------------------------------------------------------
@@ -108,10 +146,10 @@ const EYE_BLOCK_DEFAULT = detailerBlock({
 });
 
 // ---------------------------------------------------------------------------
-// The full defaults tree -- see settings.py's module docstring for why
-// `detailer` is ONE block (`enabled` + `order` + a `blocks` dict keyed by
-// id), resolving the design doc §8 example's duplicate-key drafting
-// artifact the same way Python does.
+// The full defaults tree -- NO `latent`/`loras` (2026-07-28 reversal, this
+// module's own top doc comment) -- see settings.py's module docstring for
+// why `detailer` is ONE block (`enabled` + `order` + a `blocks` dict keyed by
+// id).
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_GENERATION_SETTINGS = {
@@ -139,8 +177,6 @@ export const DEFAULT_GENERATION_SETTINGS = {
     mod_taper_scale: 0.25,
     mod_final_w: 0.0,
   },
-  latent: { width: 1024, height: 1024, batch: 1 },
-  loras: [],
   highres: {
     enabled: false,
     scale_by: 1.5,
@@ -323,9 +359,6 @@ export function normalizeGenerationSettings(raw) {
 
   const merged = deepMergeDefaults(DEFAULT_GENERATION_SETTINGS, parsed);
   merged.detailer = fixupDetailer(merged.detailer);
-  if (!Array.isArray(merged.loras)) {
-    merged.loras = [];
-  }
   merged.schema = GENERATION_SETTINGS_SCHEMA;
   merged.version = migrateVersion(parsed.version, GENERATION_SETTINGS_VERSION);
   return merged;
@@ -396,16 +429,12 @@ export function resolveStageSampler(stageSettings, baseSampler) {
 }
 
 // ---------------------------------------------------------------------------
-// Output resolution -- port of src/anima/stages.py's `resolve_outputs`/
-// `detailer_is_live`. Mirrors `playground/generator.html`'s
-// `resolveOutputs()` line for line (design doc header: the mockup is the
-// behavioural reference).
+// Stage-label resolution -- port of `src/anima/stages.py`'s
+// `detailer_is_live`/`resolve_stage_labels` (REPLACES the deleted
+// `resolve_outputs`, this module's own top doc comment). The Generator now
+// returns one `images` LIST; a stage that didn't run, or didn't change the
+// image, is OMITTED, never duplicated.
 // ---------------------------------------------------------------------------
-
-export const STAGE_BASE = "base";
-export const STAGE_HIGHRES = "highres";
-export const STAGE_DETAILER = "mid";
-export const STAGE_UPSCALE = "upscale";
 
 export function detailerIsLive({ detailerEnabled, haveImpact, blocks }) {
   if (!detailerEnabled || !haveImpact) {
@@ -417,138 +446,23 @@ export function detailerIsLive({ detailerEnabled, haveImpact, blocks }) {
   return Object.values(blocks).some((block) => isPlainObject(block) && !!block.enabled);
 }
 
-export function resolveOutputs({ highresEnabled, detailerEnabled, haveImpact, blocks, upscaleEnabled, haveUsdu }) {
-  const detailerLive = detailerIsLive({ detailerEnabled, haveImpact, blocks });
-  const afterFirst = STAGE_BASE;
-  const afterHighres = highresEnabled ? STAGE_HIGHRES : afterFirst;
-  const afterDetailer = detailerLive ? STAGE_DETAILER : afterHighres;
-  const afterUpscale = upscaleEnabled && haveUsdu ? STAGE_UPSCALE : afterDetailer;
-  return { image_base: afterFirst, image_mid: afterDetailer, image: afterUpscale, detailerLive };
-}
-
-// ---------------------------------------------------------------------------
-// Preferred internal-loader defaults -- JS twin of `src/anima/resources.py`'s
-// `UNET_NAME_CANDIDATES`/`CLIP_NAME_CANDIDATES`/`VAE_NAME_CANDIDATES`/
-// `preferred_name_default` (itself already mirrored once in
-// `js/controls/rows.mjs`'s `preferredNameDefault` for the Loader Panel).
-// KEEP ALL THREE COPIES IN SYNC or the internal-loader picker rows here can
-// silently disagree with `AnimaGenerator`'s own Python-resolved default, or
-// with the Loader Panel's.
-//
-// Why this is needed AT ALL given `unet_name`/`clip_name`/`vae_name` are
-// REAL Python-declared combo widgets whose `default` is already
-// `preferred_name_default`-resolved server-side: that resolution only ever
-// runs ONCE, at `INPUT_TYPES()` time for a BRAND NEW node. A node loaded from
-// an OLDER saved workflow can carry a `widgets_values` entry for a model file
-// that has since been renamed/deleted -- litegraph's native combo widget
-// silently falls back to `options.values[0]` when the saved value isn't in
-// the live list, which is EXACTLY the `optionList[0]` bug two other rows in
-// this pack already shipped (`ce0528f`, `8b5eca6`). Since this node mirrors
-// these widgets with its own DOM row instead of rendering the native widget,
-// it must apply the SAME heuristic Python does for that self-heal, not fall
-// through to `[0]`.
-// ---------------------------------------------------------------------------
-
-export const UNET_NAME_CANDIDATES = [
-  "anima-base-v1.0.safetensors",
-  "ANIMA\\anima_baseV10.safetensors",
-];
-export const CLIP_NAME_CANDIDATES = ["qwen_3_06b_base.safetensors"];
-export const VAE_NAME_CANDIDATES = ["qwen_image_vae.safetensors"];
-
-function preferredNameBasename(name) {
-  return String(name).replace(/\\/g, "/").split("/").pop().toLowerCase();
-}
-
-const ANIMA_HEURISTIC_RE = /anima(?![a-z])/i;
-
-function firstAnimaHeuristicMatch(names) {
-  const found = names.find((n) => ANIMA_HEURISTIC_RE.test(String(n)));
-  return found === undefined ? null : found;
-}
-
-/** `names` (the widget's live `options.values`) + `candidates` (preference
- * order) -> the best default filename. Resolution order mirrors
- * `resources.py`'s `preferred_name_default` EXACTLY. */
-export function preferredNameDefault(names, candidates) {
-  const list = Array.isArray(names) ? names : [];
-  const cands = Array.isArray(candidates) ? candidates : [];
-  if (!list.length) {
-    return cands.length ? cands[0] : "";
+/**
+ * `{ highresEnabled, detailerLive, upscaleLive, postprocessApplied }` ->
+ * ordered `["base", ...]` labels -- byte-for-byte port of `resolve_stage_
+ * labels`. `base` is always present; `mid` iff highres or a live detailer
+ * pass changed the image; `final` iff a live upscale or an applied
+ * postprocess resize changed it again. A run with every stage off returns
+ * `["base"]`.
+ */
+export function resolveStageLabels({ highresEnabled, detailerLive, upscaleLive, postprocessApplied }) {
+  const stages = [STAGE_BASE];
+  if (highresEnabled || detailerLive) {
+    stages.push(STAGE_MID);
   }
-  for (const candidate of cands) {
-    if (list.includes(candidate)) {
-      return candidate;
-    }
+  if (upscaleLive || postprocessApplied) {
+    stages.push(STAGE_FINAL);
   }
-  const byBasename = new Map(list.map((n) => [preferredNameBasename(n), n]));
-  for (const candidate of cands) {
-    const match = byBasename.get(preferredNameBasename(candidate));
-    if (match !== undefined) {
-      return match;
-    }
-  }
-  const heuristic = firstAnimaHeuristicMatch(list);
-  if (heuristic !== null) {
-    return heuristic;
-  }
-  return list[0];
-}
-
-// ---------------------------------------------------------------------------
-// LoRA list mutation helpers (design doc §5b -- inline mode's own ordered
-// list; order IS apply order). A plain array lives at
-// `generation_settings.loras`; these helpers all mutate a given array
-// in place and return it, so callers can do `state.loras =
-// addLora(state.loras)` or just call and ignore the return, either reads the
-// same array reference.
-// ---------------------------------------------------------------------------
-
-export function addLora(loras) {
-  loras.push({ name: "", strength_model: 1.0, strength_clip: 1.0 });
-  return loras;
-}
-
-export function removeLora(loras, index) {
-  if (index >= 0 && index < loras.length) {
-    loras.splice(index, 1);
-  }
-  return loras;
-}
-
-/** Swap `loras[index]` with its neighbour in direction `dir` (`-1`/`1`) --
- * order IS apply order, so this is a real behavioural reorder, not cosmetic. */
-export function moveLora(loras, index, dir) {
-  const j = index + dir;
-  if (index < 0 || index >= loras.length || j < 0 || j >= loras.length) {
-    return loras;
-  }
-  const tmp = loras[index];
-  loras[index] = loras[j];
-  loras[j] = tmp;
-  return loras;
-}
-
-/** Mute (both strengths -> 0, remembering the pair it came from) or unmute
- * (restore the remembered pair, defaulting to 1.0/1.0 if none was ever
- * recorded) one LoRA entry in place. Muted, not deleted -- matches upstream
- * Anima's "keep the row, skip it when building" semantics (design doc §5b). */
-export function toggleMuteLora(entry) {
-  if (!entry) {
-    return entry;
-  }
-  const isMuted = !entry.strength_model && !entry.strength_clip;
-  if (isMuted) {
-    const [m, c] = Array.isArray(entry._wasStrength) ? entry._wasStrength : [1.0, 1.0];
-    entry.strength_model = m;
-    entry.strength_clip = c;
-    delete entry._wasStrength;
-  } else {
-    entry._wasStrength = [entry.strength_model, entry.strength_clip];
-    entry.strength_model = 0;
-    entry.strength_clip = 0;
-  }
-  return entry;
+  return stages;
 }
 
 // ---------------------------------------------------------------------------

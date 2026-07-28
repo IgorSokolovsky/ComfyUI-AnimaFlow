@@ -1,82 +1,94 @@
 /**
  * render.mjs — DOM building + injected CSS for `AnimaGenerator` /
- * `AnimaPreview` (`docs/generator-design.md` §5/§7, ported from the signed-
- * off `playground/generator.html`). Pure DOM construction and painting only
- * — no event listeners (`interaction.mjs` wires those) and no `node`/`app`/
- * `LiteGraph` reference, so this module is importable by the headless
- * `test_resize.mjs` under plain `node` via a small doc stub, matching every
- * other DOM-widget node in this pack.
+ * `AnimaPreview` (`docs/generator-design.md` §5/§7). Pure DOM construction
+ * and painting only — no event listeners (`interaction.mjs` wires those) and
+ * no `node`/`app`/`LiteGraph` reference, so this module is importable by the
+ * headless `test_resize.mjs` under plain `node` via a small doc stub,
+ * matching every other DOM-widget node in this pack.
  *
- * ## Architecture: full-body REBUILD on every discrete action, not a diff
+ * ## Architecture (2026-07-28 rewrite): ONE scrollable panel, not one DOM
+ * widget per section growing without limit
  *
- * Unlike `js/controls/render.mjs` (one `addDOMWidget` PER ROW, a fixed row
- * height, and an incremental `syncRows` diff) or `js/prompt_rules/node/
- * render.mjs` (one static body, never restructured), this node's body
- * genuinely restructures on almost every action: toggling
- * `use_internal_loaders` shows/hides five rows plus the LoRA list; adding a
- * LoRA or a detailer block changes row counts; toggling a stage changes its
- * summary text. Diffing that incrementally buys little here (the body is a
- * few dozen elements, not hundreds) and risks exactly the class of bug
- * `comfyui-node-renders-but-dead` catalogues (a stale ref pointing at a
- * detached element). So `buildGeneratorBody`/`buildPreviewBody` below each
- * build the ENTIRE body fresh from the current settings object every time
- * `interaction.mjs`'s `repaintGenerator`/`repaintPreview` runs (after every
- * toggle/add/remove/commit) — cheap, and it can never drift from the state
- * it was built from. Popovers are a SEPARATE DOM subtree (appended to
- * `document.body`, per `js/shared/overlay.mjs`), so rebuilding the node body
- * never disturbs an open popover's own inputs or scroll position; typing in
- * a popover field only ever triggers a BODY rebuild (to update a row's
- * summary text), never a popover rebuild, unless the edit itself is the kind
- * that changes what the popover should show (e.g. flipping
- * `inherit_sampler_settings` -- `interaction.mjs` handles that by re-running
- * the popover's own content builder in place when needed).
+ * The whole body — every section, every stage row — now lives inside a
+ * single bordered `.wtn-an-panel` (one child of the DOM widget's root),
+ * modelled on upstream's AiO generator panel
+ * (`../ComfyUI-EasyUseAnima/web/js/aio/generator_panel_runtime.js`): a fixed
+ * `min-height`/`max-height` with `overflow-y: auto`, so the NODE stops
+ * growing once the panel hits its ceiling and the panel scrolls internally
+ * instead. `measureMinHeight` below enforces the same `[PANEL_MIN_H,
+ * PANEL_MAX_H]` range in JS (not just via the CSS declaration), so the cap
+ * is deterministic under this file's own headless test (no real layout
+ * engine to enforce a CSS `max-height` there) and not just a hope that the
+ * browser's computed `offsetHeight` happens to agree.
+ *
+ * The body is still rebuilt in full on every discrete action (see the old
+ * version of this file's doc comment, carried forward): toggling a stage,
+ * editing a field, adding a detailer block all replace `.wtn-an-panel`'s
+ * children wholesale via `interaction.mjs`'s `repaintGenerator`/
+ * `repaintPreview`. Popovers are a SEPARATE DOM subtree (appended to
+ * `document.body`, per `js/shared/overlay.mjs`), so a body rebuild never
+ * disturbs an open popover.
+ *
+ * ## Wheel: scroll the panel when it has room, zoom the canvas otherwise
+ *
+ * This is `js/shared/canvas_zoom.mjs`'s job, unchanged — `index.js` installs
+ * `installCanvasZoomPassthrough` on the DOM widget's ROOT (not the panel),
+ * and that module's `scrollRegionWantsWheel` already walks from the wheel
+ * event's target up to the root looking for a genuinely scrollable ancestor
+ * with room in the wheel's own direction — `.wtn-an-panel`'s `overflow-y:
+ * auto` is exactly such an ancestor once its content overflows
+ * `PANEL_MAX_H`. No bespoke "is this scrollable" check is written here —
+ * that duplication is exactly what the design brief warned against.
  *
  * ## Real sockets are litegraph's, never re-drawn in this body
  *
- * `AnimaGenerator` has real litegraph INPUT sockets (`positive`, `negative`,
- * `model`/`clip`/`vae`/`latent`, `seed`/`steps`/`cfg`/`sampler_name`/
- * `scheduler`) and real OUTPUT sockets (`image`/`image_base`/`image_mid`/
- * `latent`/`metadata_json`); `AnimaPreview` has `image_a`/`image_b`/`image_c`
- * plus the hidden, non-socket `prompt`/`extra_pnginfo`. Litegraph draws every
- * one of those itself, at its usual fixed position in the socket column,
- * completely independent of this DOM widget — so this module must NEVER
- * re-draw a row per socket name (that was exactly the "every socket rendered
- * twice" bug: `playground/generator.html`'s socket rows are representational
- * only, because that mockup has no litegraph to draw real dots for it; a real
- * node must not port them). Two things that WOULD have been lost by simply
- * deleting those rows are carried by real rows instead:
- *   - "ignored in this mode" (model/clip/vae/latent while
- *     `use_internal_loaders` is on) is now stated by the internal-loaders row
- *     itself (`buildClickRow`'s `value` text in `interaction.mjs`'s
- *     `buildResourcesSection`), not by greying a socket this body can't reach.
- *   - "driven by a wire" (the five sampler fields) lives ONLY in the sampler
- *     popover's `buildDrivenField` rows (design doc §5a) plus the summary/
- *     seed rows not claiming a wired value — never a separate status list.
+ * `AnimaGenerator` has exactly two real inputs now (`context`,
+ * `generation_settings`, the latter hidden) and three outputs (`images`,
+ * `latent`, `metadata_json`); `AnimaPreview` has `images`/`metadata_json`
+ * (both optional) plus the hidden, non-socket `prompt`/`extra_pnginfo`.
+ * Litegraph draws every one of those itself, independent of this DOM
+ * widget — this module never re-draws a row per socket name.
  *
- * ## Popover content builders live here too
+ * ## Context-supplied fields render disabled, with the reason visible
  *
- * `buildXPopover(doc, state, view)` functions build a popover's CONTENT
- * (never open it — `openOverlayWithZoom`, in `interaction.mjs`, does that)
- * from small declarative field tables (`FIELD.text/number/select`) so the
- * ~10 tabs (sampler/mod/lora/highres/detailer/upscale/postprocess/latent/
- * preview/save) don't each hand-roll DOM. `interaction.mjs` wires every
- * field's `change` (text/number/select — committed on blur/Enter, not
- * per-keystroke, to avoid rebuilding the node body while someone is mid-type)
- * by reading the SAME field spec back.
+ * `seed`/`steps`/`cfg`/`sampler_name`/`scheduler` are still each
+ * independently overridable (design doc §5a), but there is no more "wired
+ * socket on the Generator" to check — the signal is now "did the
+ * `AnimaContextBridge` upstream of `context` have THAT socket wired"
+ * (`interaction.mjs`'s `computeContextSupplied`, walking the real litegraph
+ * link). A supplied field renders via `js/shared/fields.mjs`'s
+ * `buildDrivenField` (a static "driven by the Context Bridge" row, no drag/
+ * click to edit) rather than an editable control a wire would silently
+ * override.
+ *
+ * ## This module owns only small presentational builders — popovers
+ * themselves live in `interaction.mjs`
+ *
+ * `interaction.mjs`'s `openXPopover(doc, state, view)` functions build each
+ * popover's CONTENT (never open it — `openOverlayWithZoom` there does that)
+ * out of the small field builders THIS module exports: `buildTextField`/
+ * `buildBoolField` locally, and `js/shared/fields.mjs`'s
+ * `buildNumericField`/`buildStepperField`/`buildSwitch` re-exported from
+ * here (design brief: "use our existing fields from the control panel
+ * instead of creating new fields" — see that module's own doc comment for
+ * exactly what's reused and why the DOM/CSS itself is new rather than
+ * importing `js/controls/render.mjs` directly). Free-text fields
+ * (`detect_prompt`, `filename`, `path`, …) have no Control Panel analogue
+ * (that track has none), so `buildTextField` stays local to this module.
  *
  * ## Importing `theme.mjs` — GUARDED dynamic import
  *
- * Same reasoning as every other node's `render.mjs` in this pack (see e.g.
- * `js/controls/render.mjs`'s identical doc comment): this file is imported
- * directly by the headless `test_resize.mjs`, so a static top-level import
- * of the absolute `/extensions/.../theme.mjs` path would throw
- * `ERR_MODULE_NOT_FOUND` before a single assertion runs. This module's own
- * CSS carries `var(--wtn-x, <hardcoded fallback hex>)` everywhere, so
- * styling is correct whether or not the shared stylesheet import lands in
- * time.
+ * Same reasoning as every other node's `render.mjs` in this pack: this file
+ * is imported directly by the headless `test_resize.mjs`, so a static
+ * top-level import of the absolute `/extensions/.../theme.mjs` path would
+ * throw `ERR_MODULE_NOT_FOUND` before a single assertion runs. This
+ * module's own CSS carries `var(--wtn-x, <hardcoded fallback hex>)`
+ * everywhere, so styling is correct whether or not the shared stylesheet
+ * import lands in time.
  */
 
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
+import { injectFieldStyles, buildSwitch, buildGear, buildDrivenField } from "../shared/fields.mjs";
 
 const STYLE_ID = "wtn-anima-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -109,7 +121,14 @@ const CSS = `
   /* NO height:100% / min-height here -- the ComfyUI-Pixaroma find_replace pattern. */
 }
 .wtn-an-root, .wtn-an-root * { box-sizing: border-box; }
-.wtn-an-body { display: flex; flex-direction: column; gap: 4px; }
+
+/* ── the one bordered, scrollable panel -- see this module's top doc
+   comment. min-height/max-height here are the visual/live-browser half of
+   the cap; measureMinHeight below is the deterministic, testable half. ── */
+.wtn-an-panel { display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
+  background: var(--wtn-surface, ${TOKENS.surface});
+  min-height: 220px; max-height: 480px; overflow-y: auto; overflow-x: hidden; }
 
 .wtn-an-sec { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -136,46 +155,16 @@ const CSS = `
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
 .wtn-an-stagerow.wtn-an-off { opacity: .5; }
 .wtn-an-stagerow.wtn-an-dep { border-color: rgba(251,191,36,.35); }
-.wtn-an-sw { position: relative; width: 26px; height: 14px; flex: none; cursor: pointer;
-  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
-  transition: background .12s, border-color .12s; }
-.wtn-an-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--wtn-ink-faint, ${TOKENS.inkFaint}); transition: transform .12s, background .12s; }
-.wtn-an-sw.wtn-an-on { background: rgba(45,212,191,.22); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-an-sw.wtn-an-on::after { transform: translateX(12px); background: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-sw.wtn-an-sm { width: 20px; height: 11px; }
-.wtn-an-sw.wtn-an-sm::after { width: 6px; height: 6px; top: 1.5px; left: 1.5px; }
-.wtn-an-sw.wtn-an-sm.wtn-an-on::after { transform: translateX(9px); }
 .wtn-an-stagerow .wtn-an-sn { font-size: 11.5px; font-weight: 550; }
 .wtn-an-stagerow .wtn-an-ss { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wtn-an-gear { flex: none; font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); cursor: pointer; line-height: 1; padding: 2px; }
-.wtn-an-gear:hover, .wtn-an-gear.wtn-an-active { color: var(--wtn-accent, ${TOKENS.accent}); }
-
-/* ── LoRA rows (in the node body -- these get touched constantly) ── */
-.wtn-an-lora { position: relative; display: flex; align-items: center; gap: 7px; height: 24px; margin-bottom: 4px;
-  padding: 0 8px; border-radius: 6px; font-size: 11px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
-.wtn-an-lora.wtn-an-muted { opacity: .45; }
-.wtn-an-lora.wtn-an-empty { justify-content: center; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px;
-  border-style: dashed; background: none; height: 30px; }
-.wtn-an-lora .wtn-an-ln { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--wtn-ink-dim, ${TOKENS.inkDim}); font-family: var(--wtn-font-mono, monospace); font-size: 10px; cursor: pointer; }
-.wtn-an-lora .wtn-an-lv { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); flex: none; }
-.wtn-an-addbtn { display: block; width: 100%; margin-top: 2px; padding: 6px; cursor: pointer;
-  font-size: 11px; font-weight: 550; border-radius: 6px; color: var(--wtn-on-accent, ${TOKENS.onAccent});
-  background: var(--wtn-accent, ${TOKENS.accent}); border: 1px solid var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-addbtn:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 
 /* ── popover content (shares the overlay shell from js/shared/overlay.mjs) ──
    width/max-height/box-sizing below are the signed-off mockup's OWN numbers
    (playground/generator.html:247/:252 -- \`.pop\`'s \`width: 344px\` /
-   \`max-height: 460px\`), restored after the port shrank them to 268px/420px.
-   \`box-sizing: border-box\` matters here specifically because popovers are
-   appended to \`document.body\` (js/shared/overlay.mjs), not under
-   \`.wtn-an-root\` -- so \`.wtn-an-root, .wtn-an-root *\`'s box-sizing rule
-   above never reached this element, and every field's input column was
-   squeezed by its own padding on top of the too-narrow width. */
+   \`max-height: 460px\`). \`box-sizing: border-box\` matters here specifically
+   because popovers are appended to \`document.body\` (js/shared/overlay.mjs),
+   not under \`.wtn-an-root\`. */
 .wtn-an-pop { box-sizing: border-box; width: 344px; padding: 12px 13px; border-radius: 10px;
   border: 1px solid var(--wtn-line, ${TOKENS.line});
   background: var(--wtn-surface, ${TOKENS.surface}); box-shadow: var(--wtn-shadow, 0 18px 46px rgba(0,0,0,.66));
@@ -184,17 +173,23 @@ const CSS = `
   text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); font-weight: 500; display: flex; align-items: center; gap: 7px; }
 .wtn-an-pop h4 .wtn-an-x { margin-left: auto; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12px; }
 .wtn-an-pop h4 .wtn-an-x:hover { color: var(--wtn-bad, ${TOKENS.bad}); }
-.wtn-an-grid { display: grid; grid-template-columns: 1fr; gap: 7px 10px; }
+.wtn-an-grid { display: flex; flex-direction: column; gap: 4px; }
+
+/* ── free-text field (no Control Panel analogue -- see this module's top
+   doc comment) ── */
 .wtn-an-field { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 2px; }
 .wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 116px; flex: none; }
-.wtn-an-field input, .wtn-an-field select { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
+.wtn-an-field input { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
   font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 4px 6px; outline: none; }
-.wtn-an-field input:focus, .wtn-an-field select:focus { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-an-driven { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; cursor: pointer;
-  color: var(--wtn-accent, ${TOKENS.accent}); background: rgba(45,212,191,.07); padding: 4px 6px; border-radius: 5px;
-  border: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep}); border-style: dashed; }
-.wtn-an-driven:hover { background: rgba(45,212,191,.14); }
+.wtn-an-field input:focus { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+
+/* ── boolean field: label + shared pill switch ── */
+.wtn-an-boolfield { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
+.wtn-an-boolfield > span:first-child { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+
 .wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 12px 0 7px; padding-top: 10px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
 .wtn-an-sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
@@ -234,13 +229,7 @@ const CSS = `
 .wtn-an-wipe .wtn-an-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11px; }
 .wtn-an-pvbar { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; }
-/* The "compare" label degrades (ellipsis) rather than pushing .wtn-an-segs
-   off the row -- min-width:0 is what lets a flex child shrink below its
-   content size at all. */
 .wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Right-aligned cluster holding both base|mid|final segmented groups + the
-   "vs" divider, folded onto the SAME row as the switch+label (§3) --
-   margin-left: auto is what pushes it to the right edge. */
 .wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
 .wtn-an-seg { display: flex; gap: 0; flex: none; }
 .wtn-an-seg button { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; padding: 3px 7px; cursor: pointer;
@@ -256,6 +245,7 @@ export function injectStyles(doc) {
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
   }
+  injectFieldStyles(targetDoc);
   // Guarded dynamic import -- see this module's top doc comment.
   if (typeof document !== "undefined") {
     import(THEME_URL)
@@ -295,6 +285,17 @@ function text(doc, tag, className, str) {
   return e;
 }
 
+/** The panel shell -- ONE scrollable box (this module's top doc comment).
+ * `root` is the DOM widget's actual root (what `index.js`'s `addDOMWidget`
+ * mounts and what `installCanvasZoomPassthrough` installs on); `panel` is
+ * the single bordered, scrollable child every section/row lives inside. */
+export function buildPanelShell(doc) {
+  const root = el(doc, "div", "wtn-an-root wtn");
+  const panel = el(doc, "div", "wtn-an-panel");
+  root.appendChild(panel);
+  return { root, panel };
+}
+
 /** A themed clickable row (opens a popover, or a plain toggle -- caller
  * wires the listener). Returns `{ root, val }`. */
 export function buildClickRow({ doc, name, value, title }) {
@@ -311,18 +312,9 @@ export function buildClickRow({ doc, name, value, title }) {
   return { root: row, val };
 }
 
-export function buildSwitch(doc, on, small) {
-  return el(doc, "span", `wtn-an-sw${small ? " wtn-an-sm" : ""}${on ? " wtn-an-on" : ""}`);
-}
-
-export function buildGear(doc, title) {
-  const gear = el(doc, "span", "wtn-an-gear");
-  gear.textContent = "⚙";
-  if (title) {
-    gear.title = title;
-  }
-  return gear;
-}
+// Re-exported so `interaction.mjs` has one import line for both the shared
+// primitives and this module's own presentational builders.
+export { buildSwitch, buildGear, buildDrivenField };
 
 // ---------------------------------------------------------------------------
 // Preview node -- wipe pane images. `nodes/anima/preview.py`'s
@@ -333,15 +325,9 @@ export function buildGear(doc, title) {
 
 /** ComfyUI's own `/view` endpoint URL for a UI image entry. `cacheBust` is
  * deliberately a PARAMETER, not read from `Date.now()` in here -- this stays
- * a pure, testable function, and `interaction.mjs`'s `handleExecuted` is the
- * one place that decides the value (once per `executed` message, shared by
- * every stage from that run). Skipping it is not an option: a fixed,
- * token-free `save.filename` template (a real, user-reachable case) writes
- * the SAME literal filename on every run, and without a cache-busting query
- * param a second run's `<img>` would keep showing the FIRST run's cached
- * bytes -- reads as "the node is stuck" rather than "it saved over itself".
- * Returns `null` for a missing/malformed entry so a caller renders nothing
- * rather than a broken `<img src="null">`. */
+ * a pure, testable function; `interaction.mjs`'s `handleExecuted` is the one
+ * place that decides the value (once per `executed` message, shared by every
+ * stage from that run). Returns `null` for a missing/malformed entry. */
 export function buildPreviewImageUrl(entry, cacheBust) {
   if (!entry || typeof entry.filename !== "string" || !entry.filename) {
     return null;
@@ -356,13 +342,9 @@ export function buildPreviewImageUrl(entry, cacheBust) {
   return `/view?${params.toString()}`;
 }
 
-/** One wipe pane: an absolutely positioned `.wtn-an-layer` (interaction.mjs's
- * CSS clips `.wtn-an-b` to the wipe fraction) containing an `<img>` for
- * `stage` IF `previewImages` (`node._anPreviewImages`, keyed by stage) has
- * an entry for it yet -- a stage that's wired but hasn't executed a single
- * time is legitimately empty, not an error. Maps by `stage`, never by array
- * position -- see this module's/`handleExecuted`'s own doc comments for why
- * position was never a safe key here. */
+/** One wipe pane: an absolutely positioned `.wtn-an-layer` containing an
+ * `<img>` for `stage` IF `previewImages` (`node._anPreviewImages`, keyed by
+ * stage) has an entry for it yet. Maps by `stage`, never by array position. */
 export function buildWipeLayer(doc, previewImages, stage, extraClass) {
   const layer = el(doc, "div", `wtn-an-layer${extraClass ? ` ${extraClass}` : ""}`);
   const entry = previewImages && previewImages[stage];
@@ -390,54 +372,38 @@ export function sectionLabel(doc, label, count) {
 }
 
 // ---------------------------------------------------------------------------
-// Generic popover field builders -- shared by every settings tab.
+// Local field builders -- these have no Control Panel analogue (free text)
+// or are a trivial label+switch combination not worth its own shared module
+// entry (see this module's top doc comment).
 // ---------------------------------------------------------------------------
 
-/** Builds one labeled field: `<input type=text>` (number/text) or `<select>`
- * (enum). Returns `{ root, control }` -- `interaction.mjs` wires `change`. */
-export function buildField(doc, label, value, options) {
+/** A plain labeled text `<input>`. Returns `{ root, control }`. */
+export function buildTextField(doc, label, value) {
   const field = el(doc, "div", "wtn-an-field");
   const span = el(doc, "span");
   span.textContent = label;
   field.appendChild(span);
-  let control;
-  if (Array.isArray(options)) {
-    control = el(doc, "select");
-    options.forEach((opt) => {
-      const o = el(doc, "option");
-      o.value = String(opt);
-      o.textContent = String(opt);
-      if (String(opt) === String(value)) {
-        o.selected = true;
-      }
-      control.appendChild(o);
-    });
-  } else {
-    control = el(doc, "input");
-    control.type = "text";
-    control.value = value == null ? "" : String(value);
-  }
+  const control = el(doc, "input");
+  control.type = "text";
+  control.value = value == null ? "" : String(value);
   field.appendChild(control);
   return { root: field, control };
 }
 
-/** A field whose value is driven by a wire -- design doc §5a. Click target
- * is returned as `root` itself (a clickable "unwire" affordance). */
-export function buildDrivenField(doc, label, socketName) {
-  const field = el(doc, "div", "wtn-an-field");
+/** A label + `js/shared/fields.mjs` pill switch, with an inline on/off word
+ * (mirrors `.wtn-an-driven`'s inline-note habit rather than a bare pill with
+ * no text). Returns `{ root, switchEl }`. */
+export function buildBoolField(doc, label, value) {
+  const field = el(doc, "div", "wtn-an-boolfield");
   const span = el(doc, "span");
   span.textContent = label;
+  const switchEl = buildSwitch(doc, !!value);
+  const word = el(doc, "span");
+  word.textContent = value ? "on" : "off";
   field.appendChild(span);
-  const driven = el(doc, "span", "wtn-an-driven");
-  driven.title = "This value comes from the wired socket. Click to disconnect it.";
-  const prefix = el(doc, "span");
-  prefix.textContent = "driven by wire · ";
-  const b = el(doc, "b");
-  b.textContent = socketName;
-  driven.appendChild(prefix);
-  driven.appendChild(b);
-  field.appendChild(driven);
-  return { root: field, control: driven };
+  field.appendChild(switchEl);
+  field.appendChild(word);
+  return { root: field, switchEl, word };
 }
 
 export function buildSublabel(doc, str) {
@@ -470,41 +436,72 @@ export function buildPopoverShell(doc, title) {
 
 // ---------------------------------------------------------------------------
 // Resize (ComfyUI-Pixaroma find_replace mechanism -- matches
-// `js/prompt_rules/node/render.mjs` exactly; see the frontend skill's
-// "DOM-widget resize mechanism" and that module's own doc comment for the
-// full two-renderer rationale).
+// `js/prompt_rules/node/render.mjs`; see the frontend skill's "DOM-widget
+// resize mechanism" and that module's own doc comment for the full
+// two-renderer rationale). 2026-07-28: `measureMinHeight` now also enforces
+// `PANEL_MAX_H` as a ceiling, not just a floor -- see this module's top doc
+// comment.
 // ---------------------------------------------------------------------------
 
 export const CHROME = 40;
 export const DEFAULT_W = 360;
-export const DEFAULT_H = 420;
+export const DEFAULT_H = 340;
 export const PREVIEW_DEFAULT_H = 420;
-// Preview-only floor: the compare row now carries the switch + "compare"
-// label + BOTH `base|mid|final` segmented groups on one line (§3's fold of
-// the two `.wtn-an-pvbar`s into one), and that cluster measures ~340px, so a
-// narrower node clips it.
+
+// The panel's own content-height range (excludes root padding/CHROME) --
+// mirrored in this module's CSS (`.wtn-an-panel`'s `min-height`/
+// `max-height`). Chosen so the COMMON case (sampler summary + mod-guidance
+// row + all four stage rows, nothing expanded) fits with no scrollbar
+// (~230px), while a node with several detailer blocks added, or every
+// stage's summary text at once, caps out at a size that still leaves most
+// of a crowded graph visible rather than growing without limit.
+export const PANEL_MIN_H = 220;
+export const PANEL_MAX_H = 480;
+
+// Generator floor -- the user asked for a min WIDTH explicitly, same
+// treatment as `PREVIEW_MIN_W` below. 320px is the narrowest a stage row
+// (switch + name + ellipsizable summary + gear) still reads sensibly at;
+// unlike the Preview's compare row, nothing on the Generator's own body
+// needs a wider floor than that.
+export const GENERATOR_MIN_W = 320;
+
+// Preview-only floor: the compare row carries the switch + "compare" label +
+// BOTH `base|mid|final` segmented groups on one line, and that cluster
+// measures ~340px, so a narrower node clips it.
 export const PREVIEW_MIN_W = 380;
 
-/** litegraph's `onResize(size)` contract: mutate `size` IN PLACE (same
- * pattern as `../ComfyUI-Pixaroma/js/pause_image/index.js:270-275`'s own
- * self-heal). Raises `size[0]` up to `PREVIEW_MIN_W` when it's below (or not
- * a finite number at all), never touches `size[1]` (height stays owned by
- * `getMinHeight`/`refitNode`), and tolerates a missing/short/non-numeric
- * array without throwing. Returns `size` for convenience at the call site. */
-export function clampPreviewSize(size) {
+function clampMinWidth(size, minW) {
   if (!Array.isArray(size) || size.length < 1) {
     return size;
   }
   const w = size[0];
-  if (typeof w !== "number" || !Number.isFinite(w) || w < PREVIEW_MIN_W) {
-    size[0] = PREVIEW_MIN_W;
+  if (typeof w !== "number" || !Number.isFinite(w) || w < minW) {
+    size[0] = minW;
   }
   return size;
 }
 
-export function measureMinHeight(root, floor) {
+/** litegraph's `onResize(size)` contract: mutate `size` IN PLACE. Never
+ * touches `size[1]` (height stays owned by `getMinHeight`/`refitNode`). */
+export function clampGeneratorSize(size) {
+  return clampMinWidth(size, GENERATOR_MIN_W);
+}
+
+export function clampPreviewSize(size) {
+  return clampMinWidth(size, PREVIEW_MIN_W);
+}
+
+/** Sum of `root`'s children's `offsetHeight` (skipping display:none),
+ * clamping the `.wtn-an-panel` child's OWN contribution to `[PANEL_MIN_H,
+ * PANEL_MAX_H]` -- the same "substitute a fixed min/max for a growing
+ * child's real offsetHeight" pattern the frontend skill documents for a
+ * flex-fill preview child, generalized to a ceiling as well as a floor. This
+ * is what makes the cap deterministic under this file's own headless test
+ * (no real layout engine there to enforce the CSS `max-height` declaration)
+ * as well as correct in a live browser (where the two agree). */
+export function measureMinHeight(root) {
   if (!root) {
-    return floor || 220;
+    return PANEL_MIN_H;
   }
   let h = 0;
   let count = 0;
@@ -513,7 +510,11 @@ export function measureMinHeight(root, floor) {
       continue;
     }
     count += 1;
-    h += child.offsetHeight;
+    if (child.classList && child.classList.contains("wtn-an-panel")) {
+      h += Math.max(PANEL_MIN_H, Math.min(PANEL_MAX_H, child.offsetHeight));
+    } else {
+      h += child.offsetHeight;
+    }
   }
   const cs = typeof getComputedStyle === "function" ? getComputedStyle(root) : {};
   const gap = parseFloat(cs.rowGap || cs.gap) || 0;
@@ -521,7 +522,7 @@ export function measureMinHeight(root, floor) {
     h += gap * (count - 1);
   }
   h += (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-  return Math.max(floor || 220, Math.round(h / 4) * 4);
+  return Math.max(PANEL_MIN_H, Math.round(h / 4) * 4);
 }
 
 export function setNodeHeight(node, h) {

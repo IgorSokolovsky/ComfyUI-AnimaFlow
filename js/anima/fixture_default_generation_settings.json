@@ -90,12 +90,6 @@
     "steps": 20,
     "upscale_method": "bicubic"
   },
-  "latent": {
-    "batch": 1,
-    "height": 1024,
-    "width": 1024
-  },
-  "loras": [],
   "mod_guidance": {
     "enabled": false,
     "mod_end_layer": 27,

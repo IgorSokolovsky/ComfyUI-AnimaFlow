@@ -1,10 +1,10 @@
 /**
  * interaction.mjs — event wiring + node-level orchestration for
  * `AnimaGenerator` / `AnimaPreview`. `render.mjs` only builds/paints small
- * presentational DOM pieces (a status row, a stage row's chrome, a popover
- * field); THIS module owns the tree shape (which rows exist right now, in
- * which order, wired to what) and the state <-> hidden-widget handshake --
- * mirrors `js/controls/interaction.mjs`'s split with `render.mjs`.
+ * presentational DOM pieces; THIS module owns the tree shape (which rows
+ * exist right now, in which order, wired to what) and the state <-> hidden-
+ * widget handshake — mirrors `js/controls/interaction.mjs`'s split with
+ * `render.mjs`.
  *
  * ## `ctx` — the one object every function here takes
  *
@@ -16,70 +16,68 @@
  *
  * `getCanvasEl`/`havePackages` are the only two places this whole feature
  * needs `window`/`app`/`LiteGraph` — kept OUT of this file (index.js owns
- * them) so this module stays testable with a stub, matching
- * `js/controls/interaction.mjs`'s own convention.
+ * them) so this module stays testable with a stub.
  *
  * ## Full-body REBUILD, and why popovers are never rebuilt while open
  *
  * See `render.mjs`'s top doc comment for why this node rebuilds its whole
- * body on every discrete BODY-LEVEL action (stage toggle, internal-loaders
- * toggle, LoRA add/remove/reorder/mute) rather than diffing. The one rule
- * that makes that safe: **a popover's anchor is a row element living INSIDE
- * the body**, so rebuilding the body while that popover is still open would
- * detach its anchor (the overlay's `reposition()`/outside-click check both
- * read `anchorEl.getBoundingClientRect()`/`.contains()`, which go straight
- * to `{0,0,0,0}`/always-false against a UNMOUNTED element). So:
+ * body on every discrete action rather than diffing. The rule that makes
+ * that safe: a popover's anchor is a row element living INSIDE the panel, so
+ * rebuilding the panel while that popover is still open would detach its
+ * anchor. So every body-mutating handler calls `closeActiveOverlay()` FIRST,
+ * THEN mutates + persists + rebuilds; editing a field INSIDE an open
+ * popover mutates + persists but does not rebuild the body (only, if the
+ * edit changes what that SAME popover should show, rebuilds the popover's
+ * own content in place — `refresh()`).
  *
- *   - Every BODY-LEVEL mutating handler calls `closeActiveOverlay()` FIRST
- *     (unconditionally), THEN mutates + persists + rebuilds the body. A
- *     structural change closing an unrelated open popover is the accepted
- *     trade for never orphaning one.
- *   - Editing a FIELD INSIDE an open popover mutates state + persists the
- *     widget (so the trap in `comfyui-dynamic-node-frontend`'s "declaring is
- *     not writing" is covered on every keystroke's commit) but does **not**
- *     rebuild the body — only, if the edit changes what that SAME popover
- *     itself should show (`inherit_sampler_settings`, a sampler-field wire
- *     toggle, a detailer block's own tab switch), rebuilds the **popover's
- *     own content in place** (`refreshPopover`, below), which never touches
- *     the body/anchor at all.
- *   - The body is refreshed with the field's final values when the popover
- *     **closes** (every close path routes through one `onClose` callback).
+ * ## Context-supplied fields (design doc §5a, task item 4)
+ *
+ * The Generator no longer has its own `seed`/`steps`/`cfg`/`sampler_name`/
+ * `scheduler` sockets — there is one `context` (`ANIMA_CONTEXT`) input. The
+ * frontend cannot see inside that object at graph-edit time (it's only
+ * produced at execution), so `computeContextSupplied` below reads the most
+ * reliable signal actually available: walking the real litegraph link from
+ * `context` back to the `AnimaContextBridge` node (tolerating any number of
+ * single-input pass-through nodes — Reroute and similar — in between,
+ * mirroring the Control Panel's own tolerance of "*" pass-through targets)
+ * and checking WHICH of the bridge's own eleven sockets are wired. If
+ * `context` is unwired, wired to something that isn't a bridge, or the
+ * chain doesn't resolve, every field renders editable — this frontend has
+ * no way to distinguish "definitely not supplied" from "can't tell" beyond
+ * that one-hop-upstream check, so the honest default is to never disable a
+ * field it isn't sure about.
  */
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 import { activeOverlayRef, closeActiveOverlay, closeOverlayIfOwnedBy, openOverlayWithZoom } from "../shared/overlay.mjs";
+import { buildNumericField, buildStepperField } from "../shared/fields.mjs";
 
 import {
   MAX_DETAILER_PASSES,
   SAMPLER_FIELDS,
-  INHERITED_SAMPLER_FIELDS,
+  CONTEXT_FIELDS,
   COMPARE_SLOTS,
   SAVE_WHICH_OPTIONS,
+  STAGE_ORDER,
   normalizeGenerationSettings,
   normalizePreviewSettings,
   resolveStageSampler,
-  addLora,
-  removeLora,
-  moveLora,
-  toggleMuteLora,
   addDetailerBlock,
   removeDetailerBlock,
   moveDetailerBlock,
   isBuiltinDetailerBlock,
-  preferredNameDefault,
-  UNET_NAME_CANDIDATES,
-  CLIP_NAME_CANDIDATES,
-  VAE_NAME_CANDIDATES,
 } from "./state.mjs";
 
 import {
   injectStyles,
+  buildPanelShell,
   buildClickRow,
   buildSwitch,
   buildGear,
-  sectionLabel,
-  buildField,
   buildDrivenField,
+  buildTextField,
+  buildBoolField,
+  sectionLabel,
   buildSublabel,
   buildNote,
   buildMissing,
@@ -113,16 +111,6 @@ export function getGenSettingsWidget(node) {
 export function getPreviewStateWidget(node) {
   return (node.widgets || []).find((w) => w.name === "preview_state");
 }
-export function getLoaderWidgets(node) {
-  const find = (name) => (node.widgets || []).find((w) => w.name === name);
-  return {
-    useInternal: find("use_internal_loaders"),
-    unetName: find("unet_name"),
-    clipName: find("clip_name"),
-    clipType: find("clip_type"),
-    vaeName: find("vae_name"),
-  };
-}
 
 function writeGenStateToWidget(node, state) {
   const w = getGenSettingsWidget(node);
@@ -139,10 +127,10 @@ function writePreviewStateToWidget(node, state) {
 
 /** First mount / brand-new node: normalize whatever the widget currently
  * holds (Python's literal `"{}"` default, or a hand-edited API payload) and
- * write the fully-expanded tree straight back — see this module's doc
- * comment and the frontend skill's "declaring is not writing" trap. Safe to
- * call repeatedly; always re-normalizes from the widget's CURRENT value
- * rather than trusting a cached copy, so it doubles as `restoreGenState`. */
+ * write the fully-expanded tree straight back — see the frontend skill's
+ * "declaring is not writing" trap. Safe to call repeatedly; always
+ * re-normalizes from the widget's CURRENT value, so it doubles as
+ * `restoreGenState`. */
 export function ensureGenState(node) {
   const w = getGenSettingsWidget(node);
   const state = normalizeGenerationSettings(w ? w.value : "{}");
@@ -170,9 +158,7 @@ export function persistPreviewState(node) {
 }
 
 // ---------------------------------------------------------------------------
-// Wired-socket detection (design doc §5a "per-field wired-wins" / §3
-// resource sockets). Derived from the LIVE node, refreshed on
-// `onConnectionsChange` -- never cached beyond one repaint.
+// Litegraph socket wiring helpers.
 // ---------------------------------------------------------------------------
 
 export function isInputWired(node, name) {
@@ -181,82 +167,99 @@ export function isInputWired(node, name) {
   return !!(input && input.link != null);
 }
 
-export function computeWiredFlags(node) {
-  const flags = {};
-  for (const name of ["model", "clip", "vae", "latent", ...SAMPLER_FIELDS]) {
-    flags[name] = isInputWired(node, name);
-  }
-  return flags;
-}
-
 // ---------------------------------------------------------------------------
-// Small path helpers for the generic popover field wiring.
+// Context-bridge resolution -- see this module's top doc comment.
 // ---------------------------------------------------------------------------
 
-function getPath(obj, path) {
-  return path.reduce((acc, key) => (acc == null ? acc : acc[key]), obj);
-}
-function setPath(obj, path, value) {
-  let target = obj;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    target = target[path[i]];
-  }
-  target[path[path.length - 1]] = value;
+const CONTEXT_BRIDGE_TYPE = "AnimaContextBridge";
+const MAX_PASSTHROUGH_HOPS = 24;
+
+function findInput(nodeLike, name) {
+  return (nodeLike.inputs || []).find((i) => i && i.name === name);
 }
 
-function coerce(kind, rawValue) {
-  if (kind === "number") {
-    const n = parseFloat(rawValue);
-    return Number.isFinite(n) ? n : 0;
+/** The real litegraph node feeding `nodeLike`'s `inputName` input, or `null`
+ * if that input is unwired, dangling, or the graph/link tables aren't
+ * available (every case fails closed, never throws). Tries `getInputLink`
+ * (the documented litegraph API) first, falling back to `graph.links[id]`
+ * (older/undocumented but common) — this dev environment has no live
+ * ComfyUI process to confirm which one a given litegraph build actually
+ * exposes, so both are tried. */
+function resolveLinkOrigin(nodeLike, inputName) {
+  const input = findInput(nodeLike, inputName);
+  if (!input || input.link == null) {
+    return null;
   }
-  if (kind === "int") {
-    const n = parseInt(rawValue, 10);
-    return Number.isFinite(n) ? n : 0;
+  const graph = nodeLike.graph;
+  if (!graph || typeof graph.getNodeById !== "function") {
+    return null;
   }
-  if (kind === "bool") {
-    return rawValue === "true" || rawValue === true;
+  let link = null;
+  if (typeof nodeLike.getInputLink === "function") {
+    const idx = (nodeLike.inputs || []).indexOf(input);
+    link = nodeLike.getInputLink(idx);
   }
-  return rawValue;
+  if (!link && graph.links) {
+    link = graph.links[input.link];
+  }
+  if (!link || link.origin_id == null) {
+    return null;
+  }
+  return graph.getNodeById(link.origin_id);
 }
 
-/** Builds one settings-tree-bound field (see `render.mjs`'s `buildField`)
- * and wires its `change` -> `setPath` + `onCommit`. `spec` is
- * `{ path:[...], label, kind:"text"|"number"|"int"|"bool"|"select", options }`. */
-function fieldFor(doc, root, spec, onCommit) {
-  const value = getPath(root, spec.path);
-  const displayValue = spec.kind === "bool" ? (value ? "true" : "false") : value;
-  const options = spec.kind === "bool" ? ["true", "false"] : spec.options;
-  const { root: fieldEl, control } = buildField(doc, spec.label, displayValue, options);
-  control.addEventListener("change", () => {
-    setPath(root, spec.path, coerce(spec.kind, control.value));
-    onCommit();
-  });
-  return fieldEl;
-}
-
-function appendFields(doc, container, root, specs, onCommit) {
-  specs.forEach((spec) => container.appendChild(fieldFor(doc, root, spec, onCommit)));
-}
-
-/** A wired sampler field's popover row (design doc §5a): renders as
- * `render.mjs`'s `buildDrivenField` (never an editable input the wire would
- * silently override) and, clicking it, actually disconnects the real
- * litegraph link -- `node.disconnectInput` is litegraph's own API; this is
- * a no-op if the node stub doesn't provide it (e.g. this module's own
- * tests, which assert on the call happening rather than needing the real
- * method). `refresh()` re-renders the popover in place afterward, so the
- * field immediately becomes editable without closing/reopening. */
-function buildUnwireField(doc, node, field, refresh) {
-  const { root, control } = buildDrivenField(doc, field, field);
-  control.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const inputIndex = (node.inputs || []).findIndex((i) => i && i.name === field);
-    if (inputIndex >= 0 && typeof node.disconnectInput === "function") {
-      node.disconnectInput(inputIndex);
+/**
+ * Walk backward from `node`'s "context" input to the real
+ * `AnimaContextBridge` node, tolerating any number of single-input/
+ * single-output pass-through nodes in between (Reroute and similar,
+ * matched GENERICALLY by "exactly one input", not by class name — mirrors
+ * the Control Panel's own tolerance of arbitrary "*" pass-through targets).
+ * Returns the producer node, or `null` for unwired / dangling / a cycle / a
+ * producer that isn't the bridge.
+ *
+ * VERIFY-IN-COMFYUI: this walk (and the `getInputLink`/`graph.links`
+ * fallback chain in `resolveLinkOrigin`) is read from litegraph's documented
+ * API surface, not exercised against a live process (none installed in this
+ * dev environment).
+ */
+export function resolveContextBridge(node) {
+  let current = node;
+  let inputName = "context";
+  const visited = new Set([node]);
+  for (let hop = 0; hop < MAX_PASSTHROUGH_HOPS; hop += 1) {
+    const producer = resolveLinkOrigin(current, inputName);
+    if (!producer || visited.has(producer)) {
+      return null; // unwired, dangling, or a cycle
     }
-    refresh();
-  });
-  return root;
+    visited.add(producer);
+    if (producer.type === CONTEXT_BRIDGE_TYPE || producer.comfyClass === CONTEXT_BRIDGE_TYPE) {
+      return producer;
+    }
+    const pInputs = producer.inputs || [];
+    if (pInputs.length === 1) {
+      current = producer;
+      inputName = pInputs[0].name;
+      continue;
+    }
+    return null; // wired to something real that isn't the bridge
+  }
+  return null;
+}
+
+/** `{bridgeFound, bridge, supplied: {field: bool}}` for every one of
+ * `CONTEXT_FIELDS` — see this module's top doc comment for the fail-closed
+ * contract when no bridge resolves. */
+export function computeContextSupplied(node) {
+  const bridge = resolveContextBridge(node);
+  if (!bridge) {
+    return { bridgeFound: false, bridge: null, supplied: {} };
+  }
+  const supplied = {};
+  for (const field of CONTEXT_FIELDS) {
+    const input = findInput(bridge, field);
+    supplied[field] = !!(input && input.link != null);
+  }
+  return { bridgeFound: true, bridge, supplied };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,11 +272,8 @@ function buildUnwireField(doc, node, field, refresh) {
  * Opens (or, on a second click of the SAME anchor, closes) a popover.
  * `buildContent(refresh)` builds the popover's content root; it receives a
  * `refresh()` callback it can call after an in-place mutation to rebuild
- * ITS OWN content (used by the sampler/highres/upscale/detailer tabs whose
- * visible fields depend on a flag the popover itself just changed).
- * `onAnyCommit(node, ctx)` runs on EVERY commit inside the popover (persists
- * the widget) — passed in by the caller so this stays generic across the
- * Generator's `generation_settings` and the Preview's `preview_state`.
+ * ITS OWN content. `onClosed(node, ctx)` runs when the popover closes for
+ * any reason (rebuilds the body with the field's final values).
  */
 function openPopover({ ctx, node, key, anchorEl, title, buildContent, onClosed }) {
   if (closeOverlayIfOwnedBy(key)) {
@@ -285,9 +285,6 @@ function openPopover({ ctx, node, key, anchorEl, title, buildContent, onClosed }
 
   let handle = null;
   const refresh = () => {
-    // Rebuild ONLY the content below the h4 header -- never touches
-    // `anchorEl`/the overlay wrapper, so this is safe to call from inside
-    // an already-open popover's own field handlers.
     while (shell.children.length > 1) {
       shell.removeChild(shell.children[shell.children.length - 1]);
     }
@@ -320,263 +317,29 @@ function openPopover({ ctx, node, key, anchorEl, title, buildContent, onClosed }
   anchorEl.classList && anchorEl.classList.add("wtn-an-open");
 }
 
-// ---------------------------------------------------------------------------
-// Generator body — sections
-// ---------------------------------------------------------------------------
-
-function buildResourcesSection(doc, node, ctx, state) {
-  const frag = el(doc, "div");
-  frag.appendChild(sectionLabel(doc, "resources"));
-
-  const loaders = getLoaderWidgets(node);
-  const internalOn = !!(loaders.useInternal && loaders.useInternal.value);
-
-  // This ONE row is the whole "which side is live" signal (render.mjs's top
-  // doc comment) -- the real model/clip/vae/latent sockets are litegraph's
-  // own, drawn in the socket column, and cannot be greyed from inside this
-  // DOM body, so the row's own value text says which side is live instead of
-  // a redundant per-socket status list.
-  const internalRow = buildClickRow({
-    doc, name: "use_internal_loaders",
-    value: internalOn ? "on · using the pickers below, sockets ignored" : "off · using the wired sockets",
-    title: internalOn
-      ? "The unet_name/clip_name/clip_type/vae_name pickers below are used. The model/clip/vae/latent sockets are ignored."
-      : "The model/clip/vae/latent sockets (above, in the socket column) are used. Turn this on to use the pickers below instead.",
-  });
-  internalRow.root.addEventListener("click", () => {
-    closeActiveOverlay();
-    if (loaders.useInternal) {
-      loaders.useInternal.value = !internalOn;
-    }
-    repaintGenerator(node, ctx);
-  });
-  frag.appendChild(internalRow.root);
-
-  if (internalOn) {
-    [
-      ["unet_name", loaders.unetName, UNET_NAME_CANDIDATES],
-      ["clip_name", loaders.clipName, CLIP_NAME_CANDIDATES],
-      ["clip_type", loaders.clipType, null],
-      ["vae_name", loaders.vaeName, VAE_NAME_CANDIDATES],
-    ].forEach(([label, widget, candidates]) => {
-      if (!widget) {
-        return;
-      }
-      const options = (widget.options && Array.isArray(widget.options.values)) ? widget.options.values : [];
-      // Self-heal an orphaned saved value (a renamed/deleted model file) --
-      // NEVER fall through to `options[0]` (the `ce0528f`/`8b5eca6` bug).
-      let value = widget.value;
-      if (candidates && options.length && !options.includes(value)) {
-        value = preferredNameDefault(options, candidates);
-        widget.value = value;
-      }
-      const row = buildClickRow({ doc, name: label, value });
-      row.root.addEventListener("click", () => openPickerListPopover(node, ctx, `picker:${label}`, row.root, widget, options));
-      frag.appendChild(row.root);
-    });
-
-    const latentRow = buildClickRow({
-      doc, name: "latent", value: `${state.latent.width} × ${state.latent.height}${state.latent.batch > 1 ? ` ×${state.latent.batch}` : ""}`,
-    });
-    latentRow.root.addEventListener("click", () => openLatentPopover(node, ctx, latentRow.root));
-    frag.appendChild(latentRow.root);
-
-    frag.appendChild(buildLoraSection(doc, node, ctx, state));
-  }
-
-  return frag;
-}
-
-function openPickerListPopover(node, ctx, key, anchorEl, widget, options) {
-  openPopover({
-    ctx, node, key, anchorEl, title: "Choose",
-    buildContent: () => {
-      const doc = ctx.doc;
-      const menu = el(doc, "div", "wtn-an-grid");
-      if (!options.length) {
-        menu.appendChild(buildMissing(doc, "no options installed"));
-        return menu;
-      }
-      options.forEach((opt) => {
-        const optRow = buildClickRow({ doc, name: opt === widget.value ? "● " + opt : opt, value: "" });
-        optRow.root.addEventListener("click", (e) => {
-          e.stopPropagation();
-          widget.value = opt;
-          closeActiveOverlay();
-        });
-        menu.appendChild(optRow.root);
-      });
-      return menu;
-    },
-    onClosed: () => repaintGenerator(node, ctx),
-  });
-}
-
-function buildLoraSection(doc, node, ctx, state) {
-  const frag = el(doc, "div");
-  const activeCount = state.loras.filter((l) => l.strength_model || l.strength_clip).length;
-  frag.appendChild(sectionLabel(doc, "loras", `${activeCount} active`));
-
-  if (!state.loras.length) {
-    const empty = el(doc, "div", "wtn-an-lora wtn-an-empty");
-    empty.textContent = "No LoRAs yet — click + Add LoRA";
-    frag.appendChild(empty);
-  }
-
-  state.loras.forEach((entry, index) => {
-    const muted = !(entry.strength_model || entry.strength_clip);
-    const row = el(doc, "div", `wtn-an-lora${muted ? " wtn-an-muted" : ""}`);
-    const mute = buildSwitch(doc, !muted, true);
-    mute.title = muted ? "Unmute" : "Mute (both strengths to 0)";
-    mute.addEventListener("click", (e) => {
-      e.stopPropagation();
-      closeActiveOverlay();
-      toggleMuteLora(entry);
-      persistGenState(node);
-      repaintGenerator(node, ctx);
-    });
-    const name = el(doc, "span", "wtn-an-ln");
-    name.textContent = entry.name || "(unnamed)";
-    name.title = entry.name || "";
-    const val = el(doc, "span", "wtn-an-lv");
-    val.textContent = Number(entry.strength_model || 0).toFixed(2);
-    const gear = buildGear(doc, "LoRA settings");
-    gear.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openLoraItemPopover(node, ctx, index, row);
-    });
-    row.appendChild(mute);
-    row.appendChild(name);
-    row.appendChild(val);
-    row.appendChild(gear);
-    frag.appendChild(row);
-  });
-
-  const addBtn = el(doc, "button", "wtn-an-addbtn");
-  addBtn.type = "button";
-  addBtn.textContent = "+ Add LoRA";
-  addBtn.addEventListener("click", () => {
-    closeActiveOverlay();
-    addLora(state.loras);
-    persistGenState(node);
-    repaintGenerator(node, ctx);
-  });
-  frag.appendChild(addBtn);
-  return frag;
-}
-
-function openLoraItemPopover(node, ctx, index, anchorEl) {
-  const key = `lora:${index}`;
-  openPopover({
-    ctx, node, key, anchorEl, title: "LoRA",
-    buildContent: (refresh) => {
-      const doc = ctx.doc;
-      const state = node._anGenState;
-      const entry = state.loras[index];
-      if (!entry) {
-        return buildMissing(doc, "removed");
-      }
-      const box = el(doc, "div", "wtn-an-grid");
-      box.appendChild(fieldFor(doc, entry, { path: ["name"], label: "name", kind: "text" }, () => {
-        persistGenState(node);
-      }));
-      box.appendChild(fieldFor(doc, entry, { path: ["strength_model"], label: "strength_model", kind: "number" }, () => {
-        persistGenState(node);
-      }));
-      box.appendChild(fieldFor(doc, entry, { path: ["strength_clip"], label: "strength_clip", kind: "number" }, () => {
-        persistGenState(node);
-      }));
-
-      const passtabs = el(doc, "div", "wtn-an-passtabs");
-      const up = el(doc, "button");
-      up.type = "button";
-      up.textContent = "▲ move up";
-      up.disabled = index === 0;
-      up.addEventListener("click", (e) => {
-        e.stopPropagation();
-        moveLora(state.loras, index, -1);
-        persistGenState(node);
-        closeActiveOverlay();
-        repaintGenerator(node, ctx);
-      });
-      const down = el(doc, "button");
-      down.type = "button";
-      down.textContent = "▼ move down";
-      down.disabled = index === state.loras.length - 1;
-      down.addEventListener("click", (e) => {
-        e.stopPropagation();
-        moveLora(state.loras, index, 1);
-        persistGenState(node);
-        closeActiveOverlay();
-        repaintGenerator(node, ctx);
-      });
-      passtabs.appendChild(up);
-      passtabs.appendChild(down);
-      box.appendChild(passtabs);
-
-      const foot = el(doc, "div", "wtn-an-popfoot");
-      const remove = el(doc, "button", "wtn-an-pbtn wtn-an-danger");
-      remove.type = "button";
-      remove.textContent = "Remove LoRA";
-      remove.addEventListener("click", (e) => {
-        e.stopPropagation();
-        removeLora(state.loras, index);
-        persistGenState(node);
-        closeActiveOverlay();
-        repaintGenerator(node, ctx);
-      });
-      foot.appendChild(remove);
-      box.appendChild(foot);
-      return box;
-    },
-    onClosed: () => repaintGenerator(node, ctx),
-  });
-}
-
-function openLatentPopover(node, ctx, anchorEl) {
-  openPopover({
-    ctx, node, key: "latent", anchorEl, title: "Empty latent",
-    buildContent: () => {
-      const doc = ctx.doc;
-      const state = node._anGenState;
-      const box = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, box, state.latent, [
-        { path: ["width"], label: "width", kind: "int" },
-        { path: ["height"], label: "height", kind: "int" },
-        { path: ["batch"], label: "batch", kind: "int" },
-      ], () => {
-        persistGenState(node);
-      });
-      return box;
-    },
-    onClosed: () => repaintGenerator(node, ctx),
-  });
-}
+const SAMPLERS = ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddim"];
+const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 
 // ---------------------------------------------------------------------------
-// Sampler section (first-pass sockets + summary rows + Mod Guidance)
+// Sampler section (first-pass sampler + summary rows + Mod Guidance)
 // ---------------------------------------------------------------------------
 
-function buildSamplerSection(doc, node, ctx, state, wired) {
+function buildSamplerSection(doc, node, ctx, state) {
   const frag = el(doc, "div");
   frag.appendChild(sectionLabel(doc, "sampler", "first pass"));
 
-  // No per-field status list here -- the five sampler sockets are
-  // litegraph's own (real dots, drawn in the socket column); the
-  // "driven-by-wire" signal for each lives ONLY in the sampler popover's
-  // `buildDrivenField` rows (design doc §5a), and the two rows below simply
-  // never claim a value a wire is actually supplying (`"—"`/`"from wire"`).
+  const { supplied } = computeContextSupplied(node);
   const sampler = state.sampler;
   const summary = buildClickRow({
-    doc, name: `${wired.sampler_name ? "—" : sampler.sampler_name} / ${wired.scheduler ? "—" : sampler.scheduler}`,
-    value: `${wired.steps ? "—" : sampler.steps} steps · cfg ${wired.cfg ? "—" : Number(sampler.cfg).toFixed(1)}`,
+    doc, name: `${supplied.sampler_name ? "—" : sampler.sampler_name} / ${supplied.scheduler ? "—" : sampler.scheduler}`,
+    value: `${supplied.steps ? "—" : sampler.steps} steps · cfg ${supplied.cfg ? "—" : Number(sampler.cfg).toFixed(1)}`,
   });
   summary.root.addEventListener("click", () => openSamplerPopover(node, ctx, summary.root));
   frag.appendChild(summary.root);
 
   const seedRow = buildClickRow({
     doc, name: "seed",
-    value: wired.seed ? "from wire" : (sampler.seed === -1 ? "-1 (random)" : String(sampler.seed)),
+    value: supplied.seed ? "from Context Bridge" : (sampler.seed === -1 ? "-1 (random)" : String(sampler.seed)),
   });
   seedRow.root.addEventListener("click", () => openSamplerPopover(node, ctx, seedRow.root));
   frag.appendChild(seedRow.root);
@@ -596,42 +359,65 @@ function buildSamplerSection(doc, node, ctx, state, wired) {
 function openSamplerPopover(node, ctx, anchorEl) {
   openPopover({
     ctx, node, key: "sampler", anchorEl, title: "Sampler",
-    buildContent: (refresh) => {
+    buildContent: () => {
       const doc = ctx.doc;
       const state = node._anGenState;
       const sampler = state.sampler;
-      const wired = computeWiredFlags(node);
+      const { bridgeFound, supplied } = computeContextSupplied(node);
 
       const box = el(doc, "div");
-      box.appendChild(buildNote(doc, "Wired wins, per field. Each socket that's connected drives its own field; the rest come from here."));
+      box.appendChild(buildNote(
+        doc,
+        bridgeFound
+          ? "Fields the Anima Context Bridge has wired drive this run; everything else comes from here."
+          : "No Anima Context Bridge resolved upstream of ‘context’ (unwired, or wired through something that isn't a bridge) -- every field below comes from here.",
+      ));
 
       SAMPLER_FIELDS.forEach((field) => {
-        if (wired[field]) {
-          box.appendChild(buildUnwireField(doc, node, field, refresh));
-        } else if (field === "sampler_name") {
-          box.appendChild(fieldFor(doc, sampler, { path: ["sampler_name"], label: "sampler_name", kind: "select", options: SAMPLERS }, () => persistGenState(node)));
+        if (supplied[field]) {
+          box.appendChild(buildDrivenField(doc, field, "Context Bridge").root);
+          return;
+        }
+        if (field === "sampler_name") {
+          box.appendChild(buildStepperField(doc, { label: "sampler_name", value: sampler.sampler_name, options: SAMPLERS }, {
+            onChange: (v) => { sampler.sampler_name = v; persistGenState(node); },
+          }).root);
         } else if (field === "scheduler") {
-          box.appendChild(fieldFor(doc, sampler, { path: ["scheduler"], label: "scheduler", kind: "select", options: SCHEDULERS }, () => persistGenState(node)));
+          box.appendChild(buildStepperField(doc, { label: "scheduler", value: sampler.scheduler, options: SCHEDULERS }, {
+            onChange: (v) => { sampler.scheduler = v; persistGenState(node); },
+          }).root);
         } else if (field === "cfg") {
-          box.appendChild(fieldFor(doc, sampler, { path: ["cfg"], label: "cfg", kind: "number" }, () => persistGenState(node)));
+          box.appendChild(buildNumericField(doc, {
+            label: "cfg", kind: "float", opts: { min: 0, max: 30, step: 0.1 },
+            getValue: () => sampler.cfg, setValue: (v) => { sampler.cfg = v; },
+          }, () => persistGenState(node)).root);
         } else if (field === "steps") {
-          box.appendChild(fieldFor(doc, sampler, { path: ["steps"], label: "steps", kind: "int" }, () => persistGenState(node)));
+          box.appendChild(buildNumericField(doc, {
+            label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
+            getValue: () => sampler.steps, setValue: (v) => { sampler.steps = v; },
+          }, () => persistGenState(node)).root);
         } else if (field === "seed") {
-          box.appendChild(fieldFor(doc, sampler, { path: ["seed"], label: "seed", kind: "int" }, () => persistGenState(node)));
+          box.appendChild(buildNumericField(doc, {
+            label: "seed", kind: "int", opts: { min: -1, max: 2147483647, step: 1 },
+            getValue: () => sampler.seed, setValue: (v) => { sampler.seed = v; },
+          }, () => persistGenState(node)).root);
         }
       });
 
-      box.appendChild(fieldFor(doc, sampler, { path: ["denoise"], label: "denoise", kind: "number" }, () => persistGenState(node)));
-      box.appendChild(fieldFor(doc, sampler, { path: ["shift"], label: "shift", kind: "number" }, () => persistGenState(node)));
+      box.appendChild(buildNumericField(doc, {
+        label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+        getValue: () => sampler.denoise, setValue: (v) => { sampler.denoise = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "shift", kind: "float", opts: { min: 0, max: 10, step: 0.1 },
+        getValue: () => sampler.shift, setValue: (v) => { sampler.shift = v; },
+      }, () => persistGenState(node)).root);
       box.appendChild(buildNote(doc, "shift 3.0 is Anima's recommended default and is always applied. Later stages inherit these unless their own inherit_sampler_settings is off."));
       return box;
     },
     onClosed: () => repaintGenerator(node, ctx),
   });
 }
-
-const SAMPLERS = ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddim"];
-const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 
 function openModGuidancePopover(node, ctx, anchorEl) {
   openPopover({
@@ -644,22 +430,45 @@ function openModGuidancePopover(node, ctx, anchorEl) {
         return buildMissing(doc, "ComfyUI-Spectrum-KSampler not installed -- Mod Guidance is unavailable.");
       }
       const mg = state.mod_guidance;
-      const box = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, box, mg, [
-        { path: ["enabled"], label: "enabled", kind: "bool" },
-        { path: ["profile"], label: "profile", kind: "select", options: ["step_i8_skip27", "step_i14", "uniform_w3"] },
-        { path: ["mod_w"], label: "mod_w", kind: "number" },
-        { path: ["mod_start_layer"], label: "mod_start_layer", kind: "int" },
-        { path: ["mod_end_layer"], label: "mod_end_layer", kind: "int" },
-      ], () => {
+      const box = el(doc, "div");
+
+      const enabledField = buildBoolField(doc, "enabled", mg.enabled);
+      enabledField.switchEl.addEventListener("click", () => {
+        mg.enabled = !mg.enabled;
         persistGenState(node);
         refresh();
       });
+      box.appendChild(enabledField.root);
+
+      box.appendChild(buildStepperField(doc, { label: "profile", value: mg.profile, options: ["step_i8_skip27", "step_i14", "uniform_w3"] }, {
+        onChange: (v) => { mg.profile = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "mod_w", kind: "float", opts: { min: 0, max: 10, step: 0.1 },
+        getValue: () => mg.mod_w, setValue: (v) => { mg.mod_w = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "mod_start_layer", kind: "int", opts: { min: 0, max: 48, step: 1 },
+        getValue: () => mg.mod_start_layer, setValue: (v) => { mg.mod_start_layer = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "mod_end_layer", kind: "int", opts: { min: 0, max: 48, step: 1 },
+        getValue: () => mg.mod_end_layer, setValue: (v) => { mg.mod_end_layer = v; },
+      }, () => persistGenState(node)).root);
+
       box.appendChild(buildSublabel(doc, "quality tags"));
-      appendFields(doc, box, mg, [
-        { path: ["quality_tags"], label: "positive", kind: "text" },
-        { path: ["quality_neg"], label: "negative", kind: "text" },
-      ], () => persistGenState(node));
+      const pos = buildTextField(doc, "positive", mg.quality_tags);
+      pos.control.addEventListener("change", () => {
+        mg.quality_tags = pos.control.value;
+        persistGenState(node);
+      });
+      box.appendChild(pos.root);
+      const neg = buildTextField(doc, "negative", mg.quality_neg);
+      neg.control.addEventListener("change", () => {
+        mg.quality_neg = neg.control.value;
+        persistGenState(node);
+      });
+      box.appendChild(neg.root);
       return box;
     },
     onClosed: () => repaintGenerator(node, ctx),
@@ -677,32 +486,36 @@ function appendStageSamplerFields(doc, container, stageSettings, firstPassSample
   const inherit = stageSettings.inherit_sampler_settings !== false;
   container.appendChild(buildSublabel(doc, "sampler · this stage"));
 
-  const inheritField = el(doc, "div", "wtn-an-field");
-  const label = el(doc, "span");
-  label.textContent = "inherit";
-  const toggle = el(doc, "span", "wtn-an-driven");
-  toggle.textContent = inherit ? "on · cfg/sampler/scheduler from the first pass" : "off · this stage picks its own";
-  toggle.addEventListener("click", (e) => {
-    e.stopPropagation();
+  const inheritField = buildBoolField(doc, "inherit", inherit);
+  inheritField.word.textContent = inherit ? "on · cfg/sampler/scheduler from the first pass" : "off · this stage picks its own";
+  inheritField.switchEl.addEventListener("click", () => {
     stageSettings.inherit_sampler_settings = !inherit;
     onCommit();
     refresh();
   });
-  inheritField.appendChild(label);
-  inheritField.appendChild(toggle);
-  container.appendChild(inheritField);
+  container.appendChild(inheritField.root);
 
-  const grid = el(doc, "div", "wtn-an-grid");
-  grid.appendChild(fieldFor(doc, stageSettings, { path: ["steps"], label: "steps", kind: "int" }, onCommit));
-  grid.appendChild(fieldFor(doc, stageSettings, { path: ["denoise"], label: "denoise", kind: "number" }, onCommit));
+  container.appendChild(buildNumericField(doc, {
+    label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
+    getValue: () => stageSettings.steps, setValue: (v) => { stageSettings.steps = v; },
+  }, onCommit).root);
+  container.appendChild(buildNumericField(doc, {
+    label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+    getValue: () => stageSettings.denoise, setValue: (v) => { stageSettings.denoise = v; },
+  }, onCommit).root);
+
   if (!inherit) {
-    grid.appendChild(fieldFor(doc, stageSettings, { path: ["cfg"], label: "cfg", kind: "number" }, onCommit));
-    grid.appendChild(fieldFor(doc, stageSettings, { path: ["sampler_name"], label: "sampler_name", kind: "select", options: SAMPLERS }, onCommit));
-    grid.appendChild(fieldFor(doc, stageSettings, { path: ["scheduler"], label: "scheduler", kind: "select", options: SCHEDULERS }, onCommit));
-  }
-  container.appendChild(grid);
-
-  if (inherit) {
+    container.appendChild(buildNumericField(doc, {
+      label: "cfg", kind: "float", opts: { min: 0, max: 30, step: 0.1 },
+      getValue: () => stageSettings.cfg, setValue: (v) => { stageSettings.cfg = v; },
+    }, onCommit).root);
+    container.appendChild(buildStepperField(doc, { label: "sampler_name", value: stageSettings.sampler_name, options: SAMPLERS }, {
+      onChange: (v) => { stageSettings.sampler_name = v; onCommit(); },
+    }).root);
+    container.appendChild(buildStepperField(doc, { label: "scheduler", value: stageSettings.scheduler, options: SCHEDULERS }, {
+      onChange: (v) => { stageSettings.scheduler = v; onCommit(); },
+    }).root);
+  } else {
     const resolved = resolveStageSampler(stageSettings, firstPassSampler);
     container.appendChild(buildNote(doc, `Using cfg ${Number(resolved.cfg).toFixed(1)}, ${resolved.sampler_name} / ${resolved.scheduler} from the first pass. Steps and denoise above are still this stage's own.`));
   }
@@ -812,14 +625,18 @@ function openHighresPopover(node, ctx, anchorEl) {
       const h = state.highres;
       const box = el(doc, "div");
       box.appendChild(buildNote(doc, "Latent upscale, resample at low denoise. Runs before the detailer, so faces get fixed at generation resolution rather than after an upscale."));
-      const grid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, grid, h, [
-        { path: ["scale_by"], label: "scale_by", kind: "number" },
-        { path: ["upscale_method"], label: "upscale_method", kind: "select", options: ["bicubic", "bilinear", "nearest-exact", "area"] },
-        { path: ["multiple"], label: "multiple", kind: "text" },
-        { path: ["max_long_edge"], label: "max_long_edge", kind: "int" },
-      ], () => persistGenState(node));
-      box.appendChild(grid);
+      box.appendChild(buildNumericField(doc, {
+        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
+        getValue: () => h.scale_by, setValue: (v) => { h.scale_by = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildStepperField(doc, { label: "upscale_method", value: h.upscale_method, options: ["bicubic", "bilinear", "nearest-exact", "area"] }, {
+        onChange: (v) => { h.upscale_method = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildTextField(doc, "multiple", h.multiple).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "max_long_edge", kind: "int", opts: { min: 512, max: 8192, step: 32 },
+        getValue: () => h.max_long_edge, setValue: (v) => { h.max_long_edge = v; },
+      }, () => persistGenState(node)).root);
       appendStageSamplerFields(doc, box, h, state.sampler, () => persistGenState(node), refresh);
       return box;
     },
@@ -839,17 +656,21 @@ function openUpscalePopover(node, ctx, anchorEl) {
         box.appendChild(buildMissing(doc, "ComfyUI_UltimateSDUpscale not installed -- the upscale stage is disabled."));
       }
       const u = state.upscale;
-      const grid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, grid, u, [
-        { path: ["scale_by"], label: "scale_by", kind: "number" },
-      ], () => persistGenState(node));
-      appendFields(doc, grid, u.usdu, [
-        { path: ["upscale_model_name"], label: "upscale_model", kind: "text" },
-        { path: ["mode_type"], label: "mode_type", kind: "select", options: ["Linear", "Chess", "None"] },
-        { path: ["seam_fix_mode"], label: "seam_fix_mode", kind: "select", options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] },
-        { path: ["seam_fix_denoise"], label: "seam_fix_denoise", kind: "number" },
-      ], () => persistGenState(node));
-      box.appendChild(grid);
+      box.appendChild(buildNumericField(doc, {
+        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
+        getValue: () => u.scale_by, setValue: (v) => { u.scale_by = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildTextField(doc, "upscale_model", u.usdu.upscale_model_name).root);
+      box.appendChild(buildStepperField(doc, { label: "mode_type", value: u.usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
+        onChange: (v) => { u.usdu.mode_type = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildStepperField(doc, { label: "seam_fix_mode", value: u.usdu.seam_fix_mode, options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }, {
+        onChange: (v) => { u.usdu.seam_fix_mode = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "seam_fix_denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+        getValue: () => u.usdu.seam_fix_denoise, setValue: (v) => { u.usdu.seam_fix_denoise = v; },
+      }, () => persistGenState(node)).root);
       box.appendChild(buildNote(doc, "mode_type is tile ORDER (Linear/Chess/None). tiled_decode is an unrelated VAE flag -- don't conflate them."));
       appendStageSamplerFields(doc, box, u, state.sampler, () => persistGenState(node), refresh);
       return box;
@@ -864,16 +685,23 @@ function openPostprocessPopover(node, ctx, anchorEl) {
     buildContent: () => {
       const doc = ctx.doc;
       const state = node._anGenState;
+      const fit = state.postprocess.fit;
       const box = el(doc, "div");
       box.appendChild(buildNote(doc, "The output size cap."));
-      const grid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, grid, state.postprocess.fit, [
-        { path: ["mode"], label: "mode", kind: "select", options: ["max_long_edge", "megapixels"] },
-        { path: ["method"], label: "method", kind: "select", options: ["bicubic", "bilinear", "area"] },
-        { path: ["max_long_edge"], label: "max_long_edge", kind: "int" },
-        { path: ["max_megapixels"], label: "max_megapixels", kind: "number" },
-      ], () => persistGenState(node));
-      box.appendChild(grid);
+      box.appendChild(buildStepperField(doc, { label: "mode", value: fit.mode, options: ["max_long_edge", "megapixels"] }, {
+        onChange: (v) => { fit.mode = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildStepperField(doc, { label: "method", value: fit.method, options: ["bicubic", "bilinear", "area"] }, {
+        onChange: (v) => { fit.method = v; persistGenState(node); },
+      }).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "max_long_edge", kind: "int", opts: { min: 256, max: 8192, step: 32 },
+        getValue: () => fit.max_long_edge, setValue: (v) => { fit.max_long_edge = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "max_megapixels", kind: "float", opts: { min: 0.5, max: 32, step: 0.5 },
+        getValue: () => fit.max_megapixels, setValue: (v) => { fit.max_megapixels = v; },
+      }, () => persistGenState(node)).root);
       return box;
     },
     onClosed: () => repaintGenerator(node, ctx),
@@ -997,30 +825,49 @@ function openDetailerPopover(node, ctx, anchorEl) {
       }
       box.appendChild(moveRow);
 
-      const grid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, grid, block, [
-        { path: ["label"], label: "label", kind: "text" },
-        { path: ["detect_prompt"], label: "detect_prompt", kind: "text" },
-        { path: ["detect_count"], label: "detect_count", kind: "int" },
-        { path: ["threshold"], label: "threshold", kind: "number" },
-      ], () => {
+      box.appendChild(buildTextField(doc, "label", block.label).root);
+      box.appendChild(buildTextField(doc, "detect_prompt", block.detect_prompt).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "detect_count", kind: "int", opts: { min: 1, max: 20, step: 1 },
+        getValue: () => block.detect_count, setValue: (v) => { block.detect_count = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "threshold", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+        getValue: () => block.threshold, setValue: (v) => { block.threshold = v; },
+      }, () => persistGenState(node)).root);
+
+      box.appendChild(buildSublabel(doc, "refine"));
+      box.appendChild(buildNumericField(doc, {
+        label: "feather", kind: "int", opts: { min: 0, max: 64, step: 1 },
+        getValue: () => block.feather, setValue: (v) => { block.feather = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "guide_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+        getValue: () => block.guide_size, setValue: (v) => { block.guide_size = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "max_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+        getValue: () => block.max_size, setValue: (v) => { block.max_size = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "crop_factor", kind: "float", opts: { min: 1, max: 10, step: 0.1 },
+        getValue: () => block.crop_factor, setValue: (v) => { block.crop_factor = v; },
+      }, () => persistGenState(node)).root);
+      box.appendChild(buildNumericField(doc, {
+        label: "cycle", kind: "int", opts: { min: 1, max: 10, step: 1 },
+        getValue: () => block.cycle, setValue: (v) => { block.cycle = v; },
+      }, () => persistGenState(node)).root);
+      const guideSizeForField = buildBoolField(doc, "guide_size_for", block.guide_size_for);
+      guideSizeForField.switchEl.addEventListener("click", () => {
+        block.guide_size_for = !block.guide_size_for;
         persistGenState(node);
         refresh();
       });
-      box.appendChild(grid);
-
-      box.appendChild(buildSublabel(doc, "refine"));
-      const refineGrid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, refineGrid, block, [
-        { path: ["feather"], label: "feather", kind: "int" },
-        { path: ["guide_size"], label: "guide_size", kind: "int" },
-        { path: ["max_size"], label: "max_size", kind: "int" },
-        { path: ["crop_factor"], label: "crop_factor", kind: "number" },
-        { path: ["cycle"], label: "cycle", kind: "int" },
-        { path: ["guide_size_for"], label: "guide_size_for", kind: "bool" },
-        { path: ["noise_mask_feather"], label: "noise_mask_feather", kind: "int" },
-      ], () => persistGenState(node));
-      box.appendChild(refineGrid);
+      box.appendChild(guideSizeForField.root);
+      box.appendChild(buildNumericField(doc, {
+        label: "noise_mask_feather", kind: "int", opts: { min: 1, max: 64, step: 1 },
+        getValue: () => block.noise_mask_feather, setValue: (v) => { block.noise_mask_feather = v; },
+      }, () => persistGenState(node)).root);
       box.appendChild(buildNote(doc, "Do not \"fix\" these -- guide_size_for must be false and noise_mask_feather must not be 0.", true));
 
       appendStageSamplerFields(doc, box, block, state.sampler, () => persistGenState(node), refresh);
@@ -1032,19 +879,12 @@ function openDetailerPopover(node, ctx, anchorEl) {
 
 // ---------------------------------------------------------------------------
 // Generator body root + mount/repaint
-//
-// No "conditioning"/"outputs" sections here -- `positive`/`negative` and
-// `image`/`image_base`/`image_mid`/`latent`/`metadata_json` are all real
-// litegraph sockets that litegraph already draws; this body renders only
-// what litegraph does NOT (render.mjs's top doc comment).
 // ---------------------------------------------------------------------------
 
 export function buildGeneratorBody(doc, node, ctx) {
   const state = node._anGenState;
-  const wired = computeWiredFlags(node);
   const body = el(doc, "div", "wtn-an-body");
-  body.appendChild(buildResourcesSection(doc, node, ctx, state));
-  body.appendChild(buildSamplerSection(doc, node, ctx, state, wired));
+  body.appendChild(buildSamplerSection(doc, node, ctx, state));
   body.appendChild(buildStagesSection(doc, node, ctx, state));
   return body;
 }
@@ -1055,11 +895,11 @@ export function mountGeneratorUI(node, ctx) {
   }
   const doc = ctx.doc;
   injectStyles(doc);
-  const root = el(doc, "div", "wtn-an-root wtn");
+  const { root, panel } = buildPanelShell(doc);
   ensureGenState(node);
   const body = buildGeneratorBody(doc, node, ctx);
-  root.appendChild(body);
-  const refs = { doc, root, body };
+  panel.appendChild(body);
+  const refs = { doc, root, panel, body };
   node._anRefs = refs;
   return refs;
 }
@@ -1070,7 +910,7 @@ export function repaintGenerator(node, ctx) {
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);
   }
-  refs.root.appendChild(newBody);
+  refs.panel.appendChild(newBody);
   refs.body = newBody;
   if (node.setDirtyCanvas) {
     node.setDirtyCanvas(true, true);
@@ -1080,41 +920,24 @@ export function repaintGenerator(node, ctx) {
 
 // ---------------------------------------------------------------------------
 // Preview node
+//
+// `images` is now one optional LIST input (never three fixed sockets) --
+// design doc §5/§7 reversal. Which stages the wipe can actually SHOW is no
+// longer "which socket is wired", it's "which stage names are present in
+// THIS RUN's `node._anPreviewImages`" (populated by `handleExecuted`, keyed
+// by the `stage` field Python already resolved via
+// `resolve_run_stage_labels` -- this module never re-derives that mapping).
+// Before any run, that map is empty, so the wipe shows a "wired -- run to
+// preview" / "nothing wired yet" placeholder depending on whether `images`
+// itself is wired at all.
 // ---------------------------------------------------------------------------
-
-const SLOT_TO_SOCKET = { base: "image_a", mid: "image_b", final: "image_c" };
-
-function previewShownStages(node) {
-  const wired = {
-    image_a: node.inputs && node.inputs.find((i) => i.name === "image_a" && i.link != null),
-    image_b: node.inputs && node.inputs.find((i) => i.name === "image_b" && i.link != null),
-    image_c: node.inputs && node.inputs.find((i) => i.name === "image_c" && i.link != null),
-  };
-  return {
-    base: !!wired.image_a,
-    mid: !!wired.image_b,
-    final: !!wired.image_c,
-  };
-}
 
 export function buildPreviewBody(doc, node, ctx) {
   const state = node._anPreviewState;
-  const shown = previewShownStages(node);
-  // `node._anPreviewImages`, keyed by stage, set by `handleExecuted` from
-  // this node's own `onExecuted` payload (`nodes/anima/preview.py`'s
-  // `"ui": {"images": [...]}}`, each entry carrying a `stage` key) --
-  // ABSENT until the first run, which is legitimate (pre-run, every layer
-  // below just renders empty).
   const previewImages = node._anPreviewImages || {};
+  const stagesPresent = STAGE_ORDER.filter((s) => previewImages[s]);
   const body = el(doc, "div", "wtn-an-body");
 
-  // No image_a/image_b/image_c status rows here -- those, plus the hidden
-  // prompt/extra_pnginfo (not even real sockets), are litegraph's; `shown`
-  // is used below only to decide which panes the wipe can actually render.
-
-  // Save row FIRST, above the image box (§2) -- builder/value/click handler
-  // are byte-for-byte identical to before, this is a re-order of
-  // `body.appendChild` calls only.
   const saveRow = buildClickRow({
     doc, name: "save",
     value: state.save.enabled ? `${state.save.which} · ${state.save.extension}` : "off",
@@ -1124,20 +947,18 @@ export function buildPreviewBody(doc, node, ctx) {
 
   const compare = state.compare;
   const wantsDual = !!compare.enabled;
-  const haveA = shown[compare.a];
-  const haveB = shown[compare.b];
-  // Dual-pane wipe only when BOTH named stages are actually wired. A
-  // selected `compare.a`/`compare.b` that ISN'T wired can't render its own
-  // pane -- degrade to the SAME single-image branch the "compare off" case
-  // already uses (below) rather than a broken pane with one permanently
-  // blank layer.
+  const haveA = stagesPresent.includes(compare.a);
+  const haveB = stagesPresent.includes(compare.b);
+  // Dual-pane wipe only when BOTH named stages are actually present this
+  // run. A selected compare.a/compare.b that isn't present degrades to the
+  // SAME single-image branch "compare off" already uses.
   const dualPane = wantsDual && haveA && haveB;
   const wipe = el(doc, "div", `wtn-an-wipe${dualPane ? "" : " wtn-an-single"}`);
   wipe.style.setProperty("--wipe-x", "50%");
 
-  if (!haveA && !haveB) {
+  if (!stagesPresent.length) {
     const empty = el(doc, "div", "wtn-an-empty");
-    empty.textContent = "nothing wired yet";
+    empty.textContent = isInputWired(node, "images") ? "wired — run the graph to preview" : "nothing wired yet";
     wipe.appendChild(empty);
   } else if (dualPane) {
     wipe.appendChild(buildWipeLayer(doc, previewImages, compare.a, "wtn-an-a"));
@@ -1151,12 +972,7 @@ export function buildPreviewBody(doc, node, ctx) {
     wipe.appendChild(labL);
     wipe.appendChild(labR);
   } else {
-    // Single-pane: compare off BY CHOICE, or degraded because one of the two
-    // named stages isn't wired -- either way, show whichever side actually
-    // resolves (prefer `compare.b`, the "current result" side; `haveA ||
-    // haveB` is true here, so exactly one of these two branches applies when
-    // only one is wired, and `compare.b` wins the tie when both are).
-    const soloStage = haveB ? compare.b : compare.a;
+    const soloStage = haveB ? compare.b : (haveA ? compare.a : stagesPresent[stagesPresent.length - 1]);
     wipe.appendChild(buildWipeLayer(doc, previewImages, soloStage, "wtn-an-a"));
     const labL = el(doc, "div", "wtn-an-plab wtn-an-l");
     labL.textContent = soloStage;
@@ -1164,11 +980,6 @@ export function buildPreviewBody(doc, node, ctx) {
   }
   body.appendChild(wipe);
 
-  // ONE compare row: [switch] [label "compare"] on the left and, when
-  // `wantsDual`, a right-aligned `.wtn-an-segs` cluster holding both
-  // `base|mid|final` groups (§3's fold -- this used to be a SECOND
-  // `.wtn-an-pvbar` below this one; every click handler/`persistPreviewState`/
-  // `repaintPreview` call below is unchanged from before the fold).
   const pvbar = el(doc, "div", "wtn-an-pvbar");
   const sw = buildSwitch(doc, wantsDual);
   sw.addEventListener("click", () => {
@@ -1230,19 +1041,41 @@ function openSavePopover(node, ctx, anchorEl) {
       const save = state.save;
       const box = el(doc, "div");
       box.appendChild(buildNote(doc, "Saving lives here, not on the Generator -- this node holds the images, so it's the only place base/mid/final can be saved under different names."));
-      const grid = el(doc, "div", "wtn-an-grid");
-      appendFields(doc, grid, save, [
-        { path: ["enabled"], label: "enabled", kind: "bool" },
-        { path: ["which"], label: "which", kind: "select", options: SAVE_WHICH_OPTIONS },
-        { path: ["extension"], label: "extension", kind: "select", options: ["png", "jpg", "webp"] },
-        { path: ["path"], label: "path", kind: "text" },
-        { path: ["filename"], label: "filename", kind: "text" },
-        { path: ["embed_workflow"], label: "embed workflow", kind: "bool" },
-      ], () => {
+
+      const enabledField = buildBoolField(doc, "enabled", save.enabled);
+      enabledField.switchEl.addEventListener("click", () => {
+        save.enabled = !save.enabled;
         persistPreviewState(node);
         refresh();
       });
-      box.appendChild(grid);
+      box.appendChild(enabledField.root);
+
+      box.appendChild(buildStepperField(doc, { label: "which", value: save.which, options: SAVE_WHICH_OPTIONS }, {
+        onChange: (v) => { save.which = v; persistPreviewState(node); },
+      }).root);
+      box.appendChild(buildStepperField(doc, { label: "extension", value: save.extension, options: ["png", "jpg", "webp"] }, {
+        onChange: (v) => { save.extension = v; persistPreviewState(node); },
+      }).root);
+      const pathF = buildTextField(doc, "path", save.path);
+      pathF.control.addEventListener("change", () => {
+        save.path = pathF.control.value;
+        persistPreviewState(node);
+      });
+      box.appendChild(pathF.root);
+      const filenameF = buildTextField(doc, "filename", save.filename);
+      filenameF.control.addEventListener("change", () => {
+        save.filename = filenameF.control.value;
+        persistPreviewState(node);
+      });
+      box.appendChild(filenameF.root);
+      const embedField = buildBoolField(doc, "embed workflow", save.embed_workflow);
+      embedField.switchEl.addEventListener("click", () => {
+        save.embed_workflow = !save.embed_workflow;
+        persistPreviewState(node);
+        refresh();
+      });
+      box.appendChild(embedField.root);
+
       box.appendChild(buildSublabel(doc, "filename tokens"));
       box.appendChild(buildNote(doc, "%stage% (base/mid/final), %seed%, %date:FMT%, %counter:N%, %width%, %height%."));
       return box;
@@ -1257,11 +1090,11 @@ export function mountPreviewUI(node, ctx) {
   }
   const doc = ctx.doc;
   injectStyles(doc);
-  const root = el(doc, "div", "wtn-an-root wtn");
+  const { root, panel } = buildPanelShell(doc);
   ensurePreviewState(node);
   const { body, wipeEl } = buildPreviewBody(doc, node, ctx);
-  root.appendChild(body);
-  const refs = { doc, root, body, wipeEl };
+  panel.appendChild(body);
+  const refs = { doc, root, panel, body, wipeEl };
   node._anRefs = refs;
   wireWipe(node, ctx, refs);
   return refs;
@@ -1273,7 +1106,7 @@ export function repaintPreview(node, ctx) {
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);
   }
-  refs.root.appendChild(body);
+  refs.panel.appendChild(body);
   refs.body = body;
   refs.wipeEl = wipeEl;
   wireWipe(node, ctx, refs);
@@ -1284,62 +1117,35 @@ export function repaintPreview(node, ctx) {
 }
 
 /**
- * `AnimaPreview`'s `onExecuted` handler -- `index.js` installs the actual
- * litegraph `onExecuted` hook (it's a node-instance/server-message hook, not
- * a `window`/`app`/`LiteGraph` global reference, so it's fine to call
- * straight into this module the same way `onConnectionsChange` already
- * does) and forwards `message` here unchanged. `message.images` is
- * `nodes/anima/preview.py`'s own `"ui": {"images": [...]}}` payload -- see
- * `_preview_helpers.build_preview_ui_images`'s docstring for the exact
- * shape: `{filename, subfolder, type, stage}` per entry, `type` `"output"`
- * or `"temp"`, ALWAYS one entry per wired stage regardless of `save.
- * enabled` (design doc §7/§7a's fix -- this is the frontend half of it).
+ * `AnimaPreview`'s `onExecuted` handler -- `message.images` is
+ * `nodes/anima/preview.py`'s own `"ui": {"images": [...]}}` payload: `{
+ * filename, subfolder, type, stage}` per entry, ALWAYS one entry per
+ * present stage regardless of `save.enabled` (design doc §7/§7a's fix).
  *
  * VERIFY-IN-COMFYUI: that `onExecuted`'s `message` argument really is the
- * node's own `ui` dict verbatim (i.e. `message.images` reaches here, not
- * `message.ui.images` or some other wrapping) -- this pack has no live
- * ComfyUI process to confirm against; the shape matches every other node in
- * this repo's `../ComfyUI-Pixaroma` sibling that reads `message.<key>`
- * straight off `onExecuted` (`js/find_replace/index.js`'s
- * `message?.pixaroma_find_replace?.[0]`), and stock `SaveImage`/
- * `PreviewImage` are widely documented to work the same way, but neither is
- * a substitute for confirming live.
+ * node's own `ui` dict verbatim -- no live ComfyUI process in this dev
+ * environment to confirm against; matches every other node in this repo's
+ * `../ComfyUI-Pixaroma` sibling that reads `message.<key>` straight off
+ * `onExecuted`.
  */
 export function handleExecuted(node, ctx, message) {
   if (!message || !Array.isArray(message.images)) {
     return;
   }
-  // ONE cache-bust token per `executed` message, shared by every stage from
-  // THIS run -- see `buildPreviewImageUrl`'s doc comment in render.mjs for
-  // why a run-stable (not per-stage-random) value is what's needed here.
   const cacheBust = Date.now();
   const byStage = {};
   for (const entry of message.images) {
-    // Map by STAGE, never by array position -- `build_preview_ui_images`
-    // orders entries by its own preview-stage order, not a fixed schema, and
-    // a batch > 1 stage can carry more than one entry (the FIRST one seen
-    // wins; the wipe only ever shows one image per pane).
     if (entry && typeof entry.stage === "string" && !(entry.stage in byStage)) {
       byStage[entry.stage] = { ...entry, _cacheBust: cacheBust };
     }
   }
   node._anPreviewImages = byStage;
-  // No `_anMods` check needed here -- `index.js` only ever reaches this
-  // function THROUGH `this._anMods.interaction.handleExecuted(...)`, so
-  // `_anMods` being truthy is already guaranteed by the caller; testing it
-  // again here would just make this function harder to call directly (as
-  // this pack's own `test_resize.mjs` does). `mountPreviewUI` is idempotent
-  // (returns the cached `node._anRefs` if already mounted, mounts fresh
-  // otherwise), so this always ends up painting the stashed image data
-  // somewhere, never silently drops it.
   repaintPreview(node, ctx);
 }
 
 /** The hover wipe -- design doc §7. `pointermove` with NO button gate is
- * what makes it hover rather than drag; upstream's own comment
- * (`generator_panel_runtime.js:811-816`) is the same shape.
- * `event.stopPropagation()` on both handlers is load-bearing, or litegraph
- * steals the gesture and the divider never moves. */
+ * what makes it hover rather than drag; `event.stopPropagation()` on both
+ * handlers is load-bearing, or litegraph steals the gesture. */
 export function wipeXFromEvent(rect, clientX) {
   if (!rect || !Number.isFinite(rect.width) || rect.width <= 0) {
     return 50;
@@ -1369,7 +1175,10 @@ function wireWipe(node, ctx, refs) {
 }
 
 // ---------------------------------------------------------------------------
-// Wheel-zoom passthrough + teardown (both node types)
+// Wheel-zoom passthrough + teardown (both node types). Installed on the DOM
+// widget's ROOT (which contains the single scrollable `.wtn-an-panel`) --
+// `js/shared/canvas_zoom.mjs`'s own tree-walk is what makes the panel
+// scroll-vs-zoom decision correct without any bespoke logic here.
 // ---------------------------------------------------------------------------
 
 export function installZoomPassthrough(node, ctx) {
@@ -1380,6 +1189,12 @@ export function installZoomPassthrough(node, ctx) {
   refs.zoomUninstall = installCanvasZoomPassthrough(refs.root, ctx.getCanvasEl);
 }
 
+/** Tears down everything this module mounted on `node` -- the zoom
+ * passthrough listener and any open popover. There is exactly ONE DOM
+ * widget per node (this module never mounted more than one), so there are
+ * no sibling per-row widgets to remove here; this is still the one place
+ * that must run on `onRemoved`, so nothing (listener or overlay) is ever
+ * left mounted after the node itself is gone. */
 export function teardownNode(node) {
   closeActiveOverlay();
   const refs = node._anRefs;
