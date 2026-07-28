@@ -31,18 +31,27 @@
  * `inherit_sampler_settings` -- `interaction.mjs` handles that by re-running
  * the popover's own content builder in place when needed).
  *
- * ## Real sockets vs. this body's own "status rows"
+ * ## Real sockets are litegraph's, never re-drawn in this body
  *
  * `AnimaGenerator` has real litegraph INPUT sockets (`positive`, `negative`,
  * `model`/`clip`/`vae`/`latent`, `seed`/`steps`/`cfg`/`sampler_name`/
  * `scheduler`) and real OUTPUT sockets (`image`/`image_base`/`image_mid`/
- * `latent`/`metadata_json`) — those are litegraph's own dots, drawn at their
- * usual fixed position, completely independent of this DOM widget. The rows
- * this module builds for them (`buildStatusRow`) are informational ONLY: a
- * label plus a computed wired/ignored badge, so a socket that's ignored in
- * the current mode LOOKS ignored (design doc's "rows that are ignored must
- * look ignored") even though the real dot for it sits elsewhere on the node.
- * They are never interactive and never draw a fake socket dot of their own.
+ * `latent`/`metadata_json`); `AnimaPreview` has `image_a`/`image_b`/`image_c`
+ * plus the hidden, non-socket `prompt`/`extra_pnginfo`. Litegraph draws every
+ * one of those itself, at its usual fixed position in the socket column,
+ * completely independent of this DOM widget — so this module must NEVER
+ * re-draw a row per socket name (that was exactly the "every socket rendered
+ * twice" bug: `playground/generator.html`'s socket rows are representational
+ * only, because that mockup has no litegraph to draw real dots for it; a real
+ * node must not port them). Two things that WOULD have been lost by simply
+ * deleting those rows are carried by real rows instead:
+ *   - "ignored in this mode" (model/clip/vae/latent while
+ *     `use_internal_loaders` is on) is now stated by the internal-loaders row
+ *     itself (`buildClickRow`'s `value` text in `interaction.mjs`'s
+ *     `buildResourcesSection`), not by greying a socket this body can't reach.
+ *   - "driven by a wire" (the five sampler fields) lives ONLY in the sampler
+ *     popover's `buildDrivenField` rows (design doc §5a) plus the summary/
+ *     seed rows not claiming a wired value — never a separate status list.
  *
  * ## Popover content builders live here too
  *
@@ -108,16 +117,6 @@ const CSS = `
 .wtn-an-sec::after { content: ""; flex: 1; height: 1px; background: var(--wtn-line-soft, ${TOKENS.lineSoft}); }
 .wtn-an-sec:first-child { margin-top: 2px; }
 .wtn-an-sec .wtn-an-cnt { color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-
-/* ── status rows: informational only, mirror a REAL litegraph socket ── */
-.wtn-an-status { display: flex; align-items: center; gap: 8px; height: 20px;
-  font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-.wtn-an-status .wtn-an-dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
-  border: 1.5px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-console, ${TOKENS.console}); }
-.wtn-an-status.wtn-an-wired .wtn-an-dot { background: var(--wtn-accent, ${TOKENS.accent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-status.wtn-an-ignored { opacity: .4; }
-.wtn-an-status .wtn-an-ty { margin-left: auto; font-size: 8.5px; letter-spacing: .08em; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
-  border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); border-radius: 3px; padding: 0 3px; }
 
 /* ── generic clickable row ── */
 .wtn-an-row { position: relative; display: flex; align-items: center; gap: 8px;
@@ -277,24 +276,6 @@ function text(doc, tag, className, str) {
   const e = el(doc, tag, className);
   e.textContent = str;
   return e;
-}
-
-/** Non-interactive socket status row -- see this module's top doc comment
- * for why this is informational only, never a fake socket. */
-export function buildStatusRow(doc, { name, type, wired, ignored, title }) {
-  const row = el(doc, "div", `wtn-an-status${wired ? " wtn-an-wired" : ""}${ignored ? " wtn-an-ignored" : ""}`);
-  if (title) {
-    row.title = title;
-  }
-  const dot = el(doc, "span", "wtn-an-dot");
-  const label = el(doc, "span");
-  label.textContent = name;
-  const ty = el(doc, "span", "wtn-an-ty");
-  ty.textContent = type;
-  row.appendChild(dot);
-  row.appendChild(label);
-  row.appendChild(ty);
-  return row;
 }
 
 /** A themed clickable row (opens a popover, or a plain toggle -- caller

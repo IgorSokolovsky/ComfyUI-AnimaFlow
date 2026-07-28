@@ -98,7 +98,6 @@ import {
 
 import {
   injectStyles,
-  buildStatusRow,
   buildSwitch,
   sectionLabel,
   measureMinHeight,
@@ -401,14 +400,32 @@ function makeGeneratorNode(widgetValues = {}, wiredInputs = {}) {
     options: optionsFor[name] ? { values: optionsFor[name] } : undefined,
   }));
 
-  const inputNames = ["positive", "negative", "model", "clip", "vae", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler"];
-  const inputs = inputNames.map((name) => ({ name, link: wiredInputs[name] ? 1 : null }));
+  // `type` here mirrors `nodes/anima/generator.py`'s real INPUT_TYPES/
+  // RETURN_TYPES types exactly (never hardcoded ad hoc) -- this is the SAME
+  // list section G's "no socket rendered twice" tests below iterate over, so
+  // a future socket added to `generator.py` without updating this fixture
+  // fails those tests loudly rather than silently under-covering them.
+  const INPUT_SOCKET_TYPES = {
+    positive: "CONDITIONING", negative: "CONDITIONING",
+    model: "MODEL", clip: "CLIP", vae: "VAE", latent: "LATENT",
+    seed: "INT", steps: "INT", cfg: "FLOAT", sampler_name: "COMBO", scheduler: "COMBO",
+  };
+  const inputs = Object.keys(INPUT_SOCKET_TYPES).map((name) => ({
+    name, type: INPUT_SOCKET_TYPES[name], link: wiredInputs[name] ? 1 : null,
+  }));
+  const outputs = [
+    { name: "image", type: "IMAGE" },
+    { name: "image_base", type: "IMAGE" },
+    { name: "image_mid", type: "IMAGE" },
+    { name: "latent", type: "LATENT" },
+    { name: "metadata_json", type: "STRING" },
+  ];
 
   const node = {
     size: [DEFAULT_W, 100],
     widgets,
     inputs,
-    outputs: [],
+    outputs,
     setSize(s) {
       node.size = s.slice();
     },
@@ -424,13 +441,16 @@ function makeGeneratorNode(widgetValues = {}, wiredInputs = {}) {
 
 function makePreviewNode(widgetValues = {}, wiredInputs = {}) {
   const widgets = [{ name: "preview_state", value: widgetValues.preview_state ?? "{}" }];
+  // Mirrors `nodes/anima/preview.py`'s real INPUT_TYPES types -- see
+  // `makeGeneratorNode`'s identical comment for why this isn't hardcoded
+  // ad hoc in each test.
   const inputNames = ["image_a", "image_b", "image_c"];
-  const inputs = inputNames.map((name) => ({ name, link: wiredInputs[name] ? 1 : null }));
+  const inputs = inputNames.map((name) => ({ name, type: "IMAGE", link: wiredInputs[name] ? 1 : null }));
   const node = {
     size: [396, 420],
     widgets,
     inputs,
-    outputs: [],
+    outputs: [], // AnimaPreview's RETURN_TYPES is () -- OUTPUT_NODE, no real outputs.
     setSize(s) {
       node.size = s.slice();
     },
@@ -649,13 +669,8 @@ test("injectStyles is idempotent and guarded against a doc with no createElement
   assert.doesNotThrow(() => injectStyles({}));
 });
 
-test("buildStatusRow reflects wired/ignored via classes; buildSwitch/sectionLabel render expected text", () => {
+test("buildSwitch/sectionLabel render expected text", () => {
   const doc = makeDocStub();
-  const wired = buildStatusRow(doc, { name: "model", type: "MODEL", wired: true, ignored: false });
-  assert.ok(hasClass(wired, "wtn-an-wired"));
-  const ignored = buildStatusRow(doc, { name: "model", type: "MODEL", wired: false, ignored: true });
-  assert.ok(hasClass(ignored, "wtn-an-ignored"));
-
   const on = buildSwitch(doc, true);
   assert.ok(hasClass(on, "wtn-an-on"));
   const off = buildSwitch(doc, false);
@@ -801,6 +816,126 @@ test("detailer popover: adding respects MAX_DETAILER_PASSES and face/eye stay un
   fire(addBtnAgain, "click");
   persisted = genState(node);
   assert.equal(Object.keys(persisted.detailer.blocks).length, MAX_DETAILER_PASSES, "still capped -- a disabled button click must not have added a 5th");
+});
+
+// ===========================================================================
+// C2. No socket rendered twice — the bug this whole file's fix is for.
+//    Litegraph already draws every real INPUT/OUTPUT socket in its own
+//    column; this body must render only what litegraph does NOT (settings
+//    rows), never a name+type-labeled row mirroring a socket that's already
+//    on screen. Derived from `node.inputs`/`node.outputs` (this file's own
+//    `makeGeneratorNode`/`makePreviewNode` fixtures, themselves a mirror of
+//    `nodes/anima/generator.py`/`preview.py`'s real INPUT_TYPES/RETURN_TYPES)
+//    rather than a hardcoded name list, so a future re-addition of a status
+//    row fails this test automatically without anyone needing to remember
+//    which names were removed.
+// ===========================================================================
+
+/** True if some row-like element in `root` has a direct child whose
+ * `textContent` is exactly `name` AND another direct child whose
+ * `textContent` is exactly `type` -- i.e. a "socket status row" pairing a
+ * socket's own name with its own type, the exact shape the deleted
+ * `buildStatusRow` produced (name span + type pill as siblings). A row that
+ * merely REUSES a socket's name for an unrelated settings control (the
+ * `seed` summary row, the inline-mode `latent` width/height/batch editor)
+ * never also carries that socket's TYPE string as a sibling, so this never
+ * flags those deliberate, real, editable rows -- only a genuine duplicate. */
+function rowHasNameAndType(root, name, type) {
+  return queryAll(root, (n) => Array.isArray(n.children) && n.children.length >= 2).some((n) => {
+    const texts = n.children.map((c) => c.textContent);
+    return texts.includes(name) && texts.includes(type);
+  });
+}
+
+function allSockets(node) {
+  return [...(node.inputs || []), ...(node.outputs || [])].filter((s) => s && s.type);
+}
+
+test("Generator body never re-renders a real socket as a name+type row, in either inline mode", () => {
+  [false, true].forEach((internalOn) => {
+    const node = makeGeneratorNode({ use_internal_loaders: internalOn });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    const refs = mountGeneratorUI(node, ctx);
+    allSockets(node).forEach(({ name, type }) => {
+      assert.ok(
+        !rowHasNameAndType(refs.body, name, type),
+        `${name}/${type} must not appear as a duplicated status row (use_internal_loaders=${internalOn})`,
+      );
+    });
+  });
+});
+
+test("Preview body never re-renders image_a/image_b/image_c as a name+type row", () => {
+  const node = makePreviewNode({}, { image_a: true, image_b: true, image_c: true });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+  allSockets(node).forEach(({ name, type }) => {
+    assert.ok(!rowHasNameAndType(refs.body, name, type), `${name}/${type} must not appear as a duplicated status row`);
+  });
+});
+
+function rowNames(root) {
+  return queryAll(root, (n) => hasClass(n, "wtn-an-row"))
+    .map((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent);
+}
+function rowValue(root, name) {
+  const row = queryAll(root, (n) => hasClass(n, "wtn-an-row"))
+    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === name);
+  return row && (row.children.find((c) => hasClass(c, "wtn-an-val")) || {}).textContent;
+}
+function sectionLabelTexts(root) {
+  return queryAll(root, (n) => hasClass(n, "wtn-an-sec")).map((s) => (s.children[0] || {}).textContent);
+}
+
+test("Generator body surviving row set -- use_internal_loaders OFF: no picker/latent/lora rows", () => {
+  const node = makeGeneratorNode({ use_internal_loaders: false });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const names = rowNames(refs.body);
+
+  assert.ok(names.includes("use_internal_loaders"));
+  assert.ok(names.includes("seed"));
+  assert.ok(names.includes("mod guidance"));
+  assert.ok(names.some((n) => n.includes("/")), "the sampler summary row must be present");
+  ["unet_name", "clip_name", "clip_type", "vae_name", "latent"].forEach((n) => {
+    assert.ok(!names.includes(n), `${n} row must not appear while use_internal_loaders is off`);
+  });
+  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-lora")).length, 0);
+  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length, 0);
+  assert.deepEqual(sectionLabelTexts(refs.body), ["resources", "sampler", "stages"]);
+  assert.equal(queryAll(refs.body, (n) => hasClass(n, "wtn-an-stagerow")).length, 4, "Highres/Detailer/Upscale/Postprocess");
+});
+
+test("Generator body surviving row set -- use_internal_loaders ON: pickers + latent editor + LoRA list appear too", () => {
+  const node = makeGeneratorNode({ use_internal_loaders: true });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const names = rowNames(refs.body);
+
+  ["use_internal_loaders", "unet_name", "clip_name", "clip_type", "vae_name", "latent", "seed", "mod guidance"].forEach((n) => {
+    assert.ok(names.includes(n), `${n} row must be present while use_internal_loaders is on`);
+  });
+  assert.ok(names.some((n) => n.includes("/")), "the sampler summary row must be present");
+  assert.ok(queryAll(refs.body, (n) => hasClass(n, "wtn-an-addbtn")).length >= 1, "+ Add LoRA must appear");
+  assert.deepEqual(sectionLabelTexts(refs.body), ["resources", "loras", "sampler", "stages"]);
+});
+
+test("use_internal_loaders row states plainly which side is live, in both directions", () => {
+  const offNode = makeGeneratorNode({ use_internal_loaders: false });
+  const offRefs = mountGeneratorUI(offNode, makeCtx(makeDocStub()));
+  const valOff = rowValue(offRefs.body, "use_internal_loaders");
+  assert.match(valOff, /^off\b/i, "must plainly say OFF");
+  assert.match(valOff, /wired sockets/i, "must say the sockets are the live side");
+
+  const onNode = makeGeneratorNode({ use_internal_loaders: true });
+  const onRefs = mountGeneratorUI(onNode, makeCtx(makeDocStub()));
+  const valOn = rowValue(onRefs.body, "use_internal_loaders");
+  assert.match(valOn, /^on\b/i, "must plainly say ON");
+  assert.match(valOn, /sockets ignored/i, "must say the sockets are the ignored side");
 });
 
 // ===========================================================================

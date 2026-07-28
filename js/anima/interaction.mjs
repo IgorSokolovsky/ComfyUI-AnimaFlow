@@ -58,7 +58,6 @@ import {
   normalizeGenerationSettings,
   normalizePreviewSettings,
   resolveStageSampler,
-  resolveOutputs,
   addLora,
   removeLora,
   moveLora,
@@ -75,7 +74,6 @@ import {
 
 import {
   injectStyles,
-  buildStatusRow,
   buildClickRow,
   buildSwitch,
   buildGear,
@@ -326,18 +324,24 @@ function openPopover({ ctx, node, key, anchorEl, title, buildContent, onClosed }
 // Generator body — sections
 // ---------------------------------------------------------------------------
 
-const SAMPLER_SOCKET_TYPES = { seed: "INT", steps: "INT", cfg: "FLOAT", sampler_name: "COMBO", scheduler: "COMBO" };
-
-function buildResourcesSection(doc, node, ctx, state, wired) {
+function buildResourcesSection(doc, node, ctx, state) {
   const frag = el(doc, "div");
   frag.appendChild(sectionLabel(doc, "resources"));
 
   const loaders = getLoaderWidgets(node);
   const internalOn = !!(loaders.useInternal && loaders.useInternal.value);
 
+  // This ONE row is the whole "which side is live" signal (render.mjs's top
+  // doc comment) -- the real model/clip/vae/latent sockets are litegraph's
+  // own, drawn in the socket column, and cannot be greyed from inside this
+  // DOM body, so the row's own value text says which side is live instead of
+  // a redundant per-socket status list.
   const internalRow = buildClickRow({
-    doc, name: "use_internal_loaders", value: internalOn ? "ON" : "off",
-    title: "On -> the pickers below are used and the model/clip/vae sockets are ignored.",
+    doc, name: "use_internal_loaders",
+    value: internalOn ? "on · using the pickers below, sockets ignored" : "off · using the wired sockets",
+    title: internalOn
+      ? "The unet_name/clip_name/clip_type/vae_name pickers below are used. The model/clip/vae/latent sockets are ignored."
+      : "The model/clip/vae/latent sockets (above, in the socket column) are used. Turn this on to use the pickers below instead.",
   });
   internalRow.root.addEventListener("click", () => {
     closeActiveOverlay();
@@ -347,19 +351,6 @@ function buildResourcesSection(doc, node, ctx, state, wired) {
     repaintGenerator(node, ctx);
   });
   frag.appendChild(internalRow.root);
-
-  frag.appendChild(buildStatusRow(doc, {
-    name: "model", type: "MODEL", wired: wired.model && !internalOn, ignored: internalOn,
-    title: internalOn ? "Ignored -- use_internal_loaders is on" : "",
-  }));
-  frag.appendChild(buildStatusRow(doc, {
-    name: "clip", type: "CLIP", wired: wired.clip && !internalOn, ignored: internalOn,
-    title: internalOn ? "Ignored -- use_internal_loaders is on" : "",
-  }));
-  frag.appendChild(buildStatusRow(doc, {
-    name: "vae", type: "VAE", wired: wired.vae && !internalOn, ignored: internalOn,
-    title: internalOn ? "Ignored -- use_internal_loaders is on" : "",
-  }));
 
   if (internalOn) {
     [
@@ -392,11 +383,6 @@ function buildResourcesSection(doc, node, ctx, state, wired) {
 
     frag.appendChild(buildLoraSection(doc, node, ctx, state));
   }
-
-  frag.appendChild(buildStatusRow(doc, {
-    name: "latent", type: "LATENT", wired: wired.latent && !internalOn, ignored: internalOn,
-    title: internalOn ? "Ignored -- inline mode sets size and batch itself" : "Size and batch from the wire",
-  }));
 
   return frag;
 }
@@ -575,13 +561,11 @@ function buildSamplerSection(doc, node, ctx, state, wired) {
   const frag = el(doc, "div");
   frag.appendChild(sectionLabel(doc, "sampler", "first pass"));
 
-  SAMPLER_FIELDS.forEach((field) => {
-    frag.appendChild(buildStatusRow(doc, {
-      name: field, type: SAMPLER_SOCKET_TYPES[field], wired: wired[field],
-      title: wired[field] ? "Wired -- this wire drives the value" : "Unwired -- the settings value is used",
-    }));
-  });
-
+  // No per-field status list here -- the five sampler sockets are
+  // litegraph's own (real dots, drawn in the socket column); the
+  // "driven-by-wire" signal for each lives ONLY in the sampler popover's
+  // `buildDrivenField` rows (design doc §5a), and the two rows below simply
+  // never claim a value a wire is actually supplying (`"—"`/`"from wire"`).
   const sampler = state.sampler;
   const summary = buildClickRow({
     doc, name: `${wired.sampler_name ? "—" : sampler.sampler_name} / ${wired.scheduler ? "—" : sampler.scheduler}`,
@@ -1047,49 +1031,21 @@ function openDetailerPopover(node, ctx, anchorEl) {
 }
 
 // ---------------------------------------------------------------------------
-// Outputs section (status rows -- always "wired" since these are real
-// outputs; shows which real pass each carries right now via resolve_outputs).
-// ---------------------------------------------------------------------------
-
-function buildOutputsSection(doc, node, ctx, state) {
-  const have = ctx.havePackages ? ctx.havePackages() : { spectrum: true, usdu: true, impact: true };
-  const frag = el(doc, "div");
-  frag.appendChild(sectionLabel(doc, "outputs"));
-  const outputs = resolveOutputs({
-    highresEnabled: state.highres.enabled,
-    detailerEnabled: state.detailer.enabled,
-    haveImpact: have.impact,
-    blocks: state.detailer.blocks,
-    upscaleEnabled: state.upscale.enabled,
-    haveUsdu: have.usdu,
-  });
-  [
-    ["image", "IMAGE", outputs.image],
-    ["image_base", "IMAGE", outputs.image_base],
-    ["image_mid", "IMAGE", outputs.image_mid],
-    ["latent", "LATENT", null],
-    ["metadata_json", "STRING", null],
-  ].forEach(([name, type, carries]) => {
-    frag.appendChild(buildStatusRow(doc, { name, type, wired: true, title: carries ? `carries: ${carries}` : "" }));
-  });
-  return frag;
-}
-
-// ---------------------------------------------------------------------------
 // Generator body root + mount/repaint
+//
+// No "conditioning"/"outputs" sections here -- `positive`/`negative` and
+// `image`/`image_base`/`image_mid`/`latent`/`metadata_json` are all real
+// litegraph sockets that litegraph already draws; this body renders only
+// what litegraph does NOT (render.mjs's top doc comment).
 // ---------------------------------------------------------------------------
 
 export function buildGeneratorBody(doc, node, ctx) {
   const state = node._anGenState;
   const wired = computeWiredFlags(node);
   const body = el(doc, "div", "wtn-an-body");
-  body.appendChild(sectionLabel(doc, "conditioning"));
-  body.appendChild(buildStatusRow(doc, { name: "positive", type: "COND", wired: true }));
-  body.appendChild(buildStatusRow(doc, { name: "negative", type: "COND", wired: true }));
-  body.appendChild(buildResourcesSection(doc, node, ctx, state, wired));
+  body.appendChild(buildResourcesSection(doc, node, ctx, state));
   body.appendChild(buildSamplerSection(doc, node, ctx, state, wired));
   body.appendChild(buildStagesSection(doc, node, ctx, state));
-  body.appendChild(buildOutputsSection(doc, node, ctx, state));
   return body;
 }
 
@@ -1152,9 +1108,9 @@ export function buildPreviewBody(doc, node, ctx) {
   const previewImages = node._anPreviewImages || {};
   const body = el(doc, "div", "wtn-an-body");
 
-  body.appendChild(buildStatusRow(doc, { name: "image_a", type: "IMAGE", wired: shown.base }));
-  body.appendChild(buildStatusRow(doc, { name: "image_b", type: "IMAGE", wired: shown.mid }));
-  body.appendChild(buildStatusRow(doc, { name: "image_c", type: "IMAGE", wired: shown.final }));
+  // No image_a/image_b/image_c status rows here -- those, plus the hidden
+  // prompt/extra_pnginfo (not even real sockets), are litegraph's; `shown`
+  // is used below only to decide which panes the wipe can actually render.
 
   const compare = state.compare;
   const wantsDual = !!compare.enabled;

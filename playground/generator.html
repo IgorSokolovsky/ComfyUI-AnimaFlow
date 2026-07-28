@@ -411,6 +411,15 @@
     <code>playground/theme.html</code>; nothing here fetches anything.
   </div>
   <div class="live">
+    <b>The socket rows here are representational — do not port them.</b> This page has no litegraph, so
+    it has to <i>draw</i> the input/output sockets to show the design. A real node doesn't: litegraph
+    draws every socket itself from <code>INPUT_TYPES</code>/<code>RETURN_NAMES</code>, in its own
+    column. Porting these rows literally is what produced the "every socket rendered twice" bug on
+    2026-07-28 — the node came out twice as tall, listing every socket name once as a real dot and
+    again as a fake one. The body renders <b>only</b> what litegraph doesn't: the settings rows.
+    <code>js/anima/test_resize.mjs</code> §C2 now fails if a socket row comes back.
+  </div>
+  <div class="live">
     <b>Mockup, not the node.</b> The images are procedural SVGs standing in for real stage output —
     they differ in <i>resolution</i> on purpose (1024 → 2048), because that mismatch is the thing
     the wipe has to survive. Litegraph resize, socket typing, and the settings-blob round trip are
