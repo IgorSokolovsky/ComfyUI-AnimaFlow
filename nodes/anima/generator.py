@@ -163,17 +163,20 @@ class AnimaGenerator:
         # `ui` channel in this pack stays named for what it actually
         # carries.
         #
-        # VERIFY-IN-COMFYUI: `AnimaGenerator` is NOT an `OUTPUT_NODE` (checked
-        # in `tests/test_anima_nodes.py` and must STAY that way -- see this
+        # `AnimaGenerator` is NOT an `OUTPUT_NODE` (checked in
+        # `tests/test_anima_nodes.py` and must STAY that way -- see this
         # class's own module docstring, "a graph with no Preview wired runs
         # nothing at all" is load-bearing). Returning `{"ui": ..., "result":
         # ...}` from an ordinary (non-output) node's FUNCTION is ComfyUI's
         # documented way to still emit a `ui` payload (routed to the
-        # frontend's `onExecuted`) alongside its real outputs, but that a
-        # non-output node's `ui` dict genuinely reaches `onExecuted` isn't
-        # confirmable in this dev environment -- no live ComfyUI process here
-        # to run it against; flagged so a reviewer checks it live before
-        # relying on it.
+        # frontend's `onExecuted`) alongside its real outputs -- confirmed
+        # live (2026-07-28): a completed run reports `onExecuted({anima_
+        # context: {...}})` for this node. **A CACHED run (this node not
+        # re-executed) emits NO `executed` message at all** -- the frontend
+        # must tolerate "no context report this run", and already does
+        # (`interaction.mjs`'s `computeEffectiveContextSupplied` falls back
+        # to the live litegraph-link walk, and whatever was stashed from an
+        # earlier run stays valid for unchanged wiring).
         return {
             "ui": {"anima_context": build_context_ui_payload(context)},
             "result": (images, latent_out, metadata_json),

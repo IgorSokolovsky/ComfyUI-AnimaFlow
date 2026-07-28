@@ -44,6 +44,59 @@
  * under plain `node` (`js/anima/test_resize.mjs` does exactly that), same
  * convention as every other `render.mjs` in this pack.
  *
+ * ## 2026-07-28 (bigger-type dispatch) — this module scales freely; `js/
+ * controls/` never sees it
+ *
+ * `js/anima/`'s panel read too small at ~11.5-12px, so this file's base type
+ * moved to 14px and every row height/glyph size scales with it (proportional
+ * pass, not a font-size search-and-replace — see `js/anima/render.mjs`'s own
+ * "Resize"-section doc comment for the derived constants this feeds:
+ * `PANEL_MIN_H`/`PREVIEW_PANEL_MIN_H`/etc all recompute from the SAME row
+ * heights this file now exports). The scale factor is `FLD_SCALE` below
+ * (`14/12`), applied then rounded to a clean pixel — every row height this
+ * file hands out is exported as a named constant for exactly that reason:
+ * so a derived floor elsewhere in the pack can cite the real number rather
+ * than a second hardcoded guess.
+ *
+ * This is safe to do UNSCOPED (no per-track CSS custom property, no class
+ * gate) because `injectFieldStyles` — the only thing that ever puts this
+ * file's CSS on the page — has exactly ONE caller anywhere in this repo:
+ * `js/anima/render.mjs`'s `injectStyles`. Confirmed by grep, not assumed:
+ * `js/controls/` never imports this module's CSS at all (it has its own,
+ * separate `render.mjs`/`rows.mjs` styling and only ever reaches into this
+ * file for the two exported BUILDERS it doesn't otherwise duplicate... which
+ * is currently zero — `js/controls/` does not import this module at all).
+ * So bumping every pixel value here changes exactly one rendered surface:
+ * `js/anima/`'s. If a second track ever starts importing this file's CSS,
+ * that importer becomes the one that needs scoping (a class on ITS root,
+ * `--wtn-fld-*` custom properties) — not a reason to hold this file back.
+ *
+ * ## 2026-07-28 (stepper combo overflow fix, live-use report)
+ *
+ * The SAM3 checkpoint / upscale-model-name pickers (long filenames, e.g.
+ * `sam3.1_multiplex_fp16.safetensors`) collided with their own label: `.wtn-
+ * fld-combo-val` had `overflow:hidden`/`text-overflow:ellipsis` but no
+ * `min-width: 0`, and a flex item's automatic minimum size is its own
+ * `min-content` (the WHOLE string, for `white-space: nowrap` text) unless
+ * something overrides it — so the ellipsis never actually engaged and the
+ * value spilled left over the label instead of truncating. Paired with
+ * `.wtn-fld-stepper-name`'s `flex: 0 4 auto` (tuned for `.wtn-fld-num`-style
+ * rows, where the LABEL should give way first because the value is a short
+ * number) the label lost the fight too — wrong priority for a row whose
+ * VALUE, not its label, is the long free-form string.
+ *
+ * Fix, scoped to the STEPPER row only (`.wtn-fld-num`'s own shrink priority —
+ * `docs/pixaroma-review-rounds-plan.md` Tier 2 item 8 — is untouched, and has
+ * its own regression test): `.wtn-fld-stepper-name` no longer shrinks at all
+ * (`flex: none` — every stepper label in this pack is one short word, so
+ * "never truncate the label" costs nothing), and `.wtn-fld-combo-val` gets
+ * `flex: 0 1 auto; min-width: 0` so it's the side that gives way and its
+ * existing ellipsis rule finally has room to apply. The full value is also
+ * set as a native `title` on the value span (not the themed `.wtn-tip`
+ * mechanism — that's `buildInfoIcon`'s ⓘ, a different element; a native
+ * `title` here doesn't compete with it) so a truncated filename is still
+ * readable on hover.
+ *
  * ## `buildInfoIcon`'s ⓘ — a real hover tooltip, not the native `title`
  *
  * The native `title` attribute's tooltip delay is the BROWSER's own
@@ -95,27 +148,55 @@ const TOKENS = {
   warn: "#fbbf24",
 };
 
+// Proportional-scale constants (bigger-type dispatch, this file's top doc
+// comment) -- every row height/glyph size the CSS below uses is DERIVED from
+// one of these, and each is exported so a consumer elsewhere in the pack
+// (`js/anima/render.mjs`'s `PANEL_MIN_H`/`PREVIEW_PANEL_MIN_H`/etc arithmetic
+// comments, this file's own test suite) cites the real number instead of a
+// second hardcoded guess. `FLD_SCALE` is `14/12` -- base type moved from
+// ~12px to 14px -- applied to the OLD value then rounded to a clean pixel;
+// nothing here is derived by rounding-in-code (that would make the exported
+// constant a moving target across a refactor), each is just written as the
+// concrete pixel this dispatch settled on.
+export const FLD_SCALE = 14 / 12;
+export const FLD_FONT = 13.5; // base field font (was 11.5)
+export const FLD_MONO = 13; // monospace value font (was 11)
+export const FLD_ROW_H = 29; // .wtn-fld-num / .wtn-fld-stepper height (was 25)
+export const FLD_ROW_GAP = 5; // row margin-bottom (was 4)
+export const FLD_SWITCH_W = 30; // pill switch width (was 26)
+export const FLD_SWITCH_H = 16; // pill switch height (was 14)
+export const FLD_INFO_SIZE = 13; // ⓘ glyph font-size (was 11)
+
 const CSS = `
 /* ── pill switch ── */
-.wtn-fld-switch { position: relative; width: 26px; height: 14px; flex: none; cursor: pointer;
-  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
+.wtn-fld-switch { position: relative; width: ${FLD_SWITCH_W}px; height: ${FLD_SWITCH_H}px; flex: none; cursor: pointer;
+  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 9px;
   transition: background .12s, border-color .12s; }
-.wtn-fld-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px;
+.wtn-fld-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
   border-radius: 50%; background: var(--wtn-ink-faint, ${TOKENS.inkFaint}); transition: transform .12s, background .12s; }
 .wtn-fld-switch.wtn-fld-on { background: rgba(45,212,191,.22); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-fld-switch.wtn-fld-on::after { transform: translateX(12px); background: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-fld-switch.wtn-fld-sm { width: 20px; height: 11px; }
-.wtn-fld-switch.wtn-fld-sm::after { width: 6px; height: 6px; top: 1.5px; left: 1.5px; }
-.wtn-fld-switch.wtn-fld-sm.wtn-fld-on::after { transform: translateX(9px); }
+.wtn-fld-switch.wtn-fld-on::after { transform: translateX(14px); background: var(--wtn-accent, ${TOKENS.accent}); }
+.wtn-fld-switch.wtn-fld-sm { width: 23px; height: 13px; }
+.wtn-fld-switch.wtn-fld-sm::after { width: 7px; height: 7px; top: 2px; left: 2px; }
+.wtn-fld-switch.wtn-fld-sm.wtn-fld-on::after { transform: translateX(10px); }
 
 /* ── info icon -- the one consistent ⓘ affordance (section-level help AND a
    context-supplied field's "why is this disabled" note). Default colour is
    the theme's neutral info token; .wtn-fld-info-warn swaps it for
    --wtn-warn -- reserved for "this value comes from somewhere else",
    never used for a plain explanatory note. ── */
-.wtn-fld-info { flex: none; font-size: 11px; line-height: 1; cursor: help;
+.wtn-fld-info { flex: none; font-size: ${FLD_INFO_SIZE}px; line-height: 1; cursor: help;
   color: var(--wtn-info, ${TOKENS.info}); }
 .wtn-fld-info-warn { color: var(--wtn-warn, ${TOKENS.warn}); }
+
+/* ── ⚙ gear icon -- the ⓘ's sibling affordance for the long-tail "advanced
+   fields" menu (task item 3 / \`js/anima/render.mjs\`'s \`buildSectionHeader\`).
+   Same click-stops-propagation contract as \`buildInfoIcon\` (never toggles
+   the header it lives in), same neutral-by-default colouring so it doesn't
+   compete visually with the switch/ⓘ. ── */
+.wtn-fld-gear { flex: none; font-size: ${FLD_INFO_SIZE}px; line-height: 1; cursor: pointer;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+.wtn-fld-gear:hover, .wtn-fld-gear.wtn-fld-gear-active { color: var(--wtn-accent, ${TOKENS.accent}); }
 
 /* ── ⓘ hover tooltip -- this module's own fallback for js/shared/theme.css's
    \`.wtn-tip\` (this pack's convention: theme.css may not have landed). The
@@ -142,21 +223,21 @@ const CSS = `
    above that) hold whether or not theme.css ever lands. Do NOT relax this
    back to \`.wtn-fld-tip\` alone -- that's exactly the invisible-until-live
    regression this comment exists to prevent. ── */
-.wtn-tip.wtn-fld-tip { position: fixed; z-index: 10030; max-width: 250px; pointer-events: none;
+.wtn-tip.wtn-fld-tip { position: fixed; z-index: 10030; max-width: 260px; pointer-events: none;
   background: var(--wtn-console, ${TOKENS.console}); color: var(--wtn-ink, ${TOKENS.ink});
-  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px; padding: 8px 10px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px; padding: 9px 11px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 12px; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,.55);
+  font-size: 13px; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,.55);
   opacity: 0; transition: opacity .12s; }
 .wtn-tip.wtn-fld-tip.show { opacity: 1; }
 
 /* ── numeric drag row (Control Panel's own drag-to-set-by-dragging-the-row
    maths, ported behaviour -- see rangeOf/clampNumeric/numericPercent
    imported above) ── */
-.wtn-fld-num { position: relative; display: flex; align-items: center; gap: 8px; height: 25px;
-  padding: 0 8px; border-radius: 6px; overflow: hidden; cursor: ew-resize; margin-bottom: 4px;
+.wtn-fld-num { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
+  padding: 0 9px; border-radius: 6px; overflow: hidden; cursor: ew-resize; margin-bottom: ${FLD_ROW_GAP}px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  font-size: 11.5px; }
+  font-size: ${FLD_FONT}px; }
 .wtn-fld-num.wtn-fld-disabled { cursor: default; opacity: .55; }
 .wtn-fld-num-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px 0 0 6px;
   background: linear-gradient(90deg, rgba(45,212,191,.30), rgba(45,212,191,.16));
@@ -168,34 +249,46 @@ const CSS = `
    .wtn-fld-num's own container already carries overflow: hidden (a few
    lines up) as the backstop, and there's no output dot to protect here
    (this track has no per-row litegraph sockets) -- no row/body split
-   needed, unlike the Control Panel's fix. */
+   needed, unlike the Control Panel's fix. UNCHANGED by the stepper-combo
+   fix below -- this row's value is always a short number, so the label
+   giving way first is still the right call, and its own test asserts this
+   priority explicitly so the stepper fix below can never regress it. */
 .wtn-fld-num-name { position: relative; z-index: 1; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
   flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wtn-fld-num-val { position: relative; z-index: 1; margin-left: auto; font-family: var(--wtn-font-mono, monospace);
-  font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
+  font-size: ${FLD_MONO}px; color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── ◀ [ value ▾ ] ▶ stepper row ── */
-.wtn-fld-stepper { position: relative; display: flex; align-items: center; gap: 8px; height: 25px;
-  padding: 0 8px; border-radius: 6px; margin-bottom: 4px;
+.wtn-fld-stepper { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
+  padding: 0 9px; border-radius: 6px; margin-bottom: ${FLD_ROW_GAP}px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  font-size: 11.5px; overflow: hidden; }
+  font-size: ${FLD_FONT}px; overflow: hidden; }
 .wtn-fld-stepper.wtn-fld-disabled { opacity: .55; }
-.wtn-fld-stepper-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
-  flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.wtn-fld-stepper-body { margin-left: auto; display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 2026-07-28 (stepper combo overflow fix, this file's top doc comment) --
+   the label NEVER shrinks here (every stepper label in this pack is one
+   short word) -- it's the value (a picker's value can be a long filename)
+   that has to give way, so the priority is the OPPOSITE of .wtn-fld-num-name
+   just above, deliberately. */
+.wtn-fld-stepper-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; flex: none; }
+.wtn-fld-stepper-body { margin-left: auto; display: flex; align-items: center; gap: 7px; min-width: 0; }
 .wtn-fld-arrow { width: 0; height: 0; flex: none; cursor: pointer; opacity: .92;
-  border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
-.wtn-fld-arrow.wtn-fld-left { border-right: 8px solid var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-fld-arrow.wtn-fld-right { border-left: 8px solid var(--wtn-accent, ${TOKENS.accent}); }
+  border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
+.wtn-fld-arrow.wtn-fld-left { border-right: 9px solid var(--wtn-accent, ${TOKENS.accent}); }
+.wtn-fld-arrow.wtn-fld-right { border-left: 9px solid var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-fld-arrow:hover.wtn-fld-left { border-right-color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-fld-arrow:hover.wtn-fld-right { border-left-color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
-.wtn-fld-combo { position: relative; display: flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; }
-.wtn-fld-combo-val { font-family: var(--wtn-font-mono, monospace); font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink});
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wtn-fld-combo { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; cursor: pointer; flex: 1 1 auto; }
+/* The overflow fix itself: flex: 0 1 auto + min-width: 0 is what lets the
+   existing overflow:hidden/text-overflow:ellipsis below actually engage --
+   without min-width:0 a nowrap text node's automatic flex-basis IS its full
+   min-content width, so it never shrinks and the ellipsis never fires (the
+   bug report this fixes). */
+.wtn-fld-combo-val { font-family: var(--wtn-font-mono, monospace); font-size: ${FLD_MONO}px; color: var(--wtn-ink, ${TOKENS.ink});
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
 .wtn-fld-caret { width: 0; height: 0; flex: none; transform: translateY(1px);
-  border-left: 4px solid transparent; border-right: 4px solid transparent;
-  border-top: 5px solid var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 6px solid var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-fld-combo:hover .wtn-fld-combo-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-fld-combo:hover .wtn-fld-caret { border-top-color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 `;
@@ -421,6 +514,34 @@ export function buildInfoIcon(doc, tooltip, warn) {
   return icon;
 }
 
+/** The ⚙ affordance behind `docs/generator-design.md` §12's HYBRID reversal
+ * (`js/anima/render.mjs`'s top doc comment carries the full rationale):
+ * essentials stay inline, the long tail of a section's fields lives behind
+ * this glyph instead. Deliberately just the glyph + the SAME `stopPropagation`
+ * contract `buildInfoIcon` already has -- the actual menu it opens (anchored,
+ * `placement: "right"`) is `js/anima/interaction.mjs`'s job, since opening one
+ * needs `ctx`/overlay-ownership machinery this pure-DOM module doesn't carry.
+ * `onClick(event)` is the caller's own handler; this function does not open
+ * anything itself. `active` toggles `.wtn-fld-gear-active` (matches `js/
+ * controls/render.mjs`'s own `.wtn-ctl-gear.wtn-ctl-active` convention) so a
+ * caller can highlight the gear while ITS OWN menu is the one currently open. */
+export function buildGearIcon(doc, tooltip, onClick, active) {
+  const icon = el(doc, "span", `wtn-fld-gear${active ? " wtn-fld-gear-active" : ""}`);
+  icon.textContent = "⚙";
+  if (tooltip) {
+    icon.setAttribute("aria-label", tooltip);
+  }
+  icon.addEventListener("click", (e) => {
+    if (typeof e.stopPropagation === "function") {
+      e.stopPropagation();
+    }
+    if (typeof onClick === "function") {
+      onClick(e);
+    }
+  });
+  return icon;
+}
+
 // ---------------------------------------------------------------------------
 // Numeric drag row -- ported behaviour from `js/controls/interaction.mjs`'s
 // `wireNumericRow` (drag-across-the-row-to-set, live paint on every move,
@@ -535,8 +656,15 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   body.appendChild(right);
   root.appendChild(body);
 
+  // `val.title` (native, not the themed `.wtn-tip` mechanism -- that's
+  // `buildInfoIcon`'s ⓘ, a different element, never doubled up on this one)
+  // is the stepper-combo-overflow fix's own readability half: a long value
+  // (a picker's filename) still reads on hover even once the ellipsis
+  // above has truncated it on screen.
   const repaint = (v) => {
-    val.textContent = v == null ? "" : String(v);
+    const text = v == null ? "" : String(v);
+    val.textContent = text;
+    val.title = text;
   };
   repaint(value);
 

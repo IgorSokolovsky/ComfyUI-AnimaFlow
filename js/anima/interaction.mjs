@@ -35,34 +35,40 @@
  * never default to `list[0]` in place of a saved value).
  *
  * ## 2026-07-28 reversal (inline-sections dispatch, `docs/generator-
- * design.md` §12) — sections expand IN PLACE, no more popover to protect
+ * design.md` §12) — sections' ESSENTIALS expand IN PLACE
  *
  * See `render.mjs`'s top doc comment for the full history (modal → drawer →
- * row-anchored popover → this). The popover-era rule this file used to carry
- * — "a popover's anchor lives INSIDE the panel, so rebuilding the panel
- * while it's open would detach it; close it first, rebuild after" — is GONE
- * along with the popover itself: every section (Sampler, Mod Guidance,
- * Highres, Detailer, Upscale, Postprocess, Save) now renders directly inside
- * `.wtn-an-panel`, so a full-body repaint (`repaintGenerator`/
- * `repaintPreview`, unchanged) is simply the ONE response to every action —
- * toggling a section open/closed, flipping an enable switch, editing a
- * field, adding a detailer block. `openPopover`/`activeOverlayRef`/
- * `closeActiveOverlay`/`openOverlayWithZoom` and every `openXPopover`
- * function are DELETED, not left unreferenced — `js/shared/overlay.mjs` is
- * no longer imported here at all (it is still `js/controls/`'s own overlay
- * mechanism; that track is untouched by this dispatch).
+ * row-anchored popover → inline sections → this hybrid). The popover-era
+ * rule this file used to carry — "a popover's anchor lives INSIDE the
+ * panel, so rebuilding the panel while it's open would detach it; close it
+ * first, rebuild after" — was GONE for a while (every section rendering
+ * directly inside `.wtn-an-panel`, one full-body repaint the only response
+ * to any action) but is now PARTIALLY BACK, in a narrower, deliberate form:
+ * a section's inline body (Sampler, Mod Guidance, Highres, Detailer,
+ * Upscale, Postprocess) still just expands/collapses in place, no anchor to
+ * protect there — but the hybrid essentials/⚙ dispatch reintroduced
+ * `js/shared/overlay.mjs` for the LONG TAIL of a section's fields (a ⚙
+ * menu) and for a stepper's option list, both genuinely anchored, floating
+ * overlays. `openAdvancedMenu`/`openStepperOptionList` (below) are the new
+ * shape; the OLD per-section `openXPopover` functions this paragraph used
+ * to describe as deleted are STILL deleted (never resurrected under their
+ * old names) — `repaintGenerator`/`repaintPreview` now call
+ * `closeActiveOverlay()` first, precisely because a full-body repaint DOES
+ * once again risk detaching a currently-open overlay's anchor.
  *
- * Expand/collapse state lives in the settings blob itself, under
- * `ui_expanded` (`state.mjs`'s `normalizeExpandedSections`/`DEFAULT_
- * EXPANDED_GENERATOR_SECTIONS`/`DEFAULT_EXPANDED_PREVIEW_SECTIONS`) — see
+ * Expand/collapse state for the Generator's inline sections lives in the
+ * settings blob itself, under `ui_expanded` (`state.mjs`'s
+ * `normalizeExpandedSections`/`DEFAULT_EXPANDED_GENERATOR_SECTIONS`) — see
  * that module's own top doc comment for why it's safe there (kept OUT of
- * the two fixture-tested defaults trees, applied as a second pure step
- * AFTER `normalizeGenerationSettings`/`normalizePreviewSettings`, in
- * `ensureGenState`/`ensurePreviewState` below) rather than `node.properties`.
- * It reaches the same serialized STRING widget every other edit already
- * does (`persistGenState`/`persistPreviewState` serialize the WHOLE state
+ * the fixture-tested defaults tree, applied as a second pure step AFTER
+ * `normalizeGenerationSettings`, in `ensureGenState` below) rather than
+ * `node.properties`. It reaches the same serialized STRING widget every
+ * other edit already does (`persistGenState` serializes the WHOLE state
  * object, `ui_expanded` included), so a workflow reopens with the same
- * sections expanded it was saved with — free, with no extra wiring.
+ * sections expanded it was saved with — free, with no extra wiring. **The
+ * Preview has no `ui_expanded` at all any more** — its one former section
+ * (Save) is a menu row, not an accordion (task item 2); see `state.mjs`'s
+ * own top doc comment.
  *
  * ## Context-supplied fields (design doc §5a, task item 4)
  *
@@ -92,6 +98,16 @@
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 import { buildNumericField, buildStepperField, hideActiveInfoTip } from "../shared/fields.mjs";
+// The overlay mechanism -- back in this track for ANCHORED MENUS only (this
+// module's top doc comment, "hybrid essentials/⚙ dispatch"). `js/controls/
+// interaction.mjs` uses the exact same three imports for its own option
+// lists / ⚙ popovers / add-menu -- this is the SAME shared singleton
+// bookkeeping (`activeOverlayRef`), not a second instance of it, so only one
+// overlay is ever open across the whole page regardless of which track owns
+// the click that opened it.
+import {
+  openOverlayWithZoom, closeActiveOverlay, closeOverlayIfOwnedBy, activeOverlayRef,
+} from "../shared/overlay.mjs";
 // `getComboOptions` -- reused, not reimplemented, from the Controls track
 // (`js/shared/fields.mjs` already imports OTHER pure helpers from this same
 // module, one-directional `shared`/`anima` -> `controls/rows.mjs`, per that
@@ -111,7 +127,6 @@ import {
   SAVE_WHICH_OPTIONS,
   STAGE_ORDER,
   DEFAULT_EXPANDED_GENERATOR_SECTIONS,
-  DEFAULT_EXPANDED_PREVIEW_SECTIONS,
   normalizeGenerationSettings,
   normalizePreviewSettings,
   normalizeExpandedSections,
@@ -126,6 +141,7 @@ import {
   injectStyles,
   buildPanelShell,
   buildSwitch,
+  buildGearIcon,
   buildSectionHeader,
   withInfoIcon,
   buildTextField,
@@ -198,12 +214,14 @@ export function persistGenState(node) {
   writeGenStateToWidget(node, node._anGenState);
 }
 
-/** Same two-step normalization as `ensureGenState` above, for the Preview's
- * `ui_expanded.save`. */
+/** First mount / brand-new node for the Preview -- no second `ui_expanded`
+ * step here (unlike `ensureGenState`): the Preview's one former section
+ * (Save) is a menu row now, not an accordion (task item 2 / `state.mjs`'s
+ * own top doc comment), so there is nothing left for `ui_expanded` to
+ * track on this node at all. */
 export function ensurePreviewState(node) {
   const w = getPreviewStateWidget(node);
   const state = normalizePreviewSettings(w ? w.value : "{}");
-  state.ui_expanded = normalizeExpandedSections(state.ui_expanded, DEFAULT_EXPANDED_PREVIEW_SECTIONS);
   node._anPreviewState = state;
   writePreviewStateToWidget(node, state);
   return state;
@@ -879,14 +897,30 @@ const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "expone
 
 /**
  * `spec`: `{ key, label, expanded, hasSwitch, switchOn, infoTooltip,
- * infoWarn, summary, dep, onToggleExpand, onToggleSwitch, buildBody(body) }`.
- * `buildBody` is only called (and its result only appended) while
- * `expanded` is true.
+ * infoWarn, summary, dep, onToggleExpand, onToggleSwitch, buildBody(body),
+ * hasGear, gearTooltip, gearActive, onGearClick(headerRefs) }`. `buildBody`
+ * is only called (and its result only appended) while `expanded` is true.
+ *
+ * **⚙ (hybrid essentials/⚙ dispatch, task item 3)**: `onGearClick`, if
+ * given, is wired as the gear's own click handler (already `stopPropagation`'d
+ * by `buildGearIcon`/`render.mjs`'s `buildSectionHeader` -- clicking it can
+ * never ALSO toggle this section's own expand/collapse or switch). It's
+ * called with the FULL header refs object (`{root, sumEl, gearEl, ...}`,
+ * `buildSectionHeader`'s own return shape) so the caller can anchor an
+ * overlay to `root` and later update `sumEl.textContent` in place without
+ * re-querying the DOM.
  */
 function buildSection(doc, spec) {
-  const { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep, onToggleExpand, onToggleSwitch, buildBody } = spec;
+  const {
+    label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep,
+    onToggleExpand, onToggleSwitch, buildBody, hasGear, gearTooltip, gearActive, onGearClick,
+  } = spec;
   const frag = el(doc, "div", "wtn-an-section");
-  const head = buildSectionHeader(doc, { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep });
+  const head = buildSectionHeader(doc, {
+    label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep,
+    hasGear, gearTooltip, gearActive,
+    onGearClick: onGearClick ? () => onGearClick(head) : undefined,
+  });
   if (!hasSwitch) {
     // Switchless section (Sampler) -- see this section's own top doc comment
     // for why the header click keeps doing this job here and ONLY here.
@@ -900,11 +934,166 @@ function buildSection(doc, spec) {
   }
   frag.appendChild(head.root);
   if (expanded) {
-    const body = el(doc, "div", "wtn-an-sbody");
+    // Card-attachment (task item 1): the body continues the SAME warn
+    // tint as a `dep` header (both classes' own CSS rules are in
+    // render.mjs's ".wtn-an-sbody" comment) so a missing-dependency
+    // section reads coherently whether the header or the body itself
+    // catches your eye.
+    const body = el(doc, "div", `wtn-an-sbody${dep ? " wtn-an-dep" : ""}`);
     buildBody(body);
     frag.appendChild(body);
   }
   return frag;
+}
+
+// ---------------------------------------------------------------------------
+// ⚙ advanced-fields menu + stepper option-list menu -- the two anchored
+// overlays `js/shared/overlay.mjs` is back in this track FOR (this module's
+// top doc comment). Both share the SAME singleton bookkeeping every other
+// overlay in this pack uses (`activeOverlayRef`/`closeActiveOverlay`/
+// `closeOverlayIfOwnedBy`) so a second click on the SAME opener toggles it
+// closed instead of closing-then-reopening (`js/shared/overlay.mjs`'s own
+// top doc comment covers the trap this guards against).
+// ---------------------------------------------------------------------------
+
+function openOverlayForCtx(ctx, doc, anchorEl, contentEl, placement, onClose) {
+  return openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, contentEl, placement, onClose, "wtn-an-overlay wtn");
+}
+
+/**
+ * The ⚙'s own menu (task item 3 / the Preview's Save row, task item 2) --
+ * anchored `placement: "right"` to `anchorEl` (the section's own header
+ * row, so it opens beside the section rather than the panel's narrow
+ * width). `buildBody(box, helpers)` builds the menu's field content;
+ * `helpers.rebuildMenu()` clears `box` and calls `buildBody` again IN
+ * PLACE (for an edit that changes what the menu itself should show, e.g.
+ * flipping `inherit_sampler_settings` reveals/hides cfg/sampler/scheduler)
+ * WITHOUT closing the overlay or touching the main panel body at all --
+ * this is the deliberate alternative to a full `repaintGenerator`/
+ * `repaintPreview` call from inside an open menu, which would tear down
+ * the very header this menu is anchored to (`this module's top doc
+ * comment`'s whole point in bringing the overlay back). `helpers.
+ * refreshSummary(text)` updates the section header's own `sumEl` text IN
+ * PLACE (a plain DOM mutation, not a repaint) for an edit that changes only
+ * a VALUE, not the menu's own shape -- the "persists and repaints the node
+ * body... WITHOUT rebuilding the open menu" contract the task describes,
+ * concretely: "repaints the node body" here means "updates the ONE piece
+ * of the body that could visibly be stale (the summary)," not a full
+ * teardown-and-rebuild.
+ */
+function openAdvancedMenu(doc, ctx, key, anchorEl, sumEl, buildBody) {
+  if (closeOverlayIfOwnedBy(key)) {
+    return; // toggle: this section's own menu was already open -- just close it
+  }
+  closeActiveOverlay(); // a DIFFERENT section/field's overlay was open -- switch to this one
+  const box = el(doc, "div", "wtn-an-menu wtn-an-advmenu wtn");
+  let handle;
+  const helpers = {
+    rebuildMenu: () => {
+      while (box.firstChild) {
+        box.removeChild(box.firstChild);
+      }
+      buildBody(box, helpers);
+      if (handle && typeof handle.reposition === "function") {
+        handle.reposition();
+      }
+    },
+    refreshSummary: (text) => {
+      if (sumEl) {
+        sumEl.textContent = text == null ? "" : text;
+      }
+    },
+  };
+  buildBody(box, helpers);
+  handle = openOverlayForCtx(ctx, doc, anchorEl, box, "right", () => {
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
+    }
+  });
+  handle.ownerKey = key;
+  activeOverlayRef.current = handle;
+}
+
+/**
+ * Wires a `buildStepperField`'s `onOpenList` -- opens (or, on a second
+ * click of the SAME field, closes) a themed, scrollable option-list overlay
+ * anchored `placement: "below"` the field's own combo element, marking the
+ * CURRENT value selected (`.wtn-an-opt-sel`). Clicking an option commits it
+ * -- `stepperRef.repaint(opt)` for immediate visual feedback (the field may
+ * live inside an already-open ⚙ menu that this selection must NOT force a
+ * `rebuildMenu()` of), THEN the caller's own `onSelect(opt)`, which owns
+ * persistence (and, for an inline field, whatever repaint it already did
+ * before this dispatch). Mirrors `js/controls/interaction.mjs`'s
+ * `openListMenuFor` -- same toggle/singleton bookkeeping, generalized to a
+ * plain `options` array instead of `ctx.getKnownLists()`.
+ *
+ * **Nesting note**: opening this from a stepper that lives INSIDE an
+ * already-open ⚙ menu closes that menu first (only one overlay is ever
+ * open pack-wide, `activeOverlayRef`'s own contract) -- accepted, not
+ * fixed here; the option list still opens and commits correctly, the ⚙
+ * menu just needs a second click to reopen afterward.
+ */
+function openStepperOptionList(doc, ctx, key, comboEl, options, currentValue, stepperRef, onSelect) {
+  if (closeOverlayIfOwnedBy(key)) {
+    return;
+  }
+  closeActiveOverlay();
+  const menu = el(doc, "div", "wtn-an-menu wtn-an-optlist wtn");
+  const list = Array.isArray(options) ? options : [];
+  list.forEach((opt) => {
+    const optEl = el(doc, "div", `wtn-an-opt${opt === currentValue ? " wtn-an-opt-sel" : ""}`);
+    optEl.textContent = opt;
+    optEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeActiveOverlay();
+      stepperRef.repaint(opt);
+      onSelect(opt);
+    });
+    menu.appendChild(optEl);
+  });
+  const handle = openOverlayForCtx(ctx, doc, comboEl, menu, "below", () => {
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
+    }
+  });
+  handle.ownerKey = key;
+  activeOverlayRef.current = handle;
+}
+
+// A per-module, ever-increasing counter -- every `buildAnStepper` call gets
+// its own key, unique for the lifetime of the CURRENTLY built DOM tree (a
+// full repaint discards every old key along with the DOM it belonged to;
+// see `repaintGenerator`/`repaintPreview`'s own `closeActiveOverlay()` call
+// for why a stale key surviving past a repaint is harmless either way).
+let _stepperKeySeq = 0;
+
+/**
+ * `buildStepperField` (`js/shared/fields.mjs`), with `onOpenList` ALREADY
+ * wired to `openStepperOptionList` above -- the fix for task item 2's dead
+ * dropdown (`buildStepperField` accepted `onOpenList` since this track's
+ * very first dispatch; nothing ever passed it). Every stepper in
+ * `js/anima/` should be built through this wrapper, not the bare
+ * `buildStepperField`, so the option list is wired uniformly rather than
+ * per call site. `spec`/`handlers` are `buildStepperField`'s own shapes
+ * verbatim (this only adds `onOpenList`, and only when the field isn't
+ * `disabledReason`'d -- a disabled stepper never wires ANY interaction,
+ * `buildStepperField`'s own contract).
+ */
+function buildAnStepper(doc, ctx, spec, handlers) {
+  const key = `an-stepper:${_stepperKeySeq++}`;
+  const onChange = handlers && handlers.onChange;
+  let ref;
+  ref = buildStepperField(doc, spec, {
+    onChange,
+    onOpenList: (comboEl) => {
+      openStepperOptionList(doc, ctx, key, comboEl, spec.options, spec.value, ref, (v) => {
+        if (typeof onChange === "function") {
+          onChange(v);
+        }
+      });
+    },
+  });
+  return ref;
 }
 
 /**
@@ -948,7 +1137,7 @@ const NO_RUN_VALUE_NOTE = " The last run reported it supplied but carried no val
  * own value whenever there's no run value to show (never run at all, or a
  * run that reported supplied with none -- `NO_RUN_VALUE_NOTE` covers that
  * second case in the tooltip). */
-function buildSamplerField(doc, node, field, sampler, eff) {
+function buildSamplerField(doc, node, ctx, field, sampler, eff) {
   const isSupplied = !!eff.supplied[field];
   const hasRunValue = !!eff.runSupplied[field] && Object.prototype.hasOwnProperty.call(eff.values, field);
   const displayValue = hasRunValue ? eff.values[field] : sampler[field];
@@ -966,7 +1155,7 @@ function buildSamplerField(doc, node, field, sampler, eff) {
   let fieldRoot;
   if (field === "sampler_name" || field === "scheduler") {
     const options = field === "sampler_name" ? SAMPLERS : SCHEDULERS;
-    fieldRoot = buildStepperField(doc, { label: field, value: displayValue, options, disabledReason }, {
+    fieldRoot = buildAnStepper(doc, ctx, { label: field, value: displayValue, options, disabledReason }, {
       onChange: (v) => { sampler[field] = v; persistGenState(node); },
     }).root;
   } else {
@@ -976,7 +1165,19 @@ function buildSamplerField(doc, node, field, sampler, eff) {
     const kind = field === "cfg" ? "float" : "int";
     fieldRoot = buildNumericField(doc, {
       label: field, kind, opts, disabledReason,
-      getValue: () => displayValue, setValue: (v) => { sampler[field] = v; },
+      // `getValue` MUST be a live read, not the `displayValue` CONSTANT
+      // captured above -- `buildNumericField`'s own `repaint()` calls
+      // `getValue()` on every `pointermove`, so a frozen primitive here
+      // means the fill/label never move during a drag even though
+      // `setValue` correctly writes `sampler[field]` underneath it (a
+      // regression this dispatch's own live-use report caught: "only
+      // updates when I connect something to the node," i.e. only on a full
+      // rebuild, which is the only thing that ever recomputed
+      // `displayValue`). A run-supplied field is disabled anyway (no drag
+      // possible), so re-deriving the same run-vs-settings precedence here
+      // on every read stays correct for that case too.
+      getValue: () => (hasRunValue ? eff.values[field] : sampler[field]),
+      setValue: (v) => { sampler[field] = v; },
     }, () => persistGenState(node)).root;
   }
   return withInfoIcon(doc, fieldRoot, disabledReason, true);
@@ -1017,7 +1218,7 @@ function buildSamplerSection(doc, node, ctx, state) {
     },
     buildBody: (body) => {
       SAMPLER_FIELDS.forEach((field) => {
-        body.appendChild(buildSamplerField(doc, node, field, sampler, eff));
+        body.appendChild(buildSamplerField(doc, node, ctx, field, sampler, eff));
       });
       body.appendChild(buildNumericField(doc, {
         label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
@@ -1049,7 +1250,7 @@ function buildModGuidanceSection(doc, node, ctx, state, have) {
         body.appendChild(buildMissing(doc, missingText));
         return;
       }
-      body.appendChild(buildStepperField(doc, { label: "profile", value: mg.profile, options: ["step_i8_skip27", "step_i14", "uniform_w3"] }, {
+      body.appendChild(buildAnStepper(doc, ctx, { label: "profile", value: mg.profile, options: ["step_i8_skip27", "step_i14", "uniform_w3"] }, {
         onChange: (v) => { mg.profile = v; persistGenState(node); },
       }).root);
       body.appendChild(buildNumericField(doc, {
@@ -1086,12 +1287,22 @@ function buildModGuidanceSection(doc, node, ctx, state, have) {
 // Stage-sampler sub-block (highres/upscale/each detailer block) -- design
 // doc §6b. Hides EXACTLY `cfg`/`sampler_name`/`scheduler` while
 // `inherit_sampler_settings` is on; `steps`/`denoise` are always the
-// stage's own. Appends into `container`. `refresh` is now always the
-// enclosing section's own `repaintGenerator` call (no more popover-local
-// refresh -- this module's top doc comment).
+// stage's own.
+//
+// **2026-07-28 (hybrid essentials/⚙ dispatch): this is now ADVANCED-MENU-ONLY
+// content, never inline.** Per the task's own per-section table, `steps`/
+// `denoise` are INLINE for every stage that has them (rendered directly by
+// that section's own `buildBody`, not through this function any more);
+// `inherit_sampler_settings` + the conditionally-shown `cfg`/`sampler_name`/
+// `scheduler` are the part that moves behind a ⚙. `refresh` is no longer the
+// enclosing section's `repaintGenerator` -- it's the ⚙ menu's OWN
+// `rebuildMenu` (from `openAdvancedMenu`'s `helpers`), since flipping
+// `inherit` changes what THIS MENU shows, not the main panel body; the menu
+// stays open and rebuilds in place instead of a full-panel repaint tearing
+// down the very anchor it's attached to.
 // ---------------------------------------------------------------------------
 
-function appendStageSamplerFields(doc, container, stageSettings, firstPassSampler, onCommit, refresh) {
+function appendStageSamplerAdvancedFields(doc, ctx, container, stageSettings, firstPassSampler, onCommit, rebuildMenu) {
   const inherit = stageSettings.inherit_sampler_settings !== false;
   container.appendChild(buildSublabel(doc, "sampler · this stage"));
 
@@ -1100,34 +1311,25 @@ function appendStageSamplerFields(doc, container, stageSettings, firstPassSample
   inheritField.switchEl.addEventListener("click", () => {
     stageSettings.inherit_sampler_settings = !inherit;
     onCommit();
-    refresh();
+    rebuildMenu();
   });
   if (inherit) {
     const resolved = resolveStageSampler(stageSettings, firstPassSampler);
     container.appendChild(withInfoIcon(doc, inheritField.root,
-      `Using cfg ${Number(resolved.cfg).toFixed(1)}, ${resolved.sampler_name} / ${resolved.scheduler} from the first pass. Steps and denoise below are still this stage's own.`));
+      `Using cfg ${Number(resolved.cfg).toFixed(1)}, ${resolved.sampler_name} / ${resolved.scheduler} from the first pass. Steps and denoise are this stage's own, set inline.`));
   } else {
     container.appendChild(inheritField.root);
   }
-
-  container.appendChild(buildNumericField(doc, {
-    label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
-    getValue: () => stageSettings.steps, setValue: (v) => { stageSettings.steps = v; },
-  }, onCommit).root);
-  container.appendChild(buildNumericField(doc, {
-    label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
-    getValue: () => stageSettings.denoise, setValue: (v) => { stageSettings.denoise = v; },
-  }, onCommit).root);
 
   if (!inherit) {
     container.appendChild(buildNumericField(doc, {
       label: "cfg", kind: "float", opts: { min: 0, max: 30, step: 0.1 },
       getValue: () => stageSettings.cfg, setValue: (v) => { stageSettings.cfg = v; },
     }, onCommit).root);
-    container.appendChild(buildStepperField(doc, { label: "sampler_name", value: stageSettings.sampler_name, options: SAMPLERS }, {
+    container.appendChild(buildAnStepper(doc, ctx, { label: "sampler_name", value: stageSettings.sampler_name, options: SAMPLERS }, {
       onChange: (v) => { stageSettings.sampler_name = v; onCommit(); },
     }).root);
-    container.appendChild(buildStepperField(doc, { label: "scheduler", value: stageSettings.scheduler, options: SCHEDULERS }, {
+    container.appendChild(buildAnStepper(doc, ctx, { label: "scheduler", value: stageSettings.scheduler, options: SCHEDULERS }, {
       onChange: (v) => { stageSettings.scheduler = v; onCommit(); },
     }).root);
   }
@@ -1152,7 +1354,7 @@ function appendStageSamplerFields(doc, container, stageSettings, firstPassSample
 function buildModelFilePicker(doc, ctx, listKey, label, missingText, getValue, setValue, onCommit) {
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
   const list = Array.isArray(lists && lists[listKey]) ? lists[listKey] : [];
-  return buildStepperField(doc, {
+  return buildAnStepper(doc, ctx, {
     label, value: getValue(), options: list, disabledReason: list.length ? undefined : missingText,
   }, {
     onChange: (v) => { setValue(v); onCommit(); },
@@ -1201,16 +1403,45 @@ function stageBlocked(stageKey, state, have) {
   return false;
 }
 
+/** Highres -- INLINE: `scale_by`, `steps`, `denoise`. ADVANCED (⚙):
+ * `inherit_sampler_settings` + `cfg`/`sampler_name`/`scheduler`,
+ * `max_long_edge`, `multiple`, `upscale_method` (task item 3's own table). */
 function buildHighresSection(doc, node, ctx, state, have) {
   const expanded = !!state.ui_expanded.highres;
   const h = state.highres;
+  const summaryText = () => stageSummary("highres", state, have);
+
   return buildSection(doc, {
     key: "highres", label: "Highres", expanded, hasSwitch: true, switchOn: h.enabled,
     infoTooltip: "Latent upscale, resample at low denoise. Runs before the detailer, so faces get fixed at generation resolution rather than after an upscale.",
-    summary: h.enabled ? stageSummary("highres", state, have) : null,
+    summary: h.enabled ? summaryText() : null,
     // No `dep` here -- `stageBlocked` has no real logic for "highres" (it
     // only gates on a soft-import for detailer/upscale); passing it through
     // anyway would always be `false` and reads as a meaningless dead check.
+    hasGear: true,
+    gearTooltip: "Advanced: sampler inherit/cfg/sampler/scheduler, max_long_edge, multiple, upscale_method.",
+    onGearClick: (headerRefs) => {
+      openAdvancedMenu(doc, ctx, "gen:highres:adv", headerRefs.root, headerRefs.sumEl, (box, helpers) => {
+        box.appendChild(buildSublabel(doc, "highres · advanced"));
+        box.appendChild(buildAnStepper(doc, ctx, { label: "upscale_method", value: h.upscale_method, options: ["bicubic", "bilinear", "nearest-exact", "area"] }, {
+          onChange: (v) => { h.upscale_method = v; persistGenState(node); },
+        }).root);
+        const multipleF = buildTextField(doc, "multiple", h.multiple);
+        multipleF.control.addEventListener("change", () => {
+          h.multiple = multipleF.control.value;
+          persistGenState(node);
+        });
+        box.appendChild(multipleF.root);
+        box.appendChild(buildNumericField(doc, {
+          label: "max_long_edge", kind: "int", opts: { min: 512, max: 8192, step: 32 },
+          getValue: () => h.max_long_edge, setValue: (v) => { h.max_long_edge = v; },
+        }, () => persistGenState(node)).root);
+        appendStageSamplerAdvancedFields(doc, ctx, box, h, state.sampler, () => {
+          persistGenState(node);
+          helpers.refreshSummary(h.enabled ? summaryText() : null);
+        }, helpers.rebuildMenu);
+      });
+    },
     onToggleExpand: () => { state.ui_expanded.highres = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
     onToggleSwitch: () => { setSwitchAndExpand(state, "highres", h); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
@@ -1218,19 +1449,22 @@ function buildHighresSection(doc, node, ctx, state, have) {
         label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
         getValue: () => h.scale_by, setValue: (v) => { h.scale_by = v; },
       }, () => persistGenState(node)).root);
-      body.appendChild(buildStepperField(doc, { label: "upscale_method", value: h.upscale_method, options: ["bicubic", "bilinear", "nearest-exact", "area"] }, {
-        onChange: (v) => { h.upscale_method = v; persistGenState(node); },
-      }).root);
-      body.appendChild(buildTextField(doc, "multiple", h.multiple).root);
       body.appendChild(buildNumericField(doc, {
-        label: "max_long_edge", kind: "int", opts: { min: 512, max: 8192, step: 32 },
-        getValue: () => h.max_long_edge, setValue: (v) => { h.max_long_edge = v; },
+        label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
+        getValue: () => h.steps, setValue: (v) => { h.steps = v; },
       }, () => persistGenState(node)).root);
-      appendStageSamplerFields(doc, body, h, state.sampler, () => persistGenState(node), () => repaintGenerator(node, ctx));
+      body.appendChild(buildNumericField(doc, {
+        label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+        getValue: () => h.denoise, setValue: (v) => { h.denoise = v; },
+      }, () => persistGenState(node)).root);
     },
   });
 }
 
+/** Upscale -- INLINE: `usdu.upscale_model_name` (picker), `scale_by`,
+ * `steps`, `denoise`. ADVANCED (⚙): `inherit_sampler_settings` +
+ * `cfg`/`sampler_name`/`scheduler`, and every other `usdu.*` tile/seam
+ * field (task item 3's own table). */
 function buildUpscaleSection(doc, node, ctx, state, have) {
   const expanded = !!state.ui_expanded.upscale;
   const u = state.upscale;
@@ -1238,41 +1472,134 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
   const missingText = "ComfyUI_UltimateSDUpscale not installed -- the upscale stage is disabled.";
   const infoTooltip = "mode_type is tile ORDER (Linear/Chess/None). tiled_decode is an unrelated VAE flag -- don't conflate them."
     + (missing ? ` ${missingText}` : "");
+  const summaryText = () => stageSummary("upscale", state, have);
 
   return buildSection(doc, {
     key: "upscale", label: "Upscale", expanded, hasSwitch: true, switchOn: u.enabled,
     infoTooltip, infoWarn: missing, dep: u.enabled && missing,
-    summary: u.enabled ? stageSummary("upscale", state, have) : null,
+    summary: u.enabled ? summaryText() : null,
+    hasGear: true,
+    gearTooltip: "Advanced: sampler inherit/cfg/sampler/scheduler, and every USDU tile/seam field.",
+    onGearClick: (headerRefs) => {
+      openAdvancedMenu(doc, ctx, "gen:upscale:adv", headerRefs.root, headerRefs.sumEl, (box, helpers) => {
+        const usdu = u.usdu;
+        const commit = () => persistGenState(node);
+        box.appendChild(buildSublabel(doc, "usdu · tiling"));
+        box.appendChild(buildBoolFieldInto(doc, "auto_tile_size", usdu, "auto_tile_size", commit));
+        box.appendChild(buildAnStepper(doc, ctx, { label: "mode_type", value: usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
+          onChange: (v) => { usdu.mode_type = v; commit(); },
+        }).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "auto_tile_target", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          getValue: () => usdu.auto_tile_target, setValue: (v) => { usdu.auto_tile_target = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "auto_tile_min", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          getValue: () => usdu.auto_tile_min, setValue: (v) => { usdu.auto_tile_min = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "auto_tile_max", kind: "int", opts: { min: 64, max: 8192, step: 32 },
+          getValue: () => usdu.auto_tile_max, setValue: (v) => { usdu.auto_tile_max = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "tile_width", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          getValue: () => usdu.tile_width, setValue: (v) => { usdu.tile_width = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "tile_height", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          getValue: () => usdu.tile_height, setValue: (v) => { usdu.tile_height = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "mask_blur", kind: "int", opts: { min: 0, max: 64, step: 1 },
+          getValue: () => usdu.mask_blur, setValue: (v) => { usdu.mask_blur = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "tile_padding", kind: "int", opts: { min: 0, max: 256, step: 8 },
+          getValue: () => usdu.tile_padding, setValue: (v) => { usdu.tile_padding = v; },
+        }, commit).root);
+        box.appendChild(buildBoolFieldInto(doc, "force_uniform_tiles", usdu, "force_uniform_tiles", commit));
+        box.appendChild(buildNumericField(doc, {
+          label: "batch_size", kind: "int", opts: { min: 1, max: 16, step: 1 },
+          getValue: () => usdu.batch_size, setValue: (v) => { usdu.batch_size = v; },
+        }, commit).root);
+        box.appendChild(buildBoolFieldInto(doc, "tiled_decode", usdu, "tiled_decode", commit));
+
+        box.appendChild(buildSublabel(doc, "usdu · seam fix"));
+        box.appendChild(buildAnStepper(doc, ctx, { label: "seam_fix_mode", value: usdu.seam_fix_mode, options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }, {
+          onChange: (v) => { usdu.seam_fix_mode = v; commit(); },
+        }).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "seam_fix_denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+          getValue: () => usdu.seam_fix_denoise, setValue: (v) => { usdu.seam_fix_denoise = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "seam_fix_width", kind: "int", opts: { min: 0, max: 512, step: 8 },
+          getValue: () => usdu.seam_fix_width, setValue: (v) => { usdu.seam_fix_width = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "seam_fix_mask_blur", kind: "int", opts: { min: 0, max: 64, step: 1 },
+          getValue: () => usdu.seam_fix_mask_blur, setValue: (v) => { usdu.seam_fix_mask_blur = v; },
+        }, commit).root);
+        box.appendChild(buildNumericField(doc, {
+          label: "seam_fix_padding", kind: "int", opts: { min: 0, max: 256, step: 8 },
+          getValue: () => usdu.seam_fix_padding, setValue: (v) => { usdu.seam_fix_padding = v; },
+        }, commit).root);
+
+        appendStageSamplerAdvancedFields(doc, ctx, box, u, state.sampler, () => {
+          commit();
+          helpers.refreshSummary(u.enabled ? summaryText() : null);
+        }, helpers.rebuildMenu);
+      });
+    },
     onToggleExpand: () => { state.ui_expanded.upscale = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
     onToggleSwitch: () => { setSwitchAndExpand(state, "upscale", u); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       if (missing) {
         body.appendChild(buildMissing(doc, missingText));
       }
-      body.appendChild(buildNumericField(doc, {
-        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
-        getValue: () => u.scale_by, setValue: (v) => { u.scale_by = v; },
-      }, () => persistGenState(node)).root);
       body.appendChild(buildModelFilePicker(
         doc, ctx, "upscale_models", "upscale_model_name",
         "No upscale models installed (UpscaleModelLoader's own list is empty or unavailable) -- showing the saved value.",
         () => u.usdu.upscale_model_name, (v) => { u.usdu.upscale_model_name = v; }, () => persistGenState(node),
       ));
-      body.appendChild(buildStepperField(doc, { label: "mode_type", value: u.usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
-        onChange: (v) => { u.usdu.mode_type = v; persistGenState(node); },
-      }).root);
-      body.appendChild(buildStepperField(doc, { label: "seam_fix_mode", value: u.usdu.seam_fix_mode, options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }, {
-        onChange: (v) => { u.usdu.seam_fix_mode = v; persistGenState(node); },
-      }).root);
       body.appendChild(buildNumericField(doc, {
-        label: "seam_fix_denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
-        getValue: () => u.usdu.seam_fix_denoise, setValue: (v) => { u.usdu.seam_fix_denoise = v; },
+        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
+        getValue: () => u.scale_by, setValue: (v) => { u.scale_by = v; },
       }, () => persistGenState(node)).root);
-      appendStageSamplerFields(doc, body, u, state.sampler, () => persistGenState(node), () => repaintGenerator(node, ctx));
+      body.appendChild(buildNumericField(doc, {
+        label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
+        getValue: () => u.steps, setValue: (v) => { u.steps = v; },
+      }, () => persistGenState(node)).root);
+      body.appendChild(buildNumericField(doc, {
+        label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+        getValue: () => u.denoise, setValue: (v) => { u.denoise = v; },
+      }, () => persistGenState(node)).root);
     },
   });
 }
 
+/** A `buildBoolField` bound to `obj[key]`, wired to persist immediately --
+ * a tiny shared helper for the several plain-boolean USDU/detailer/Save
+ * advanced fields that don't need anything fancier than "flip and commit."
+ * Returns the field's root directly (unlike `buildBoolField` itself, which
+ * returns `{root, switchEl, word}`) since every call site here just wants
+ * to `appendChild` it. */
+function buildBoolFieldInto(doc, label, obj, key, onCommit) {
+  const field = buildBoolField(doc, label, obj[key]);
+  field.switchEl.addEventListener("click", () => {
+    obj[key] = !obj[key];
+    field.word.textContent = obj[key] ? "on" : "off";
+    onCommit();
+  });
+  return field.root;
+}
+
+// Mod Guidance and Postprocess are explicitly OUT of scope for the inline/
+// advanced split (task item 3: "leave their current field sets as they
+// are -- not in scope, don't restructure them") -- `buildPostprocessSection`
+// below is otherwise UNCHANGED except routing its two steppers through
+// `buildAnStepper` (task item 2's stepper-onOpenList fix applies to every
+// stepper in this file, restructured or not).
 function buildPostprocessSection(doc, node, ctx, state) {
   const expanded = !!state.ui_expanded.postprocess;
   const post = state.postprocess;
@@ -1284,10 +1611,10 @@ function buildPostprocessSection(doc, node, ctx, state) {
     onToggleExpand: () => { state.ui_expanded.postprocess = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
     onToggleSwitch: () => { setSwitchAndExpand(state, "postprocess", post); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
-      body.appendChild(buildStepperField(doc, { label: "mode", value: fit.mode, options: ["max_long_edge", "megapixels"] }, {
+      body.appendChild(buildAnStepper(doc, ctx, { label: "mode", value: fit.mode, options: ["max_long_edge", "megapixels"] }, {
         onChange: (v) => { fit.mode = v; persistGenState(node); },
       }).root);
-      body.appendChild(buildStepperField(doc, { label: "method", value: fit.method, options: ["bicubic", "bilinear", "area"] }, {
+      body.appendChild(buildAnStepper(doc, ctx, { label: "method", value: fit.method, options: ["bicubic", "bilinear", "area"] }, {
         onChange: (v) => { fit.method = v; persistGenState(node); },
       }).root);
       body.appendChild(buildNumericField(doc, {
@@ -1302,11 +1629,98 @@ function buildPostprocessSection(doc, node, ctx, state) {
   });
 }
 
+/** A detailer block's ADVANCED fields (task item 3's own table) -- opened
+ * from that block's OWN ⚙ (`buildDetailerBody` below), a SEPARATE menu from
+ * the section-level ⚙ Highres/Upscale each have (Detailer's section header
+ * has no advanced content of its own -- `detailer.sam3.checkpoint` is its
+ * only section-wide setting, and it's already inline). Built from the SAME
+ * field builders the inline rows use -- `withInfoIcon`'s guide_size_for/
+ * noise_mask_feather pairing note carries over unchanged, just relocated. */
+function buildDetailerAdvancedFields(doc, ctx, node, state, block, box, helpers) {
+  const commit = () => persistGenState(node);
+
+  const detectPromptF = buildTextField(doc, "detect_prompt", block.detect_prompt);
+  detectPromptF.control.addEventListener("change", () => { block.detect_prompt = detectPromptF.control.value; commit(); });
+  box.appendChild(detectPromptF.root);
+  const wildcardF = buildTextField(doc, "wildcard", block.wildcard);
+  wildcardF.control.addEventListener("change", () => { block.wildcard = wildcardF.control.value; commit(); });
+  box.appendChild(wildcardF.root);
+  box.appendChild(buildNumericField(doc, {
+    label: "detect_count", kind: "int", opts: { min: 1, max: 20, step: 1 },
+    getValue: () => block.detect_count, setValue: (v) => { block.detect_count = v; },
+  }, commit).root);
+
+  box.appendChild(buildSublabel(doc, "refine"));
+  box.appendChild(buildNumericField(doc, {
+    label: "feather", kind: "int", opts: { min: 0, max: 64, step: 1 },
+    getValue: () => block.feather, setValue: (v) => { block.feather = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "guide_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+    getValue: () => block.guide_size, setValue: (v) => { block.guide_size = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "max_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+    getValue: () => block.max_size, setValue: (v) => { block.max_size = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "crop_factor", kind: "float", opts: { min: 1, max: 10, step: 0.1 },
+    getValue: () => block.crop_factor, setValue: (v) => { block.crop_factor = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "cycle", kind: "int", opts: { min: 1, max: 10, step: 1 },
+    getValue: () => block.cycle, setValue: (v) => { block.cycle = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "refine_iterations", kind: "int", opts: { min: 1, max: 10, step: 1 },
+    getValue: () => block.refine_iterations, setValue: (v) => { block.refine_iterations = v; },
+  }, commit).root);
+  box.appendChild(buildNumericField(doc, {
+    label: "drop_size", kind: "int", opts: { min: 1, max: 2000, step: 1 },
+    getValue: () => block.drop_size, setValue: (v) => { block.drop_size = v; },
+  }, commit).root);
+  const guideSizeForField = buildBoolField(doc, "guide_size_for", block.guide_size_for);
+  guideSizeForField.switchEl.addEventListener("click", () => {
+    block.guide_size_for = !block.guide_size_for;
+    guideSizeForField.word.textContent = block.guide_size_for ? "on" : "off";
+    commit();
+  });
+  // The one warn ⓘ covers BOTH fields it names -- see this module's top doc
+  // comment on the ⓘ affordance replacing a `buildNote` text block.
+  box.appendChild(withInfoIcon(doc, guideSizeForField.root, "Do not \"fix\" these -- guide_size_for must be false and noise_mask_feather must not be 0.", true));
+  box.appendChild(buildNumericField(doc, {
+    label: "noise_mask_feather", kind: "int", opts: { min: 1, max: 64, step: 1 },
+    getValue: () => block.noise_mask_feather, setValue: (v) => { block.noise_mask_feather = v; },
+  }, commit).root);
+  box.appendChild(buildBoolFieldInto(doc, "noise_mask", block, "noise_mask", commit));
+  box.appendChild(buildBoolFieldInto(doc, "force_inpaint", block, "force_inpaint", commit));
+  box.appendChild(buildBoolFieldInto(doc, "inpaint_model", block, "inpaint_model", commit));
+  box.appendChild(buildBoolFieldInto(doc, "bbox_fill", block, "bbox_fill", commit));
+  box.appendChild(buildBoolFieldInto(doc, "contour_fill", block, "contour_fill", commit));
+  box.appendChild(buildBoolFieldInto(doc, "combined", block, "combined", commit));
+  box.appendChild(buildBoolFieldInto(doc, "individual_masks", block, "individual_masks", commit));
+  box.appendChild(buildBoolFieldInto(doc, "tiled_decode", block, "tiled_decode", commit));
+  box.appendChild(buildBoolFieldInto(doc, "tiled_encode", block, "tiled_encode", commit));
+  const alignmentF = buildTextField(doc, "alignment", block.alignment);
+  alignmentF.control.addEventListener("change", () => { block.alignment = alignmentF.control.value; commit(); });
+  box.appendChild(alignmentF.root);
+
+  appendStageSamplerAdvancedFields(doc, ctx, box, block, state.sampler, commit, helpers.rebuildMenu);
+}
+
 /** The Detailer section's body -- tabs (one per block) + the active block's
  * own fields. `node._anDetailerTab` is ephemeral UI-only state (which block
  * is showing), same as before the inline-sections dispatch; every action
  * here still ends in a full `repaintGenerator` (`refresh` below), which is
- * exactly how every other section already behaves now. */
+ * exactly how every other section already behaves now.
+ *
+ * **INLINE (task item 3's own table): label, enabled (the on/off button
+ * already here), threshold, steps, denoise.** Everything else about a
+ * block -- `detect_prompt`/`wildcard`/the sampler-inherit block/every other
+ * field -- lives behind that block's OWN ⚙ (`buildDetailerAdvancedFields`
+ * above), separate from the Highres/Upscale kind of SECTION-level ⚙: the
+ * Detailer's section header carries no ⚙ of its own at all, since its only
+ * section-wide setting (`sam3.checkpoint`) is already inline. */
 function buildDetailerBody(doc, node, ctx, state, box) {
   const detailer = state.detailer;
   const refresh = () => repaintGenerator(node, ctx);
@@ -1425,55 +1839,39 @@ function buildDetailerBody(doc, node, ctx, state, box) {
     });
     moveRow.appendChild(del);
   }
+  // The block's OWN ⚙ -- deliberately a plain `buildGearIcon` here, not
+  // `buildSectionHeader`'s (this body isn't built from `buildSection` at
+  // all, it's the tab-strip shape). Anchored to itself; `sumEl` is `null`
+  // (there's no per-block header summary span for `refreshSummary` to
+  // touch), which `openAdvancedMenu` already tolerates.
+  let gearBtn;
+  gearBtn = buildGearIcon(doc, "Advanced: detect_prompt, wildcard, sampler inherit, and the full detailer field set.", () => {
+    openAdvancedMenu(doc, ctx, `gen:detailer:${activeId}:adv`, gearBtn, null, (advBox, helpers) => {
+      buildDetailerAdvancedFields(doc, ctx, node, state, block, advBox, helpers);
+    });
+  });
+  moveRow.appendChild(gearBtn);
   box.appendChild(moveRow);
 
-  box.appendChild(buildTextField(doc, "label", block.label).root);
-  box.appendChild(buildTextField(doc, "detect_prompt", block.detect_prompt).root);
-  box.appendChild(buildNumericField(doc, {
-    label: "detect_count", kind: "int", opts: { min: 1, max: 20, step: 1 },
-    getValue: () => block.detect_count, setValue: (v) => { block.detect_count = v; },
-  }, () => persistGenState(node)).root);
+  const labelF = buildTextField(doc, "label", block.label);
+  labelF.control.addEventListener("change", () => {
+    block.label = labelF.control.value;
+    persistGenState(node);
+    refresh(); // the tab strip's own button text names this block -- must repaint
+  });
+  box.appendChild(labelF.root);
   box.appendChild(buildNumericField(doc, {
     label: "threshold", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
     getValue: () => block.threshold, setValue: (v) => { block.threshold = v; },
   }, () => persistGenState(node)).root);
-
-  box.appendChild(buildSublabel(doc, "refine"));
   box.appendChild(buildNumericField(doc, {
-    label: "feather", kind: "int", opts: { min: 0, max: 64, step: 1 },
-    getValue: () => block.feather, setValue: (v) => { block.feather = v; },
+    label: "steps", kind: "int", opts: { min: 1, max: 150, step: 1 },
+    getValue: () => block.steps, setValue: (v) => { block.steps = v; },
   }, () => persistGenState(node)).root);
   box.appendChild(buildNumericField(doc, {
-    label: "guide_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
-    getValue: () => block.guide_size, setValue: (v) => { block.guide_size = v; },
+    label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+    getValue: () => block.denoise, setValue: (v) => { block.denoise = v; },
   }, () => persistGenState(node)).root);
-  box.appendChild(buildNumericField(doc, {
-    label: "max_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
-    getValue: () => block.max_size, setValue: (v) => { block.max_size = v; },
-  }, () => persistGenState(node)).root);
-  box.appendChild(buildNumericField(doc, {
-    label: "crop_factor", kind: "float", opts: { min: 1, max: 10, step: 0.1 },
-    getValue: () => block.crop_factor, setValue: (v) => { block.crop_factor = v; },
-  }, () => persistGenState(node)).root);
-  box.appendChild(buildNumericField(doc, {
-    label: "cycle", kind: "int", opts: { min: 1, max: 10, step: 1 },
-    getValue: () => block.cycle, setValue: (v) => { block.cycle = v; },
-  }, () => persistGenState(node)).root);
-  const guideSizeForField = buildBoolField(doc, "guide_size_for", block.guide_size_for);
-  guideSizeForField.switchEl.addEventListener("click", () => {
-    block.guide_size_for = !block.guide_size_for;
-    persistGenState(node);
-    refresh();
-  });
-  // The one warn ⓘ covers BOTH fields it names -- see this module's top doc
-  // comment on the ⓘ affordance replacing a `buildNote` text block.
-  box.appendChild(withInfoIcon(doc, guideSizeForField.root, "Do not \"fix\" these -- guide_size_for must be false and noise_mask_feather must not be 0.", true));
-  box.appendChild(buildNumericField(doc, {
-    label: "noise_mask_feather", kind: "int", opts: { min: 1, max: 64, step: 1 },
-    getValue: () => block.noise_mask_feather, setValue: (v) => { block.noise_mask_feather = v; },
-  }, () => persistGenState(node)).root);
-
-  appendStageSamplerFields(doc, box, block, state.sampler, () => persistGenState(node), refresh);
 }
 
 function buildDetailerSection(doc, node, ctx, state, have) {
@@ -1538,6 +1936,15 @@ export function repaintGenerator(node, ctx) {
   // `wireInfoTip` doc comment for the orphaned-tooltip trap this call
   // prevents.
   hideActiveInfoTip();
+  // Same reasoning, for the ⚙/option-list overlay this dispatch brought back
+  // (this module's top doc comment): ANY full-body repaint discards the
+  // header/field elements a currently-open overlay might be anchored to, so
+  // it must close first -- an edit made FROM INSIDE an open menu never
+  // reaches this function at all (it calls `persistGenState`/`helpers.
+  // refreshSummary`/`helpers.rebuildMenu` directly instead, precisely so the
+  // menu it's inside of survives), so this can never close a menu the very
+  // click that triggered this repaint owns.
+  closeActiveOverlay();
   const newBody = buildGeneratorBody(refs.doc, node, ctx);
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);
@@ -1573,11 +1980,19 @@ export function repaintGenerator(node, ctx) {
  * native-preview trigger, never this node's data; matches `handleExecuted`
  * below reading ONLY `anima_stages`).
  *
- * VERIFY-IN-COMFYUI: that `onExecuted`'s `message` argument really is the
- * node's own `ui` dict verbatim, and that a non-`OUTPUT_NODE`'s `ui` dict
- * genuinely reaches it at all -- no live ComfyUI process in this dev
- * environment to confirm against (matches `nodes/anima/generator.py`'s own
- * VERIFY-IN-COMFYUI note on the Python side of this same channel).
+ * Confirmed live (2026-07-28): a completed run does call `onExecuted` on
+ * this non-`OUTPUT_NODE` with `{anima_context: {...}}` intact -- the
+ * `VERIFY-IN-COMFYUI` this doc comment used to carry (and the same one on
+ * `nodes/anima/generator.py`'s side of this channel) is resolved, not just
+ * dropped. **One real behaviour the probe surfaced: a CACHED run (this
+ * node not re-executed this queue) emits no `executed` message at all** --
+ * this function is simply never called that run, and that's fine as-is:
+ * `computeEffectiveContextSupplied` (this module's top doc comment) already
+ * falls back to the live litegraph-link walk when there's no run report,
+ * and whatever `node._anContextRun` already held from an earlier run stays
+ * valid for as long as the wiring it described hasn't changed (cleared only
+ * on an actual connection change, never on "this run happened to be
+ * cached").
  */
 export function handleGeneratorExecuted(node, ctx, message) {
   if (!message || !message.anima_context || typeof message.anima_context !== "object" || Array.isArray(message.anima_context)) {
@@ -1609,7 +2024,7 @@ export function buildPreviewBody(doc, node, ctx) {
   const stagesPresent = STAGE_ORDER.filter((s) => previewImages[s]);
   const body = el(doc, "div", "wtn-an-body");
 
-  body.appendChild(buildSaveSection(doc, node, ctx, state));
+  body.appendChild(buildSaveRow(doc, node, ctx, state));
 
   const compare = state.compare;
   const wantsDual = !!compare.enabled;
@@ -1704,43 +2119,75 @@ export function buildPreviewBody(doc, node, ctx) {
  * because its outer row carried no switch of its own). The filename-token
  * legend folds into the filename field's own ⓘ instead of a separate
  * sublabel + note block. */
-function buildSaveSection(doc, node, ctx, state) {
-  const expanded = !!state.ui_expanded.save;
+/**
+ * The Preview's Save ROW (task item 2, hybrid essentials/⚙ dispatch) --
+ * REPLACES the old inline accordion `buildSaveSection`. The user asked for
+ * this specifically: the Preview's image must fill the node, and an inline
+ * Save section ate that space (`render.mjs`'s own doc comment on
+ * `PREVIEW_PANEL_MIN_H`'s recomputed arithmetic). Save is now a single row
+ * that NEVER expands in place -- no chevron, no `.wtn-an-sbody` (`hasChevron:
+ * false` on `buildSectionHeader`) -- clicking anywhere on the row (or its own
+ * ⚙, same target really: both open the SAME menu, `stopPropagation` on the
+ * switch is what keeps that one control separate) opens the SAME field set
+ * the accordion used to hold, anchored `placement: "right"`. The switch
+ * still toggles `save.enabled` directly, immediately, with a full repaint
+ * (there is no `ui_expanded` left to keep in step with it any more --
+ * `state.mjs`'s own top doc comment).
+ */
+function buildSaveRow(doc, node, ctx, state) {
   const save = state.save;
-  return buildSection(doc, {
-    key: "save", label: "Save", expanded, hasSwitch: true, switchOn: save.enabled,
+  const summaryText = () => `${save.which} · ${save.extension}`;
+
+  const head = buildSectionHeader(doc, {
+    label: "Save", expanded: false, hasChevron: false,
+    hasSwitch: true, switchOn: save.enabled,
     infoTooltip: "Saving lives here, not on the Generator -- this node holds the images, so it's the only place base/mid/final can be saved under different names.",
-    summary: save.enabled ? `${save.which} · ${save.extension}` : null,
-    onToggleExpand: () => { state.ui_expanded.save = !expanded; persistPreviewState(node); repaintPreview(node, ctx); },
-    onToggleSwitch: () => { setSwitchAndExpand(state, "save", save); persistPreviewState(node); repaintPreview(node, ctx); },
-    buildBody: (body) => {
-      body.appendChild(buildStepperField(doc, { label: "which", value: save.which, options: SAVE_WHICH_OPTIONS }, {
-        onChange: (v) => { save.which = v; persistPreviewState(node); },
+    summary: save.enabled ? summaryText() : null,
+    hasGear: true,
+    gearTooltip: "which, extension, path, filename, embed workflow.",
+    onGearClick: () => openSaveMenu(),
+  });
+  head.root.classList.add("wtn-an-menurow");
+  if (head.switchEl) {
+    head.switchEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      save.enabled = !save.enabled;
+      persistPreviewState(node);
+      repaintPreview(node, ctx);
+    });
+  }
+  // The row itself is ALSO a click target for the same menu (the gear is
+  // the discoverable affordance; the row-click is the forgiving one) --
+  // the switch's own listener above already stops propagation, so flipping
+  // it can never also open this.
+  head.root.addEventListener("click", () => openSaveMenu());
+
+  function openSaveMenu() {
+    openAdvancedMenu(doc, ctx, "pv:save:adv", head.root, head.sumEl, (box, helpers) => {
+      const refreshSum = () => helpers.refreshSummary(save.enabled ? summaryText() : null);
+      box.appendChild(buildAnStepper(doc, ctx, { label: "which", value: save.which, options: SAVE_WHICH_OPTIONS }, {
+        onChange: (v) => { save.which = v; persistPreviewState(node); refreshSum(); },
       }).root);
-      body.appendChild(buildStepperField(doc, { label: "extension", value: save.extension, options: ["png", "jpg", "webp"] }, {
-        onChange: (v) => { save.extension = v; persistPreviewState(node); },
+      box.appendChild(buildAnStepper(doc, ctx, { label: "extension", value: save.extension, options: ["png", "jpg", "webp"] }, {
+        onChange: (v) => { save.extension = v; persistPreviewState(node); refreshSum(); },
       }).root);
       const pathF = buildTextField(doc, "path", save.path);
       pathF.control.addEventListener("change", () => {
         save.path = pathF.control.value;
         persistPreviewState(node);
       });
-      body.appendChild(pathF.root);
+      box.appendChild(pathF.root);
       const filenameF = buildTextField(doc, "filename", save.filename);
       filenameF.control.addEventListener("change", () => {
         save.filename = filenameF.control.value;
         persistPreviewState(node);
       });
-      body.appendChild(withInfoIcon(doc, filenameF.root, "%stage% (base/mid/final), %seed%, %date:FMT%, %counter:N%, %width%, %height%."));
-      const embedField = buildBoolField(doc, "embed workflow", save.embed_workflow);
-      embedField.switchEl.addEventListener("click", () => {
-        save.embed_workflow = !save.embed_workflow;
-        persistPreviewState(node);
-        repaintPreview(node, ctx);
-      });
-      body.appendChild(embedField.root);
-    },
-  });
+      box.appendChild(withInfoIcon(doc, filenameF.root, "%stage% (base/mid/final), %seed%, %date:FMT%, %counter:N%, %width%, %height%."));
+      box.appendChild(buildBoolFieldInto(doc, "embed workflow", save, "embed_workflow", () => persistPreviewState(node)));
+    });
+  }
+
+  return head.root;
 }
 
 export function mountPreviewUI(node, ctx) {
@@ -1769,6 +2216,10 @@ export function repaintPreview(node, ctx) {
   const refs = mountPreviewUI(node, ctx);
   // Same orphaned-tooltip guard as `repaintGenerator` above.
   hideActiveInfoTip();
+  // Same reasoning as `repaintGenerator`'s own call -- the Save row's ⚙
+  // menu (`buildSaveRow` below) is anchored to a header element this
+  // repaint is about to discard.
+  closeActiveOverlay();
   const { body, wipeEl } = buildPreviewBody(refs.doc, node, ctx);
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);

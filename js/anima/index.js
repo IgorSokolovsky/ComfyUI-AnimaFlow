@@ -55,7 +55,9 @@
  * file's "Socket self-healing" section above for why that's an acceptable
  * cost, not a budget violation. Matches `js/controls/index.js`'s `loadMods`
  * exactly, same reasoning, same trick of costing multiple node classes one
- * auto-loaded file.
+ * auto-loaded file. **`../shared/graph_loading.mjs` is the one exception** —
+ * see its own import comment above for why it has to be eager rather than
+ * riding `loadMods()`.
  *
  * ## Widget contract (matches `nodes/anima/*.py`'s declared STRING widgets)
  *
@@ -71,6 +73,30 @@
  * for them here.
  */
 import { app } from "/scripts/app.js";
+// `isGraphLoading` -- the ONE exception to this file's "everything past
+// `/scripts/app.js` is a LAZY dynamic import" rule (this file's own "lazy,
+// not static" section below). It has to be a STATIC top-level import,
+// deliberately: `app.loadGraphData` must be wrapped BEFORE the very first
+// workflow load call happens, and by the time this pack's OWN lazy
+// `loadMods()` would resolve (queued from inside `onNodeCreated`, which
+// itself fires DURING that same `loadGraphData` call), that call has
+// already started -- wrapping it from inside a callback triggered by its
+// own execution can never retroactively flag the call already in progress.
+// This module is tiny (a single monkey-patch + a getter, no DOM/CSS), so
+// the download-budget cost of making it eager is negligible next to what
+// making it correct requires. See `setupNode`'s own "Sizing" comment below
+// for the actual bug this closes.
+import { isGraphLoading } from "../shared/graph_loading.mjs";
+// `isSubmitting` -- same "wrap the one funnel, hold a flag for the call plus
+// a trailing window" shape as `isGraphLoading` above, for a DIFFERENT churn
+// window: cg-use-everywhere (and similar extensions) materialize real
+// litegraph links at submit time to build the prompt, then remove them
+// again -- see `../shared/submit_guard.mjs`'s own top doc comment for the
+// live trace that proved this and why it broke "post-run context-supplied
+// values." Eager for the same reason `isGraphLoading` is: the wrap has to
+// be in place before the FIRST queue click, not after this pack's own lazy
+// `loadMods()` resolves.
+import { isSubmitting } from "../shared/submit_guard.mjs";
 
 // `AnimaContextBridge` is included ONLY for socket self-healing (see this
 // file's top doc comment) -- `mountsUi` below is what actually gates every
@@ -351,11 +377,50 @@ function setupNode(node, mods, isGenerator) {
     mods.render.applyNodeChrome(node);
   }
 
-  // `Math.max(..., PREVIEW_MIN_H)` on the Preview -- its floor (`480`, see
+  // ---------------------------------------------------------------------
+  // Sizing -- GATED on `!isGraphLoading() && !node._anConfiguring` (this is
+  // the fix for the pack's most-repeated bug: "the Generator loses its
+  // saved size on every refresh / every workflow re-open", live-traced to
+  // `[setSize] [360,340] id 747` -- exactly this block's own
+  // `DEFAULT_W`/`DEFAULT_H`, stamped over an already-saved node).
+  //
+  // `node._anConfiguring` ALONE is not enough, even though the comment
+  // above this block correctly explains why it protects `applyNodeChrome`:
+  // `onNodeCreated` fires for a RESTORED node too (litegraph's construct-
+  // then-configure sequence calls `onNodeCreated` BEFORE `onConfigure`, not
+  // instead of it), and `app.loadGraphData` -- the thing that eventually
+  // calls `configure()` on every restored node -- is itself async. So
+  // there is a real window where THIS function's own `loadMods().then(...)`
+  // microtask (queued from `onNodeCreated`) resolves and runs before
+  // `onConfigure` has had any chance to set `_anConfiguring` at all -- and
+  // during that exact window `node.size` still holds litegraph's tiny
+  // freshly-CONSTRUCTED default (not yet the workflow's saved one), so
+  // flooring up from THAT snaps the node to its fresh-node default instead.
+  // `isGraphLoading()` (`js/shared/graph_loading.mjs`, ported from
+  // `../ComfyUI-Pixaroma`'s module of the same name -- see
+  // `THIRD_PARTY_NOTICES.md`) closes exactly that window: it wraps
+  // `app.loadGraphData` itself (the one funnel every workflow open/tab
+  // switch/undo goes through) and stays true for the WHOLE call plus a
+  // trailing window, independent of any per-node flag's own timing.
+  // `node._anConfiguring` is kept as a second, belt-and-braces check (it
+  // still covers a hot-reload/edge case `isGraphLoading` might not), not
+  // because it alone is suffient -- removing EITHER half of this
+  // `||` reintroduces the exact bug this comment describes.
+  //
+  // `restoreNode` (below) already does no sizing at all, by design; this
+  // gate is what makes `setupNode` -- which unlike `restoreNode` DOES run
+  // on the restore path, via `onNodeCreated` -- actually honour that same
+  // rule instead of quietly violating it whenever the race above fires.
+  // ---------------------------------------------------------------------
+  if (isGraphLoading() || node._anConfiguring) {
+    return;
+  }
+
+  // `Math.max(..., PREVIEW_MIN_H)` on the Preview -- its floor (see
   // render.mjs's `PREVIEW_MIN_H` doc comment) is now taller than its own
-  // `PREVIEW_DEFAULT_H` (`420`, unchanged), and this node's panel is
+  // `PREVIEW_DEFAULT_H` (unchanged), and this node's panel is
   // `overflow: hidden` (no scroll fallback), so a fresh node MUST start at
-  // or above its own floor or it opens already clipping its Save section.
+  // or above its own floor or it opens already clipping its Save row.
   // The Generator has no such gap (its panel still scrolls past its floor),
   // so `DEFAULT_H` alone is untouched there.
   const defaultH = isGenerator ? mods.render.DEFAULT_H : Math.max(mods.render.PREVIEW_DEFAULT_H, mods.render.PREVIEW_MIN_H);
@@ -484,13 +549,31 @@ app.registerExtension({
     // Generator's own hook below applies to itself). A generator not yet
     // mounted is skipped -- it will build with the CURRENT wiring anyway, so
     // there's nothing stale to fix there.
+    //
+    // **Gated on `!isSubmitting()` (`../shared/submit_guard.mjs`)** -- a
+    // Use-Everywhere-driven prompt submission materializes real links across
+    // every UE-fed socket and then removes them again, firing THIS hook
+    // roughly a dozen times per run. Without the gate, `clearContextRun`
+    // wipes the very `_anContextRun` `handleGeneratorExecuted` just stashed
+    // (that IS the bug this guards against -- "post-run context-supplied
+    // values never appear," see `submit_guard.mjs`'s own doc comment for the
+    // live trace), and the matching repaint is pure churn on top of it. A
+    // GENUINE user rewire (dragging a wire in the editor, outside any
+    // submission) is never inside this window, so it still clears/repaints
+    // exactly as before.
     if (nodeData.name === CONTEXT_BRIDGE_NAME) {
       const _bridgeConn = nodeType.prototype.onConnectionsChange;
       nodeType.prototype.onConnectionsChange = function (...args) {
         const result = _bridgeConn ? _bridgeConn.apply(this, args) : undefined;
+        if (isSubmitting()) {
+          return result;
+        }
         const bridge = this;
         loadMods()
           .then((mods) => {
+            if (isSubmitting()) {
+              return; // the guard window opened WHILE this microtask was pending
+            }
             const generators = mods.interaction.resolveDownstreamGenerators(bridge);
             generators.forEach((gen) => {
               if (gen._anMods) {
@@ -519,18 +602,36 @@ app.registerExtension({
     // broken -- gated on `!_anConfiguring`-equivalent isn't needed here
     // (unlike Controls' auto-row-kind resolution, refreshing a read-only
     // badge on a workflow's own link replay is harmless and correct).
+    //
+    // **Generator branch ONLY, gated on `!isSubmitting()`** -- same
+    // Use-Everywhere submit-churn guard as the Bridge's hook above
+    // (`../shared/submit_guard.mjs`'s own doc comment has the live trace:
+    // a burst of connect-then-disconnect across every UE-fed socket, firing
+    // this hook roughly a dozen times per run). While submitting, skip BOTH
+    // the clear and the repaint for the Generator entirely -- clearing here
+    // would wipe the very `_anContextRun` `handleGeneratorExecuted` just
+    // stashed for this run (the exact bug this guards against), and
+    // repainting on top of that is pure churn. The Preview branch below is
+    // UNTOUCHED by this gate -- UE's churn is on the Bridge's context-feeding
+    // sockets, never the Preview's `images`/`metadata_json`, so there is
+    // nothing to protect there.
     const _conn = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function (...args) {
       const result = _conn ? _conn.apply(this, args) : undefined;
-      if (isGenerator && this._anMods) {
-        // A stale post-run "supplied" must never outlive the wiring it
-        // described -- clear it on the Generator's OWN context link
-        // changing too, not just the Bridge's forward-walk hook above.
-        // Safe to gate on `_anMods` alone (not also `_anRefs`):
-        // `_anContextRun` is only EVER set by `handleGeneratorExecuted`,
-        // itself gated on `_anMods` being loaded, so it can never hold a
-        // stale value while `_anMods` is still unset.
-        this._anMods.interaction.clearContextRun(this);
+      if (isGenerator) {
+        if (isSubmitting()) {
+          return result;
+        }
+        if (this._anMods) {
+          // A stale post-run "supplied" must never outlive the wiring it
+          // described -- clear it on the Generator's OWN context link
+          // changing too, not just the Bridge's forward-walk hook above.
+          // Safe to gate on `_anMods` alone (not also `_anRefs`):
+          // `_anContextRun` is only EVER set by `handleGeneratorExecuted`,
+          // itself gated on `_anMods` being loaded, so it can never hold a
+          // stale value while `_anMods` is still unset.
+          this._anMods.interaction.clearContextRun(this);
+        }
       }
       if (this._anMods && this._anRefs) {
         if (isGenerator) {

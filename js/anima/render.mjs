@@ -71,6 +71,40 @@
  * click-a-row-to-open-it row) and `buildNote` (a text-block explanation,
  * replaced by the ⓘ affordance below) are DELETED, not left unreferenced.
  *
+ * ## 2026-07-28 (hybrid essentials/⚙ dispatch) — §12's "settings expand IN
+ * PLACE" call is amended, not reversed a fifth time
+ *
+ * Live use surfaced the actual cost of the inline-sections dispatch above:
+ * the Detailer alone has 31 fields per block, and putting every one of them
+ * inline buries the handful that matter (`enabled`, `threshold`, `steps`,
+ * `denoise`) under a wall of rarely-touched controls. The fix is a
+ * deliberate HYBRID, not a fifth reversal of §12's "no more floating
+ * popover" call: a section's ESSENTIALS still expand inline exactly as
+ * described above (the chevron/switch/`.wtn-an-sbody` mechanism is
+ * unchanged) — what moves is the section's own LONG TAIL of rarely-touched
+ * fields, which now lives behind a ⚙ that opens a small, genuinely-anchored
+ * overlay (`js/shared/overlay.mjs`'s `openOverlayWithZoom`, imported back
+ * into this track — see `interaction.mjs`'s own top doc comment for the
+ * full mechanism and why re-importing it does NOT contradict §12).
+ *
+ * Two consequences worth stating plainly:
+ *   - §12's retraction of `js/shared/overlay.mjs` stands for SETTINGS
+ *     SURFACES specifically — a section's inline body is still the one true
+ *     home for its essentials, never a popover again. An option list (a
+ *     stepper's `◀ [ value ▾ ] ▶`) and a ⚙'s advanced-fields menu are a
+ *     DIFFERENT thing: both are inherently anchored, transient overlays (a
+ *     list of options to pick ONE from; a batch of fields you open, edit,
+ *     and close), and both genuinely need real anchoring machinery — a
+ *     stepper's own `onOpenList` callback existed in `js/shared/fields.mjs`
+ *     since this track's very first dispatch and was simply never wired to
+ *     anything (`grep -rn "onOpenList" js/` found only the definition before
+ *     this dispatch), which is the concrete bug this amendment also fixes.
+ *   - The Detailer's per-INLINE-field split (this file's own
+ *     `buildSectionHeader`/`interaction.mjs`'s per-section body builders) is
+ *     the user's own field-by-field call, not a heuristic — see
+ *     `interaction.mjs`'s top doc comment for the exact inline/advanced
+ *     table per section.
+ *
  * ## Context-supplied fields render DISABLED, with a yellow ⓘ, not a
  * separate "driven" row
  *
@@ -142,7 +176,10 @@
  */
 
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
-import { injectFieldStyles, buildSwitch, buildInfoIcon } from "../shared/fields.mjs";
+import {
+  injectFieldStyles, buildSwitch, buildInfoIcon, buildGearIcon,
+  FLD_ROW_H, FLD_ROW_GAP,
+} from "../shared/fields.mjs";
 // Re-exported below (never redefined here) so `index.js` can reach it as
 // `mods.render.applyNodeChrome`, matching every other lazily-loaded helper
 // it calls -- see `../shared/node_chrome.mjs`'s own doc comment for the full
@@ -174,9 +211,22 @@ const TOKENS = {
   info: "#7dd3fc",
 };
 
+// Proportional-scale constants (bigger-type dispatch, task item 4) -- base
+// panel type moved from ~12px to 14px, and every size below is DERIVED from
+// these rather than a second independent guess. This module's own "Resize"
+// section further down (`PANEL_MIN_H`/`PREVIEW_PANEL_MIN_H`/`GENERATOR_MIN_W`/
+// etc) is written FROM these same numbers too, so the exported constant and
+// the CSS floor it's supposed to match can never drift apart. `FLD_ROW_H`/
+// `FLD_ROW_GAP` (imported above) are `js/shared/fields.mjs`'s OWN already-
+// scaled row height/gap for `.wtn-fld-num`/`.wtn-fld-stepper` -- reused here
+// (not re-derived) for the same arithmetic reason.
+export const BASE_FONT = 14; // was ~12
+export const SHEAD_H = 32; // .wtn-an-shead height (was 27)
+export const SHEAD_GAP = 5; // header-to-next-section spacing (was 4)
+
 const CSS = `
 .wtn-an-root { display: flex; flex-direction: column; gap: 0; width: 100%; box-sizing: border-box;
-  padding: 4px 2px 2px; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 5px 2px 2px; font: ${BASE_FONT}px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
   /* NO height:100% / min-height here -- the ComfyUI-Pixaroma find_replace pattern. */
 }
@@ -194,14 +244,14 @@ const CSS = `
    types) -- the Preview overrides both the scrollbar and the floor via
    \`.wtn-an-panel-pv\` below (this file's "Preview node: hover wipe"
    section), it does not scroll at all. ── */
-.wtn-an-panel { display: flex; flex-direction: column; gap: 4px; padding: 6px;
+.wtn-an-panel { display: flex; flex-direction: column; gap: 5px; padding: 7px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
   background: var(--wtn-surface, ${TOKENS.surface});
-  flex: 1 1 auto; min-height: 220px; overflow-y: auto; overflow-x: hidden; }
+  flex: 1 1 auto; min-height: 256px; overflow-y: auto; overflow-x: hidden; }
 
-.wtn-an-sec { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em;
+.wtn-an-sec { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
-  margin: 9px 0 4px; display: flex; align-items: center; gap: 7px; }
+  margin: 10px 0 5px; display: flex; align-items: center; gap: 8px; }
 .wtn-an-sec::after { content: ""; flex: 1; height: 1px; background: var(--wtn-line-soft, ${TOKENS.lineSoft}); }
 .wtn-an-sec:first-child { margin-top: 2px; }
 .wtn-an-sec .wtn-an-cnt { color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
@@ -211,12 +261,12 @@ const CSS = `
 
    **NO-JUMP INVARIANT (2026-07-28, wheel/header-order dispatch) -- DOM
    order is FIXED: chevron -> switch (if any) -> label -> ⓘ (if any) ->
-   summary. Every one of those first four is \`flex: none\` (pinned,
-   never resized); the summary is the ONLY element with \`margin-left:
-   auto\` + ellipsis (\`overflow: hidden; text-overflow: ellipsis;
-   white-space: nowrap; min-width: 0\`), so it is the ONLY thing whose
-   width ever varies, and it varies into the empty space on the right --
-   nothing else ever shifts position when a section is turned on/off or
+   ⚙ (if any) -> summary. Every one of those first five is \`flex: none\`
+   (pinned, never resized); the summary is the ONLY element with
+   \`margin-left: auto\` + ellipsis (\`overflow: hidden; text-overflow:
+   ellipsis; white-space: nowrap; min-width: 0\`), so it is the ONLY thing
+   whose width ever varies, and it varies into the empty space on the right
+   -- nothing else ever shifts position when a section is turned on/off or
    its summary text changes length. Do NOT reorder these back to
    chevron/label/summary/ⓘ/switch (the pre-dispatch order): that let the
    ⓘ and the switch slide left/right depending on whether a summary
@@ -224,68 +274,150 @@ const CSS = `
    If you add a new header child, decide up front whether it's a FIXED
    affordance (append it before the summary, \`flex: none\`) or content
    that should ellipsize (there should only ever be one of those: the
-   summary).**
+   summary). **2026-07-28 (hybrid essentials/⚙ dispatch): the ⚙ is the one
+   new fixed slot, appended right after the ⓘ and before the summary --
+   exactly the same "fixed affordance, never the thing that ellipsizes"
+   rule, so a section gaining/losing its ⚙ (only Highres/Upscale/Detailer
+   have one; Sampler/Mod Guidance/Postprocess don't) never shifts anything
+   but the summary either.**
 
    As of the inline-sections-expand-is-the-switch's-job dispatch (this same
    day, later), clicking \`.wtn-an-shead\` itself only toggles expand/collapse
    for a SWITCHLESS section (Sampler) -- see \`interaction.mjs\`'s
    \`buildSection\` for the split. The switch's own click (stopPropagation'd)
    now flips BOTH \`enabled\` and expand/collapse together for every section
-   that has one. The ⓘ's click is always stopPropagation'd only, on both
-   kinds of section -- it never toggles anything. \`.wtn-an-expanded\` is
-   purely a hook for the chevron glyph/hover state -- the actual body is a
-   SIBLING element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
+   that has one. The ⓘ's and ⚙'s clicks are always stopPropagation'd only,
+   on both kinds of section -- NEITHER ever toggles expand/collapse; the ⚙
+   opens its own anchored menu instead (\`interaction.mjs\`'s
+   \`openAdvancedMenu\`), a DIFFERENT surface from this header's own inline
+   body. \`.wtn-an-expanded\` is purely a hook for the chevron glyph/hover
+   state PLUS (2026-07-28, card-attachment dispatch, next comment) the
+   header's own bottom-corner/border/margin -- the actual body is a SIBLING
+   element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
    collapsed, not a max-height: 0 hide. ── */
-.wtn-an-shead { position: relative; display: flex; align-items: center; gap: 8px; height: 27px;
-  margin-bottom: 4px; padding: 0 8px; border-radius: 6px; cursor: pointer;
+.wtn-an-shead { position: relative; display: flex; align-items: center; gap: 9px; height: ${SHEAD_H}px;
+  margin-bottom: ${SHEAD_GAP}px; padding: 0 9px; border-radius: 8px; cursor: pointer;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   overflow: hidden; }
 .wtn-an-shead:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-shead .wtn-an-chev { flex: none; width: 10px; font-size: 9px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
-.wtn-an-shead .wtn-an-shead-nm { font-size: 11.5px; font-weight: 550; flex: none; white-space: nowrap; }
-.wtn-an-shead .wtn-an-shead-sum { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px;
+/* ── card attachment (task item 1): while expanded, the header SQUARES OFF
+   its own bottom corners and drops its own bottom margin to zero, so
+   \`.wtn-an-sbody\` right below it (this file's next CSS block) reads as ONE
+   joined shape instead of a header floating disconnected from its body.
+   The accent border this rule ALSO sets is what \`.wtn-an-sbody\`'s own
+   border colour continues below -- see that block's own comment. ── */
+.wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-accent, ${TOKENS.accent});
+  border-radius: 8px 8px 0 0; margin-bottom: 0; }
+.wtn-an-shead .wtn-an-chev { flex: none; width: 12px; font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+.wtn-an-shead .wtn-an-shead-nm { font-size: 13.5px; font-weight: 550; flex: none; white-space: nowrap; }
+.wtn-an-shead .wtn-an-shead-sum { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 11px;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .wtn-an-shead.wtn-an-dep { border-color: rgba(251,191,36,.35); }
 
-/* ── section body -- rendered only while its header is expanded. Indented
-   under the chevron so the nesting reads clearly while the panel scrolls. ── */
-.wtn-an-sbody { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 8px 20px; }
+/* ── section body -- CARD treatment attached to its own header (task item 1,
+   2026-07-28). Rendered only while its header is expanded, so it only ever
+   needs to continue an EXPANDED (accent-bordered) header: same surface as
+   the header (\`--wtn-surface-2\`), the SAME border colour continued
+   (\`border-top: none\` is what removes the seam -- the header's own bottom
+   border and this element's own top edge would otherwise double up into a
+   visible line between them), rounded ONLY on the bottom (the header kept
+   its own top corners rounded, squared its bottom -- see \`.wtn-an-expanded\`
+   above), and \`margin-top: 0\` (no gap at all between the two -- spacing to
+   the NEXT section instead comes from this element's own margin-bottom,
+   matching \`SHEAD_GAP\`, the same spacing a COLLAPSED header's own
+   margin-bottom already provides). \`.wtn-an-dep\` mirrors the header's own
+   warn-tinted border so a missing-dependency section reads coherently
+   whether it's the header or the body catching your eye. Indented under
+   the chevron so the nesting still reads clearly while the panel scrolls. ── */
+.wtn-an-sbody { display: flex; flex-direction: column; gap: 5px; padding: 3px 5px 10px 23px;
+  margin-top: 0; margin-bottom: ${SHEAD_GAP}px;
+  background: var(--wtn-surface-2, ${TOKENS.surface2});
+  border: 1px solid var(--wtn-accent, ${TOKENS.accent}); border-top: none;
+  border-radius: 0 0 8px 8px; }
+.wtn-an-sbody.wtn-an-dep { border-color: rgba(251,191,36,.35); }
 
 /* ── a field paired with its own ⓘ (context-supplied warning, or a plain
    note) -- see this module's top doc comment. The field itself keeps its
    own bottom margin off (the wrapper owns the spacing) so pairing an icon
    never doubles the gap between rows. ── */
-.wtn-an-fieldrow { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.wtn-an-fieldrow { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 .wtn-an-fieldrow > *:first-child { flex: 1; min-width: 0; margin-bottom: 0; }
 
 /* ── free-text field (no Control Panel analogue -- see this module's top
    doc comment) ── */
-.wtn-an-field { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 2px; }
-.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 116px; flex: none; }
+.wtn-an-field { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 2px; }
+.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 135px; flex: none; }
 .wtn-an-field input { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
-  font-size: 11px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
-  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 4px 6px; outline: none; }
+  font-size: 13px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 5px 7px; outline: none; }
 .wtn-an-field input:focus { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 
 /* ── boolean field: label + shared pill switch ── */
-.wtn-an-boolfield { display: flex; align-items: center; gap: 8px; font-size: 11.5px; margin-bottom: 4px; }
+.wtn-an-boolfield { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 5px; }
 .wtn-an-boolfield > span:first-child { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px;
+.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 12px;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 
-.wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 12px 0 7px; padding-top: 10px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  display: flex; align-items: center; gap: 6px; }
+.wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  display: flex; align-items: center; gap: 7px; }
 .wtn-an-sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.wtn-an-missing { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
-  padding: 9px 10px; border-radius: 8px; margin-bottom: 11px; background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28); }
-.wtn-an-passtabs { display: flex; gap: 5px; margin-bottom: 11px; flex-wrap: wrap; }
-.wtn-an-passtabs button { font-family: var(--wtn-font-mono, monospace); font-size: 10px; padding: 4px 9px; cursor: pointer;
+.wtn-an-missing { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  padding: 11px 12px; border-radius: 8px; margin-bottom: 12px; background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28); }
+.wtn-an-passtabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.wtn-an-passtabs button { font-family: var(--wtn-font-mono, monospace); font-size: 12px; padding: 5px 11px; cursor: pointer;
   border-radius: 6px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); background: var(--wtn-surface-2, ${TOKENS.surface2});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); }
 .wtn-an-passtabs button.wtn-an-on { background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-an-passtabs button:disabled { opacity: .4; cursor: default; }
+
+/* ── the Preview's Save ROW (task item 2, 2026-07-28) -- a \`buildSectionHeader\`
+   with NO chevron and NO body: it never expands in place, it just opens
+   \`interaction.mjs\`'s \`openAdvancedMenu\` (placement "right") anchored to
+   itself, same mechanism as a stage's own ⚙ menu. Both the row's own ⚙ (the
+   discoverable affordance, consistent with every other advanced menu in
+   this track) AND a click anywhere else on the row (the forgiving target)
+   open the SAME menu -- only the switch's own click is carved out
+   (\`stopPropagation\`'d), so flipping \`enabled\` can never also pop the
+   menu open. Because \`expanded\` is always false for this row, it never
+   gains \`.wtn-an-expanded\`'s squared-bottom-corner/card treatment either
+   -- correct, since there is no \`.wtn-an-sbody\` for it to attach to any
+   more. \`.wtn-an-menurow\` only exists so a click handler can tell "this
+   is a menu-only header" apart from an accordion one without inspecting
+   \`expanded\` -- purely a hook, no rules of its own. ── */
+.wtn-an-shead.wtn-an-menurow { cursor: pointer; }
+
+/* ── the overlay WRAPPER itself (\`js/shared/overlay.mjs\`'s \`openOverlay\`
+   appends this, \`interaction.mjs\`'s \`openOverlayForCtx\` passes this class
+   name) -- mirrors \`js/controls/render.mjs\`'s own \`.wtn-ctl-overlay\` rule.
+   Belt-and-suspenders, same reasoning as that file's: \`openOverlay\` ALSO
+   sets \`position: fixed\`/\`z-index\` inline (its own doc comment), so this
+   rule is redundant in practice, but keeping it means a late/failed
+   stylesheet injection still can't hide a menu (\`comfyui-node-renders-but-
+   dead\` skill's root cause A). ── */
+.wtn-an-overlay { position: fixed; z-index: 10020; }
+
+/* ── ⚙ menu content -- the long tail behind a section's own gear (task
+   item 3) or the Preview's Save row (task item 2). Mirrors \`js/controls/
+   render.mjs\`'s \`.wtn-ctl-menu\`/\`.wtn-ctl-opt\`/\`.wtn-ctl-mhead\` (the SAME
+   overlay mechanism, \`js/shared/overlay.mjs\`, is what mounts this), scaled
+   to this file's own type. \`.wtn-an-opt\`/\`.wtn-an-mhead\` are the stepper's
+   OWN option list (\`interaction.mjs\`'s \`openStepperOptionList\`, \`placement:
+   "below"\`, scrollable for a long list like samplers/checkpoints);
+   \`.wtn-an-advmenu\` is the ⚙'s wider field-column menu (\`placement:
+   "right"\`), built from the SAME field builders the inline rows use. ── */
+.wtn-an-menu { border-radius: 8px; border: 1px solid var(--wtn-line, ${TOKENS.line});
+  background: var(--wtn-surface-2, ${TOKENS.surface2}); box-shadow: var(--wtn-shadow, 0 20px 44px rgba(0,0,0,.7)); }
+.wtn-an-menu.wtn-an-optlist { max-height: 280px; overflow-y: auto; padding: 5px; }
+.wtn-an-opt { font-family: var(--wtn-font-mono, monospace); font-size: 13px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  padding: 6px 7px; border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtn-an-opt:hover { background: var(--wtn-console, ${TOKENS.console}); color: var(--wtn-ink, ${TOKENS.ink}); }
+.wtn-an-opt.wtn-an-opt-sel { background: #2b3440; color: var(--wtn-ink, ${TOKENS.ink}); font-weight: 650; }
+.wtn-an-mhead { font-family: var(--wtn-font-mono, monospace); font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); padding: 5px 7px 7px; }
+.wtn-an-advmenu { width: 264px; max-height: 60vh; overflow-y: auto; padding: 12px; }
+.wtn-an-advmenu > * { margin-bottom: 0 !important; }
+.wtn-an-advmenu > * + * { margin-top: 5px; }
 
 /* ── Preview node: hover wipe ──
    2026-07-28, LATER the same day -- REVERSES the aspect-ratio call this
@@ -323,13 +455,13 @@ const CSS = `
 .wtn-an-wipe .wtn-an-layer.wtn-an-b { clip-path: inset(0 0 0 var(--wipe-x, 50%)); }
 .wtn-an-wipe .wtn-an-divider { position: absolute; top: 0; bottom: 0; left: var(--wipe-x, 50%); width: 1px;
   background: var(--wtn-accent, ${TOKENS.accent}); box-shadow: 0 0 10px rgba(45,212,191,.8); pointer-events: none; }
-.wtn-an-wipe .wtn-an-plab { position: absolute; top: 7px; font-family: var(--wtn-font-mono, monospace); font-size: 9px;
-  padding: 2px 6px; border-radius: 4px; background: rgba(10,13,18,.82); border: 1px solid var(--wtn-line, ${TOKENS.line});
+.wtn-an-wipe .wtn-an-plab { position: absolute; top: 8px; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px;
+  padding: 3px 7px; border-radius: 4px; background: rgba(10,13,18,.82); border: 1px solid var(--wtn-line, ${TOKENS.line});
   color: var(--wtn-ink-dim, ${TOKENS.inkDim}); pointer-events: none; }
-.wtn-an-wipe .wtn-an-plab.wtn-an-l { left: 7px; }
-.wtn-an-wipe .wtn-an-plab.wtn-an-r { right: 7px; }
+.wtn-an-wipe .wtn-an-plab.wtn-an-l { left: 8px; }
+.wtn-an-wipe .wtn-an-plab.wtn-an-r { right: 8px; }
 .wtn-an-wipe .wtn-an-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11px; }
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 13px; }
 
 /* ── Preview-only panel modifier -- see the "Preview node: hover wipe"
    comment above for the reversal this carries. \`.wtn-an-panel\` (two
@@ -338,21 +470,25 @@ const CSS = `
    rule turns the body into its own flex column so the wipe below can
    flex-fill it (\`min-height: 0\` is what lets a flex child shrink below
    its content -- without it the wipe could never give height back to a
-   shrinking node); the universal \`> *\` rule floors the Save section and
-   the compare row at their natural height, and the more specific
+   shrinking node); the universal \`> *\` rule floors the Save ROW and the
+   compare row at their natural height, and the more specific
    \`.wtn-an-wipe\` rule after it (same specificity, later in the sheet --
    the tie-break) is what lets the wipe alone override that back to
-   flex-fill. ── */
-.wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: 400px; }
-.wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; }
+   flex-fill. \`min-height\`/\`PREVIEW_IMG_MIN_H\` below are recomputed
+   (task item 2's second bullet) now that Save is a \`placement: "right"\`
+   MENU (this file's "the Preview's Save ROW" comment above), not an
+   inline accordion body -- see \`PREVIEW_PANEL_MIN_H\`'s own arithmetic
+   comment in this file's "Resize" section for the exact sum. ── */
+.wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: 284px; }
+.wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-height: 0; }
 .wtn-an-panel-pv > .wtn-an-body > * { flex: none; }
-.wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: 160px; aspect-ratio: auto; }
+.wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: 188px; aspect-ratio: auto; }
 
-.wtn-an-pvbar { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; }
+.wtn-an-pvbar { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; }
 .wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; }
+.wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: none; }
 .wtn-an-seg { display: flex; gap: 0; flex: none; }
-.wtn-an-seg button { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; padding: 3px 7px; cursor: pointer;
+.wtn-an-seg button { font-family: var(--wtn-font-mono, monospace); font-size: 11px; padding: 4px 8px; cursor: pointer;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-right-width: 0; }
 .wtn-an-seg button:first-child { border-radius: 5px 0 0 5px; }
@@ -426,7 +562,7 @@ export function buildPanelShell(doc, { preview } = {}) {
 
 // Re-exported so `interaction.mjs` has one import line for both the shared
 // primitives and this module's own presentational builders.
-export { buildSwitch, buildInfoIcon };
+export { buildSwitch, buildInfoIcon, buildGearIcon };
 
 // ---------------------------------------------------------------------------
 // Expandable section header -- 2026-07-28 inline-sections dispatch (this
@@ -437,25 +573,40 @@ export { buildSwitch, buildInfoIcon };
 
 /**
  * `spec`: `{ label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn,
- * summary, dep }`. `dep` (matches the old `stageBlocked` styling) dims the
- * header via `.wtn-an-dep` when a required soft-import package is missing --
- * display only, never disables the switch itself (a user may install the
- * package later; the switch already tolerated this before this dispatch).
+ * summary, dep, hasChevron = true, hasGear, gearTooltip, gearActive }`.
+ * `dep` (matches the old `stageBlocked` styling) dims the header via
+ * `.wtn-an-dep` when a required soft-import package is missing -- display
+ * only, never disables the switch itself (a user may install the package
+ * later; the switch already tolerated this before this dispatch).
+ * `hasChevron: false` (the Preview's Save ROW, task item 2 -- a menu row,
+ * never an accordion) omits the chevron entirely and never gains
+ * `.wtn-an-expanded` (there is no body for it to attach to); every other
+ * caller keeps the default.
  *
- * **DOM child order is fixed: chevron -> switch (if any) -> label -> ⓘ (if
- * any) -> summary (if any)** -- see this file's `.wtn-an-shead` CSS comment
- * for the no-jump invariant this preserves (only the summary's width ever
- * varies, and only into empty space on the right; the other four never move
- * regardless of whether a switch/ⓘ/summary is present or how long the
- * summary text is). Returns `{ root, chev, sumEl, infoEl, switchEl }` -- any
- * of the optional three may be `null`.
+ * **DOM child order is fixed: chevron (if any) -> switch (if any) -> label
+ * -> ⓘ (if any) -> ⚙ (if any) -> summary (if any)** -- see this file's
+ * `.wtn-an-shead` CSS comment for the no-jump invariant this preserves
+ * (only the summary's width ever varies, and only into empty space on the
+ * right; every other child never moves regardless of which optional pieces
+ * are present or how long the summary text is). Returns `{ root, chev,
+ * sumEl, infoEl, switchEl, gearEl }` -- any of the optional ones may be
+ * `null`. The gear's own click handler is the CALLER's job (`interaction.mjs`'s
+ * `openAdvancedMenu`) -- this function only builds the icon
+ * (`js/shared/fields.mjs`'s `buildGearIcon`, already `stopPropagation`'d so
+ * it never ALSO toggles the header's own expand/collapse).
  */
 export function buildSectionHeader(doc, spec) {
-  const { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep } = spec;
+  const {
+    label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep,
+    hasChevron = true, hasGear, gearTooltip, gearActive, onGearClick,
+  } = spec;
   const header = el(doc, "div", `wtn-an-shead${expanded ? " wtn-an-expanded" : ""}${dep ? " wtn-an-dep" : ""}`);
-  const chev = el(doc, "span", "wtn-an-chev");
-  chev.textContent = expanded ? "▾" : "▸";
-  header.appendChild(chev);
+  let chev = null;
+  if (hasChevron) {
+    chev = el(doc, "span", "wtn-an-chev");
+    chev.textContent = expanded ? "▾" : "▸";
+    header.appendChild(chev);
+  }
   let switchEl = null;
   if (hasSwitch) {
     switchEl = buildSwitch(doc, !!switchOn);
@@ -469,13 +620,18 @@ export function buildSectionHeader(doc, spec) {
     infoEl = buildInfoIcon(doc, infoTooltip, infoWarn);
     header.appendChild(infoEl);
   }
+  let gearEl = null;
+  if (hasGear) {
+    gearEl = buildGearIcon(doc, gearTooltip, onGearClick, gearActive);
+    header.appendChild(gearEl);
+  }
   let sumEl = null;
   if (summary) {
     sumEl = el(doc, "span", "wtn-an-shead-sum");
     sumEl.textContent = summary;
     header.appendChild(sumEl);
   }
-  return { root: header, chev, sumEl, infoEl, switchEl };
+  return { root: header, chev, sumEl, infoEl, switchEl, gearEl };
 }
 
 /** Wraps `fieldRoot` with a `js/shared/fields.mjs` `buildInfoIcon` beside it
@@ -634,72 +790,81 @@ export function buildMissing(doc, str) {
 // would.
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_W = 360;
-export const DEFAULT_H = 340;
-export const PREVIEW_DEFAULT_H = 420;
+// Every constant below is scaled from its pre-bigger-type value by roughly
+// the same ratio as the type itself (`BASE_FONT`/`FLD_SCALE`, ~14/12 ≈
+// 1.167) and then rounded to a clean pixel -- task item 4's "every derived
+// constant... scales with it" requirement. None of these are computed IN
+// CODE from the ratio (that would make the exported number a moving target
+// across an unrelated refactor); each is the concrete pixel this dispatch
+// settled on, same convention as `js/shared/fields.mjs`'s own `FLD_*`
+// constants.
+export const DEFAULT_W = 420; // was 360
+export const DEFAULT_H = 400; // was 340
+export const PREVIEW_DEFAULT_H = 490; // was 420
 
 // The node-height FLOOR (there is no ceiling any more -- see this section's
 // top comment). Mirrored in this module's CSS (`.wtn-an-panel`'s
 // `min-height`) and reported to litegraph via `measureMinHeight` below.
-// 220px is the common case (sampler summary + mod-guidance row + all four
+// 256px is the common case (sampler summary + mod-guidance row + all four
 // stage rows, nothing expanded) with no scrollbar; a node dragged smaller
 // than that would clip a stage row, so litegraph refuses to go below it.
 // Beyond this floor the panel scrolls internally (a node with several
 // detailer blocks, or every stage's summary text at once) rather than the
 // node growing to meet it -- the user drags taller instead, if they want to.
-export const PANEL_MIN_H = 220;
+export const PANEL_MIN_H = 256; // was 220
 
 // Generator floor -- the user asked for a min WIDTH explicitly, same
-// treatment as `PREVIEW_MIN_W` below. 320px is the narrowest a stage row
-// (switch + name + ellipsizable summary + gear) still reads sensibly at;
-// unlike the Preview's compare row, nothing on the Generator's own body
-// needs a wider floor than that.
-export const GENERATOR_MIN_W = 320;
+// treatment as `PREVIEW_MIN_W` below. 374px is the narrowest a stage row
+// (chevron + switch + name + ⓘ + ⚙ + ellipsizable summary) still reads
+// sensibly at now that the row also carries a ⚙ (task item 3); unlike the
+// Preview's compare row, nothing on the Generator's own body needs a wider
+// floor than that.
+export const GENERATOR_MIN_W = 374; // was 320
 
 // Preview-only floor: the compare row carries the switch + "compare" label +
 // BOTH `base|mid|final` segmented groups on one line, and that cluster
-// measures ~340px, so a narrower node clips it.
-export const PREVIEW_MIN_W = 380;
+// measures ~410px at this file's bigger type, so a narrower node clips it.
+export const PREVIEW_MIN_W = 444; // was 380
 
 // The wipe's OWN floor -- see this file's "Preview node: hover wipe" CSS
 // comment for the reversal this backs (`.wtn-an-panel-pv .wtn-an-wipe`'s
 // `min-height`, mirrored here as a constant exactly like `PANEL_MIN_H`
-// mirrors `.wtn-an-panel`'s). 160px keeps the compare image legible (both
+// mirrors `.wtn-an-panel`'s). 188px keeps the compare image legible (both
 // wipe layers, the divider, and both `.wtn-an-plab` corner labels) even at
 // the Preview's smallest possible height.
-export const PREVIEW_IMG_MIN_H = 160;
+export const PREVIEW_IMG_MIN_H = 188; // was 160
 
 // The Preview PANEL's own floor (`.wtn-an-panel.wtn-an-panel-pv`'s
 // `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
-// `.wtn-an-panel` rule) -- sized so the Save section fully EXPANDED (its
-// header + all 5 fields), the compare row, and `PREVIEW_IMG_MIN_H` ALL fit
-// inside a `overflow: hidden` panel with room to spare. Sizing for Save
-// EXPANDED (not collapsed) is the whole point: it is what lets this panel
-// never scroll, ever, with no auto-grow-on-repaint mechanism needed (this
-// dispatch deliberately does NOT reintroduce `refitNode`/`scheduleRefit` --
-// see this section's own top comment). Arithmetic, read off the CSS above
-// and `js/shared/fields.mjs`'s own field heights:
-//   Save header (.wtn-an-shead height 27 + margin-bottom 4)            =  31
-//   .wtn-an-sbody padding (2 top + 8 bottom)                           =  10
-//   .wtn-an-sbody gap (4px x 4 gaps between its 5 fields)              =  16
-//   which / extension (.wtn-fld-stepper: height 25 + margin-bottom 4,
-//     x2 -- both are buildStepperField rows)                          =  58
-//   path (.wtn-an-field: ~25 input + its own margin-bottom 2)          =  27
-//   filename (.wtn-an-field wrapped in .wtn-an-fieldrow for its ⓘ --
-//     the field's OWN margin is zeroed by
-//     ".wtn-an-fieldrow > *:first-child", the fieldrow's margin-bottom 4
-//     replaces it: ~25 + 4)                                            =  29
-//   embed workflow (.wtn-an-boolfield: ~16 content + margin-bottom 4)  =  20
-//   compare row (.wtn-an-pvbar margin-top 7 + ~19 content)             =  26
-//   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                    = 160
-//   .wtn-an-body's own gap (4px x 2 gaps between its 3 children -- the
-//     Save section, the wipe, and the compare row)                    =   8
-//   .wtn-an-panel's padding (6 top + 6 bottom)                        =  12
-//   .wtn-an-panel's border (1 top + 1 bottom)                         =   2
-//                                                             total   = 399
-// Rounded up to 400 for headroom (matches measureMinHeight's own
+// `.wtn-an-panel` rule).
+//
+// **Recomputed (task item 2's second bullet), and it dropped A LOT** --
+// 400 -> 284 -- now that the Preview's Save section is a `placement:
+// "right"` MENU (`interaction.mjs`'s `openAdvancedMenu`, anchored to the
+// Save ROW -- this file's "the Preview's Save ROW" CSS comment), not an
+// inline accordion body any more. The old arithmetic sized this floor for
+// the Save section fully EXPANDED (its header + all 5 fields) plus the
+// compare row plus `PREVIEW_IMG_MIN_H`; the Save ROW itself never expands
+// in place any more, so its own contribution shrinks from "header + 5
+// fields" down to just its own header-shaped row. Sizing for what's
+// actually left (header + compare row + `PREVIEW_IMG_MIN_H` + gaps + panel
+// chrome) is still what lets this panel never scroll, ever, with no
+// auto-grow-on-repaint mechanism needed (this dispatch deliberately does
+// NOT reintroduce `refitNode`/`scheduleRefit` -- see this section's own top
+// comment). Arithmetic, read off the CSS above and `js/shared/fields.mjs`'s
+// own field heights (`SHEAD_H`/`FLD_ROW_H` etc, this file's/that file's own
+// exported constants):
+//   Save ROW (.wtn-an-shead height SHEAD_H 32 + margin-bottom SHEAD_GAP 5) =  37
+//   compare row (.wtn-an-pvbar margin-top 8 + ~24 segmented-button content) =  32
+//   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                        = 188
+//   .wtn-an-body's own gap (5px x 2 gaps between its 3 children -- the
+//     Save row, the wipe, and the compare row)                             =  10
+//   .wtn-an-panel's padding (7 top + 7 bottom)                             =  14
+//   .wtn-an-panel's border (1 top + 1 bottom)                              =   2
+//                                                                 total    = 283
+// Rounded up to 284 for headroom (matches measureMinHeight's own
 // round-to-4px convention below).
-export const PREVIEW_PANEL_MIN_H = 400;
+export const PREVIEW_PANEL_MIN_H = 284; // was 400
 
 // The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
 // the DOM widget itself doesn't cover: the title bar (LiteGraph's default
@@ -707,14 +872,16 @@ export const PREVIEW_PANEL_MIN_H = 400;
 // (`images`, `metadata_json`, each a standard ~20px litegraph input row
 // above the widget area -- the hidden `prompt`/`extra_pnginfo` carry no
 // socket dot and cost nothing) + ~10px of widget-area top margin before
-// the DOM widget itself begins. 30 + 2*20 + 10 = 80. (Mirrors
-// `js/prompt_rules/node/render.mjs`'s `CHROME = 52` title-bar-only
-// baseline, extended for the two extra socket rows this node has that that
-// one doesn't.)
+// the DOM widget itself begins. 30 + 2*20 + 10 = 80 -- this chrome is
+// litegraph's OWN native pixel geometry, independent of this file's own
+// type scale, so it is deliberately NOT scaled the way every constant
+// above it is. (Mirrors `js/prompt_rules/node/render.mjs`'s `CHROME = 52`
+// title-bar-only baseline, extended for the two extra socket rows this
+// node has that that one doesn't.)
 // VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
 // read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
 // widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
-export const PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80;
+export const PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(400) + 80
 
 function clampMinWidth(size, minW) {
   if (!Array.isArray(size) || size.length < 1) {

@@ -148,13 +148,13 @@ import path from "node:path";
 import { scrollRegionWantsWheel } from "../shared/canvas_zoom.mjs";
 import * as fields from "../shared/fields.mjs";
 import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
+import { activeOverlayRef, closeActiveOverlay } from "../shared/overlay.mjs";
 
 import {
   GENERATION_SETTINGS_SCHEMA,
   MAX_DETAILER_PASSES,
   STAGE_ORDER,
   DEFAULT_EXPANDED_GENERATOR_SECTIONS,
-  DEFAULT_EXPANDED_PREVIEW_SECTIONS,
   deepMergeDefaults,
   migrateVersion,
   normalizeGenerationSettings,
@@ -187,6 +187,9 @@ import {
   PREVIEW_IMG_MIN_H,
   PREVIEW_PANEL_MIN_H,
   PREVIEW_MIN_H,
+  BASE_FONT,
+  SHEAD_H,
+  SHEAD_GAP,
 } from "./render.mjs";
 
 import * as interactionModule from "./interaction.mjs";
@@ -219,9 +222,15 @@ let failures = 0;
 let count = 0;
 function test(name, fn) {
   count += 1;
-  // 2026-07-28 (inline-sections dispatch): there is no more `js/shared/
-  // overlay.mjs` module-level singleton to reset between tests -- js/anima/
-  // no longer imports it at all (this file's own top doc comment).
+  // 2026-07-28 (hybrid essentials/⚙ dispatch): `js/shared/overlay.mjs` is
+  // back in this track for anchored MENUS (option lists, ⚙ menus) -- its
+  // `activeOverlayRef` singleton is shared with `js/controls/test_resize.mjs`
+  // WITHIN THIS PROCESS (same imported module instance), so a test that
+  // opens one and doesn't explicitly close it could otherwise leak into the
+  // next test in THIS file. Closing before every test (not just after)
+  // guarantees each test starts from a clean slate regardless of what the
+  // previous one left open.
+  closeActiveOverlay();
   try {
     fn();
     console.log(`ok - ${name}`);
@@ -464,6 +473,27 @@ function sectionBodyOf(header) {
 }
 function switchOf(row) {
   return row.children.find((c) => hasClass(c, "wtn-fld-switch"));
+}
+/** A header's own ⚙ (`js/shared/fields.mjs`'s `buildGearIcon`, `.wtn-fld-gear`)
+ * -- `null` for a section with none. */
+function gearOf(header) {
+  return header.children.find((c) => hasClass(c, "wtn-fld-gear"));
+}
+/** Clicks a header's ⚙ (asserting one exists) and returns the CONTENT box
+ * the ⚙'s `openAdvancedMenu` actually built -- `activeOverlayRef.current.
+ * overlay` is the fixed-position wrapper `js/shared/overlay.mjs`'s
+ * `openOverlay` appends to `doc.body`; its one child is the real
+ * `.wtn-an-menu.wtn-an-advmenu` box. A `rebuildMenu()` call (e.g. flipping
+ * `inherit_sampler_settings` inside the menu) replaces THAT box's own
+ * children in place without ever swapping the box itself or closing the
+ * overlay, so re-querying the SAME returned reference after such an edit
+ * sees the rebuilt content -- callers don't need to call this twice. */
+function openGearMenu(header) {
+  const gear = gearOf(header);
+  assert.ok(gear, "expected a ⚙ on this header");
+  fire(gear, "click");
+  assert.ok(activeOverlayRef.current, "expected an overlay to be open after clicking ⚙");
+  return activeOverlayRef.current.overlay.children[0];
 }
 /** Finds a field container (numeric/stepper/boolean/text -- one of this
  * track's four field shapes) by its own label text, across every field kind
@@ -814,21 +844,59 @@ test("injected CSS: .wtn-an-shead's own name (.wtn-an-shead-nm) never shrinks or
   assert.ok(sum.includes("min-width: 0") && sum.includes("text-overflow: ellipsis"), ".wtn-an-shead-sum must be able to shrink to nothing and ellipsize");
 });
 
-test("injected CSS (shared js/shared/fields.mjs primitives): .wtn-fld-stepper clips its own children, and .wtn-fld-stepper-name/.wtn-fld-num-name have no flex-grow either (same margin-left: auto sibling reasoning as .wtn-an-nm)", () => {
+test("injected CSS (shared js/shared/fields.mjs primitives): .wtn-fld-stepper clips its own children, and .wtn-fld-num-name still gives way first (Tier 2 item 8's numeric-row priority, untouched by the stepper-combo overflow fix below)", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const cssText = doc.head.children.find((c) => c.id === "wtn-fields-style").textContent;
   const stepper = cssRuleBody(cssText, ".wtn-fld-stepper");
   assert.ok(stepper, "expected a .wtn-fld-stepper rule in the injected CSS");
   assert.ok(stepper.includes("overflow: hidden"));
-  for (const selector of [".wtn-fld-stepper-name", ".wtn-fld-num-name"]) {
-    const body = cssRuleBody(cssText, selector);
-    assert.ok(body, `expected a ${selector} rule in the injected CSS`);
-    const flexMatch = body.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
-    assert.ok(flexMatch, `${selector} must declare an explicit flex shorthand`);
-    assert.equal(Number(flexMatch[1]), 0, `${selector}: flex-grow must stay 0`);
-    assert.ok(body.includes("min-width: 0") && body.includes("text-overflow: ellipsis"), `${selector} must be able to shrink to nothing and ellipsize`);
-  }
+
+  const numName = cssRuleBody(cssText, ".wtn-fld-num-name");
+  const flexMatch = numName.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
+  assert.ok(flexMatch, ".wtn-fld-num-name must declare an explicit flex shorthand");
+  assert.equal(Number(flexMatch[1]), 0, ".wtn-fld-num-name: flex-grow must stay 0");
+  assert.ok(Number(flexMatch[2]) >= 4, ".wtn-fld-num-name must keep its HEAVY shrink factor -- a numeric row's value is short, so the label gives way first");
+  assert.ok(numName.includes("min-width: 0") && numName.includes("text-overflow: ellipsis"), ".wtn-fld-num-name must still be able to shrink to nothing and ellipsize");
+});
+
+// ---------------------------------------------------------------------------
+// Stepper-combo overflow fix (live-use report, folded into the bigger-type
+// dispatch): a long picker value (a checkpoint/upscale-model filename)
+// collided with its own label. The label now NEVER shrinks
+// (.wtn-fld-stepper-name is flex: none -- every stepper label in this pack
+// is one short word); the value gives way instead (.wtn-fld-combo-val gets
+// min-width: 0 so its existing ellipsis can actually engage). The numeric
+// row's own OPPOSITE priority (tested just above) must be untouched.
+// ---------------------------------------------------------------------------
+
+test("stepper-combo overflow fix: .wtn-fld-stepper-name never shrinks (flex: none) -- the LABEL is never the one that gives way in a stepper row, opposite of .wtn-fld-num-name's own priority", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-fields-style").textContent;
+  const stepperName = cssRuleBody(cssText, ".wtn-fld-stepper-name");
+  assert.ok(stepperName, "expected a .wtn-fld-stepper-name rule");
+  assert.match(stepperName, /flex:\s*none/, ".wtn-fld-stepper-name must never shrink -- the label is always short, the VALUE is the one that can be long");
+});
+
+test("stepper-combo overflow fix: .wtn-fld-combo-val has min-width: 0 (so its existing overflow:hidden/ellipsis can actually engage) and a shrink-only flex", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-fields-style").textContent;
+  const comboVal = cssRuleBody(cssText, ".wtn-fld-combo-val");
+  assert.ok(comboVal, "expected a .wtn-fld-combo-val rule");
+  assert.ok(comboVal.includes("min-width: 0"), ".wtn-fld-combo-val must declare min-width: 0 -- without it a nowrap text node's automatic minimum IS its full content width, and the ellipsis never fires");
+  assert.match(comboVal, /flex:\s*0\s+1\s+auto/, ".wtn-fld-combo-val must be allowed to shrink (flex-shrink 1)");
+  assert.ok(comboVal.includes("overflow: hidden") && comboVal.includes("text-overflow: ellipsis"));
+});
+
+test("stepper-combo overflow fix: repainting to a long value sets a native title on the value span, for hover-readability once truncated", () => {
+  const doc = makeDocStub();
+  const built = fields.buildStepperField(doc, {
+    label: "checkpoint", value: "short.safetensors", options: ["short.safetensors", "sam3.1_multiplex_fp16.safetensors"],
+  }, {});
+  built.repaint("sam3.1_multiplex_fp16.safetensors");
+  assert.equal(built.val.title, "sam3.1_multiplex_fp16.safetensors");
 });
 
 test("buildSwitch/sectionLabel render expected text (shared js/shared/fields.mjs primitives)", () => {
@@ -1650,6 +1718,32 @@ test("dragging a numeric field (steps) INSIDE an expanded Sampler section writes
   assert.equal(persisted.sampler.steps, 150, "dragging to the far right of a [1,150] range commits the max");
 });
 
+test("REGRESSION (live-use report): dragging Steps/CFG in the Sampler section actually MOVES the rendered label/fill mid-drag, not just the persisted state -- buildSamplerField's getValue must be a LIVE read, not a value frozen at build time", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  for (const [label, dragToX, expectRendered] of [["steps", 300, "150"], ["cfg", 0, "0.0"]]) {
+    const field = findFieldByLabel(body, label);
+    assert.ok(field, `${label} must be editable`);
+    const valEl = field.children.find((c) => hasClass(c, "wtn-fld-num-val"));
+    const before = valEl.textContent;
+
+    field._rect = { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 };
+    fire(field, "pointerdown", { clientX: dragToX });
+    // The rendered label must already reflect the drag BEFORE release -- a
+    // getValue() that returns a value frozen at BUILD time (the exact
+    // regression) would leave valEl.textContent unchanged here, since
+    // buildNumericField's own repaint() re-reads getValue() on every move.
+    assert.equal(valEl.textContent, expectRendered, `${label}'s rendered value must update DURING the drag, not just on the next full rebuild`);
+    assert.notEqual(valEl.textContent, before, `${label}'s rendered value must actually have changed from its starting text`);
+    fire(field, "pointerup", { clientX: dragToX });
+  }
+});
+
 test("cycling a stepper field (sampler_name) writes the widget immediately (no drag needed)", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
@@ -1837,7 +1931,7 @@ test("interaction.mjs still touches no window/LiteGraph directly -- getKnownList
   assert.doesNotMatch(code, /\bLiteGraph\b/);
 });
 
-test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/scheduler, both directions, and persists", () => {
+test("inherit_sampler_settings toggle (Highres, now in the ⚙ menu -- task item 3) hides exactly cfg/sampler_name/scheduler, both directions, persists, and REBUILDS the menu in place without closing it", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -1845,21 +1939,25 @@ test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/s
   const refs = mountGeneratorUI(node, ctx);
   // Highres HAS a switch -- expand/collapse is the switch's job now (task 3),
   // not the header's; the header click test below covers the no-op case.
-  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // expand -- inline, no popover
-  let body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
-  assert.ok(findFieldByLabel(body, "steps"));
-  assert.ok(findFieldByLabel(body, "denoise"));
-  assert.ok(!findFieldByLabel(body, "cfg"), "cfg hidden while inherit is ON");
-  assert.ok(!findFieldByLabel(body, "sampler_name"));
-  assert.ok(!findFieldByLabel(body, "scheduler"));
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // enable
 
-  const inheritField = queryAll(body, (n) => hasClass(n, "wtn-an-boolfield"))
+  const header = findSectionHeader(refs.body, "Highres");
+  const box = openGearMenu(header);
+  assert.ok(findFieldByLabel(box, "inherit"));
+  assert.ok(!findFieldByLabel(box, "cfg"), "cfg hidden while inherit is ON");
+  assert.ok(!findFieldByLabel(box, "sampler_name"));
+  assert.ok(!findFieldByLabel(box, "scheduler"));
+
+  const inheritField = queryAll(box, (n) => hasClass(n, "wtn-an-boolfield"))
     .find((f) => (f.children[0] || {}).textContent === "inherit");
   fire(inheritField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
-  body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
-  assert.ok(findFieldByLabel(body, "cfg"), "cfg reappears once inherit is OFF");
-  assert.ok(findFieldByLabel(body, "sampler_name"));
-  assert.ok(findFieldByLabel(body, "scheduler"));
+
+  // The SAME overlay must still be open -- a menu-internal edit rebuilds
+  // its own content, it never closes/reopens the overlay wholesale.
+  assert.ok(activeOverlayRef.current, "the ⚙ menu must still be open after toggling inherit inside it");
+  assert.ok(findFieldByLabel(box, "cfg"), "cfg reappears once inherit is OFF");
+  assert.ok(findFieldByLabel(box, "sampler_name"));
+  assert.ok(findFieldByLabel(box, "scheduler"));
   assert.equal(genState(node).highres.inherit_sampler_settings, false);
 });
 
@@ -1941,37 +2039,79 @@ function headerChildKinds(header) {
     if (hasClass(c, "wtn-fld-switch")) return "switch";
     if (hasClass(c, "wtn-an-shead-nm")) return "label";
     if (hasClass(c, "wtn-fld-info")) return "info";
+    if (hasClass(c, "wtn-fld-gear")) return "gear";
     if (hasClass(c, "wtn-an-shead-sum")) return "summary";
     return "?";
   });
 }
 
-test("header child order is chevron -> switch -> label -> ⓘ (no summary while disabled -- Highres always carries an ⓘ AND a switch)", () => {
+test("header child order is chevron -> switch -> label -> ⓘ -> ⚙ (no summary while disabled -- Highres always carries an ⓘ, a switch, AND a ⚙ -- task item 3)", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   const header = findSectionHeader(refs.body, "Highres"); // starts disabled -> summary is null
-  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info"], "no summary while disabled -- but the first four never move");
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "gear"], "no summary while disabled -- but the first five never move");
 });
 
-test("header child order is the SAME (chevron -> switch -> label -> ⓘ) once a summary appears -- enabling only APPENDS the summary, never reorders anything else", () => {
+test("header child order is the SAME (chevron -> switch -> label -> ⓘ -> ⚙) once a summary appears -- enabling only APPENDS the summary, never reorders anything else", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // enable -> gets a summary
   const header = findSectionHeader(refs.body, "Highres");
-  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "summary"], "chevron/switch/label/ⓘ must be in the EXACT same order as the disabled case above, with the summary appended at the end");
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "gear", "summary"], "chevron/switch/label/ⓘ/⚙ must be in the EXACT same order as the disabled case above, with the summary appended at the end");
 });
 
-test("header child order for a SWITCHLESS section (Sampler): chevron -> label -> ⓘ -> summary -- switch is simply absent, nothing else shifts", () => {
+test("header child order for a SWITCHLESS section (Sampler): chevron -> label -> ⓘ -> summary -- switch AND ⚙ are simply absent (Sampler isn't in item 3's restructured table), nothing else shifts", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   const header = findSectionHeader(refs.body, "Sampler");
   assert.deepEqual(headerChildKinds(header), ["chev", "label", "info", "summary"]);
+});
+
+test("header child order for Postprocess (restructuring out of scope, task item 3): chevron -> switch -> label -> ⓘ -> summary -- no ⚙ at all", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Postprocess");
+  assert.ok(!gearOf(header), "Postprocess must carry no ⚙ -- its field set is unchanged");
+  fire(switchOf(header), "click");
+  assert.deepEqual(headerChildKinds(findSectionHeader(refs.body, "Postprocess")), ["chev", "switch", "label", "info", "summary"]);
+});
+
+test("⚙ click never toggles a section's own expand/collapse -- Highres and Upscale each expose one, and clicking it changes neither ui_expanded nor enabled", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  for (const name of ["Highres", "Upscale"]) {
+    const before = JSON.parse(JSON.stringify(genState(node)));
+    const header = findSectionHeader(refs.body, name);
+    assert.ok(gearOf(header), `${name} must carry a ⚙`);
+    fire(gearOf(header), "click");
+    const after = genState(node);
+    const key = name.toLowerCase();
+    assert.equal(after.ui_expanded[key], before.ui_expanded[key], `${name}'s ⚙ click must not touch ui_expanded`);
+    assert.equal(after[key].enabled, before[key].enabled, `${name}'s ⚙ click must not touch enabled`);
+    assert.ok(!sectionBodyOf(header), `${name} must still be collapsed -- the ⚙ opens a MENU, never the inline body`);
+    closeActiveOverlay();
+  }
+});
+
+test("Detailer's section header carries NO ⚙ of its own (its only section-wide setting, sam3.checkpoint, is already inline) -- only its BLOCKS have one, separately", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Detailer");
+  assert.ok(!gearOf(header), "Detailer's own SECTION header must carry no ⚙");
 });
 
 // ===========================================================================
@@ -2137,13 +2277,13 @@ test("the popover mechanism is gone from js/anima/ entirely -- render.mjs's buil
   assert.equal(typeof fields.buildInfoIcon, "function");
 });
 
-test("interaction.mjs no longer imports js/shared/overlay.mjs at all -- a static source scan (comments stripped, so this file's OWN doc comments discussing the deletion don't trip the check) mirroring how the previous dispatch proved a deleted call site never survives in index.js", () => {
+test("interaction.mjs re-imports js/shared/overlay.mjs (2026-07-28, hybrid essentials/⚙ dispatch) -- for ANCHORED MENUS only (⚙ menus, stepper option lists), not the deleted per-section popover shape (already asserted gone, above)", () => {
   const src = readFileSync(path.join(__dirname, "interaction.mjs"), "utf8");
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/.*$/gm, "");
-  assert.doesNotMatch(code, /overlay\.mjs/);
-  assert.doesNotMatch(code, /openOverlayWithZoom/);
-  assert.doesNotMatch(code, /activeOverlayRef/);
-  assert.doesNotMatch(code, /closeOverlayIfOwnedBy/);
+  assert.match(src, /from\s+"\.\.\/shared\/overlay\.mjs"/, "interaction.mjs must import the shared overlay module again");
+  assert.match(src, /openOverlayWithZoom/);
+  assert.match(src, /closeActiveOverlay/);
+  assert.match(src, /closeOverlayIfOwnedBy/);
+  assert.match(src, /activeOverlayRef/);
 });
 
 // ===========================================================================
@@ -2239,7 +2379,7 @@ test("wipeXFromEvent clamps to [0,100] and defaults to 50 for a degenerate rect"
   assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 50), 50);
 });
 
-test("Preview: the Save section's own header switch reaches the preview_state widget immediately", () => {
+test("Preview: the Save row's own switch reaches the preview_state widget immediately, WITHOUT opening the menu (stopPropagation keeps it a separate control)", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -2248,46 +2388,60 @@ test("Preview: the Save section's own header switch reaches the preview_state wi
   const header = findSectionHeader(refs.body, "Save");
   fire(switchOf(header), "click");
   assert.equal(previewState(node).save.enabled, false);
+  assert.equal(activeOverlayRef.current, null, "flipping the switch must never also open the Save menu");
 });
 
-test("Preview: ui_expanded.save (driven by the Save section's own SWITCH, not its header) persists across a repaint and reaches the serialized preview_state widget, same contract as the Generator's sections", () => {
+test("Preview: Save is NOT an inline accordion any more (task item 2) -- its row carries no chevron and never gains a .wtn-an-sbody, regardless of switch state", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
+  makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
-
-  assert.equal(previewState(node).ui_expanded.save, false);
-  // Save HAS a switch -- a header click is a no-op for it (task 3); flip
-  // the switch instead. `makePreviewNode`'s default state has save.enabled
-  // already true, so this first click turns it OFF (and collapses it);
-  // click again to land on enabled+expanded.
-  fire(switchOf(findSectionHeader(refs.body, "Save")), "click");
-  fire(switchOf(findSectionHeader(refs.body, "Save")), "click");
-  assert.equal(previewState(node).ui_expanded.save, true);
-  assert.equal(previewState(node).save.enabled, true);
-  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Save")));
-
-  const rebuilt = repaintPreview(node, ctx);
-  assert.ok(sectionBodyOf(findSectionHeader(rebuilt.body, "Save")), "still expanded after a repaint");
+  const header = findSectionHeader(refs.body, "Save");
+  assert.ok(!header.children.some((c) => hasClass(c, "wtn-an-chev")), "the Save row must carry no chevron at all");
+  assert.ok(!sectionBodyOf(header), "no inline body while enabled");
+  fire(switchOf(header), "click"); // disable
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Save")), "still no inline body once disabled either");
 });
 
-test("Preview: the Save section's HEADER click does nothing -- neither ui_expanded nor enabled changes, and no body appears", () => {
+test("Preview: the Save row opens its menu as a placement:\"right\" overlay (task item 2) -- via its own ⚙ AND via a plain click on the row, holding the SAME field set the old inline section had", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
+  makeWindowStub(doc, { w: 1200, h: 900 });
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Save");
 
-  const before = JSON.parse(JSON.stringify(previewState(node)));
-  fire(findSectionHeader(refs.body, "Save"), "click");
-  const after = previewState(node);
-  assert.equal(after.ui_expanded.save, before.ui_expanded.save);
-  assert.equal(after.save.enabled, before.save.enabled);
-  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Save")), "still collapsed -- header click is a no-op");
+  const box = openGearMenu(header);
+  assert.equal(activeOverlayRef.current.overlay.className, "wtn-an-overlay wtn");
+  for (const label of ["which", "extension", "path", "filename"]) {
+    assert.ok(findFieldByLabel(box, label), `expected ${label} in the Save menu`);
+  }
+  assert.ok(queryAll(box, (n) => hasClass(n, "wtn-an-boolfield")).some((f) => (f.children[0] || {}).textContent === "embed workflow"));
+  closeActiveOverlay();
+
+  // Clicking the row itself (not just the ⚙) opens the SAME menu.
+  fire(header, "click");
+  assert.ok(activeOverlayRef.current, "a plain click on the Save row must also open the menu");
 });
 
-test("normalizeExpandedSections applied against DEFAULT_EXPANDED_PREVIEW_SECTIONS (the Preview's own defaults, distinct from the Generator's) defaults 'save' to collapsed", () => {
-  assert.deepEqual(normalizeExpandedSections(undefined, DEFAULT_EXPANDED_PREVIEW_SECTIONS), { save: false });
-  assert.deepEqual(DEFAULT_EXPANDED_PREVIEW_SECTIONS, { save: false });
+test("Preview: editing a field inside the Save menu persists immediately and updates the header's own summary in place, WITHOUT rebuilding the menu or closing it", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Save");
+  const box = openGearMenu(header);
+
+  const extensionField = findFieldByLabel(box, "extension");
+  const rightArrow = extensionField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click");
+
+  assert.ok(activeOverlayRef.current, "the menu must still be open after a field edit inside it");
+  assert.equal(previewState(node).save.extension, "jpg", "cycling extension must persist immediately");
+  const sumEl = header.children.find((c) => hasClass(c, "wtn-an-shead-sum"));
+  assert.ok(sumEl.textContent.includes("jpg"), "the header's own summary must reflect the new extension WITHOUT a full repaint");
 });
 
 // ===========================================================================
@@ -2793,6 +2947,320 @@ test("index.js: socket healing (healNodeSockets) is wired into onConfigure only 
   // explaining why it is NOT called from `onNodeCreated`.
   assert.doesNotMatch(onNodeCreatedBlock, /healNodeSockets\(/, "onNodeCreated must never heal -- a fresh node is already correct");
   assert.match(onConfigureBlock, /healNodeSockets\(/, "onConfigure must be the one place healing runs");
+});
+
+// ===========================================================================
+// H2. The "Generator loses its saved size on every refresh" race
+//     (`isGraphLoading()`, `js/shared/graph_loading.mjs`, ported from
+//     `../ComfyUI-Pixaroma`). Neither `index.js` nor `graph_loading.mjs`
+//     itself can be imported directly here (both carry a top-level absolute
+//     `/scripts/app.js` import, which 404s under plain `node` -- this file's
+//     own top doc comment already states index.js is never imported
+//     directly for exactly this reason) -- both are covered by static
+//     source scans, the SAME technique this suite already uses for
+//     `index.js`'s other un-instantiable wiring (the tests immediately
+//     above/below this one).
+// ===========================================================================
+
+test("js/shared/graph_loading.mjs: wraps app.loadGraphData exactly once (idempotency guard), holds a flag through the call plus a trailing window, and exports isGraphLoading", () => {
+  const src = readFileSync(path.join(__dirname, "..", "shared", "graph_loading.mjs"), "utf8");
+  assert.match(src, /app\.loadGraphData\s*=\s*function/, "must wrap app.loadGraphData");
+  assert.match(src, /_wtnGraphLoadWrapped/, "must guard against double-wrapping (hot reload)");
+  assert.match(src, /setTimeout\(\(\)\s*=>\s*\{\s*_loading\s*=\s*false;?\s*\},\s*300\)/, "must clear the flag after a trailing window, not immediately");
+  assert.match(src, /export function isGraphLoading/);
+});
+
+test("index.js: setupNode's sizing block is gated on isGraphLoading() || node._anConfiguring -- the fix for the Generator snapping to its fresh-node default (360x340) on every refresh/workflow re-open", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(indexSource, /import\s*\{\s*isGraphLoading\s*\}\s*from\s*"\.\.\/shared\/graph_loading\.mjs"/, "must import isGraphLoading eagerly (not through loadMods())");
+
+  const setupIdx = indexSource.indexOf("function setupNode(");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  assert.ok(setupIdx >= 0 && restoreIdx > setupIdx, "setupNode must be defined, and restoreNode must follow it");
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+
+  const gateIdx = setupBody.indexOf("if (isGraphLoading() || node._anConfiguring)");
+  assert.ok(gateIdx >= 0, "setupNode must gate on BOTH isGraphLoading() and node._anConfiguring");
+  const sizingIdx = setupBody.indexOf("wFloor");
+  assert.ok(sizingIdx > gateIdx, "the gate must come BEFORE the actual sizing/Math.max floor logic, not after");
+
+  // restoreNode itself must still do no sizing at all -- the gate above is
+  // what makes setupNode (which DOES run on the restore path, unlike
+  // restoreNode) honour that same rule instead of quietly violating it.
+  const restoreBody = indexSource.slice(restoreIdx, restoreIdx + 400);
+  assert.doesNotMatch(restoreBody, /setSize\(/);
+});
+
+// ===========================================================================
+// H4. The Use-Everywhere submit-churn guard (`js/shared/submit_guard.mjs`'s
+//     `isSubmitting()`) -- a connect-then-disconnect burst across every
+//     UE-fed socket at prompt-submit time used to wipe the very
+//     `_anContextRun` a run had just stashed. Neither `submit_guard.mjs`
+//     nor `index.js` can be imported directly here (both carry a top-level
+//     absolute `/scripts/app.js` import) -- covered by static source scans,
+//     same technique as H2's `isGraphLoading` coverage just above.
+// ===========================================================================
+
+test("js/shared/submit_guard.mjs: wraps app.queuePrompt AND app.graphToPrompt (idempotency-guarded), holds a flag through the call plus a GENEROUS trailing window, and exports isSubmitting", () => {
+  const src = readFileSync(path.join(__dirname, "..", "shared", "submit_guard.mjs"), "utf8");
+  assert.match(src, /app\[fnName\]\s*=\s*function/, "must wrap the submit entry point(s) generically");
+  assert.match(src, /wrapSubmitFn\("queuePrompt"\)/, "must wrap app.queuePrompt");
+  assert.match(src, /wrapSubmitFn\("graphToPrompt"\)/, "must ALSO wrap app.graphToPrompt (the more likely link-injection point)");
+  assert.match(src, /_wtnSubmitWrapped_/, "must guard against double-wrapping (hot reload)");
+  assert.match(src, /TRAILING_MS\s*=\s*600/, "the trailing window must be generous (>= graph_loading.mjs's own 300ms), since the executed message and the UE teardown ordering isn't pinned down live");
+  assert.match(src, /export function isSubmitting/);
+});
+
+test("index.js: BOTH onConnectionsChange hooks (the Bridge's forward-walk one, and the Generator's own) skip clearContextRun AND the repaint entirely while isSubmitting() -- the fix for post-run context-supplied values never appearing", () => {
+  const src = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(src, /import\s*\{\s*isSubmitting\s*\}\s*from\s*"\.\.\/shared\/submit_guard\.mjs"/, "must import isSubmitting eagerly (not through loadMods())");
+
+  const bridgeConnIdx = src.indexOf("nodeType.prototype.onConnectionsChange = function (...args) {\n        const result = _bridgeConn");
+  const genConnIdx = src.indexOf("nodeType.prototype.onConnectionsChange = function (...args) {\n      const result = _conn");
+  assert.ok(bridgeConnIdx >= 0, "expected the Bridge's own onConnectionsChange hook");
+  assert.ok(genConnIdx > bridgeConnIdx, "expected the Generator/Preview onConnectionsChange hook to follow it");
+
+  const bridgeHookBody = src.slice(bridgeConnIdx, genConnIdx);
+  assert.match(bridgeHookBody, /if\s*\(isSubmitting\(\)\)\s*\{\s*return result;/, "the Bridge hook must bail out entirely (no clear, no downstream repaint) while submitting");
+
+  const genHookBody = src.slice(genConnIdx, genConnIdx + 1600);
+  assert.match(genHookBody, /if\s*\(isSubmitting\(\)\)\s*\{\s*return result;/, "the Generator branch must bail out entirely (no clear, no repaint) while submitting");
+  // The Preview branch of the SAME hook must be untouched -- UE's churn is
+  // on the Bridge's context sockets, never the Preview's own images/
+  // metadata_json, so its repaint must still fire unconditionally.
+  assert.match(genHookBody, /repaintPreview\(this, this\._anCtx\)/);
+});
+
+// ===========================================================================
+// H3. The hybrid essentials/⚙ dispatch (task items 1-4) -- card CSS,
+//     stepper option lists, the inline/advanced field split per section, ⚙
+//     menu edit persistence vs rebuild, and the type-scale constants.
+// ===========================================================================
+
+test("card CSS contract (task item 1): .wtn-an-sbody continues its header's own surface/border and rounds ONLY its bottom corners; the header squares off its OWN bottom corners while expanded", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+
+  const bodyRule = cssRuleBody(cssText, ".wtn-an-sbody");
+  assert.ok(bodyRule, "expected a .wtn-an-sbody rule");
+  assert.ok(bodyRule.includes("background: var(--wtn-surface-2"), ".wtn-an-sbody must share the header's OWN surface token");
+  assert.ok(bodyRule.includes("border-top: none"), ".wtn-an-sbody must not double the header's own bottom border into a seam");
+  assert.match(bodyRule, /border-radius:\s*0 0 8px 8px/, ".wtn-an-sbody must round ONLY its bottom corners");
+
+  const expandedRule = cssRuleBody(cssText, ".wtn-an-shead.wtn-an-expanded");
+  assert.ok(expandedRule, "expected a .wtn-an-shead.wtn-an-expanded rule");
+  assert.match(expandedRule, /border-radius:\s*8px 8px 0 0/, "the EXPANDED header must square off its own bottom corners so it joins the body below with no visible seam");
+  assert.match(expandedRule, /margin-bottom:\s*0/, "the expanded header must drop its own bottom margin -- zero gap between header and body");
+});
+
+test("card CSS contract: a dep (missing-dependency) section's body continues the SAME warn-tinted border its header carries", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const depHeadRule = cssRuleBody(cssText, ".wtn-an-shead.wtn-an-dep");
+  const depBodyRule = cssRuleBody(cssText, ".wtn-an-sbody.wtn-an-dep");
+  assert.ok(depHeadRule && depBodyRule, "expected BOTH a header and a body dep rule");
+  assert.equal(depHeadRule.match(/border-color:\s*([^;]+);/)[1], depBodyRule.match(/border-color:\s*([^;]+);/)[1], "the body's dep border colour must match the header's own");
+});
+
+test("a stepper's onOpenList is wired (task item 2's dead-dropdown fix) -- clicking the value/caret opens an anchored, scrollable option list marking the CURRENT selection, and picking one writes+persists+closes", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    getKnownLists: () => ({
+      checkpoints: ["sam3.1_multiplex_fp16.safetensors", "other_checkpoint.safetensors"],
+      upscale_models: ["2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"],
+    }),
+  });
+  const refs = mountGeneratorUI(node, ctx);
+  // Highres HAS a switch -- enable it to reach its inline body isn't even
+  // needed here (upscale_method now lives in the ⚙ menu) -- use the
+  // Detailer's inline SAM3 checkpoint picker instead, a stepper that's
+  // ALWAYS inline and always has a real option list from ctx.getKnownLists().
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const field = findFieldByLabel(body, "checkpoint");
+  assert.ok(field, "expected the SAM3 checkpoint stepper inline");
+  const combo = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo"));
+
+  fire(combo, "click");
+  assert.ok(activeOverlayRef.current, "clicking the combo must open an option-list overlay");
+  const menu = activeOverlayRef.current.overlay.children[0];
+  assert.ok(hasClass(menu, "wtn-an-optlist"), "the option list must carry the scrollable optlist modifier");
+  const opts = queryAll(menu, (n) => hasClass(n, "wtn-an-opt"));
+  assert.ok(opts.length >= 2, "the checkpoint list must have real options (ctx.getKnownLists().checkpoints)");
+  const current = genState(node).detailer.sam3.checkpoint;
+  assert.ok(opts.some((o) => hasClass(o, "wtn-an-opt-sel") && o.textContent === current), "the CURRENT value must be marked selected");
+
+  const other = opts.find((o) => o.textContent !== current);
+  fire(other, "click");
+  assert.equal(activeOverlayRef.current, null, "picking an option must close the list");
+  assert.equal(genState(node).detailer.sam3.checkpoint, other.textContent, "picking an option must write+persist it");
+
+  // A second click on the SAME combo toggles it closed instead of
+  // close-then-reopen (js/shared/overlay.mjs's own documented trap).
+  fire(combo, "click");
+  assert.ok(activeOverlayRef.current);
+  fire(combo, "click");
+  assert.equal(activeOverlayRef.current, null, "a second click on the SAME opener must close its own list, not reopen it");
+});
+
+/** Every visible field LABEL (numeric/stepper/bool/text -- the union
+ * `findFieldByLabel`'s own predicate already covers) inside `root`, walked
+ * recursively -- used to assert an exact inline/advanced split against
+ * task item 3's table, both directions. */
+function allFieldLabels(root) {
+  const containers = queryAll(root, (n) =>
+    hasClass(n, "wtn-fld-num") || hasClass(n, "wtn-fld-stepper") || hasClass(n, "wtn-an-boolfield") || hasClass(n, "wtn-an-field"));
+  return containers.map((f) => {
+    const nameEl = f.children.find((c) => hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name")) || f.children[0];
+    return nameEl && nameEl.textContent;
+  }).filter(Boolean);
+}
+
+/** Flips a ⚙ menu's own "inherit" boolfield off -- `cfg`/`sampler_name`/
+ * `scheduler` only render while inherit is OFF (design doc §6b), so every
+ * inline/advanced split test below has to turn it off first to see all
+ * three, exactly like a real user opening the menu for the first time
+ * would (it defaults ON). */
+function toggleInheritOff(box) {
+  const inheritField = queryAll(box, (n) => hasClass(n, "wtn-an-boolfield"))
+    .find((f) => (f.children[0] || {}).textContent === "inherit");
+  assert.ok(inheritField, "expected an 'inherit' boolfield in this menu");
+  fire(inheritField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+}
+
+test("Highres: the inline field set is EXACTLY {scale_by, steps, denoise} -- every advanced field (inherit, cfg, sampler_name, scheduler, max_long_edge, multiple, upscale_method) is present in the ⚙ menu and ABSENT inline, both directions (task item 3's table)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
+  assert.deepEqual(allFieldLabels(body).sort(), ["denoise", "scale_by", "steps"].sort());
+
+  const box = openGearMenu(findSectionHeader(refs.body, "Highres"));
+  toggleInheritOff(box); // reveal cfg/sampler_name/scheduler (hidden by default -- inherit starts ON)
+  const advancedLabels = allFieldLabels(box);
+  for (const label of ["inherit", "cfg", "sampler_name", "scheduler", "max_long_edge", "multiple", "upscale_method"]) {
+    assert.ok(advancedLabels.includes(label), `expected ${label} in Highres's ⚙ menu`);
+  }
+  for (const label of ["scale_by", "steps", "denoise"]) {
+    assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the ⚙ menu`);
+  }
+});
+
+test("Upscale: the inline field set is EXACTLY {upscale_model_name, scale_by, steps, denoise} -- every USDU tile/seam field plus the sampler-inherit block live ONLY in the ⚙ menu (task item 3's table)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
+  assert.deepEqual(allFieldLabels(body).sort(), ["denoise", "scale_by", "steps", "upscale_model_name"].sort());
+
+  const box = openGearMenu(findSectionHeader(refs.body, "Upscale"));
+  toggleInheritOff(box);
+  const advancedLabels = allFieldLabels(box);
+  for (const label of [
+    "inherit", "cfg", "sampler_name", "scheduler",
+    "auto_tile_size", "mode_type", "auto_tile_target", "auto_tile_min", "auto_tile_max",
+    "tile_width", "tile_height", "mask_blur", "tile_padding", "force_uniform_tiles", "batch_size", "tiled_decode",
+    "seam_fix_mode", "seam_fix_denoise", "seam_fix_width", "seam_fix_mask_blur", "seam_fix_padding",
+  ]) {
+    assert.ok(advancedLabels.includes(label), `expected ${label} in Upscale's ⚙ menu`);
+  }
+  for (const label of ["upscale_model_name", "scale_by", "steps", "denoise"]) {
+    assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the ⚙ menu`);
+  }
+});
+
+test("Detailer block: the inline field set is EXACTLY {label, threshold, steps, denoise} (plus the structural tab/reorder/on-off controls) -- every other field (detect_prompt, wildcard, sampler inherit, crop_factor, guide_size, ...) lives ONLY behind that block's OWN ⚙ (task item 3's table)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  // "checkpoint" is the section-level sam3 picker, not a per-block field --
+  // excluded from the per-block inline set assertion below by name.
+  const inlineLabels = allFieldLabels(body).filter((l) => l !== "checkpoint");
+  assert.deepEqual(inlineLabels.sort(), ["denoise", "label", "steps", "threshold"].sort());
+
+  const gear = queryAll(body, (n) => hasClass(n, "wtn-fld-gear"))[0];
+  assert.ok(gear, "expected the active block's own ⚙ inside the Detailer body");
+  fire(gear, "click");
+  const box = activeOverlayRef.current.overlay.children[0];
+  toggleInheritOff(box);
+  const advancedLabels = allFieldLabels(box);
+  for (const label of [
+    "detect_prompt", "wildcard", "detect_count", "inherit", "cfg", "sampler_name", "scheduler",
+    "crop_factor", "guide_size", "guide_size_for", "max_size", "feather",
+    "noise_mask", "noise_mask_feather", "force_inpaint", "inpaint_model", "cycle",
+    "refine_iterations", "drop_size", "bbox_fill", "contour_fill", "combined",
+    "individual_masks", "alignment", "tiled_decode", "tiled_encode",
+  ]) {
+    assert.ok(advancedLabels.includes(label), `expected ${label} in the block's ⚙ menu`);
+  }
+  for (const label of ["label", "threshold", "steps", "denoise"]) {
+    assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the block's ⚙ menu`);
+  }
+});
+
+test("⚙ menu: editing a plain VALUE field (that doesn't change what the menu shows) persists immediately and does NOT rebuild the menu -- the SAME DOM node reference survives the edit", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
+  const box = openGearMenu(findSectionHeader(refs.body, "Highres"));
+
+  const maxLongEdgeField = findFieldByLabel(box, "max_long_edge");
+  assert.ok(maxLongEdgeField);
+  maxLongEdgeField._rect = { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 };
+  fire(maxLongEdgeField, "pointerdown", { clientX: 300 });
+  fire(maxLongEdgeField, "pointerup", { clientX: 300 });
+
+  assert.ok(activeOverlayRef.current, "the menu must still be open");
+  // The identical field element must still be attached to the SAME box --
+  // a rebuild would have replaced every child with a freshly-built one.
+  assert.ok(findFieldByLabel(box, "max_long_edge") === maxLongEdgeField, "editing a non-shape-changing field must not rebuild the menu's DOM");
+  assert.equal(genState(node).highres.max_long_edge, 8192, "the edit must still persist");
+});
+
+test("font/height constants (task item 4) are internally consistent: every row/header height and node-size floor scales together, and the litegraph-native chrome constant does NOT", () => {
+  // Row/header heights: the header is taller than a plain field row (it
+  // carries a chevron/switch/⚙ cluster the field rows don't).
+  assert.ok(SHEAD_H > fields.FLD_ROW_H, "SHEAD_H must be taller than a plain field row");
+  assert.equal(BASE_FONT, 14, "the base type this whole pass scaled to");
+  assert.ok(fields.FLD_FONT < BASE_FONT, "field body type stays slightly smaller than the panel's own base font, matching the pre-existing proportion");
+
+  // Width/height floors must all have grown from their pre-dispatch values
+  // (this file's own "Resize" section comments record the "was" numbers).
+  assert.ok(DEFAULT_W > 360 && GENERATOR_MIN_W > 320 && PREVIEW_MIN_W > 380);
+  assert.ok(PREVIEW_IMG_MIN_H > 160 && PANEL_MIN_H > 220);
+
+  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (task item 2's second
+  // bullet, render.mjs's own comment) sums to within rounding of the
+  // exported constant.
+  const saveRowH = SHEAD_H + SHEAD_GAP;
+  const compareRowH = 8 + 24; // pvbar margin-top + its own segmented-button content
+  const bodyGaps = 5 * 2; // 3 children (save row / wipe / compare row) -> 2 gaps
+  const panelChrome = 7 * 2 + 1 * 2; // padding top+bottom, border top+bottom
+  const sum = saveRowH + compareRowH + PREVIEW_IMG_MIN_H + bodyGaps + panelChrome;
+  assert.ok(sum <= PREVIEW_PANEL_MIN_H, "PREVIEW_PANEL_MIN_H must cover the documented arithmetic");
+  assert.ok(PREVIEW_PANEL_MIN_H - sum < 4, "rounded up to the nearest 4px grid only, not padded further");
+
+  // The node-chrome constant (title bar + socket rows) is litegraph's OWN
+  // native pixel geometry, independent of this file's type scale -- it must
+  // NOT have moved just because everything else did.
+  assert.equal(PREVIEW_MIN_H - PREVIEW_PANEL_MIN_H, 80, "the node-chrome addend must stay 80 regardless of the type-scale pass");
 });
 
 // ===========================================================================

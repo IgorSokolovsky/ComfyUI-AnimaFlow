@@ -9,10 +9,17 @@
 
 ## What's inside
 
+Seven nodes across three tracks:
+
 - **🎛️ Rule Builder** — a visual editor for **prompt-transform rules**. Define your character/outfit/scene logic as declarative rules; the engine rewrites your prompt before it's encoded. Works for **Anima labelled-prose** *and* **booru tags**. → [**docs/rule-builder.md**](docs/rule-builder.md)
+  *`Prompt Rules`, `Prompt Rules (CLIP)`*
+- **🎚️ Control Panel + Loader Panel** — one node holding as many labelled controls as you want (seeds, ints, floats, samplers, schedulers, empty latents; UNET/VAE/CLIP loaders in the Loader variant), each with its own output socket parked on its own row. Drag to reorder, and a fresh row adopts the type, range and name of whatever you first plug it into. → [**docs/control-panel-design.md**](docs/control-panel-design.md)
+  *`Anima Control Panel`, `Anima Loader Panel`*
+- **🖼️ Generator + Preview** — the whole txt2img pipeline (first pass → highres → detailer → upscale → postprocess) behind one node with inline settings sections, fed by a **Context Bridge** that bundles model/clip/vae/conditioning/sampler settings into one wire. The Preview node compares two stage images with a hover wipe and owns saving, so `base`/`mid`/`final` can be saved under different names. → [**docs/generator-design.md**](docs/generator-design.md)
+  *`Anima Context Bridge`, `Anima Generator`, `Anima Preview`*
 - **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
 
-All node UIs share one **house theme** (dark slate + teal) so the pack feels like a single tool.
+All node UIs share one **house theme** (dark slate + teal) so the pack feels like a single tool — see [**docs/THEME.md**](docs/THEME.md).
 
 ---
 
@@ -78,7 +85,7 @@ detection · launch + [pinggy](https://pinggy.io) tunnel for a public URL · liv
 
 ## Quick start — the Rule Builder
 
-1. Add a **Prompt Rules** node (text output) or **Prompt Rules (CLIP)** (conditioning output) — category `AnimaFlow/anima_prompt`.
+1. Add a **Prompt Rules** node (text output) or **Prompt Rules (CLIP)** (conditioning output) — category `AnimaFlow/Prompt`.
 2. Click **Open Rule Builder** on the node → the overlay opens.
 3. Edit rules visually (or start from the sample `celica` sheet); the **live preview** shows the transformed prompt + a **trace** of exactly what fired.
 4. Click **Pick…** to insert a character/outfit/background token without memorizing names.
@@ -95,6 +102,9 @@ Character sheets live as `rules/*.yaml` files (reusable) and/or embedded per-wor
 | [**docs/rule-builder.md**](docs/rule-builder.md) | The Rule Builder + prompt-rules engine — concepts, the overlay, the picker, character sheets, worked examples. |
 | [**docs/rules-reference.md**](docs/rules-reference.md) | Complete rule reference — every rule type, condition, target, and profile. |
 | [**docs/nodes.md**](docs/nodes.md) | Catalog of every node: inputs, outputs, and what it's for. |
+| [**docs/control-panel-design.md**](docs/control-panel-design.md) | The Control Panel + Loader Panel — why one node per many controls, per-row output typing, the design decisions and why several reversed. |
+| [**docs/generator-design.md**](docs/generator-design.md) | The Generator + Preview + Context Bridge — stage order, the settings blob, the hover-wipe compare, and where saving lives. |
+| [**docs/THEME.md**](docs/THEME.md) | The house theme: tokens, the `.wtn-*` class vocabulary, and the gotchas of styling a node UI inside ComfyUI. |
 | [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md) | Deep spec of the ruleset format + Document model (for tinkerers). |
 
 ---
@@ -105,9 +115,11 @@ The prompt tools serve **booru tags** (Illustrious/Pony), **labelled prose** (An
 
 ## Credits & license
 
-AnimaFlow is **MIT** licensed — see [`LICENSE`](LICENSE). It stands on two other projects, in two very different ways:
+AnimaFlow is **MIT** licensed — see [`LICENSE`](LICENSE). It stands on three other projects, in three very different ways:
 
-**[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — this pack's tag-autocomplete and tag-highlighting/classify service derive from this project, with logic copied and adapted under its MIT license. Thank you to n0va39: the booru-autocomplete approach and the classify logic behind prompt highlighting both originate there. (AnimaFlow previously also carried a leaner port of this pack's generation/conditioning node line; that line has been removed for now and will be re-derived node-by-node from this same upstream in a future build.)
+**[ComfyUI-Pixaroma](https://github.com/pixaroma/ComfyUI-Pixaroma)** (MIT, © 2026 pixaroma) — **the reason this pack's node UIs work at all.** Every custom-DOM node here is built on patterns worked out in that project, ported under its MIT license with thanks to pixaroma: the DOM-widget sizing mechanism our nodes' bodies depend on (from its `find_replace` node), the wildcard-`ANY` output-typing trick and state-in-a-widget shape behind the Control Panel (from `PixaromaSliders`), parking a row's output socket on its own row (`alignOutputsLegacy`, from its `sliders` node), the wheel-zooms-the-canvas-through-a-DOM-widget fix (`js/shared/canvas_zoom.mjs`), and the themed node chrome (from its `note` node). Its `find_replace` node is also this pack's aesthetic reference, and seven rounds of review bugs it already found and fixed are being mined for ours in [`docs/pixaroma-review-rounds-plan.md`](docs/pixaroma-review-rounds-plan.md) — several of those bugs bite any node built this way, and finding them pre-fixed in someone else's working code saved real debugging here.
+
+**[ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima)** (MIT, © 2026 n0va39) — this pack's tag-autocomplete and tag-highlighting/classify service derive from this project, with logic copied and adapted under its MIT license. Thank you to n0va39: the booru-autocomplete approach and the classify logic behind prompt highlighting both originate there. The **Generator + Preview + Context Bridge** line is also re-derived from this upstream — its stage order (detailer *before* upscale, which is not obvious and is right), per-stage sampler overrides, the hover-wipe compare, and its tuned stage defaults. The rest of that line (Conditioning Encode, Detailer Align Hook, Image Scale, Region Mask Editor, Regional Conditioning) is still to be re-derived node by node.
 
 **[ComfyUI-MyOriginalWaifu](https://github.com/Deathspike/ComfyUI-MyOriginalWaifu)** (GPL-3.0) — **concept inspiration only; no code was copied.** The Rule Builder idea comes from here, but AnimaFlow's engine (`src/prompt_rules/core/`) is a **clean-room** implementation written against its own spec, [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md), and is architecturally different (a Document tree with profiles and selectors, versus a flat weighted tag list). Since that project is copyleft, this boundary is what keeps AnimaFlow MIT — please don't copy code across it.
 
