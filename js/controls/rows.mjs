@@ -141,6 +141,86 @@ export const UNET_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m
 export const CLIP_TYPES = ["stable_diffusion", "sdxl", "flux", "wan", "qwen_image"];
 export const CLIP_DEVICES = ["default", "cpu"];
 
+// ---------------------------------------------------------------------------
+// Anima-model heuristic default — a fresh/orphaned `unet` picker row (a
+// brand-new row, or a saved value that fell off the currently-installed
+// list) must not blindly adopt `optionList[0]` the way every other picker
+// kind does: on a real models folder, index 0 is whatever sorts first,
+// essentially never an Anima checkpoint (the ORIGINAL bug, just narrower --
+// see this pack's Loader Panel bug report). Mirrors
+// `src/anima/resources.py`'s `UNET_NAME_CANDIDATES`/`preferred_name_default`
+// EXACTLY, including the same `anima(?![a-z])` heuristic regex -- KEEP THE
+// TWO IN SYNC (comment repeated at that module's own definition site) or
+// AnimaGenerator's internal unet_name picker and this Loader Panel's
+// fresh-row default can silently disagree about which installed file "is"
+// the Anima model.
+// ---------------------------------------------------------------------------
+
+export const UNET_NAME_CANDIDATES = [
+  "anima-base-v1.0.safetensors",
+  // Upstream's own second candidate, verbatim -- see resources.py's
+  // identical comment on its Python twin.
+  "ANIMA\\anima_baseV10.safetensors",
+];
+
+/** Last path segment, lowercased, tolerant of either slash direction --
+ * JS twin of `resources.py`'s `_preferred_name_basename`. */
+function preferredNameBasename(name) {
+  return String(name).replace(/\\/g, "/").split("/").pop().toLowerCase();
+}
+
+/** Matches "anima" case-insensitively but NOT as a substring of a longer
+ * word -- the negative lookahead is what rejects **Animagine XL**
+ * (`animagineXL31.safetensors`, a real, unrelated SDXL anime model: "g"
+ * immediately follows "anima") while still accepting
+ * `nyaIrisAnima_base1V20.safetensors` ("_" follows), `anima-base-v1.0...`
+ * ("-" follows), `ANIMA/anima_baseV10...` ("_" follows), and bare
+ * `Anima.safetensors` (end of string). Identical regex to
+ * `resources.py`'s `_ANIMA_HEURISTIC_RE` -- keep both in sync. */
+const ANIMA_HEURISTIC_RE = /anima(?![a-z])/i;
+
+/** First entry in `names` (list order, not sorted) the heuristic above
+ * matches, or `null` if nothing does. */
+function firstAnimaHeuristicMatch(names) {
+  const found = names.find((n) => ANIMA_HEURISTIC_RE.test(String(n)));
+  return found === undefined ? null : found;
+}
+
+/**
+ * `names` (a live installed-file list) + `candidates` (preference order) ->
+ * the best default filename. Resolution order mirrors
+ * `resources.py`'s `preferred_name_default` EXACTLY: exact candidate ->
+ * basename-insensitive candidate -> `anima`-heuristic -> `names[0]` ->
+ * `candidates[0]`/`""` if `names` is empty. Used by `interaction.mjs`'s
+ * `repaintRows` for a `unet` row instead of the plain `optionList[0]` every
+ * other picker kind still uses (see this section's doc comment for why
+ * `unet` alone needs it).
+ */
+export function preferredNameDefault(names, candidates) {
+  const list = Array.isArray(names) ? names : [];
+  const cands = Array.isArray(candidates) ? candidates : [];
+  if (!list.length) {
+    return cands.length ? cands[0] : "";
+  }
+  for (const candidate of cands) {
+    if (list.includes(candidate)) {
+      return candidate;
+    }
+  }
+  const byBasename = new Map(list.map((n) => [preferredNameBasename(n), n]));
+  for (const candidate of cands) {
+    const match = byBasename.get(preferredNameBasename(candidate));
+    if (match !== undefined) {
+      return match;
+    }
+  }
+  const heuristic = firstAnimaHeuristicMatch(list);
+  if (heuristic !== null) {
+    return heuristic;
+  }
+  return list[0];
+}
+
 /**
  * Aspect ratios, each pinned to its canonical dimensions at the 1024 tier
  * (the SDXL/Anima buckets people already recognise — 832×1216, 1344×768…).
@@ -384,7 +464,15 @@ export function mkRow(kind, overrides = {}) {
   } else if (kind === "unet") {
     row.opts = { weight_dtype: "default" };
   } else if (kind === "clip") {
-    row.opts = { type: "stable_diffusion", device: "default" };
+    // "qwen_image", NOT CLIP_TYPES[0] ("stable_diffusion") -- this pack
+    // targets Anima, whose CLIP is a Qwen text encoder; AnimaGenerator's own
+    // internal clip_type picker already defaults to "qwen_image"
+    // (nodes/anima/generator.py), so the two must agree or the Loader Panel
+    // (the RECOMMENDED path) silently loads the wrong CLIP type. Only the
+    // fresh-row default changes here -- normalizeRow's fallback below is the
+    // other site; an already-saved `stable_diffusion` value is untouched by
+    // either (see that site's comment for why).
+    row.opts = { type: "qwen_image", device: "default" };
   }
   // sampler / scheduler / vae / auto: no extra opts.
 
@@ -595,8 +683,18 @@ function normalizeRow(raw, panelKind) {
     row.opts = {};
     row.value = typeof row.value === "string" ? row.value : undefined;
   } else if (kind === "clip") {
+    // Fallback is "qwen_image" (Anima's own CLIP type -- see mkRow's clip
+    // branch above), used ONLY when `row.opts.type` is missing/invalid
+    // (a hand-edited payload, or an old save with no `type` at all). A
+    // stored value that IS a valid CLIP_TYPES entry -- including a
+    // deliberately-picked "stable_diffusion" -- passes through UNCHANGED:
+    // there's no way to tell "this is the old wrong default" apart from "the
+    // user picked this on purpose", and stomping the latter is worse than
+    // leaving the former. Existing saved rows are NOT migrated -- a user
+    // with a pre-fix row still showing "stable_diffusion" needs to flip it
+    // by hand in the ⚙ popover.
     row.opts = {
-      type: CLIP_TYPES.includes(row.opts.type) ? row.opts.type : "stable_diffusion",
+      type: CLIP_TYPES.includes(row.opts.type) ? row.opts.type : "qwen_image",
       device: CLIP_DEVICES.includes(row.opts.device) ? row.opts.device : "default",
     };
     row.value = typeof row.value === "string" ? row.value : undefined;

@@ -52,6 +52,9 @@ import {
   isPresetId,
   menuMetaFor,
   mkCatalogRow,
+  CLIP_TYPES,
+  UNET_NAME_CANDIDATES,
+  preferredNameDefault,
 } from "./rows.mjs";
 
 let failures = 0;
@@ -338,6 +341,86 @@ test("mkRow builds sane per-kind defaults", () => {
   assert.equal(mkRow("latent").opts.mode, "predefined");
   assert.equal(mkRow("unet").opts.weight_dtype, "default");
   assert.equal(mkRow("clip").opts.device, "default");
+});
+
+test('mkRow("clip"): a fresh row defaults to opts.type "qwen_image", NOT CLIP_TYPES[0] ("stable_diffusion") -- Bug 1', () => {
+  const row = mkRow("clip");
+  assert.equal(row.opts.type, "qwen_image");
+  assert.notEqual(row.opts.type, CLIP_TYPES[0]);
+});
+
+test("normalizeState: a stored clip type that IS a valid CLIP_TYPES entry (including the old wrong default, stable_diffusion) survives untouched -- no silent migration", () => {
+  const state = normalizeState(
+    { rows: [{ kind: "clip", slot: 1, value: "clip_l.safetensors", opts: { type: "stable_diffusion", device: "default" } }] },
+    "loader"
+  );
+  assert.equal(state.rows[0].opts.type, "stable_diffusion");
+});
+
+test("normalizeState: a garbage/missing clip type falls back to qwen_image, not stable_diffusion", () => {
+  const garbage = normalizeState(
+    { rows: [{ kind: "clip", slot: 1, value: "clip_l.safetensors", opts: { type: "not-a-real-type" } }] },
+    "loader"
+  );
+  assert.equal(garbage.rows[0].opts.type, "qwen_image");
+  const missing = normalizeState(
+    { rows: [{ kind: "clip", slot: 1, value: "clip_l.safetensors", opts: {} }] },
+    "loader"
+  );
+  assert.equal(missing.rows[0].opts.type, "qwen_image");
+});
+
+// =========================================================================
+// preferredNameDefault -- the `unet` row's anima-heuristic default (Bug 2),
+// mirroring src/anima/resources.py's `preferred_name_default` EXACTLY. See
+// tests/test_anima_resources.py for the Python twin of this exact matrix.
+// =========================================================================
+
+test("preferredNameDefault: a candidate present wins even if not first in the folder list", () => {
+  const names = ["some-other-model.safetensors", "anima-base-v1.0.safetensors", "yet-another.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "anima-base-v1.0.safetensors");
+});
+
+test("preferredNameDefault: no candidate present falls back to names[0]", () => {
+  const names = ["totally-unrelated-a.safetensors", "totally-unrelated-b.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "totally-unrelated-a.safetensors");
+});
+
+test("preferredNameDefault: empty names list falls back to candidates[0], empty candidates falls back to ''", () => {
+  assert.equal(preferredNameDefault([], UNET_NAME_CANDIDATES), UNET_NAME_CANDIDATES[0]);
+  assert.equal(preferredNameDefault([], []), "");
+});
+
+test("preferredNameDefault: basename-insensitive candidate match (subfolder separator/case)", () => {
+  const names = ["ANIMA/anima_baseV10.safetensors", "unrelated.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "ANIMA/anima_baseV10.safetensors");
+});
+
+test("preferredNameDefault: heuristic matches a real-world Anima filename that matches no fixed candidate", () => {
+  const names = ["aaa-totally-unrelated.safetensors", "nyaIrisAnima_base1V20.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "nyaIrisAnima_base1V20.safetensors");
+});
+
+test("preferredNameDefault: heuristic beats names[0] even when the Anima file sorts last", () => {
+  const names = ["zzz-totally-unrelated.safetensors", "nyaIrisAnima_base1V20.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "nyaIrisAnima_base1V20.safetensors");
+});
+
+test("preferredNameDefault: an exact candidate still beats the heuristic when both are installed", () => {
+  const names = ["nyaIrisAnima_base1V20.safetensors", "anima-base-v1.0.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "anima-base-v1.0.safetensors");
+});
+
+test("preferredNameDefault: Animagine XL false positive is rejected, falling through to names[0]", () => {
+  const names = ["aaa-totally-unrelated.safetensors", "animagineXL31.safetensors"];
+  const result = preferredNameDefault(names, UNET_NAME_CANDIDATES);
+  assert.equal(result, "aaa-totally-unrelated.safetensors");
+  assert.notEqual(result, "animagineXL31.safetensors");
+});
+
+test("preferredNameDefault: heuristic is case-insensitive", () => {
+  const names = ["zzz-totally-unrelated.safetensors", "ANIMA.safetensors"];
+  assert.equal(preferredNameDefault(names, UNET_NAME_CANDIDATES), "ANIMA.safetensors");
 });
 
 test("mkRow overrides merge into opts rather than replacing it wholesale", () => {

@@ -194,6 +194,62 @@ def test_preferred_name_default_clip_and_vae_candidates_also_work():
     assert r.preferred_name_default(vae_names, r.VAE_NAME_CANDIDATES) == "qwen_image_vae.safetensors"
 
 
+# ---------------------------------------------------------------------------
+# The `anima`-heuristic fallback -- a real-world Anima checkpoint's filename
+# rarely matches a fixed candidate at all (community naming), so this is the
+# step that keeps `preferred_name_default` from falling all the way to
+# `names[0]` for a genuinely-installed Anima model. The Animagine XL false
+# positive is the whole reason the regex has a negative lookahead rather than
+# a plain substring test -- it MUST be rejected.
+# ---------------------------------------------------------------------------
+
+
+def test_preferred_name_default_heuristic_matches_real_world_anima_filename():
+    # The exact filename from a live session (task's Bug 2): matches no fixed
+    # UNET_NAME_CANDIDATES entry at all, so only the heuristic can find it.
+    names = ["aaa-totally-unrelated.safetensors", "nyaIrisAnima_base1V20.safetensors"]
+    assert r.preferred_name_default(names, r.UNET_NAME_CANDIDATES) == "nyaIrisAnima_base1V20.safetensors"
+
+
+def test_preferred_name_default_heuristic_beats_names_first_entry():
+    # The Anima file deliberately sorts LAST here -- the heuristic must still
+    # win over blindly taking names[0].
+    names = ["zzz-totally-unrelated.safetensors", "nyaIrisAnima_base1V20.safetensors"]
+    assert r.preferred_name_default(names, r.UNET_NAME_CANDIDATES) == "nyaIrisAnima_base1V20.safetensors"
+
+
+def test_preferred_name_default_animagine_false_positive_is_rejected():
+    # Animagine XL is a real, well-known, and completely unrelated SDXL anime
+    # model -- a naive `"anima" in name` substring test would pick it as an
+    # Anima base model. The negative-lookahead heuristic must reject it
+    # ("animag..." -- a letter immediately follows "anima"), falling all the
+    # way through to names[0] instead.
+    names = ["aaa-totally-unrelated.safetensors", "animagineXL31.safetensors"]
+    result = r.preferred_name_default(names, r.UNET_NAME_CANDIDATES)
+    assert result == "aaa-totally-unrelated.safetensors"
+    assert result != "animagineXL31.safetensors"
+
+
+def test_preferred_name_default_exact_candidate_still_beats_the_heuristic():
+    # Both a heuristic match AND an exact candidate are installed -- the
+    # candidate (a KNOWN-good exact name) must still win.
+    names = ["nyaIrisAnima_base1V20.safetensors", "anima-base-v1.0.safetensors"]
+    assert r.preferred_name_default(names, r.UNET_NAME_CANDIDATES) == "anima-base-v1.0.safetensors"
+
+
+def test_preferred_name_default_heuristic_is_case_insensitive():
+    names = ["zzz-totally-unrelated.safetensors", "ANIMA.safetensors"]
+    assert r.preferred_name_default(names, r.UNET_NAME_CANDIDATES) == "ANIMA.safetensors"
+
+
+def test_preferred_name_default_heuristic_accepts_bare_anima_at_string_end():
+    # No character follows "anima" at all (end of string, no extension) --
+    # the negative lookahead must not require a non-letter to be PRESENT,
+    # just that a LETTER isn't.
+    names = ["zzz-totally-unrelated.safetensors", "Anima"]
+    assert r.preferred_name_default(names, r.UNET_NAME_CANDIDATES) == "Anima"
+
+
 ALL_TESTS = [
     test_flag_on_pickers_win_even_with_sockets_wired,
     test_flag_off_socket_wins_when_wired,
@@ -217,6 +273,12 @@ ALL_TESTS = [
     test_preferred_name_default_basename_matches_bare_filename_variant,
     test_preferred_name_default_basename_match_is_case_insensitive,
     test_preferred_name_default_clip_and_vae_candidates_also_work,
+    test_preferred_name_default_heuristic_matches_real_world_anima_filename,
+    test_preferred_name_default_heuristic_beats_names_first_entry,
+    test_preferred_name_default_animagine_false_positive_is_rejected,
+    test_preferred_name_default_exact_candidate_still_beats_the_heuristic,
+    test_preferred_name_default_heuristic_is_case_insensitive,
+    test_preferred_name_default_heuristic_accepts_bare_anima_at_string_end,
 ]
 
 

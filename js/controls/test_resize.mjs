@@ -1591,6 +1591,89 @@ test("Loader Panel row (unet): clicking the steppers cycles the value and persis
   assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet").value, unetEntry.refs.row.value);
 });
 
+// =========================================================================
+// Bug 2 -- a fresh/orphaned `unet` row must adopt an Anima-looking file over
+// optionList[0], via rows.mjs's `preferredNameDefault`
+// (mirrors src/anima/resources.py's `preferred_name_default`). Asserting the
+// SERIALIZED panel_state WIDGET, not just the live row object, is the
+// habit that would have caught the "adoptedDefault never persists" class of
+// bug (see the syncRows/panel_state widget test above, "would have caught
+// Bug 3").
+// =========================================================================
+
+test("repaintRows (mount path): a brand-new unet row picks an Anima-looking file over optionList[0], and persists it to the panel_state widget", () => {
+  const node = makeFakeNode(); // fresh node -- default loader state, unet row's value starts undefined
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    // "sdxl_checkpoint.safetensors" sorts first -- optionList[0] would be
+    // WRONG for Anima. The real Anima file sorts last.
+    getKnownLists: () => ({ unet: ["sdxl_checkpoint.safetensors", "nyaIrisAnima_base1V20.safetensors"], vae: ["v"], clip: ["c"] }),
+  });
+  syncRows(node, ctx); // rebuildRowWidgets -> repaintRows, since the unet row's value is unset
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  assert.notEqual(unetEntry.refs.row.value, "sdxl_checkpoint.safetensors");
+  // The dangerous version of this bug is a live row that LOOKS right but
+  // never reached the widget the backend actually reads -- assert the
+  // SERIALIZED panel_state, not node.properties.
+  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors");
+});
+
+test("repaintRows (mount path): the Animagine XL false positive is rejected for a fresh unet row -- falls through to optionList[0]", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["aaa-unrelated.safetensors", "animagineXL31.safetensors"], vae: ["v"], clip: ["c"] }),
+  });
+  syncRows(node, ctx);
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row.value, "aaa-unrelated.safetensors");
+  assert.notEqual(unetEntry.refs.row.value, "animagineXL31.safetensors");
+  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(persistedUnet.value, "aaa-unrelated.safetensors");
+});
+
+test("repaintRows (mount path): a non-unet picker row (vae) still adopts plain optionList[0] -- the heuristic is unet-only", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["nyaIrisAnima_base1V20.safetensors"], vae: ["vae_a.safetensors", "vae_b.safetensors"], clip: ["c"] }),
+  });
+  syncRows(node, ctx);
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+  assert.equal(vaeEntry.refs.row.value, "vae_a.safetensors");
+});
+
+test("repaintRows (mount path): an orphaned unet row (saved value no longer installed) re-adopts via the heuristic too, not just a brand-new one", () => {
+  const node = makeFakeNode(
+    JSON.stringify({
+      version: 1,
+      rows: [
+        { slot: 1, kind: "unet", name: "unet", value: "a-model-that-was-deleted.safetensors", opts: { weight_dtype: "default" } },
+        { slot: 2, kind: "vae", name: "vae", value: "v.safetensors", opts: {} },
+        { slot: 3, kind: "clip", name: "clip", value: "c.safetensors", opts: { type: "qwen_image", device: "default" } },
+      ],
+    })
+  );
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({ unet: ["sdxl_checkpoint.safetensors", "nyaIrisAnima_base1V20.safetensors"], vae: ["v.safetensors"], clip: ["c.safetensors"] }),
+  });
+  syncRows(node, ctx);
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+});
+
+test("Bug 1 (mount path): a brand-new node's clip row persists opts.type 'qwen_image' to the panel_state WIDGET, not 'stable_diffusion'", () => {
+  const node = makeFakeNode(); // Python's literal "{}" default -- a genuinely fresh node
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx);
+  const persistedClip = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "clip");
+  assert.equal(persistedClip.opts.type, "qwen_image");
+});
+
 test("seed row: mode button toggles to fixed and back to lastMode; N rolls a new seed and parks at fixed", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();

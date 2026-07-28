@@ -186,6 +186,21 @@ def test_load_row_model_clip_passes_type_and_device():
         restore()
 
 
+def test_load_row_model_clip_missing_type_key_defaults_to_qwen_image_not_stable_diffusion():
+    # A genuinely hand-edited/malformed API payload can omit "type" entirely
+    # -- the frontend (js/controls/rows.mjs) always fills it in via
+    # normalizeRow/mkRow, so this only fires off that path. Was
+    # "stable_diffusion" (the same wrong-for-Anima default Bug 1 fixed on
+    # the frontend); must agree with it, not silently diverge.
+    _reset()
+    calls, restore = _install_fake_comfy()
+    try:
+        lh.load_row_model({"kind": "clip", "value": "clipA.safetensors", "opts": {}})
+        assert calls == [("clip", "clipA.safetensors", "qwen_image", "default")]
+    finally:
+        restore()
+
+
 def test_load_row_model_vae_has_no_extra_opts():
     _reset()
     calls, restore = _install_fake_comfy()
@@ -504,6 +519,7 @@ ALL_TESTS = [
     test_load_row_model_non_dict_or_unrecognized_kind_returns_zero,
     test_load_row_model_unet_passes_weight_dtype,
     test_load_row_model_clip_passes_type_and_device,
+    test_load_row_model_clip_missing_type_key_defaults_to_qwen_image_not_stable_diffusion,
     test_load_row_model_vae_has_no_extra_opts,
     test_cache_hits_when_row_is_unchanged,
     test_cache_evicts_on_name_change,

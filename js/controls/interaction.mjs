@@ -65,6 +65,8 @@ import {
   UNET_DTYPES,
   CLIP_TYPES,
   CLIP_DEVICES,
+  UNET_NAME_CANDIDATES,
+  preferredNameDefault,
   RATIOS,
   TIERS,
   NODE_DEF_SOURCE,
@@ -1284,10 +1286,18 @@ function repaintRows(node, ctx) {
           disabledReason = `${(NODE_DEF_SOURCE[row.kind] && NODE_DEF_SOURCE[row.kind].className) || row.kind} not installed`;
         } else if (optionList.length && !optionList.includes(row.value)) {
           // A freshly-added combo row (or one whose saved value fell off the
-          // installed list) has nothing valid to show -- adopt the first
-          // option, same as a real ComfyUI combo widget always showing SOME
-          // current value rather than a blank one.
-          row.value = optionList[0];
+          // installed list) has nothing valid to show -- adopt SOME current
+          // value, same as a real ComfyUI combo widget always showing one
+          // rather than a blank. `unet` alone routes through
+          // `preferredNameDefault` (rows.mjs) instead of the plain
+          // `optionList[0]` every other kind uses: on a real models folder,
+          // index 0 is whatever sorts first, essentially never an Anima
+          // checkpoint -- this was the ORIGINAL bug, just narrower, and it
+          // hits every brand-new `unet` row (value starts `undefined`), not
+          // just an orphaned one. Mirrors `src/anima/resources.py`'s
+          // `preferred_name_default` -- keep the two in sync (see that
+          // module's own comment on this).
+          row.value = row.kind === "unet" ? preferredNameDefault(optionList, UNET_NAME_CANDIDATES) : optionList[0];
           adoptedDefault = true;
         }
       }

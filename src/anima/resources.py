@@ -6,6 +6,7 @@ reading a socket's real wired value, happens in `pipeline.py`.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 
@@ -107,22 +108,52 @@ def _preferred_name_basename(name: str) -> str:
     return str(name).replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
+# Heuristic fallback for when NO exact/basename candidate matches at all --
+# community Anima checkpoints are named all sorts of ways (a live session's
+# real file was `nyaIrisAnima_base1V20.safetensors`, which matches no fixed
+# candidate above), so an exact list alone can't keep up. Matches "anima"
+# case-insensitively, but NOT as a substring of a longer word -- the
+# negative lookahead `(?![a-z])` is what rejects **Animagine XL**
+# (`animagineXL31.safetensors`), a real, well-known, and completely
+# unrelated SDXL anime model: "animag..." has a letter right after "anima",
+# so it's refused, while "Anima_", "Anima.", "Anima-", "Anima" (end of
+# string) all pass (no letter follows).
+#
+# KEEP THIS IN SYNC with js/controls/rows.mjs's `ANIMA_HEURISTIC_RE` /
+# `preferredNameDefault` -- the Loader Panel (JS) and AnimaGenerator's
+# internal picker (this module) must agree on which installed file "is" the
+# Anima model, or the two nodes silently disagree about which one is right.
+_ANIMA_HEURISTIC_RE = re.compile(r"anima(?![a-z])", re.IGNORECASE)
+
+
+def _first_anima_heuristic_match(names) -> Optional[str]:
+    """First entry in `names` (folder-list order, not sorted) whose name
+    matches `_ANIMA_HEURISTIC_RE` -- or `None` if nothing does."""
+    for name in names:
+        if _ANIMA_HEURISTIC_RE.search(str(name)):
+            return name
+    return None
+
+
 def preferred_name_default(names, candidates):
     """The `default` to hand one of the three pickers' `INPUT_TYPES` tuple.
 
-    Semantics (never crash, never invent a name that isn't installed):
-    - Walk `candidates` IN ORDER (candidate-tuple order, not folder-list
-      order -- that ordering is the whole point of a preference tuple) and
-      return the first one actually present in `names`, exact string match
-      first.
-    - If no candidate matches exactly, retry basename-insensitively (handles
-      a candidate's subfolder prefix not matching the folder list's own
-      separator/depth -- see `_preferred_name_basename`).
-    - If nothing in `candidates` is present at all, fall back to `names[0]`
-      -- some installed model IS a safer, more honest default than `None`.
-    - `names == []` (a missing models folder -- `folder_paths` returns `[]`
-      rather than raising) falls back to `candidates[0]` if there is one,
-      else `""`; there's nothing installed to pick either way.
+    Resolution order (never crash, never invent a name that isn't installed):
+    1. Exact candidate match, walking `candidates` IN ORDER (candidate-tuple
+       order, not folder-list order -- that ordering is the whole point of a
+       preference tuple).
+    2. Basename-insensitive candidate match (handles a candidate's subfolder
+       prefix not matching the folder list's own separator/depth -- see
+       `_preferred_name_basename`).
+    3. The `anima`-heuristic fallback (`_first_anima_heuristic_match`,
+       above) -- for a real-world Anima checkpoint that matches no fixed
+       candidate at all, e.g. `nyaIrisAnima_base1V20.safetensors`.
+    4. `names[0]` -- some installed model IS a safer, more honest default
+       than `None`, even if nothing above matched.
+    5. `names == []` (a missing models folder -- `folder_paths` returns `[]`
+       rather than raising) falls back to `candidates[0]` if there is one,
+       else `""`; there's nothing installed to pick either way. (Checked
+       FIRST below since every later step assumes `names` is non-empty.)
     """
     if not names:
         return candidates[0] if candidates else ""
@@ -134,6 +165,9 @@ def preferred_name_default(names, candidates):
         match = by_basename.get(_preferred_name_basename(candidate))
         if match is not None:
             return match
+    heuristic = _first_anima_heuristic_match(names)
+    if heuristic is not None:
+        return heuristic
     return names[0]
 
 

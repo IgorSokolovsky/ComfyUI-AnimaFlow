@@ -55,6 +55,16 @@ _FOLDER_FOR_KIND = {
     "clip": "text_encoders",
 }
 
+# Fallback ONLY for a clip row's `opts` missing a `"type"` key entirely --
+# the normal path (`js/controls/rows.mjs`'s `normalizeRow`/`mkRow`) always
+# writes a real `type` before the row's state ever reaches this module, so
+# this fires only for a genuinely hand-edited/malformed API payload. Was
+# "stable_diffusion" (CLIP_TYPES[0] on the JS side) -- the same wrong-for-
+# Anima default Bug 1 fixed on the frontend; kept in sync here so a
+# malformed payload doesn't quietly disagree with the frontend's own
+# default. See `js/controls/rows.mjs`'s clip branch / `src/anima/resources.py`.
+_DEFAULT_CLIP_TYPE = "qwen_image"
+
 
 class LoaderRowError(ValueError):
     """A loader row's saved filename can no longer be resolved against
@@ -93,7 +103,7 @@ def _cache_key(kind: str, name: str, opts: Dict[str, Any]) -> Tuple:
     if kind == "unet":
         return (name, opts.get("weight_dtype", "default"))
     if kind == "clip":
-        return (name, opts.get("type", "stable_diffusion"), opts.get("device", "default"))
+        return (name, opts.get("type", _DEFAULT_CLIP_TYPE), opts.get("device", "default"))
     return (name,)  # vae has no extra options (§3 table)
 
 
@@ -136,7 +146,7 @@ def _load(kind: str, name: str, opts: Dict[str, Any]) -> Any:
     if kind == "vae":
         return comfy_nodes.VAELoader().load_vae(name)[0]
     # kind == "clip"
-    clip_type = opts.get("type", "stable_diffusion")
+    clip_type = opts.get("type", _DEFAULT_CLIP_TYPE)
     device = opts.get("device", "default")
     return comfy_nodes.CLIPLoader().load_clip(name, clip_type, device)[0]
 
