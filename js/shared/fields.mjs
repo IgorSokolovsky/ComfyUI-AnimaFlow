@@ -1,9 +1,22 @@
 /**
  * fields.mjs — small themed field primitives shared across tracks: a pill
- * switch, a gear glyph, a drag-to-set numeric row with an inline fill, and a
+ * switch, an info glyph, a drag-to-set numeric row with an inline fill, and a
  * `◀ [ value ] ▶` stepper row. Extracted while building `js/anima/`
  * (`docs/generator-design.md`'s frontend dispatch: "use our existing fields
  * from the control panel instead of creating new fields").
+ *
+ * **2026-07-28 (inline-sections dispatch)**: `buildGear`/`buildDrivenField`
+ * are DELETED — both existed only to serve the row-anchored-popover design
+ * (`docs/generator-design.md` §12's now-superseded entry): a gear opened a
+ * popover, and a "driven" row showed a context-supplied value as static text
+ * instead of a real (disabled) control. Neither has a second caller outside
+ * `js/anima/`, and that track no longer needs either shape — sections expand
+ * inline behind their own header (no gear to click), and a context-supplied
+ * field renders as a genuinely disabled `buildNumericField`/
+ * `buildStepperField` (both already accept `disabledReason`) rather than a
+ * bespoke read-only row. `buildInfoIcon` is new: the one consistent ⓘ
+ * affordance both a context-supplied field (yellow, `--wtn-warn`) and a
+ * section's own explanatory note (default, `--wtn-info`) now share.
  *
  * ## What's genuinely reused from `js/controls/`, and what isn't
  *
@@ -20,8 +33,8 @@
  * behavioural change to a track this task was told not to touch ("if reuse
  * would require changing Control Panel behaviour, don't; report it
  * instead"). So the DOM/CSS below is new, built to the same visual/
- * interaction language (drag-to-set with a fill, a stepper, a pill switch, a
- * gear) but decoupled from `row`/`opts`-shaped state and litegraph output
+ * interaction language (drag-to-set with a fill, a stepper, a pill switch)
+ * but decoupled from `row`/`opts`-shaped state and litegraph output
  * dots — callers bind it to whatever value they own via plain `getValue`/
  * `setValue` callbacks. `js/controls/` is completely unmodified by this file
  * (import-only, one direction) and keeps passing its own test suites
@@ -59,6 +72,8 @@ const TOKENS = {
   accentStrong: "#34e5d2",
   accentDeep: "#14b8a6",
   onAccent: "#062420",
+  info: "#7dd3fc",
+  warn: "#fbbf24",
 };
 
 const CSS = `
@@ -74,10 +89,14 @@ const CSS = `
 .wtn-fld-switch.wtn-fld-sm::after { width: 6px; height: 6px; top: 1.5px; left: 1.5px; }
 .wtn-fld-switch.wtn-fld-sm.wtn-fld-on::after { transform: translateX(9px); }
 
-/* ── gear ── */
-.wtn-fld-gear { flex: none; font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); cursor: pointer;
-  line-height: 1; padding: 2px; }
-.wtn-fld-gear:hover, .wtn-fld-gear.wtn-fld-active { color: var(--wtn-accent, ${TOKENS.accent}); }
+/* ── info icon -- the one consistent ⓘ affordance (section-level help AND a
+   context-supplied field's "why is this disabled" note). Default colour is
+   the theme's neutral info token; .wtn-fld-info-warn swaps it for
+   --wtn-warn -- reserved for "this value comes from somewhere else",
+   never used for a plain explanatory note. ── */
+.wtn-fld-info { flex: none; font-size: 11px; line-height: 1; cursor: help;
+  color: var(--wtn-info, ${TOKENS.info}); }
+.wtn-fld-info-warn { color: var(--wtn-warn, ${TOKENS.warn}); }
 
 /* ── numeric drag row (Control Panel's own drag-to-set-by-dragging-the-row
    maths, ported behaviour -- see rangeOf/clampNumeric/numericPercent
@@ -127,16 +146,6 @@ const CSS = `
   border-top: 5px solid var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-fld-combo:hover .wtn-fld-combo-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-fld-combo:hover .wtn-fld-caret { border-top-color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-
-/* ── disabled/"driven elsewhere" field row -- e.g. a value the Anima
-   Context Bridge supplied ── */
-.wtn-fld-driven { display: flex; align-items: center; gap: 8px; height: 25px; padding: 0 8px;
-  border-radius: 6px; margin-bottom: 4px; font-size: 11.5px; cursor: default;
-  color: var(--wtn-accent, ${TOKENS.accent}); background: rgba(45,212,191,.07);
-  border: 1px dashed var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-fld-driven-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-.wtn-fld-driven-val { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
 export function injectFieldStyles(doc) {
@@ -173,20 +182,33 @@ function el(doc, tag, className) {
 }
 
 // ---------------------------------------------------------------------------
-// Switch / gear
+// Switch / info icon
 // ---------------------------------------------------------------------------
 
 export function buildSwitch(doc, on, small) {
   return el(doc, "span", `wtn-fld-switch${small ? " wtn-fld-sm" : ""}${on ? " wtn-fld-on" : ""}`);
 }
 
-export function buildGear(doc, title) {
-  const gear = el(doc, "span", "wtn-fld-gear");
-  gear.textContent = "⚙";
-  if (title) {
-    gear.title = title;
+/** The one ⓘ affordance this pack's `js/anima/` sections use for BOTH
+ * section-level help (default, `--wtn-info`) and "this value is driven from
+ * somewhere else" (`warn: true`, `--wtn-warn` -- the yellow the Context
+ * Bridge dispatch specifically asked for, never invented). `tooltip` is set
+ * as the native `title` attribute -- this glyph has no click behaviour of
+ * its own (`stopPropagation` on click only, so a click never bubbles into a
+ * section header's own expand/collapse toggle if a caller nests this INSIDE
+ * a clickable header). */
+export function buildInfoIcon(doc, tooltip, warn) {
+  const icon = el(doc, "span", `wtn-fld-info${warn ? " wtn-fld-info-warn" : ""}`);
+  icon.textContent = "ⓘ";
+  if (tooltip) {
+    icon.title = tooltip;
   }
-  return gear;
+  icon.addEventListener("click", (e) => {
+    if (typeof e.stopPropagation === "function") {
+      e.stopPropagation();
+    }
+  });
+  return icon;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,20 +362,3 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   return { root, val, comboEl: combo, repaint };
 }
 
-// ---------------------------------------------------------------------------
-// "Driven elsewhere" row -- e.g. a Generator field the Anima Context Bridge
-// supplied (design doc §5a: "must show a field driven by the context as
-// driven by the context, not as an editable number that's silently
-// ignored"). Purely presentational; no click wiring of its own.
-// ---------------------------------------------------------------------------
-
-export function buildDrivenField(doc, label, sourceText) {
-  const root = el(doc, "div", "wtn-fld-driven");
-  const name = el(doc, "span", "wtn-fld-driven-name");
-  name.textContent = label;
-  const val = el(doc, "span", "wtn-fld-driven-val");
-  val.textContent = sourceText;
-  root.appendChild(name);
-  root.appendChild(val);
-  return { root, val };
-}

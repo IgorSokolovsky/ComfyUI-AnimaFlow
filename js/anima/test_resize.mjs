@@ -2,8 +2,10 @@
  * test_resize.mjs — regression tests for `state.mjs` (pure settings logic),
  * `render.mjs` (DOM/CSS building), and `interaction.mjs` (event wiring +
  * node-level orchestration) for `AnimaGenerator` / `AnimaPreview`, rewritten
- * against the 2026-07-28 Context Bridge contract (`docs/generator-design.md`
- * §1/§3/§5/§7's dated reversal notes). Runs under plain `node` via a small
+ * against the 2026-07-28 Context Bridge contract AND (this dispatch) the
+ * inline-sections reversal (`docs/generator-design.md` §1/§3/§5/§7/§12's
+ * dated reversal notes — §12 records the modal → drawer → row-anchored
+ * popover → inline-section history). Runs under plain `node` via a small
  * DOM + fake-litegraph-node stub (same pattern as `js/controls/
  * test_resize.mjs`), never imports `index.js` directly (it needs a real
  * `app`/`window.LiteGraph`, which only exist in an actual ComfyUI page).
@@ -46,13 +48,21 @@
  *      built panel DOM (not a bespoke check — `js/shared/canvas_zoom.mjs`'s
  *      own `scrollRegionWantsWheel`).
  *   D. Teardown — `installZoomPassthrough`/`teardownNode` leave no orphaned
- *      wheel listener or open popover after `onRemoved`.
+ *      wheel listener after `onRemoved` (there is no more popover to close).
  *   E. Context-supplied fields — `resolveContextBridge`/
  *      `computeContextSupplied` for: `context` unwired; wired straight to a
  *      real `AnimaContextBridge`; wired through a single-input pass-through
- *      (Reroute-shaped) node to a bridge; wired to something that ISN'T a
- *      bridge. A supplied sampler field renders as a static "driven" row: an
- *      unsupplied one renders as an editable numeric/stepper field.
+ *      (Reroute-shaped) node to a bridge (both a dead end and one that
+ *      resolves); wired to something that ISN'T a bridge; a cycle. A
+ *      supplied sampler field renders as the SAME editable field shape,
+ *      genuinely DISABLED, with a yellow (`--wtn-warn`) ⓘ beside it; an
+ *      unsupplied one renders fully editable with no ⓘ at all.
+ *   E2. Inline sections (this dispatch) — a section's header click toggles
+ *      `.wtn-an-sbody` existing/not-existing (never a floating overlay); that
+ *      `ui_expanded` flag persists across a repaint AND across a fresh mount
+ *      off the same (saved) widget value; the deleted popover mechanism
+ *      (`buildPopoverShell`/`buildClickRow`/`buildNote`, every `openXPopover`,
+ *      `closeActiveOverlay`) has no surviving export anywhere in `js/anima/`.
  *   F. State still reaches the SERIALIZED widget after every edit — a
  *      stage toggle, a drag-to-set numeric field, a stepper cycle, a boolean
  *      switch, a detailer block add/remove — never just in-memory state.
@@ -91,12 +101,13 @@
  *       jump on load, no false "modified" workflow indicator).
  *   [ ] `resolveContextBridge`'s `getInputLink`/`graph.links[id]` fallback
  *       chain actually resolves against a real litegraph graph.
- *   [ ] The ⚙ popovers actually appear beside the correct row on screen and
- *       flip to the other side when they'd overflow the viewport.
+ *   [ ] A section genuinely expands/collapses in place inside the scrolling
+ *       panel (no jitter, no layout jump) and a ⓘ's tooltip actually shows
+ *       on hover, positioned sensibly near the cursor.
  *   [ ] The wipe's hover tracks the cursor smoothly with no jitter.
  *   [ ] Mouse wheel over the node body zooms the canvas, except while
  *       hovering the `.wtn-an-panel` itself once its content overflows the
- *       panel's OWN current height, or a popover's own `overflow: auto`.
+ *       panel's OWN current height.
  *   [ ] VERIFY-IN-COMFYUI: the actual `beforeRegisterNodeDef` `nodeData`
  *       shape for `AnimaGenerator`/`AnimaPreview`/`AnimaContextBridge` (this
  *       file's `GENERATOR_NODE_DATA`/`PREVIEW_NODE_DATA`/`BRIDGE_NODE_DATA`
@@ -116,15 +127,19 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { scrollRegionWantsWheel } from "../shared/canvas_zoom.mjs";
+import * as fields from "../shared/fields.mjs";
 
 import {
   GENERATION_SETTINGS_SCHEMA,
   MAX_DETAILER_PASSES,
   STAGE_ORDER,
+  DEFAULT_EXPANDED_GENERATOR_SECTIONS,
+  DEFAULT_EXPANDED_PREVIEW_SECTIONS,
   deepMergeDefaults,
   migrateVersion,
   normalizeGenerationSettings,
   normalizePreviewSettings,
+  normalizeExpandedSections,
   resolveStageSampler,
   detailerIsLive,
   resolveStageLabels,
@@ -149,6 +164,7 @@ import {
   PANEL_MIN_H,
 } from "./render.mjs";
 
+import * as interactionModule from "./interaction.mjs";
 import {
   getGenSettingsWidget,
   getPreviewStateWidget,
@@ -164,7 +180,6 @@ import {
   handleExecuted,
   installZoomPassthrough,
   teardownNode,
-  closeActiveOverlay,
   computeNodeDefinition,
   healNodeSockets,
 } from "./interaction.mjs";
@@ -175,11 +190,9 @@ let failures = 0;
 let count = 0;
 function test(name, fn) {
   count += 1;
-  // `js/shared/overlay.mjs`'s active-overlay slot is a MODULE-LEVEL
-  // singleton. Reset it before every test so a popover a PREVIOUS test left
-  // open never makes an unrelated later test's `openPopover` treat itself as
-  // "already open -- toggle closed".
-  closeActiveOverlay();
+  // 2026-07-28 (inline-sections dispatch): there is no more `js/shared/
+  // overlay.mjs` module-level singleton to reset between tests -- js/anima/
+  // no longer imports it at all (this file's own top doc comment).
   try {
     fn();
     console.log(`ok - ${name}`);
@@ -401,30 +414,40 @@ function queryAll(root, predicate) {
 function hasClass(n, cls) {
   return !!(n.classList && n.classList.contains(cls));
 }
-function findStageRow(root, name) {
-  return queryAll(root, (n) => hasClass(n, "wtn-an-stagerow")).find(
-    (row) => (row.children.find((c) => hasClass(c, "wtn-an-sn")) || {}).textContent === name,
+/** Finds an expandable SECTION's own header (`.wtn-an-shead`, this
+ * dispatch's replacement for the popover-opening row/stage-row) by its own
+ * name text (`.wtn-an-shead-nm`). */
+function findSectionHeader(root, name) {
+  return queryAll(root, (n) => hasClass(n, "wtn-an-shead")).find(
+    (h) => (h.children.find((c) => hasClass(c, "wtn-an-shead-nm")) || {}).textContent === name,
   );
 }
-function gearOf(row) {
-  return row.children.find((c) => hasClass(c, "wtn-fld-gear"));
+/** A section header's own `.wtn-an-sbody` -- a SIBLING element (not a
+ * child), appended right after the header inside their shared
+ * `.wtn-an-section` wrapper only while that section is expanded. `null`
+ * while collapsed -- this IS the "no floating overlay, no popover" contract
+ * this dispatch introduces: there is nothing else to find. */
+function sectionBodyOf(header) {
+  if (!header || !header.parentNode) {
+    return null;
+  }
+  return header.parentNode.children.find((c) => hasClass(c, "wtn-an-sbody")) || null;
 }
 function switchOf(row) {
   return row.children.find((c) => hasClass(c, "wtn-fld-switch"));
 }
-function popoverRoot(doc) {
-  return queryAll(doc.body, (n) => hasClass(n, "wtn-an-pop")).slice(-1)[0];
-}
 /** Finds a field container (numeric/stepper/boolean/text -- one of this
  * track's four field shapes) by its own label text, across every field kind
- * this popover UI can render. */
+ * a section body can render -- regardless of whether it's wrapped in a
+ * `.wtn-an-fieldrow` alongside its own ⓘ (`queryAll`'s recursive walk finds
+ * it at any depth either way). */
 function findFieldByLabel(root, label) {
   const containers = queryAll(root, (n) =>
     hasClass(n, "wtn-fld-num") || hasClass(n, "wtn-fld-stepper") || hasClass(n, "wtn-an-boolfield")
-    || hasClass(n, "wtn-an-field") || hasClass(n, "wtn-fld-driven"));
+    || hasClass(n, "wtn-an-field"));
   return containers.find((f) => {
     const nameEl = f.children.find((c) =>
-      hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name") || hasClass(c, "wtn-fld-driven-name"))
+      hasClass(c, "wtn-fld-num-name") || hasClass(c, "wtn-fld-stepper-name"))
       || f.children[0];
     return nameEl && nameEl.textContent === label;
   });
@@ -692,16 +715,17 @@ test("injectStyles is idempotent and guarded against a doc with no createElement
 
 // ---------------------------------------------------------------------------
 // docs/pixaroma-review-rounds-plan.md Tier 2 item 8 -- ported the same
-// defensive backstop to this track's own rows (.wtn-an-row/.wtn-an-stagerow
-// here, .wtn-fld-stepper/.wtn-fld-num-name/.wtn-fld-num-val in the shared
-// js/shared/fields.mjs primitives these panels are built from). Unlike the
-// Control Panel, nothing here has to survive an output dot living outside
-// its own box (this track has no per-row litegraph sockets at all -- one
-// static DOM widget per node), so overflow: hidden can sit straight on the
-// row with no row/body split needed. Same caveat as js/controls/
-// test_resize.mjs's equivalent tests: a crude CSS-text guard, not a real
-// layout check -- see the build report for the actual headless-Chrome
-// measurement this was verified against.
+// defensive backstop to this track's own section header (.wtn-an-shead --
+// 2026-07-28 inline-sections dispatch's replacement for the deleted
+// .wtn-an-row/.wtn-an-stagerow, here; .wtn-fld-stepper/.wtn-fld-num-name/
+// .wtn-fld-num-val in the shared js/shared/fields.mjs primitives these
+// panels are built from). Unlike the Control Panel, nothing here has to
+// survive an output dot living outside its own box (this track has no
+// per-row litegraph sockets at all -- one static DOM widget per node), so
+// overflow: hidden can sit straight on the row with no row/body split
+// needed. Same caveat as js/controls/test_resize.mjs's equivalent tests: a
+// crude CSS-text guard, not a real layout check -- see the build report for
+// the actual headless-Chrome measurement this was verified against.
 // ---------------------------------------------------------------------------
 
 /** Same helper as js/controls/test_resize.mjs's cssRuleBody -- duplicated
@@ -723,27 +747,27 @@ function cssRuleBody(cssText, selector) {
   return null;
 }
 
-test("injected CSS: .wtn-an-row and .wtn-an-stagerow both clip their own children (overflow: hidden) -- the same item-8 backstop as the Control Panel, ported to this track", () => {
+test("injected CSS: .wtn-an-shead (the section header -- this dispatch's replacement for the popover-opening row) clips its own children (overflow: hidden), the same item-8 backstop as the Control Panel", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
-  for (const selector of [".wtn-an-row", ".wtn-an-stagerow"]) {
-    const body = cssRuleBody(cssText, selector);
-    assert.ok(body, `expected a ${selector} rule in the injected CSS`);
-    assert.ok(body.includes("overflow: hidden"), `${selector} must clip its own children`);
-  }
+  const body = cssRuleBody(cssText, ".wtn-an-shead");
+  assert.ok(body, "expected a .wtn-an-shead rule in the injected CSS");
+  assert.ok(body.includes("overflow: hidden"), ".wtn-an-shead must clip its own children");
 });
 
-test("injected CSS: .wtn-an-row's name (.wtn-an-nm) has no flex-grow (its sibling .wtn-an-val already pushes itself right via margin-left: auto -- a growable name would fight that and stretch across the row instead of hugging the left edge)", () => {
+test("injected CSS: .wtn-an-shead's own name (.wtn-an-shead-nm) never shrinks or grows (flex: none) -- it's the section's identity, never truncated; its muted summary (.wtn-an-shead-sum) is the one pushed right (margin-left: auto) and able to ellipsize", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
-  const nm = cssRuleBody(cssText, ".wtn-an-row .wtn-an-nm");
-  assert.ok(nm, "expected a .wtn-an-row .wtn-an-nm rule in the injected CSS");
-  const flexMatch = nm.match(/flex:\s*(\d+)\s+(\d+)\s+auto/);
-  assert.ok(flexMatch, ".wtn-an-nm must declare an explicit flex shorthand");
-  assert.equal(Number(flexMatch[1]), 0, "flex-grow must stay 0 -- margin-left: auto on .wtn-an-val owns the push-right job");
-  assert.ok(Number(flexMatch[2]) > 1, "flex-shrink should still exceed the default so a long name yields before the value does");
+  const nm = cssRuleBody(cssText, ".wtn-an-shead .wtn-an-shead-nm");
+  assert.ok(nm, "expected a .wtn-an-shead .wtn-an-shead-nm rule in the injected CSS");
+  assert.ok(nm.includes("flex: none"), ".wtn-an-shead-nm must never shrink or grow");
+
+  const sum = cssRuleBody(cssText, ".wtn-an-shead .wtn-an-shead-sum");
+  assert.ok(sum, "expected a .wtn-an-shead .wtn-an-shead-sum rule in the injected CSS");
+  assert.match(sum, /margin-left:\s*auto/, ".wtn-an-shead-sum pushes itself right -- the name never grows to meet it");
+  assert.ok(sum.includes("min-width: 0") && sum.includes("text-overflow: ellipsis"), ".wtn-an-shead-sum must be able to shrink to nothing and ellipsize");
 });
 
 test("injected CSS (shared js/shared/fields.mjs primitives): .wtn-fld-stepper clips its own children, and .wtn-fld-stepper-name/.wtn-fld-num-name have no flex-grow either (same margin-left: auto sibling reasoning as .wtn-an-nm)", () => {
@@ -872,7 +896,7 @@ test("mounting a node never touches node.size -- a size litegraph already restor
   assert.deepEqual(pvNode.size, [611, 899], "mounting the Preview UI must not resize the node");
 });
 
-test("a manual resize survives every kind of repaint -- toggling a stage, opening/editing a popover field, and a detailer block add all leave node.size exactly as the user (here, a direct setSize standing in for a manual drag) left it", () => {
+test("a manual resize survives every kind of repaint -- toggling a stage, expanding a section, editing a field inline, and a detailer block add all leave node.size exactly as the user (here, a direct setSize standing in for a manual drag) left it", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -885,19 +909,20 @@ test("a manual resize survives every kind of repaint -- toggling a stage, openin
   node.setSize([node.size[0], 150]);
   assert.deepEqual(node.size, [DEFAULT_W, 150]);
 
-  const row = findStageRow(refs.body, "Highres");
-  fire(switchOf(row), "click"); // toggles a stage -> repaintGenerator internally
+  const highresHeader = findSectionHeader(refs.body, "Highres");
+  fire(switchOf(highresHeader), "click"); // toggles a stage -> repaintGenerator internally
   assert.deepEqual(node.size, [DEFAULT_W, 150], "a stage toggle (and its repaint) must not touch node.size");
 
-  const detailerRow = findStageRow(repaintGenerator(node, ctx).body, "Detailer");
-  fire(gearOf(detailerRow), "click");
-  const pop = popoverRoot(doc);
-  const addBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
-  fire(addBtn, "click"); // adds a detailer block, persists, and refreshes the popover in place
+  fire(findSectionHeader(refs.body, "Detailer"), "click"); // expand -> repaintGenerator internally
+  assert.deepEqual(node.size, [DEFAULT_W, 150], "expanding a section must not touch node.size");
+
+  const detailerBody = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const addBtn = queryAll(detailerBody, (n) => n.tagName === "button").find((b) => b.textContent === "+");
+  fire(addBtn, "click"); // adds a detailer block, persists, and repaints in place
   assert.deepEqual(node.size, [DEFAULT_W, 150], "adding a detailer block must not touch node.size either");
 
-  closeActiveOverlay(); // closing runs onClosed -> repaintGenerator -- must not touch node.size either
-  assert.deepEqual(node.size, [DEFAULT_W, 150], "closing the popover (and its repaint) must not touch node.size");
+  fire(findSectionHeader(refs.body, "Detailer"), "click"); // collapse -> repaintGenerator internally
+  assert.deepEqual(node.size, [DEFAULT_W, 150], "collapsing the section (and its repaint) must not touch node.size");
 });
 
 test("a manual resize survives a Preview repaint too (save/compare toggles, handleExecuted)", () => {
@@ -993,18 +1018,18 @@ test("installZoomPassthrough installs exactly one wheel listener on the DOM widg
   assert.equal((node._anRefs.root._listeners.wheel || []).length, 0, "no orphaned wheel listener after teardown");
 });
 
-test("teardownNode closes an open popover -- no orphan left mounted on document.body", () => {
+test("teardownNode is safe to call on a node with a section left expanded -- there is no popover left to leak, and the zoom listener still comes off", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  const row = findStageRow(refs.body, "Highres");
-  fire(gearOf(row), "click");
-  assert.ok(popoverRoot(doc), "popover must have opened");
+  installZoomPassthrough(node, ctx);
+  fire(findSectionHeader(refs.body, "Highres"), "click"); // leave a section expanded
+  assert.ok(sectionBodyOf(findSectionHeader(node._anRefs.body, "Highres")));
 
-  teardownNode(node);
-  assert.ok(!popoverRoot(doc), "teardownNode must close any popover this node still owns");
+  assert.doesNotThrow(() => teardownNode(node));
+  assert.equal((node._anRefs.root._listeners.wheel || []).length, 0, "the zoom listener must still come off");
 });
 
 // ===========================================================================
@@ -1069,7 +1094,7 @@ test("resolveContextBridge: a cycle (pass-through nodes looping back on themselv
   assert.equal(resolveContextBridge(node), null);
 });
 
-test("a context-supplied sampler field renders as a static driven row; an unsupplied one renders editable", () => {
+test("a context-supplied sampler field renders as the SAME field shape, genuinely DISABLED, with a yellow warn ⓘ beside it naming the Context Bridge; an unsupplied one renders fully editable with no ⓘ at all", () => {
   const bridge = makeBridgeNode(2, ["seed"]);
   const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
   const node = makeGeneratorNode({ contextLink: 1, graph });
@@ -1078,30 +1103,115 @@ test("a context-supplied sampler field renders as a static driven row; an unsupp
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
-  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "seed");
-  fire(seedRow, "click");
-  const pop = popoverRoot(doc);
+  // Sampler starts EXPANDED by default (DEFAULT_EXPANDED_GENERATOR_SECTIONS
+  // -- it's the one section with no enable switch, always relevant), so
+  // there's nothing to click open here.
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  assert.ok(body, "Sampler must be expanded by default");
 
-  const seedField = findFieldByLabel(pop, "seed");
-  assert.ok(seedField && hasClass(seedField, "wtn-fld-driven"), "seed is context-supplied -- must render as a static driven row");
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(seedField && hasClass(seedField, "wtn-fld-num") && hasClass(seedField, "wtn-fld-disabled"),
+    "seed is context-supplied -- must render as the SAME numeric field shape, genuinely disabled");
+  const seedWrap = seedField.parentNode;
+  assert.ok(hasClass(seedWrap, "wtn-an-fieldrow"), "a disabled field is paired with its ⓘ inside a .wtn-an-fieldrow wrapper");
+  const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
+  assert.ok(seedIcon && hasClass(seedIcon, "wtn-fld-info-warn"), "the ⓘ beside a context-supplied field must be the YELLOW warn variant");
+  assert.match(seedIcon.title, /Context Bridge/, "the ⓘ's tooltip must say WHERE the value comes from");
+  assert.match(seedIcon.title, /disconnect that socket/i, "the tooltip must say how to get it back, not just that it's disabled");
 
-  const stepsField = findFieldByLabel(pop, "steps");
-  assert.ok(stepsField && hasClass(stepsField, "wtn-fld-num"), "steps is NOT context-supplied -- must render as an editable numeric field");
+  const stepsField = findFieldByLabel(body, "steps");
+  assert.ok(stepsField && hasClass(stepsField, "wtn-fld-num") && !hasClass(stepsField, "wtn-fld-disabled"),
+    "steps is NOT context-supplied -- must render as an editable numeric field");
+  assert.ok(!hasClass(stepsField.parentNode, "wtn-an-fieldrow"), "an unsupplied field carries no ⓘ wrapper at all");
 });
 
-test("no Context Bridge resolved -- every sampler field renders editable, and the popover says so", () => {
+test("no Context Bridge resolved -- every sampler field renders editable, and the SECTION's own ⓘ (not a text block) says so", () => {
   const node = makeGeneratorNode({ contextLink: null });
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  const seedRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "seed");
-  fire(seedRow, "click");
-  const pop = popoverRoot(doc);
-  assert.ok(!queryAll(pop, (n) => hasClass(n, "wtn-fld-driven")).length, "nothing should render as driven with no bridge resolved");
-  assert.ok(findFieldByLabel(pop, "seed") && hasClass(findFieldByLabel(pop, "seed"), "wtn-fld-num"));
+  // Sampler starts EXPANDED by default -- nothing to click open here.
+  const header = findSectionHeader(refs.body, "Sampler");
+  const icon = header.children.find((c) => hasClass(c, "wtn-fld-info"));
+  assert.ok(icon && !hasClass(icon, "wtn-fld-info-warn"), "no bridge resolved is the normal case -- the section's ⓘ is informational, not a warning");
+  assert.match(icon.title, /No Anima Context Bridge resolved/);
+
+  const body = sectionBodyOf(header);
+  assert.ok(!queryAll(body, (n) => hasClass(n, "wtn-fld-disabled")).length, "nothing should render disabled with no bridge resolved");
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(seedField && hasClass(seedField, "wtn-fld-num") && !hasClass(seedField, "wtn-fld-disabled"));
+});
+
+test("fail-closed cases (context unwired, wired to a non-bridge, wired through a Reroute-shaped dead end, a cycle) all render every sampler field editable; even when a Reroute DOES resolve to a real bridge, a field the bridge itself doesn't wire stays editable", () => {
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+
+  function assertAllEditable(node, label) {
+    const refs = mountGeneratorUI(node, ctx);
+    // Sampler starts EXPANDED by default -- nothing to click open here.
+    const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+    for (const fieldLabel of ["seed", "steps", "cfg", "sampler_name", "scheduler"]) {
+      const field = findFieldByLabel(body, fieldLabel);
+      assert.ok(field, `${label}: ${fieldLabel} field must exist`);
+      assert.ok(!hasClass(field, "wtn-fld-disabled"), `${label}: ${fieldLabel} must render editable`);
+    }
+  }
+
+  assertAllEditable(makeGeneratorNode({ contextLink: null }), "context unwired");
+
+  {
+    const notABridge = { id: 2, type: "SomeOtherNode", inputs: [] };
+    const graph = makeGraph({ 2: notABridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+    assertAllEditable(makeGeneratorNode({ contextLink: 1, graph }), "wired to a non-bridge");
+  }
+
+  {
+    // A Reroute-shaped pass-through that never reaches anything -- a dead
+    // end, distinct from the SUCCESSFUL Reroute-to-bridge case exercised
+    // separately below.
+    const dead = { id: 2, type: "Reroute", inputs: [{ name: "", link: null }] };
+    const graph = makeGraph({ 2: dead }, { 1: { origin_id: 2, origin_slot: 0 } });
+    dead.graph = graph;
+    assertAllEditable(makeGeneratorNode({ contextLink: 1, graph }), "Reroute dead end");
+  }
+
+  {
+    const a = { id: 2, type: "Reroute", inputs: [{ name: "", link: 20 }] };
+    const b = { id: 3, type: "Reroute", inputs: [{ name: "", link: 10 }] };
+    const graph = makeGraph({ 2: a, 3: b }, {
+      1: { origin_id: 2, origin_slot: 0 },
+      20: { origin_id: 3, origin_slot: 0 },
+      10: { origin_id: 2, origin_slot: 0 }, // a cycle
+    });
+    a.graph = graph;
+    b.graph = graph;
+    assertAllEditable(makeGeneratorNode({ contextLink: 1, graph }), "a cycle");
+  }
+
+  {
+    // The Reroute DOES resolve, to a REAL bridge -- but that bridge only
+    // wires `scheduler`, so every OTHER sampler field must still be
+    // editable; only `scheduler` itself renders disabled.
+    const bridge = makeBridgeNode(3, ["scheduler"]);
+    const reroute = { id: 2, type: "Reroute", inputs: [{ name: "", link: 20 }] };
+    const graph = makeGraph({ 2: reroute, 3: bridge }, {
+      1: { origin_id: 2, origin_slot: 0 },
+      20: { origin_id: 3, origin_slot: 0 },
+    });
+    reroute.graph = graph;
+    bridge.graph = graph;
+    const node = makeGeneratorNode({ contextLink: 1, graph });
+    const refs = mountGeneratorUI(node, ctx);
+    const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+    for (const label of ["seed", "steps", "cfg", "sampler_name"]) {
+      const field = findFieldByLabel(body, label);
+      assert.ok(!hasClass(field, "wtn-fld-disabled"), `${label} isn't wired by the bridge -- must stay editable`);
+    }
+    const schedField = findFieldByLabel(body, "scheduler");
+    assert.ok(hasClass(schedField, "wtn-fld-disabled"), "scheduler IS wired by the bridge -- must render disabled");
+  }
 });
 
 // ===========================================================================
@@ -1119,29 +1229,28 @@ test("mountGeneratorUI: brand-new node's generation_settings widget is written w
   assert.equal(persisted.sampler.steps, 32);
 });
 
-test("toggling a stage switch writes the generation_settings WIDGET, not just in-memory state", () => {
+test("toggling a stage switch (on the section HEADER itself) writes the generation_settings WIDGET, not just in-memory state", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
   assert.equal(genState(node).highres.enabled, false);
-  const row = findStageRow(refs.body, "Highres");
-  fire(switchOf(row), "click");
+  const header = findSectionHeader(refs.body, "Highres");
+  fire(switchOf(header), "click");
   assert.equal(genState(node).highres.enabled, true);
 });
 
-test("dragging a numeric field (steps) writes the widget on release, live-painting during the drag", () => {
+test("dragging a numeric field (steps) INSIDE an expanded Sampler section writes the widget on release, live-painting during the drag", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
-  const summary = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
-  fire(summary, "click");
-  let pop = popoverRoot(doc);
-  const stepsField = findFieldByLabel(pop, "steps");
+  // Sampler starts EXPANDED by default -- nothing to click open here.
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  const stepsField = findFieldByLabel(body, "steps");
   assert.ok(stepsField, "steps must be editable -- nothing is context-supplied on an unwired-context node");
 
   stepsField._rect = { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 };
@@ -1159,10 +1268,9 @@ test("cycling a stepper field (sampler_name) writes the widget immediately (no d
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  const summary = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
-  fire(summary, "click");
-  const pop = popoverRoot(doc);
-  const samplerField = findFieldByLabel(pop, "sampler_name");
+  // Sampler starts EXPANDED by default -- nothing to click open here.
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  const samplerField = findFieldByLabel(body, "sampler_name");
   const before = genState(node).sampler.sampler_name;
   const rightArrow = samplerField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
   fire(rightArrow, "click");
@@ -1170,43 +1278,40 @@ test("cycling a stepper field (sampler_name) writes the widget immediately (no d
   assert.notEqual(after, before, "the stepper must cycle AND persist immediately");
 });
 
-test("a boolean switch (mod guidance enabled) writes the widget immediately", () => {
+test("a boolean switch (mod guidance enabled -- now the SECTION HEADER's own switch, not a redundant field inside the body) writes the widget immediately", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  const mgRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))
-    .find((r) => (r.children.find((c) => hasClass(c, "wtn-an-nm")) || {}).textContent === "mod guidance");
-  fire(mgRow, "click");
-  const pop = popoverRoot(doc);
-  const enabledField = findFieldByLabel(pop, "enabled");
-  fire(enabledField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+  const header = findSectionHeader(refs.body, "Mod Guidance");
+  fire(switchOf(header), "click");
   assert.equal(genState(node).mod_guidance.enabled, true);
 });
 
-test("detailer popover: adding respects MAX_DETAILER_PASSES and face/eye stay unremovable, all reaching the widget", () => {
+test("detailer section: adding respects MAX_DETAILER_PASSES and face/eye stay unremovable, all reaching the widget", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
-  const row = findStageRow(refs.body, "Detailer");
-  fire(gearOf(row), "click");
-  let pop = popoverRoot(doc);
+  fire(findSectionHeader(refs.body, "Detailer"), "click"); // expand -- inline, no popover
+  let body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
 
-  const builtinBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "built in");
+  const builtinBtn = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "built in");
   assert.ok(builtinBtn && builtinBtn.disabled);
 
-  const addBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
+  let addBtn = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "+");
   fire(addBtn, "click");
+  body = sectionBodyOf(findSectionHeader(refs.body, "Detailer")); // the whole body was rebuilt
+  addBtn = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "+");
   fire(addBtn, "click");
   let persisted = genState(node);
   assert.equal(Object.keys(persisted.detailer.blocks).length, MAX_DETAILER_PASSES);
 
-  pop = popoverRoot(doc);
-  const addBtnAgain = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
+  body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const addBtnAgain = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "+");
   assert.ok(addBtnAgain.disabled, "MAX_DETAILER_PASSES reached -- the + button must refuse further adds");
 });
 
@@ -1216,23 +1321,106 @@ test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/s
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  const row = findStageRow(refs.body, "Highres");
-  fire(gearOf(row), "click");
-  let pop = popoverRoot(doc);
-  assert.ok(findFieldByLabel(pop, "steps"));
-  assert.ok(findFieldByLabel(pop, "denoise"));
-  assert.ok(!findFieldByLabel(pop, "cfg"), "cfg hidden while inherit is ON");
-  assert.ok(!findFieldByLabel(pop, "sampler_name"));
-  assert.ok(!findFieldByLabel(pop, "scheduler"));
+  fire(findSectionHeader(refs.body, "Highres"), "click"); // expand -- inline, no popover
+  let body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
+  assert.ok(findFieldByLabel(body, "steps"));
+  assert.ok(findFieldByLabel(body, "denoise"));
+  assert.ok(!findFieldByLabel(body, "cfg"), "cfg hidden while inherit is ON");
+  assert.ok(!findFieldByLabel(body, "sampler_name"));
+  assert.ok(!findFieldByLabel(body, "scheduler"));
 
-  const inheritField = queryAll(pop, (n) => hasClass(n, "wtn-an-boolfield"))
+  const inheritField = queryAll(body, (n) => hasClass(n, "wtn-an-boolfield"))
     .find((f) => (f.children[0] || {}).textContent === "inherit");
   fire(inheritField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
-  pop = popoverRoot(doc);
-  assert.ok(findFieldByLabel(pop, "cfg"), "cfg reappears once inherit is OFF");
-  assert.ok(findFieldByLabel(pop, "sampler_name"));
-  assert.ok(findFieldByLabel(pop, "scheduler"));
+  body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
+  assert.ok(findFieldByLabel(body, "cfg"), "cfg reappears once inherit is OFF");
+  assert.ok(findFieldByLabel(body, "sampler_name"));
+  assert.ok(findFieldByLabel(body, "scheduler"));
   assert.equal(genState(node).highres.inherit_sampler_settings, false);
+});
+
+// ===========================================================================
+// E2. Inline sections -- expand/collapse, its persistence, and proof the
+//     popover mechanism is genuinely gone (not just unreferenced by luck).
+// ===========================================================================
+
+test("a section's expand/collapse state persists across a rebuild, and reaches the serialized generation_settings widget", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  assert.equal(genState(node).ui_expanded.highres, false, "Highres starts collapsed by default");
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Highres")), "collapsed -- no body rendered at all");
+
+  fire(findSectionHeader(refs.body, "Highres"), "click");
+  assert.equal(genState(node).ui_expanded.highres, true, "expanding must reach the serialized widget");
+  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Highres")), "expanded -- the body actually renders");
+
+  // A REBUILD (repaintGenerator, standing in for a fresh mount off the same
+  // widget value) must come out expanded again -- this is what makes the
+  // state genuinely persistent rather than a one-off in-memory flag.
+  const rebuilt = repaintGenerator(node, ctx);
+  assert.ok(sectionBodyOf(findSectionHeader(rebuilt.body, "Highres")), "still expanded after a repaint");
+
+  fire(findSectionHeader(rebuilt.body, "Highres"), "click");
+  assert.equal(genState(node).ui_expanded.highres, false, "collapsing must reach the widget too");
+  assert.ok(!sectionBodyOf(findSectionHeader(node._anRefs.body, "Highres")), "collapsed again -- no body rendered");
+});
+
+test("ui_expanded round-trips through a FRESH mount off a saved widget value -- a workflow reopens with the same sections expanded it was saved with", () => {
+  const saved = normalizeGenerationSettings("{}");
+  saved.ui_expanded = { sampler: false, mod_guidance: false, highres: true, detailer: false, upscale: false, postprocess: false };
+  const node = makeGeneratorNode({ generation_settings: JSON.stringify(saved) });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Highres")), "Highres reopens expanded, as saved");
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Sampler")), "Sampler reopens collapsed, as saved");
+});
+
+test("normalizeExpandedSections: an unknown/garbage ui_expanded value falls back to defaults per-key, never throws; an unknown SECTION key inside it is dropped, not carried forward", () => {
+  assert.deepEqual(normalizeExpandedSections(undefined, DEFAULT_EXPANDED_GENERATOR_SECTIONS), DEFAULT_EXPANDED_GENERATOR_SECTIONS);
+  assert.deepEqual(normalizeExpandedSections("not an object", DEFAULT_EXPANDED_GENERATOR_SECTIONS), DEFAULT_EXPANDED_GENERATOR_SECTIONS);
+  const out = normalizeExpandedSections({ highres: true, sampler: "not a bool", stale_key: true }, DEFAULT_EXPANDED_GENERATOR_SECTIONS);
+  assert.equal(out.highres, true);
+  assert.equal(out.sampler, DEFAULT_EXPANDED_GENERATOR_SECTIONS.sampler, "a non-boolean value falls back to the default");
+  assert.ok(!("stale_key" in out), "an unknown section key never survives into the normalized result");
+  assert.deepEqual(Object.keys(out).sort(), Object.keys(DEFAULT_EXPANDED_GENERATOR_SECTIONS).sort());
+});
+
+test("Python's own tolerant normalizer contract (src/anima/settings.py's _deep_merge_defaults) is what makes ui_expanded safe to keep OUT of DEFAULT_GENERATION_SETTINGS -- this JS side's OWN unknown-top-level-key passthrough (the same code path Python's `_deep_merge_defaults` port shares the contract with) round-trips ui_expanded exactly as written", () => {
+  const raw = JSON.stringify({ ui_expanded: { highres: true, made_up_field: true } });
+  const out = normalizeGenerationSettings(raw);
+  assert.deepEqual(out.ui_expanded, { highres: true, made_up_field: true }, "an unknown top-level key (ui_expanded, and whatever's inside it) survives normalizeGenerationSettings verbatim -- ensureGenState is the ONLY place that later reshapes it via normalizeExpandedSections");
+});
+
+test("the popover mechanism is gone from js/anima/ entirely -- render.mjs's buildPopoverShell/buildClickRow/buildNote, interaction.mjs's closeActiveOverlay, and js/shared/fields.mjs's buildGear/buildDrivenField have no surviving export (matches the previous dispatch's pattern of asserting a deleted mechanism's exports are undefined)", () => {
+  assert.equal(render.buildPopoverShell, undefined);
+  assert.equal(render.buildClickRow, undefined);
+  assert.equal(render.buildNote, undefined);
+  assert.equal(interactionModule.closeActiveOverlay, undefined);
+  assert.equal(interactionModule.openSamplerPopover, undefined);
+  assert.equal(interactionModule.openModGuidancePopover, undefined);
+  assert.equal(interactionModule.openHighresPopover, undefined);
+  assert.equal(interactionModule.openUpscalePopover, undefined);
+  assert.equal(interactionModule.openPostprocessPopover, undefined);
+  assert.equal(interactionModule.openDetailerPopover, undefined);
+  assert.equal(interactionModule.openSavePopover, undefined);
+  assert.equal(fields.buildGear, undefined);
+  assert.equal(fields.buildDrivenField, undefined);
+  // The new inline-section shape IS exported, so this isn't "everything's gone".
+  assert.equal(typeof render.buildSectionHeader, "function");
+  assert.equal(typeof fields.buildInfoIcon, "function");
+});
+
+test("interaction.mjs no longer imports js/shared/overlay.mjs at all -- a static source scan (comments stripped, so this file's OWN doc comments discussing the deletion don't trip the check) mirroring how the previous dispatch proved a deleted call site never survives in index.js", () => {
+  const src = readFileSync(path.join(__dirname, "interaction.mjs"), "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/.*$/gm, "");
+  assert.doesNotMatch(code, /overlay\.mjs/);
+  assert.doesNotMatch(code, /openOverlayWithZoom/);
+  assert.doesNotMatch(code, /activeOverlayRef/);
+  assert.doesNotMatch(code, /closeOverlayIfOwnedBy/);
 });
 
 // ===========================================================================
@@ -1309,18 +1497,35 @@ test("wipeXFromEvent clamps to [0,100] and defaults to 50 for a degenerate rect"
   assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 50), 50);
 });
 
-test("Preview: save/compare edits reach the preview_state widget", () => {
+test("Preview: the Save section's own header switch reaches the preview_state widget immediately", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
-  const saveRow = queryAll(refs.body, (n) => hasClass(n, "wtn-an-row"))[0];
-  fire(saveRow, "click");
-  const pop = popoverRoot(doc);
-  const enabledField = findFieldByLabel(pop, "enabled");
-  fire(enabledField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click");
+  const header = findSectionHeader(refs.body, "Save");
+  fire(switchOf(header), "click");
   assert.equal(previewState(node).save.enabled, false);
+});
+
+test("Preview: ui_expanded.save persists across a repaint and reaches the serialized preview_state widget, same contract as the Generator's sections", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  assert.equal(previewState(node).ui_expanded.save, false);
+  fire(findSectionHeader(refs.body, "Save"), "click");
+  assert.equal(previewState(node).ui_expanded.save, true);
+  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Save")));
+
+  const rebuilt = repaintPreview(node, ctx);
+  assert.ok(sectionBodyOf(findSectionHeader(rebuilt.body, "Save")), "still expanded after a repaint");
+});
+
+test("normalizeExpandedSections applied against DEFAULT_EXPANDED_PREVIEW_SECTIONS (the Preview's own defaults, distinct from the Generator's) defaults 'save' to collapsed", () => {
+  assert.deepEqual(normalizeExpandedSections(undefined, DEFAULT_EXPANDED_PREVIEW_SECTIONS), { save: false });
+  assert.deepEqual(DEFAULT_EXPANDED_PREVIEW_SECTIONS, { save: false });
 });
 
 // ===========================================================================

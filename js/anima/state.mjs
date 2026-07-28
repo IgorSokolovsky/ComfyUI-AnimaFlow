@@ -45,6 +45,37 @@
  * `resolveStageLabels`, a byte-for-byte port of `src/anima/stages.py`'s
  * `resolve_stage_labels` (the new `images` LIST's position -> stage-label
  * resolver).
+ *
+ * **2026-07-28 reversal (inline-sections dispatch, `docs/generator-design.md`
+ * §12)** — settings no longer live in a popover; each section (Sampler, Mod
+ * Guidance, Highres, Detailer, Upscale, Postprocess, Save) expands IN PLACE
+ * inside the one scrolling panel. That expand/collapse state has to persist
+ * across a rebuild, and it's UI-only (Python never reads it) — it lives
+ * under `ui_expanded` at the TOP of the settings tree, same level as
+ * `sampler`/`highres`/etc, deliberately KEPT OUT of `DEFAULT_GENERATION_
+ * SETTINGS`/`DEFAULT_PREVIEW_SETTINGS` below (those two trees are
+ * deep-equal-tested against Python's own fixture output — adding a
+ * frontend-only key to them would make `normalizeGenerationSettings("{}")`
+ * disagree with `fixture_default_generation_settings.json` on the very next
+ * test run). Instead, `normalizeExpandedSections`/`DEFAULT_EXPANDED_
+ * GENERATOR_SECTIONS`/`DEFAULT_EXPANDED_PREVIEW_SECTIONS` below are a small
+ * SEPARATE pure step `interaction.mjs`'s `ensureGenState`/`ensurePreviewState`
+ * run AFTER `normalizeGenerationSettings`/`normalizePreviewSettings` — so the
+ * two Python-parity normalizers stay byte-identical to their fixtures, and
+ * `ui_expanded` still round-trips through the SAME serialized STRING widget
+ * (`persistGenState`/`persistPreviewState` write the whole state object,
+ * `ui_expanded` included). This relies on `_deep_merge_defaults`'s own
+ * documented contract (`src/anima/settings.py`'s module docstring, "unknown
+ * keys... [are] not rejected... pass through UNTOUCHED") — a `ui_expanded`
+ * key Python's own defaults tree has never heard of survives a round-trip
+ * through `normalize_generation_settings` on the Python side exactly as
+ * written, never stripped, never validated — confirmed by reading
+ * `src/anima/settings.py`'s `_deep_merge_defaults` directly (its own
+ * docstring states the contract; this isn't inferred from this module's
+ * port of it), rather than spawning `python3` from this headless `node`
+ * suite to re-verify live. `test_resize.mjs` exercises this JS side's own
+ * unknown-key passthrough (`deepMergeDefaults`'s existing test already
+ * covers the general case; a new one below covers `ui_expanded` by name).
  */
 
 // ---------------------------------------------------------------------------
@@ -245,6 +276,45 @@ export const DEFAULT_PREVIEW_SETTINGS = {
     embed_workflow: true,
   },
 };
+
+// ---------------------------------------------------------------------------
+// Section expand/collapse (this module's top doc comment, "inline-sections
+// dispatch") -- UI-only, deliberately NOT part of either fixture-tested
+// defaults tree above. Sampler starts open (it's the one section with no
+// enable switch, always relevant); every switch-bearing section starts
+// closed, matching how the popover it replaces always started closed.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_EXPANDED_GENERATOR_SECTIONS = {
+  sampler: true,
+  mod_guidance: false,
+  highres: false,
+  detailer: false,
+  upscale: false,
+  postprocess: false,
+};
+
+export const DEFAULT_EXPANDED_PREVIEW_SECTIONS = {
+  save: false,
+};
+
+/** `raw` (whatever `state.ui_expanded` currently holds -- possibly absent,
+ * possibly garbage) -> a plain `{sectionKey: boolean}` object with exactly
+ * `defaults`' own keys, each coerced to a real boolean (falling back to the
+ * default for anything not a boolean, including a missing key entirely).
+ * Never throws; never expands `defaults`' own key SET (an old workflow's
+ * stale section name is simply dropped, same "unknown keys don't survive
+ * inside a schema-owned sub-object" posture `_fixup_detailer` already takes
+ * for `detailer.blocks`, as opposed to the top-level "unknown keys survive
+ * verbatim" rule this whole feature relies on for `ui_expanded` ITSELF). */
+export function normalizeExpandedSections(raw, defaults) {
+  const parsed = isPlainObject(raw) ? raw : {};
+  const result = {};
+  for (const key of Object.keys(defaults)) {
+    result[key] = typeof parsed[key] === "boolean" ? parsed[key] : defaults[key];
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Generic recursive merge -- port of settings.py's `_deep_merge_defaults`.

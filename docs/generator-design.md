@@ -752,13 +752,39 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - ~~Which Spectrum repo ships `AnimaModGuidance`~~ — **settled: `blepping/ComfyUI-Spectrum-KSampler`.**
   Upstream's *code* cites it twice (`aio/sampling.py:131`, `:257`); only its README says `sorryhyun`.
   The code wins — it is what actually runs.
-- ~~one tabbed overlay or one dialog per stage~~ — **settled: neither.** Settings are a **popover
-  anchored to the row you clicked**, which is what the Control Panel already does
+- ~~one tabbed overlay or one dialog per stage~~ — **settled 2026-07-27: neither.** Settings were a
+  **popover anchored to the row you clicked**, which is what the Control Panel already does
   (`openOverlayWithZoom(..., "below")`). It went modal → right-side drawer → row popover across three
   review passes: the modal covered the graph being tuned, and the drawer still put the controls far
-  from the thing they belong to. The popover also deletes the "which stage am I editing" problem, so
-  there is no tab strip. **Reuse the Control Panel's overlay helper**, including its viewport-flip
+  from the thing they belong to. The popover also deleted the "which stage am I editing" problem, so
+  there was no tab strip. **Reuse the Control Panel's overlay helper**, including its viewport-flip
   logic — do not reimplement the anchoring.
+
+  **Reversed 2026-07-28 (inline-sections dispatch) — the FOURTH iteration: the popover is gone too,
+  settings expand IN PLACE.** Click a section's header (Sampler, Mod Guidance, Highres, Detailer,
+  Upscale, Postprocess on the Generator; Save on the Preview) and its fields appear directly below
+  it, inside the SAME scrolling `.wtn-an-panel` the header itself lives in; the panel scrolls, there
+  is no second surface. Full history now: modal → right-side drawer → row-anchored popover →
+  inline section. Why inline wins over the popover the row before it just settled on: an anchored
+  popover is still a floating DOM subtree that has to be positioned relative to its anchor, flipped
+  to the other side when it would overflow the viewport, and explicitly closed before the panel can
+  safely rebuild underneath it (`js/anima/render.mjs`'s deleted "never rebuild the panel while a
+  popover it doesn't own is open" rule) — an expand/collapse toggle inside ONE surface has none of
+  that machinery to get right, and it is what the upstream reference implementation
+  (`../ComfyUI-EasyUseAnima/web/js/aio/generator_panel_runtime.js`) actually does for its own
+  always-on-panel fields (its `*_settings_dialog.js` siblings are real MODAL dialogs for a few
+  advanced/rare controls, a different pattern this pack didn't adopt — everything routine stays
+  inline here instead). "Reuse the Control Panel's overlay helper" is RETRACTED for `js/anima/`
+  specifically: `js/shared/overlay.mjs` is untouched and still is `js/controls/`'s own mechanism,
+  but `js/anima/interaction.mjs` no longer imports it at all. A section's expand/collapse state
+  persists in the settings blob itself, under a UI-only `ui_expanded` key kept OUT of the two
+  fixture-tested defaults trees (`js/anima/state.mjs`'s own top doc comment) — so a workflow reopens
+  with the same sections expanded it was saved with, same as any other setting. A context-supplied
+  sampler field (§5a) is now a genuinely DISABLED control (not a separate "driven" text row) with a
+  yellow ⓘ beside it, and that same ⓘ affordance replaces every explanatory text block the popover
+  bodies used to carry (e.g. the "shift 3.0 is Anima's recommended default" note) — one consistent
+  hover-for-more-detail glyph instead of prose eating vertical space in a surface that now has to fit
+  everything at once.
 - Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
   are both settled (§6a).
 

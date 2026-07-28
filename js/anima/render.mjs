@@ -32,11 +32,71 @@
  *
  * The body is still rebuilt in full on every discrete action (see the old
  * version of this file's doc comment, carried forward): toggling a stage,
- * editing a field, adding a detailer block all replace `.wtn-an-panel`'s
- * children wholesale via `interaction.mjs`'s `repaintGenerator`/
- * `repaintPreview`. Popovers are a SEPARATE DOM subtree (appended to
- * `document.body`, per `js/shared/overlay.mjs`), so a body rebuild never
- * disturbs an open popover.
+ * expanding/collapsing a section, editing a field, adding a detailer block
+ * all replace `.wtn-an-panel`'s children wholesale via `interaction.mjs`'s
+ * `repaintGenerator`/`repaintPreview`.
+ *
+ * ## 2026-07-28 reversal (inline-sections dispatch, `docs/generator-
+ * design.md` §12) — settings expand IN PLACE, no more floating popover
+ *
+ * This is the FOURTH iteration on where a setting lives: modal → right-side
+ * drawer → a popover anchored to the row you clicked → this. The popover
+ * (`js/shared/overlay.mjs`'s `openOverlayWithZoom`, a separate DOM subtree
+ * appended to `document.body` so a body rebuild never disturbed an open
+ * popover — see this section's own history in git blame) is GONE from this
+ * track entirely: every section (Sampler, Mod Guidance, Highres, Detailer,
+ * Upscale, Postprocess on the Generator; Save on the Preview) is now a
+ * clickable HEADER living directly inside `.wtn-an-panel`, and its fields
+ * render inline in a `.wtn-an-sbody` directly below that header when
+ * expanded — `buildSectionHeader` below is the whole shape (chevron, name,
+ * optional muted summary, optional ⓘ, optional enable switch). Because
+ * there is no separate floating layer to protect any more, a section
+ * toggling open/closed is just another full-body repaint like every other
+ * action already was — no `refresh()`-this-popover-only special case is
+ * needed (`interaction.mjs` no longer imports `js/shared/overlay.mjs` at
+ * all; `js/controls/` is the overlay module's only remaining consumer).
+ * `buildPopoverShell`/`buildClickRow` (the popover's chrome + the
+ * click-a-row-to-open-it row) and `buildNote` (a text-block explanation,
+ * replaced by the ⓘ affordance below) are DELETED, not left unreferenced.
+ *
+ * ## Context-supplied fields render DISABLED, with a yellow ⓘ, not a
+ * separate "driven" row
+ *
+ * `seed`/`steps`/`cfg`/`sampler_name`/`scheduler` are still each
+ * independently overridable (design doc §5a), but there is no more "wired
+ * socket on the Generator" to check — the signal is "did the
+ * `AnimaContextBridge` upstream of `context` have THAT socket wired"
+ * (`interaction.mjs`'s `computeContextSupplied`, walking the real litegraph
+ * link). Previously a supplied field rendered as `buildDrivenField` (a
+ * static "driven by the Context Bridge" text row with no value at all,
+ * `js/shared/fields.mjs`, now deleted) — an editable-LOOKING number that
+ * silently discards edits is the exact trap this reversal (and §5a/§6b
+ * before it) argue against, so this dispatch goes one step further than
+ * "not editable": `buildNumericField`/`buildStepperField` (still `../shared/
+ * fields.mjs`, unchanged) already accept a `disabledReason`, which renders
+ * the SAME field shape — same value on display, same layout — just
+ * genuinely inert (no drag, no cycle) and titled with the reason. This
+ * module pairs that with `js/shared/fields.mjs`'s `buildInfoIcon(doc,
+ * tooltip, warn)`, `warn: true`, next to the field — the yellow the task
+ * asked for is `--wtn-warn`, the theme's own warn token, not invented here.
+ * The VALUE shown is this settings tree's own value (`sampler.seed` etc,
+ * exactly what an editable render would show) — this frontend cannot see
+ * inside the bridge's own execution-time output at graph-edit time (design
+ * doc's own admission, unchanged by this dispatch), so rather than
+ * guess at whatever node feeds the bridge's wired socket, the tooltip says
+ * plainly that the number on screen may be overridden at run time.
+ *
+ * ## This module owns only small presentational builders — section BODIES
+ * (which fields exist, in what order, wired to what) live in
+ * `interaction.mjs`
+ *
+ * Same split as before: `interaction.mjs`'s `buildXSection` functions build
+ * a section's inline content using the small field builders THIS module
+ * exports (`buildTextField`/`buildBoolField` locally, `js/shared/fields.mjs`'s
+ * `buildNumericField`/`buildStepperField`/`buildSwitch`/`buildInfoIcon`
+ * re-exported from here). Free-text fields (`detect_prompt`, `filename`,
+ * `path`, …) have no Control Panel analogue, so `buildTextField` stays local
+ * to this module.
  *
  * ## Wheel: scroll the panel when it has room, zoom the canvas otherwise
  *
@@ -46,10 +106,8 @@
  * event's target up to the root looking for a genuinely scrollable ancestor
  * with room in the wheel's own direction — `.wtn-an-panel`'s `overflow-y:
  * auto` is exactly such an ancestor whenever its content overflows the
- * panel's own current height (now the node's height, not a fixed ceiling —
- * see this module's "Resize" section). No bespoke "is this scrollable"
- * check is written here — that duplication is exactly what the design
- * brief warned against.
+ * panel's own current height. No bespoke "is this scrollable" check is
+ * written here.
  *
  * ## Real sockets are litegraph's, never re-drawn in this body
  *
@@ -59,33 +117,6 @@
  * (both optional) plus the hidden, non-socket `prompt`/`extra_pnginfo`.
  * Litegraph draws every one of those itself, independent of this DOM
  * widget — this module never re-draws a row per socket name.
- *
- * ## Context-supplied fields render disabled, with the reason visible
- *
- * `seed`/`steps`/`cfg`/`sampler_name`/`scheduler` are still each
- * independently overridable (design doc §5a), but there is no more "wired
- * socket on the Generator" to check — the signal is now "did the
- * `AnimaContextBridge` upstream of `context` have THAT socket wired"
- * (`interaction.mjs`'s `computeContextSupplied`, walking the real litegraph
- * link). A supplied field renders via `js/shared/fields.mjs`'s
- * `buildDrivenField` (a static "driven by the Context Bridge" row, no drag/
- * click to edit) rather than an editable control a wire would silently
- * override.
- *
- * ## This module owns only small presentational builders — popovers
- * themselves live in `interaction.mjs`
- *
- * `interaction.mjs`'s `openXPopover(doc, state, view)` functions build each
- * popover's CONTENT (never open it — `openOverlayWithZoom` there does that)
- * out of the small field builders THIS module exports: `buildTextField`/
- * `buildBoolField` locally, and `js/shared/fields.mjs`'s
- * `buildNumericField`/`buildStepperField`/`buildSwitch` re-exported from
- * here (design brief: "use our existing fields from the control panel
- * instead of creating new fields" — see that module's own doc comment for
- * exactly what's reused and why the DOM/CSS itself is new rather than
- * importing `js/controls/render.mjs` directly). Free-text fields
- * (`detect_prompt`, `filename`, `path`, …) have no Control Panel analogue
- * (that track has none), so `buildTextField` stays local to this module.
  *
  * ## Importing `theme.mjs` — GUARDED dynamic import
  *
@@ -99,7 +130,7 @@
  */
 
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
-import { injectFieldStyles, buildSwitch, buildGear, buildDrivenField } from "../shared/fields.mjs";
+import { injectFieldStyles, buildSwitch, buildInfoIcon } from "../shared/fields.mjs";
 
 const STYLE_ID = "wtn-anima-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -153,56 +184,37 @@ const CSS = `
 .wtn-an-sec:first-child { margin-top: 2px; }
 .wtn-an-sec .wtn-an-cnt { color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 
-/* ── generic clickable row ──
-   overflow: hidden here (and on .wtn-an-stagerow below) is the same
-   defensive backstop as js/controls/render.mjs's .wtn-ctl-body (Tier 2
-   item 8, docs/pixaroma-review-rounds-plan.md) -- these rows have no
-   litegraph output dot living outside their own box (unlike a Control
-   Panel row: this track's nodes are single-DOM-widget panels, no
-   per-row addOutput/dot), so unlike THAT fix, no row/body split is
-   needed here -- overflow: hidden can go straight on the row. .wtn-an-nm
-   additionally gets min-width: 0 + ellipsis so a long hand-typed name
-   can't push .wtn-an-val (already shrinkable) or a trailing gear out
-   past the rounded border either. */
-.wtn-an-row { position: relative; display: flex; align-items: center; gap: 8px;
-  height: 25px; margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  font-size: 11.5px; cursor: pointer; overflow: hidden; }
-.wtn-an-row:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-an-row:hover .wtn-an-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
-.wtn-an-row.wtn-an-open { border-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-an-row .wtn-an-nm { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap;
-  flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.wtn-an-row .wtn-an-val { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 11px;
-  color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
-
-/* ── stage row: toggle + name + summary + gear -- same backstop as
-   .wtn-an-row above (no dot to protect against clipping here either). ── */
-.wtn-an-stagerow { position: relative; display: flex; align-items: center; gap: 9px; height: 27px;
-  margin-bottom: 4px; padding: 0 8px; border-radius: 6px;
+/* ── expandable SECTION header (2026-07-28 inline-sections dispatch) --
+   replaces every popover-opening row this track used to have. Clicking
+   anywhere on \`.wtn-an-shead\` itself toggles expand/collapse
+   (\`interaction.mjs\` wires that); the switch and the ⓘ each stop their own
+   click from bubbling into that toggle, so flipping "enabled" or reading a
+   tooltip never also opens/closes the section. \`.wtn-an-expanded\` is purely
+   a hook for the chevron glyph/hover state -- the actual body is a SIBLING
+   element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
+   collapsed, not a max-height: 0 hide. ── */
+.wtn-an-shead { position: relative; display: flex; align-items: center; gap: 8px; height: 27px;
+  margin-bottom: 4px; padding: 0 8px; border-radius: 6px; cursor: pointer;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   overflow: hidden; }
-.wtn-an-stagerow.wtn-an-off { opacity: .5; }
-.wtn-an-stagerow.wtn-an-dep { border-color: rgba(251,191,36,.35); }
-.wtn-an-stagerow .wtn-an-sn { font-size: 11.5px; font-weight: 550; flex: none; white-space: nowrap; }
-.wtn-an-stagerow .wtn-an-ss { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wtn-an-shead:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+.wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-accent, ${TOKENS.accent}); }
+.wtn-an-shead .wtn-an-chev { flex: none; width: 10px; font-size: 9px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+.wtn-an-shead .wtn-an-shead-nm { font-size: 11.5px; font-weight: 550; flex: none; white-space: nowrap; }
+.wtn-an-shead .wtn-an-shead-sum { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.wtn-an-shead.wtn-an-dep { border-color: rgba(251,191,36,.35); }
 
-/* ── popover content (shares the overlay shell from js/shared/overlay.mjs) ──
-   width/max-height/box-sizing below are the signed-off mockup's OWN numbers
-   (playground/generator.html:247/:252 -- \`.pop\`'s \`width: 344px\` /
-   \`max-height: 460px\`). \`box-sizing: border-box\` matters here specifically
-   because popovers are appended to \`document.body\` (js/shared/overlay.mjs),
-   not under \`.wtn-an-root\`. */
-.wtn-an-pop { box-sizing: border-box; width: 344px; padding: 12px 13px; border-radius: 10px;
-  border: 1px solid var(--wtn-line, ${TOKENS.line});
-  background: var(--wtn-surface, ${TOKENS.surface}); box-shadow: var(--wtn-shadow, 0 18px 46px rgba(0,0,0,.66));
-  max-height: 460px; overflow: auto; }
-.wtn-an-pop h4 { margin: 0 0 10px; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; letter-spacing: .13em;
-  text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); font-weight: 500; display: flex; align-items: center; gap: 7px; }
-.wtn-an-pop h4 .wtn-an-x { margin-left: auto; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12px; }
-.wtn-an-pop h4 .wtn-an-x:hover { color: var(--wtn-bad, ${TOKENS.bad}); }
-.wtn-an-grid { display: flex; flex-direction: column; gap: 4px; }
+/* ── section body -- rendered only while its header is expanded. Indented
+   under the chevron so the nesting reads clearly while the panel scrolls. ── */
+.wtn-an-sbody { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 8px 20px; }
+
+/* ── a field paired with its own ⓘ (context-supplied warning, or a plain
+   note) -- see this module's top doc comment. The field itself keeps its
+   own bottom margin off (the wrapper owns the spacing) so pairing an icon
+   never doubles the gap between rows. ── */
+.wtn-an-fieldrow { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.wtn-an-fieldrow > *:first-child { flex: 1; min-width: 0; margin-bottom: 0; }
 
 /* ── free-text field (no Control Panel analogue -- see this module's top
    doc comment) ── */
@@ -220,12 +232,9 @@ const CSS = `
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 
 .wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em; text-transform: uppercase;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 12px 0 7px; padding-top: 10px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 12px 0 7px; padding-top: 10px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  display: flex; align-items: center; gap: 6px; }
 .wtn-an-sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.wtn-an-dnote { font-size: 11px; line-height: 1.55; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); margin: 0 0 11px;
-  padding: 8px 10px; border-radius: 8px; background: var(--wtn-console, ${TOKENS.console});
-  border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); border-left: 2px solid var(--wtn-info, ${TOKENS.info}); }
-.wtn-an-dnote.wtn-an-warn { border-left-color: var(--wtn-warn, ${TOKENS.warn}); }
 .wtn-an-missing { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   padding: 9px 10px; border-radius: 8px; margin-bottom: 11px; background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28); }
 .wtn-an-passtabs { display: flex; gap: 5px; margin-bottom: 11px; flex-wrap: wrap; }
@@ -234,11 +243,6 @@ const CSS = `
   border: 1px solid var(--wtn-line, ${TOKENS.line}); }
 .wtn-an-passtabs button.wtn-an-on { background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-an-passtabs button:disabled { opacity: .4; cursor: default; }
-.wtn-an-popfoot { display: flex; gap: 7px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); }
-.wtn-an-pbtn { font-size: 11.5px; cursor: pointer; flex: 1; background: transparent; border: 1px solid var(--wtn-line, ${TOKENS.line});
-  border-radius: 7px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); padding: 5px 8px; }
-.wtn-an-pbtn:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-.wtn-an-pbtn.wtn-an-danger:hover { color: var(--wtn-bad, ${TOKENS.bad}); border-color: var(--wtn-bad, ${TOKENS.bad}); }
 
 /* ── Preview node: hover wipe ──
    Aspect-ratio choice for this dispatch's "panel fills the node" change:
@@ -337,25 +341,68 @@ export function buildPanelShell(doc) {
   return { root, panel };
 }
 
-/** A themed clickable row (opens a popover, or a plain toggle -- caller
- * wires the listener). Returns `{ root, val }`. */
-export function buildClickRow({ doc, name, value, title }) {
-  const row = el(doc, "div", "wtn-an-row");
-  if (title) {
-    row.title = title;
-  }
-  const nm = el(doc, "span", "wtn-an-nm");
-  nm.textContent = name;
-  const val = el(doc, "span", "wtn-an-val");
-  val.textContent = value == null ? "" : String(value);
-  row.appendChild(nm);
-  row.appendChild(val);
-  return { root: row, val };
-}
-
 // Re-exported so `interaction.mjs` has one import line for both the shared
 // primitives and this module's own presentational builders.
-export { buildSwitch, buildGear, buildDrivenField };
+export { buildSwitch, buildInfoIcon };
+
+// ---------------------------------------------------------------------------
+// Expandable section header -- 2026-07-28 inline-sections dispatch (this
+// module's top doc comment). Purely presentational: `interaction.mjs` wires
+// the header's own click (toggle expand) and the switch's own click (toggle
+// enabled, `stopPropagation`ed so it never ALSO toggles expand).
+// ---------------------------------------------------------------------------
+
+/**
+ * `spec`: `{ label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn,
+ * summary, dep }`. `dep` (matches the old `stageBlocked` styling) dims the
+ * header via `.wtn-an-dep` when a required soft-import package is missing --
+ * display only, never disables the switch itself (a user may install the
+ * package later; the switch already tolerated this before this dispatch).
+ * Returns `{ root, chev, sumEl, infoEl, switchEl }` -- any of the optional
+ * three may be `null`.
+ */
+export function buildSectionHeader(doc, spec) {
+  const { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep } = spec;
+  const header = el(doc, "div", `wtn-an-shead${expanded ? " wtn-an-expanded" : ""}${dep ? " wtn-an-dep" : ""}`);
+  const chev = el(doc, "span", "wtn-an-chev");
+  chev.textContent = expanded ? "▾" : "▸";
+  header.appendChild(chev);
+  const nm = el(doc, "span", "wtn-an-shead-nm");
+  nm.textContent = label;
+  header.appendChild(nm);
+  let sumEl = null;
+  if (summary) {
+    sumEl = el(doc, "span", "wtn-an-shead-sum");
+    sumEl.textContent = summary;
+    header.appendChild(sumEl);
+  }
+  let infoEl = null;
+  if (infoTooltip) {
+    infoEl = buildInfoIcon(doc, infoTooltip, infoWarn);
+    header.appendChild(infoEl);
+  }
+  let switchEl = null;
+  if (hasSwitch) {
+    switchEl = buildSwitch(doc, !!switchOn);
+    header.appendChild(switchEl);
+  }
+  return { root: header, chev, sumEl, infoEl, switchEl };
+}
+
+/** Wraps `fieldRoot` with a `js/shared/fields.mjs` `buildInfoIcon` beside it
+ * when `tooltip` is truthy; returns `fieldRoot` UNWRAPPED otherwise, so a
+ * field with nothing to say about itself doesn't grow an empty container.
+ * `warn` selects the yellow `--wtn-warn` variant (context-supplied fields);
+ * omit it for a plain informational note. */
+export function withInfoIcon(doc, fieldRoot, tooltip, warn) {
+  if (!tooltip) {
+    return fieldRoot;
+  }
+  const wrap = el(doc, "div", "wtn-an-fieldrow");
+  wrap.appendChild(fieldRoot);
+  wrap.appendChild(buildInfoIcon(doc, tooltip, warn));
+  return wrap;
+}
 
 // ---------------------------------------------------------------------------
 // Preview node -- wipe pane images. `nodes/anima/preview.py`'s
@@ -432,8 +479,8 @@ export function buildTextField(doc, label, value) {
 }
 
 /** A label + `js/shared/fields.mjs` pill switch, with an inline on/off word
- * (mirrors `.wtn-an-driven`'s inline-note habit rather than a bare pill with
- * no text). Returns `{ root, switchEl }`. */
+ * (mirrors this module's inline-note habit rather than a bare pill with no
+ * text). Returns `{ root, switchEl, word }`. */
 export function buildBoolField(doc, label, value) {
   const field = el(doc, "div", "wtn-an-boolfield");
   const span = el(doc, "span");
@@ -447,32 +494,29 @@ export function buildBoolField(doc, label, value) {
   return { root: field, switchEl, word };
 }
 
-export function buildSublabel(doc, str) {
-  return text(doc, "div", "wtn-an-sublab", str);
+/** An uppercase mono group sub-label, optionally carrying its own ⓘ (this
+ * module's top doc comment: one consistent affordance for explanatory text
+ * instead of a `buildNote` text block eating vertical space). */
+export function buildSublabel(doc, str, infoTooltip, infoWarn) {
+  const root = el(doc, "div", "wtn-an-sublab");
+  const span = el(doc, "span");
+  span.textContent = str;
+  root.appendChild(span);
+  if (infoTooltip) {
+    root.appendChild(buildInfoIcon(doc, infoTooltip, infoWarn));
+  }
+  return root;
 }
 
-export function buildNote(doc, str, warn) {
-  return text(doc, "div", `wtn-an-dnote${warn ? " wtn-an-warn" : ""}`, str);
-}
-
+/** A short "this section is unavailable" status block -- rendered inside an
+ * expanded section body when a required soft-import package is absent (the
+ * header's own ⓘ already carries the SAME text as its tooltip; this is the
+ * body's fuller, always-visible restatement for when the section is open). */
 export function buildMissing(doc, str) {
   const m = el(doc, "div", "wtn-an-missing");
   const k = text(doc, "span", "", str);
   m.appendChild(k);
   return m;
-}
-
-export function buildPopoverShell(doc, title) {
-  const root = el(doc, "div", "wtn-an-pop wtn");
-  const h = el(doc, "h4");
-  const t = el(doc, "span");
-  t.textContent = title;
-  const x = el(doc, "span", "wtn-an-x");
-  x.textContent = "✕";
-  h.appendChild(t);
-  h.appendChild(x);
-  root.appendChild(h);
-  return { root, closeBtn: x };
 }
 
 // ---------------------------------------------------------------------------
