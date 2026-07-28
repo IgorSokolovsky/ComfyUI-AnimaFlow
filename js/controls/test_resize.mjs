@@ -65,6 +65,9 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 import {
   KIND_META,
@@ -117,6 +120,8 @@ import {
   closeActiveOverlay,
   teardownAllZoomPassthrough,
 } from "./interaction.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let failures = 0;
 let count = 0;
@@ -418,6 +423,12 @@ function makeCtx(doc, panelConfig, overrides = {}) {
     getKnownLists: overrides.getKnownLists || (() => ({})),
     describeLinkTarget: overrides.describeLinkTarget || (() => null),
     confirmRemove: overrides.confirmRemove || (() => true),
+    // Injected by index.js's buildCtx in the real extension (this file's
+    // own "Load-race sizing guard" section, below) -- left undefined by
+    // default so the ~150 other tests that never pass it get the exact
+    // pre-existing behaviour (`scheduleFit`'s guard treats a non-function
+    // `ctx.isGraphLoading` as "not loading").
+    isGraphLoading: overrides.isGraphLoading,
   };
 }
 
@@ -2730,6 +2741,111 @@ test("scheduleFit skips fitting while _ctrlConfiguring is set (never resize duri
   scheduleFit(node, ctx);
   rafQueue.forEach((cb) => cb());
   assert.deepEqual(node.size, before);
+});
+
+// =========================================================================
+// H. Load-race sizing guard (`isGraphLoading`, `js/shared/graph_loading.mjs`)
+// -- ported from the identical fix already landed for `js/anima/index.js`
+// (see that file's own top doc comment / its `test_resize.mjs`'s "H2"
+// section for the live trace: `[setSize] [360,340] id 747`, a saved
+// Generator snapped back to its fresh-node default on refresh). The Controls
+// line hits the SAME race, just with a worse symptom -- `rowCountOf` can
+// also still read 0 mid-restore, so an unguarded floor collapses the HEIGHT
+// too, not just the width (an already-saved 8-row panel can come back both
+// narrow AND short).
+//
+// `index.js` itself carries a top-level absolute `/scripts/app.js` import
+// (this file's own top doc comment: "never imports `index.js` directly, it
+// needs a real `app`/`window.LiteGraph`") -- so `setupNode`'s own gate is
+// covered by a static source scan, the SAME technique `js/anima/
+// test_resize.mjs`'s "H2" section uses for its un-instantiable equivalent.
+// `scheduleFit`'s OWN gate lives in `interaction.mjs` (directly importable,
+// no `/scripts/app.js` anywhere in it), so those two are real behavioural
+// tests against the actual exported function instead.
+// =========================================================================
+
+test("index.js: setupNode's sizing block is gated on `!isGraphLoading() && !node._ctrlConfiguring` -- while a load is in flight, NEITHER node.size[0] NOR node.size[1] is written", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\s*\{\s*isGraphLoading\s*\}\s*from\s*"\.\.\/shared\/graph_loading\.mjs"/,
+    "must import isGraphLoading eagerly (not through loadMods())",
+  );
+
+  const setupIdx = indexSource.indexOf("function setupNode(node, panelConfig, mods)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  assert.ok(setupIdx >= 0 && restoreIdx > setupIdx, "setupNode must be defined, and restoreNode must follow it");
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+
+  const gateIdx = setupBody.indexOf("if (!isGraphLoading() && !node._ctrlConfiguring) {");
+  assert.ok(gateIdx >= 0, "setupNode must gate the sizing block on BOTH isGraphLoading() and node._ctrlConfiguring");
+
+  const widthWriteIdx = setupBody.indexOf("node.size[0] = mods.render.DEFAULT_W;");
+  const heightWriteIdx = setupBody.indexOf("node.size[1] = mods.render.bodyHeight(mods.interaction.rowCountOf(node, ctx));");
+  assert.ok(widthWriteIdx > gateIdx, "the width write must be INSIDE the gate, not before it");
+  assert.ok(heightWriteIdx > gateIdx, "the height write must ALSO be inside the gate -- this is the part that collapses when rowCountOf reads 0 mid-restore");
+
+  // Both writes must close before computeSize/scheduleFit run again --
+  // i.e. there is exactly one gated block, not the gate wrapping only the
+  // width line while the height line escapes it (or vice versa).
+  const closeGateIdx = setupBody.indexOf("\n  }\n\n  mods.interaction.syncRows(node, ctx);");
+  assert.ok(closeGateIdx > heightWriteIdx, "both the width and height writes must be inside the SAME gated block, not split across it");
+});
+
+test("index.js: setupNode's sizing block still applies the ORIGINAL fresh-node floor once isGraphLoading()/_ctrlConfiguring are both false -- the gate only skips the block during a load, it does not remove the floor logic itself", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const setupIdx = indexSource.indexOf("function setupNode(node, panelConfig, mods)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+
+  // The pre-existing "is this node already at/above the floor" condition is
+  // untouched -- unchanged from before this dispatch, just now living
+  // one level deeper inside the isGraphLoading()/_ctrlConfiguring gate.
+  assert.match(setupBody, /if \(!node\.size \|\| node\.size\[0\] < mods\.render\.MIN_W\) \{/, "the original floor condition must still be present, unchanged");
+  assert.match(setupBody, /node\.size = node\.size \|\| \[0, 0\];/);
+  assert.match(setupBody, /node\.size\[0\] = mods\.render\.DEFAULT_W;/);
+  assert.match(setupBody, /node\.size\[1\] = mods\.render\.bodyHeight\(mods\.interaction\.rowCountOf\(node, ctx\)\);/);
+});
+
+test("scheduleFit's rAF early-returns while ctx.isGraphLoading() is true, even with node._ctrlConfiguring ALREADY cleared -- the leaky-clear-before-rAF race `_ctrlConfiguring` alone cannot cover", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { isGraphLoading: () => true });
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  node._ctrlConfiguring = false; // already cleared, as it plausibly is by the time this rAF actually fires
+  const before = node.size.slice();
+  scheduleFit(node, ctx);
+  rafQueue.forEach((cb) => cb());
+  assert.deepEqual(node.size, before, "fitNode must NOT have run while ctx.isGraphLoading() reports true");
+});
+
+test("scheduleFit: a saved size ABOVE the floor is never touched on load (isGraphLoading() true) -- fitNode would otherwise recompute a SMALLER size from bodyHeight(rows.length) and clobber a user's saved, enlarged panel", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+  syncRows(node, ctx); // 3 rows -- bodyHeight(3) is well below the size set just below
+  const savedSize = [900, 900]; // deliberately far ABOVE both MIN_W and bodyHeight(3)
+  node.size = savedSize.slice();
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  scheduleFit(node, ctx);
+  rafQueue.forEach((cb) => cb());
+  assert.deepEqual(node.size, savedSize, "the saved, above-floor size must survive untouched while isGraphLoading() is true");
+});
+
+test("scheduleFit still fits exactly as before once isGraphLoading() is false and _ctrlConfiguring is unset -- no behaviour change to the ordinary user-action resize path", () => {
+  const node = makeFakeNode();
+  node.size = [10, 10]; // narrower than MIN_W
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => false });
+  syncRows(node, ctx); // 3 rows
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  scheduleFit(node, ctx);
+  rafQueue.forEach((cb) => cb());
+  assert.equal(node.size[0], MIN_W);
+  assert.equal(node.size[1], bodyHeight(3));
 });
 
 // =========================================================================

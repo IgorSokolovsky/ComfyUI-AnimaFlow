@@ -2034,7 +2034,26 @@ export function scheduleFit(node, ctx) {
     return;
   }
   requestAnimationFrame(() => {
-    if (node._ctrlConfiguring) {
+    // `node._ctrlConfiguring` ALONE is not a reliable guard here, even
+    // though it reads as one: `index.js`'s `onConfigure` wrapper sets it
+    // SYNCHRONOUSLY at the top and clears it in a `.finally()` chained off
+    // the same `loadMods()` promise `setupNode`'s own call site rides --
+    // and since ALL of that (the `.then`/`.catch`/`.finally` callbacks) runs
+    // as plain microtasks, it fully drains and the flag is very likely
+    // already back to `false` well before the browser gets around to firing
+    // THIS rAF callback (a real animation frame, not a microtask, is the
+    // next thing after the microtask queue empties). So a node genuinely
+    // still being restored can reach this callback with
+    // `node._ctrlConfiguring` already cleared, and get fitted anyway --
+    // clobbering the saved size `fitNode` was supposed to leave alone.
+    // `ctx.isGraphLoading` (injected by `index.js`'s `buildCtx` -- see its
+    // own doc comment for why it rides `ctx` instead of a static import
+    // here) stays true for the WHOLE load plus a trailing window,
+    // independent of this microtask-vs-rAF race, so it's kept as a second,
+    // belt-and-braces check alongside `_ctrlConfiguring` rather than
+    // replacing it -- same two-guards shape as `index.js`'s `setupNode`
+    // sizing gate, and the same fix already landed for `js/anima/index.js`.
+    if (node._ctrlConfiguring || (typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
       return; // a workflow load is in flight -- trust the saved node.size
     }
     fitNode(node, ctx);

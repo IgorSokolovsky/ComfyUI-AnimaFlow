@@ -54,6 +54,24 @@
  * (`interaction.mjs`'s `persistState`).
  */
 import { app } from "/scripts/app.js";
+// `isGraphLoading` -- the ONE exception to this file's "everything past
+// `/scripts/app.js` is a LAZY dynamic import" rule (this file's own "lazy,
+// not static" doc comment above). It has to be a STATIC top-level import,
+// deliberately: `app.loadGraphData` must be wrapped BEFORE the very first
+// workflow load call happens, and by the time this pack's OWN lazy
+// `loadMods()` would resolve (queued from inside `onNodeCreated`, which
+// itself fires DURING that same `loadGraphData` call), that call has
+// already started -- wrapping it from inside a callback triggered by its
+// own execution can never retroactively flag the call already in progress.
+// This module is tiny (a single monkey-patch + a getter, no DOM/CSS), so the
+// download-budget cost of making it eager is negligible next to what making
+// it correct requires. Ported to `js/anima/index.js` first (its own
+// identical top-of-file comment has the live trace: `[setSize] [360,340] id
+// 747`, a saved Generator snapped back to its fresh-node default); see
+// `setupNode`'s own "Sizing" comment below for why the Controls line hits
+// the exact same race, just with a worse symptom (a collapsed row count
+// makes the HEIGHT collapse too, not just the width).
+import { isGraphLoading } from "../shared/graph_loading.mjs";
 
 // CATEGORY is Title Case ("AnimaFlow/Controls") on the Python side; nothing
 // here needs to know that string, only the two class names.
@@ -214,6 +232,15 @@ function buildCtx(panelConfig, mods) {
     describeLinkTarget,
     confirmRemove,
     getCanvasEl,
+    // Injectable, same reason `getCanvasEl` is (`js/shared/canvas_zoom.mjs`'s
+    // own doc comment on that pattern): `interaction.mjs`'s `scheduleFit`
+    // needs `isGraphLoading` too (this file's own eager top-level import),
+    // but `interaction.mjs` itself has no `/scripts/app.js` import of its
+    // own and must stay importable under plain `node` (`test_resize.mjs`
+    // imports it directly) -- so the LIVE function is handed through `ctx`
+    // rather than `interaction.mjs` importing `graph_loading.mjs` statically
+    // (which would 404 under that headless suite).
+    isGraphLoading,
   };
 }
 
@@ -273,10 +300,46 @@ function setupNode(node, panelConfig, mods) {
     return [mods.render.MIN_W, mods.render.bodyHeight(mods.interaction.rowCountOf(this, ctx))];
   };
 
-  if (!node.size || node.size[0] < mods.render.MIN_W) {
-    node.size = node.size || [0, 0];
-    node.size[0] = mods.render.DEFAULT_W;
-    node.size[1] = mods.render.bodyHeight(mods.interaction.rowCountOf(node, ctx));
+  // ---------------------------------------------------------------------
+  // Sizing -- GATED on `!isGraphLoading() && !node._ctrlConfiguring` (the
+  // exact same fix `js/anima/index.js`'s `setupNode` already carries for
+  // `AnimaGenerator`/`AnimaPreview`, ported here for `AnimaControlPanel`/
+  // `AnimaLoaderPanel` -- see that file's own "Sizing" comment for the full
+  // derivation this one only summarizes).
+  //
+  // `node._ctrlConfiguring` ALONE is not enough, even though it correctly
+  // guards `applyNodeChrome` just above: `setupNode` runs from
+  // `onNodeCreated`'s own deferred `loadMods().then(...)` microtask, and
+  // `onNodeCreated` fires for a RESTORED node too (litegraph's construct-
+  // then-configure sequence calls `onNodeCreated` BEFORE `onConfigure`, not
+  // instead of it). `app.loadGraphData` -- the thing that eventually calls
+  // `configure()` on every restored node -- is itself async, so there is a
+  // real window where THIS function's own microtask resolves and runs
+  // BEFORE `onConfigure` has had any chance to set `_ctrlConfiguring` at
+  // all. During that exact window `node.size` still holds litegraph's tiny
+  // freshly-CONSTRUCTED default (not yet the workflow's saved one) -- and
+  // WORSE than the Anima track's version of this race, `rowCountOf` can
+  // ALSO still read zero rows here (the state widget's saved value hasn't
+  // been parsed into `node._ctrlRows` yet either), so an unguarded floor
+  // doesn't just widen the node, it can also collapse its HEIGHT to a
+  // near-empty single-row body over an already-saved 8-row panel.
+  // `isGraphLoading()` (`js/shared/graph_loading.mjs`, ported from
+  // `../ComfyUI-Pixaroma` -- see `THIRD_PARTY_NOTICES.md`) closes exactly
+  // that window: it wraps `app.loadGraphData` itself (the one funnel every
+  // workflow open/tab switch/undo goes through) and stays true for the
+  // WHOLE call plus a trailing window, independent of any per-node flag's
+  // own timing. `node._ctrlConfiguring` is kept as a second, belt-and-
+  // braces check (it still covers a hot-reload/edge case `isGraphLoading`
+  // might not), not because it alone is sufficient -- removing EITHER half
+  // of this `||` reintroduces the exact "loses its saved size on refresh"
+  // bug this comment describes.
+  // ---------------------------------------------------------------------
+  if (!isGraphLoading() && !node._ctrlConfiguring) {
+    if (!node.size || node.size[0] < mods.render.MIN_W) {
+      node.size = node.size || [0, 0];
+      node.size[0] = mods.render.DEFAULT_W;
+      node.size[1] = mods.render.bodyHeight(mods.interaction.rowCountOf(node, ctx));
+    }
   }
 
   mods.interaction.syncRows(node, ctx);
