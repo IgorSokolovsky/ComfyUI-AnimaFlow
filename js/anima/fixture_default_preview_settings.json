@@ -1,0 +1,17 @@
+{
+  "compare": {
+    "a": "base",
+    "b": "final",
+    "enabled": true
+  },
+  "save": {
+    "embed_workflow": true,
+    "enabled": true,
+    "extension": "png",
+    "filename": "%date:yyyy-MM-dd%_%seed%_%stage%",
+    "path": "AnimaFlow",
+    "which": "shown"
+  },
+  "schema": "animaflow.anima_preview.preview_state",
+  "version": 1
+}

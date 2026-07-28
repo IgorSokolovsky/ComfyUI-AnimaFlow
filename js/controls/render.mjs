@@ -55,6 +55,7 @@
  */
 
 import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
+import { openOverlay as sharedOpenOverlay } from "../shared/overlay.mjs";
 
 const STYLE_ID = "wtn-controls-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -568,76 +569,17 @@ export function buildNameInput(doc, value) {
  * listeners. Only ONE overlay is ever open at a time (closing any previous
  * one first) -- mirrors `js/prompt_rules/node/picker.mjs`'s single-instance
  * pattern.
+ *
+ * A thin wrapper over `js/shared/overlay.mjs`'s `openOverlay` — the actual
+ * anchoring/dismiss/viewport-flip mechanism was EXTRACTED there while
+ * building `js/anima/` (`docs/generator-design.md` §12: "reuse the Control
+ * Panel's overlay helper ... do not reimplement the anchoring"), so this
+ * pack has exactly one implementation, not a fork. Only the CSS hook
+ * (`"wtn-ctl-overlay wtn"`, asserted by this file's own `test_resize.mjs`)
+ * stays Controls-specific.
  */
 export function openOverlay(doc, anchorEl, contentEl, placement, onClose) {
-  const win = (doc && doc.defaultView) || (typeof window !== "undefined" ? window : null);
-  const overlay = el(doc, "div", "wtn-ctl-overlay wtn");
-  // Belt-and-suspenders: `.wtn-ctl-overlay`'s `position: fixed` normally
-  // comes from the injected stylesheet, but if that injection is ever
-  // missing/late/fails, a `position: static` overlay lays out as a block at
-  // the very bottom of the page -- invisible, not merely unstyled, and every
-  // click on it silently does nothing a user can see (exactly what made
-  // "+ Add control" look dead before `injectStyles` was wired up). Setting
-  // it inline here means a stylesheet failure can never hide a menu again.
-  overlay.style.position = "fixed";
-  overlay.style.zIndex = "10020";
-  overlay.appendChild(contentEl);
-  const body = doc.body || doc;
-  body.appendChild(overlay);
-
-  const reposition = () => {
-    const rect = typeof anchorEl.getBoundingClientRect === "function"
-      ? anchorEl.getBoundingClientRect()
-      : { left: 0, top: 0, right: 0, bottom: 0, width: 240 };
-    if (placement === "below") {
-      overlay.style.left = `${rect.left}px`;
-      overlay.style.top = `${rect.bottom + 6}px`;
-      overlay.style.width = `${Math.max(120, rect.width)}px`;
-    } else {
-      overlay.style.left = `${rect.right + 10}px`;
-      overlay.style.top = `${rect.top}px`;
-    }
-  };
-  reposition();
-
-  function onDocPointerDown(e) {
-    if (overlay.contains(e.target) || (anchorEl && anchorEl.contains && anchorEl.contains(e.target))) {
-      return;
-    }
-    close();
-  }
-  function onKeydown(e) {
-    if (e.key === "Escape") {
-      close();
-    }
-  }
-  let closed = false;
-  function close() {
-    if (closed) {
-      return;
-    }
-    closed = true;
-    if (win) {
-      win.removeEventListener("pointerdown", onDocPointerDown, true);
-      win.removeEventListener("keydown", onKeydown, true);
-    }
-    if (overlay.parentNode) {
-      overlay.parentNode.removeChild(overlay);
-    }
-    if (typeof onClose === "function") {
-      onClose();
-    }
-  }
-  if (win) {
-    // Deferred so the SAME click that opened this overlay doesn't also
-    // immediately close it via the outside-click listener.
-    win.setTimeout(() => {
-      win.addEventListener("pointerdown", onDocPointerDown, true);
-      win.addEventListener("keydown", onKeydown, true);
-    }, 0);
-  }
-
-  return { overlay, close, reposition };
+  return sharedOpenOverlay(doc, anchorEl, contentEl, placement, onClose, "wtn-ctl-overlay wtn");
 }
 
 // ---------------------------------------------------------------------------

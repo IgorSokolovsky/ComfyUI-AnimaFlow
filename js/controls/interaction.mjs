@@ -99,7 +99,6 @@ import {
   buildAddRow,
   buildNameInput,
   paintRow,
-  openOverlay,
   bodyHeight,
   ROW_H,
   ROW_GAP,
@@ -115,6 +114,24 @@ import {
 // module scope, so it's just as importable under plain `node` as
 // `rows.mjs`/`render.mjs` already are -- no 404 risk.
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
+
+// The single-overlay-at-a-time bookkeeping + toggle primitive (ownerKey) --
+// EXTRACTED to js/shared/overlay.mjs while building js/anima/ so both
+// tracks share one implementation rather than a fork (see that module's top
+// doc comment, and docs/generator-design.md §12). `closeActiveOverlay`/
+// `closeOverlayIfOwnedBy` are used exactly as before; `openOverlayWithZoom`
+// below is a thin wrapper that keeps this file's existing call-site
+// signature (`ctx` first, not a bare `getCanvasEl`) and this pack's own
+// `"wtn-ctl-overlay wtn"` CSS hook, so nothing downstream of this import
+// had to change.
+import {
+  activeOverlayRef,
+  closeActiveOverlay,
+  closeOverlayIfOwnedBy,
+  openOverlayWithZoom as sharedOpenOverlayWithZoom,
+} from "../shared/overlay.mjs";
+
+export { closeActiveOverlay };
 
 // ---------------------------------------------------------------------------
 // State <-> hidden widget handshake (per the dynamic-node-frontend skill:
@@ -266,70 +283,19 @@ function winOf(ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Single-overlay-at-a-time bookkeeping (option list / ⚙ popover / context
-// menu / add-catalog menu all share this) -- mirrors
-// `js/prompt_rules/node/picker.mjs`'s single-instance pattern.
-// ---------------------------------------------------------------------------
-
-let _activeOverlay = null;
-
-export function closeActiveOverlay() {
-  if (_activeOverlay) {
-    _activeOverlay.close();
-    _activeOverlay = null;
-  }
-}
-
-/**
- * The toggle primitive every per-row overlay opener (option list / ⚙
- * popover / right-click menu) uses: close the active overlay ONLY IF it's
- * the one identified by `key` (each opener's own `${kind}:${row.id}` --
- * see `openListMenuFor`/`openGearPopover`/`openContextMenuFor` below),
- * returning whether it actually closed anything.
- *
- * THIS is the toggle -- not the document-level outside-click/Escape
- * listener in `render.mjs`'s `openOverlay`. That listener already correctly
- * ignores a pointerdown whose target is inside `anchorEl` (every opener
- * here passes the ROW's own root as the anchor), so a second click on the
- * SAME field was NEVER being closed by a stray outside-click race in the
- * first place -- the actual bug was that every opener unconditionally
- * called `closeActiveOverlay()` THEN immediately opened a brand-new overlay
- * on every click, with no memory of "is this exact field's overlay already
- * the one that's open". Two clicks on the same field: close (whatever's
- * open, including itself) -> reopen fresh -- net visible effect "nothing
- * happened" (still open), not an actual close. `ownerKey` is the fix: each
- * opener checks it FIRST and, if it matches, closes and stops -- no reopen.
- */
-function closeOverlayIfOwnedBy(key) {
-  if (_activeOverlay && _activeOverlay.ownerKey === key) {
-    closeActiveOverlay();
-    return true;
-  }
-  return false;
-}
-
-/**
- * `openOverlay` (render.mjs), plus wheel-zoom passthrough on the overlay
- * element itself -- ONE choke point for every overlay this node ever opens
- * (option list, ⚙ popover, row context menu, add-catalog menu), so wheeling
- * over any of them zooms the canvas same as wheeling over a row, EXCEPT over
- * a genuinely scrollable child that still has room (the option list's own
- * `.wtn-ctl-menu`/the latent popover's `.wtn-ctl-reslist`, both
- * `overflow-y: auto` -- `scrollRegionWantsWheel` finds them by walking up
- * from the wheel's actual target, so they keep scrolling normally).
- * `ctx.getCanvasEl` is `index.js`'s real `app.canvas.canvas` getter (or
- * `undefined` under test, where `installCanvasZoomPassthrough` harmlessly
- * falls back to never finding a canvas to dispatch to).
- */
+// `openOverlayWithZoom` -- thin wrapper over the shared primitive (see this
+// file's import comment above): keeps this module's existing `ctx`-first
+// call signature and this pack's own `"wtn-ctl-overlay wtn"` CSS hook, which
+// `test_resize.mjs` asserts on. Wheel-zoom passthrough on the overlay
+// element itself is the shared function's job -- ONE choke point for every
+// overlay this node ever opens (option list, ⚙ popover, row context menu,
+// add-catalog menu), so wheeling over any of them zooms the canvas same as
+// wheeling over a row, EXCEPT over a genuinely scrollable child that still
+// has room (the option list's own `.wtn-ctl-menu`/the latent popover's
+// `.wtn-ctl-reslist`, both `overflow-y: auto`). `ctx.getCanvasEl` is
+// `index.js`'s real `app.canvas.canvas` getter (or `undefined` under test).
 function openOverlayWithZoom(ctx, doc, anchorEl, contentEl, placement, onClose) {
-  const handle = openOverlay(doc, anchorEl, contentEl, placement, onClose);
-  const uninstallZoom = installCanvasZoomPassthrough(handle.overlay, ctx.getCanvasEl);
-  const origClose = handle.close;
-  handle.close = () => {
-    uninstallZoom();
-    origClose();
-  };
-  return handle;
+  return sharedOpenOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, contentEl, placement, onClose, "wtn-ctl-overlay wtn");
 }
 
 function optionListFor(ctx, kind) {
@@ -413,12 +379,12 @@ function openListMenuFor(node, ctx, row, refs) {
   });
   const handle = openOverlayWithZoom(ctx, doc, refs.root, menu, "below", () => {
     refs.root.classList.remove("wtn-ctl-open");
-    if (_activeOverlay === handle) {
-      _activeOverlay = null;
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
     }
   });
   handle.ownerKey = key;
-  _activeOverlay = handle;
+  activeOverlayRef.current = handle;
   refs.root.classList.add("wtn-ctl-open");
 }
 
@@ -840,12 +806,12 @@ function openGearPopover(node, ctx, row, refs) {
   const handle = openOverlayWithZoom(ctx, doc, refs.root, content, "right", () => {
     refs.gear.classList.remove("wtn-ctl-active");
     refs.root.classList.remove("wtn-ctl-open");
-    if (_activeOverlay === handle) {
-      _activeOverlay = null;
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
     }
   });
   handle.ownerKey = key;
-  _activeOverlay = handle;
+  activeOverlayRef.current = handle;
   refs.gear.classList.add("wtn-ctl-active");
   refs.root.classList.add("wtn-ctl-open");
 }
@@ -1011,12 +977,12 @@ function openContextMenuFor(node, ctx, row, refs) {
 
   const handle = openOverlayWithZoom(ctx, doc, refs.root, menu, "below", () => {
     refs.root.classList.remove("wtn-ctl-open");
-    if (_activeOverlay === handle) {
-      _activeOverlay = null;
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
     }
   });
   handle.ownerKey = key;
-  _activeOverlay = handle;
+  activeOverlayRef.current = handle;
   refs.root.classList.add("wtn-ctl-open");
 }
 
@@ -1161,12 +1127,12 @@ function openAddMenu(node, ctx, addRefs) {
   });
 
   const handle = openOverlayWithZoom(ctx, doc, addRefs.root, menu, "below", () => {
-    if (_activeOverlay === handle) {
-      _activeOverlay = null;
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
     }
   });
   handle.ownerKey = key;
-  _activeOverlay = handle;
+  activeOverlayRef.current = handle;
 }
 
 // ---------------------------------------------------------------------------

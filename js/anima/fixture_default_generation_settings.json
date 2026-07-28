@@ -1,0 +1,162 @@
+{
+  "detailer": {
+    "blocks": {
+      "eye": {
+        "alignment": "32",
+        "bbox_fill": false,
+        "cfg": 8.0,
+        "combined": false,
+        "contour_fill": true,
+        "crop_factor": 6.0,
+        "cycle": 1,
+        "denoise": 0.29,
+        "detect_count": 1,
+        "detect_prompt": "eyes",
+        "drop_size": 40,
+        "enabled": false,
+        "feather": 6,
+        "force_inpaint": true,
+        "guide_size": 1024,
+        "guide_size_for": false,
+        "individual_masks": true,
+        "inherit_sampler_settings": true,
+        "inpaint_model": false,
+        "label": "Eye Detailer",
+        "max_size": 2048,
+        "noise_mask": true,
+        "noise_mask_feather": 20,
+        "refine_iterations": 2,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "steps": 20,
+        "threshold": 0.5,
+        "tiled_decode": false,
+        "tiled_encode": false,
+        "wildcard": ""
+      },
+      "face": {
+        "alignment": "32",
+        "bbox_fill": false,
+        "cfg": 8.0,
+        "combined": false,
+        "contour_fill": true,
+        "crop_factor": 4.0,
+        "cycle": 1,
+        "denoise": 0.33,
+        "detect_count": 1,
+        "detect_prompt": "face",
+        "drop_size": 100,
+        "enabled": false,
+        "feather": 5,
+        "force_inpaint": true,
+        "guide_size": 1024,
+        "guide_size_for": false,
+        "individual_masks": true,
+        "inherit_sampler_settings": true,
+        "inpaint_model": false,
+        "label": "Face Detailer",
+        "max_size": 2048,
+        "noise_mask": true,
+        "noise_mask_feather": 10,
+        "refine_iterations": 2,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "steps": 20,
+        "threshold": 0.52,
+        "tiled_decode": false,
+        "tiled_encode": false,
+        "wildcard": ""
+      }
+    },
+    "enabled": false,
+    "order": [
+      "face",
+      "eye"
+    ],
+    "sam3": {
+      "checkpoint": "sam3.1_multiplex_fp16.safetensors"
+    }
+  },
+  "highres": {
+    "cfg": 8.0,
+    "denoise": 0.25,
+    "enabled": false,
+    "inherit_sampler_settings": true,
+    "max_long_edge": 2560,
+    "multiple": "32",
+    "sampler_name": "euler",
+    "scale_by": 1.5,
+    "scheduler": "simple",
+    "steps": 20,
+    "upscale_method": "bicubic"
+  },
+  "latent": {
+    "batch": 1,
+    "height": 1024,
+    "width": 1024
+  },
+  "loras": [],
+  "mod_guidance": {
+    "enabled": false,
+    "mod_end_layer": 27,
+    "mod_final_w": 0.0,
+    "mod_start_layer": 8,
+    "mod_taper": 0,
+    "mod_taper_scale": 0.25,
+    "mod_w": 3.0,
+    "profile": "step_i8_skip27",
+    "quality_neg": "score_1, score_2, score_3, worst quality, lowres, old, bad hands, bad anatomy",
+    "quality_tags": "highres, best quality, score_7"
+  },
+  "postprocess": {
+    "enabled": false,
+    "fit": {
+      "max_long_edge": 2048,
+      "max_megapixels": 4.0,
+      "method": "bicubic",
+      "mode": "max_long_edge"
+    }
+  },
+  "sampler": {
+    "cfg": 5.0,
+    "denoise": 1.0,
+    "sampler_name": "er_sde",
+    "scheduler": "simple",
+    "seed": -1,
+    "seed_after_generate": "fixed",
+    "shift": 3.0,
+    "steps": 32
+  },
+  "schema": "animaflow.anima_generator.generation_settings",
+  "upscale": {
+    "cfg": 8.0,
+    "denoise": 0.2,
+    "enabled": false,
+    "inherit_sampler_settings": true,
+    "sampler_name": "euler",
+    "scale_by": 2.0,
+    "scheduler": "simple",
+    "steps": 20,
+    "usdu": {
+      "auto_tile_max": 2048,
+      "auto_tile_min": 512,
+      "auto_tile_size": true,
+      "auto_tile_target": 1024,
+      "batch_size": 1,
+      "force_uniform_tiles": true,
+      "mask_blur": 8,
+      "mode_type": "Linear",
+      "seam_fix_denoise": 1.0,
+      "seam_fix_mask_blur": 8,
+      "seam_fix_mode": "None",
+      "seam_fix_padding": 16,
+      "seam_fix_width": 64,
+      "tile_height": 512,
+      "tile_padding": 32,
+      "tile_width": 512,
+      "tiled_decode": false,
+      "upscale_model_name": "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"
+    }
+  },
+  "version": 1
+}
