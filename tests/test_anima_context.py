@@ -151,6 +151,69 @@ def test_require_context_value_never_raises_attributeerror_on_garbage_context():
             assert False, f"raised AttributeError for {garbage!r}"
 
 
+# ---------------------------------------------------------------------------
+# build_context_ui_payload -- the post-run truth AnimaGenerator hands the
+# frontend back (the only thing that can see a Use-Everywhere-injected
+# sampler scalar, since that never rides a litegraph link).
+# ---------------------------------------------------------------------------
+
+
+def test_build_context_ui_payload_reports_supplied_for_all_eleven_fields():
+    context = ctx.build_context({"model": "M", "seed": 7})
+    payload = ctx.build_context_ui_payload(context)
+    assert set(payload["supplied"]) == set(ctx.CONTEXT_FIELDS)
+    assert payload["supplied"]["model"] is True
+    assert payload["supplied"]["seed"] is True
+    assert payload["supplied"]["clip"] is False
+
+
+def test_build_context_ui_payload_values_are_only_the_five_sampler_scalars():
+    # Every context field wired, so if anything besides the five sampler
+    # scalars could ever land in `values`, this is where it would show up.
+    context = ctx.build_context(
+        {
+            "model": "M", "clip": "C", "vae": "V",
+            "positive": "POS", "negative": "NEG", "latent": "LAT",
+            "seed": 1, "steps": 20, "cfg": 7.0,
+            "sampler_name": "euler", "scheduler": "simple",
+        }
+    )
+    payload = ctx.build_context_ui_payload(context)
+    assert set(payload["values"]) == {"seed", "steps", "cfg", "sampler_name", "scheduler"}
+    for banned in ("model", "clip", "vae", "positive", "negative", "latent"):
+        assert banned not in payload["values"], banned
+    # A torch-shaped stand-in in `values` would have blown up json.dumps --
+    # prove the whole payload is actually JSON-safe, not just eyeballed.
+    import json
+
+    json.dumps(payload)
+
+
+def test_build_context_ui_payload_values_only_include_supplied_sampler_fields():
+    context = ctx.build_context({"seed": 7})
+    payload = ctx.build_context_ui_payload(context)
+    assert payload["values"] == {"seed": 7}
+    for field in ("steps", "cfg", "sampler_name", "scheduler"):
+        assert field not in payload["values"], field
+
+
+def test_build_context_ui_payload_supplied_as_none_still_reports_a_value():
+    # A wire that legitimately carried None through -- supplied stays True,
+    # and the frontend, not this function, decides whether a None value
+    # falls back to the settings tree.
+    context = ctx.build_context({"cfg": None})
+    payload = ctx.build_context_ui_payload(context)
+    assert payload["supplied"]["cfg"] is True
+    assert payload["values"]["cfg"] is None
+
+
+def test_build_context_ui_payload_fails_closed_on_garbage_context():
+    for garbage in [None, "not-a-dict", 42, [], {}]:
+        payload = ctx.build_context_ui_payload(garbage)
+        assert all(v is False for v in payload["supplied"].values()), garbage
+        assert payload["values"] == {}, garbage
+
+
 ALL_TESTS = [
     test_every_field_missing_from_raw_is_recorded_as_not_supplied,
     test_a_real_value_is_recorded_as_supplied,
@@ -167,6 +230,11 @@ ALL_TESTS = [
     test_require_context_value_raises_for_every_field_by_name,
     test_require_context_value_does_not_raise_when_supplied_as_none,
     test_require_context_value_never_raises_attributeerror_on_garbage_context,
+    test_build_context_ui_payload_reports_supplied_for_all_eleven_fields,
+    test_build_context_ui_payload_values_are_only_the_five_sampler_scalars,
+    test_build_context_ui_payload_values_only_include_supplied_sampler_fields,
+    test_build_context_ui_payload_supplied_as_none_still_reports_a_value,
+    test_build_context_ui_payload_fails_closed_on_garbage_context,
 ]
 
 

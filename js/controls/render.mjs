@@ -56,6 +56,7 @@
 
 import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
 import { openOverlay as sharedOpenOverlay } from "../shared/overlay.mjs";
+import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
 
 const STYLE_ID = "wtn-controls-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -87,7 +88,7 @@ const CSS = `
    hidden straight on the row -- was VERIFIED (headless-Chrome measurement,
    see js/controls/test_resize.mjs's "clips content, never the dot" tests)
    to also clip .wtn-ctl-dot, since the dot is deliberately positioned
-   OUTSIDE the row's own box (right: -16px -- see that rule's own comment)
+   OUTSIDE the row's own box (right: -15px -- see that rule's own comment)
    to sit in the socket gutter between the row and the node's real edge.
    overflow: hidden on an element clips ANY descendant that visually
    overflows its box, absolutely-positioned ones included, with no
@@ -188,8 +189,10 @@ const CSS = `
 .wtn-ctl-dot {
   /* width/height/right below are EYEBALLED against the real litegraph
      output socket in a live ComfyUI (alignOutputsLegacy parks that socket
-     at node.size[0] on this row's Y) -- empirical, don't "round" them. */
-  position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
+     at node.size[0] on this row's Y) -- empirical, don't "round" them.
+     right: -15px is the LIVE-VERIFIED value (checked against the real
+     socket in a live ComfyUI session, 2026-07-28) -- don't re-derive it. */
+  position: absolute; right: -15px; top: 50%; transform: translateY(-50%);
   width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #0b0e13;
   /* This element is a purely visual stand-in for the REAL output socket
      litegraph itself draws on the canvas underneath it (alignOutputsLegacy
@@ -369,21 +372,13 @@ const CSS = `
 /**
  * Paints the LEGACY LITEGRAPH NODE ITSELF (body + title-bar strip) in our
  * theme, so the dark DOM rows sit on our own dark surface instead of
- * ComfyUI's lighter default node chrome. Mirrors
- * `../ComfyUI-Pixaroma/js/note/render.mjs`'s `renderContent` (see its top
- * doc comment, lines ~66-113, for the exact reasoning this ports): litegraph
- * SERIALIZES `node.color`/`node.bgcolor` into the saved workflow the moment
- * either is set (by us, OR by the user's own right-click -> Colors pick), so
- * this only ever fills in a still-null value -- it must NEVER overwrite one
- * that's already set, or it would silently clobber a user's explicit choice
- * every time it runs.
- *
- * `TOKENS.surface`/`TOKENS.console` (this module's single source of truth
- * for the palette, mirroring `js/shared/theme.mjs`) are used directly rather
- * than a third hardcoded pair of hexes. The title-bar uses `TOKENS.console`
- * (the same inset "field background" token as the DOM rows' own fields),
- * not `TOKENS.surface2` -- the header reads as the darkest band on the node,
- * matching the field background, rather than the brightest.
+ * ComfyUI's lighter default node chrome. Re-exported here (rather than
+ * defined here) as a thin delegation to `../shared/node_chrome.mjs` -- see
+ * that module's own top doc comment for the full constraints (litegraph
+ * SERIALIZES `node.color`/`node.bgcolor` the moment either is set, so this
+ * must NEVER overwrite an already-set value; the Pixaroma attribution; the
+ * palette decision) now that Controls and Anima share exactly ONE
+ * implementation instead of each carrying its own copy.
  *
  * Called from `index.js`'s `setupNode` ONLY, and only when
  * `!node._ctrlConfiguring` -- i.e. a genuinely fresh node, never one being
@@ -392,15 +387,7 @@ const CSS = `
  * deliberately never touches colour at all).
  */
 export function applyNodeChrome(node) {
-  if (!node) {
-    return;
-  }
-  if (node.bgcolor == null) {
-    node.bgcolor = TOKENS.surface;
-  }
-  if (node.color == null) {
-    node.color = TOKENS.console;
-  }
+  return sharedApplyNodeChrome(node);
 }
 
 export function injectStyles(doc) {

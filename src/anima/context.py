@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
+from .resources import SAMPLER_FIELDS
+
 # ---------------------------------------------------------------------------
 # The MISSING sentinel — "this socket was never wired at all", distinct from
 # "wired, but the thing on the other end of the wire produced None on
@@ -147,8 +149,46 @@ def require_context_value(context: Any, field: str) -> Any:
     return context_value(context, field)
 
 
+def build_context_ui_payload(context: Any) -> Dict[str, Any]:
+    """The post-run truth `AnimaGenerator` hands the frontend back under its
+    `anima_context` `ui` key (`nodes/anima/generator.py`) — the only thing
+    that can see a sampler scalar Use Everywhere injected straight into the
+    prompt at submit time, since that never travels over a litegraph link
+    the frontend can walk at edit time.
+
+        {"supplied": {field: bool, ... for EVERY CONTEXT_FIELDS field},
+         "values": {field: value, ... only for a SAMPLER_FIELDS field this
+                     context actually had `context_supplied` for}}
+
+    **Only `SAMPLER_FIELDS` (the five JSON-safe scalars) may ever appear in
+    `values`.** `model`/`clip`/`vae`/`positive`/`negative`/`latent` are real
+    torch objects (or `None`) — putting one in `values` would blow up
+    `json.dumps` the instant this payload is serialized into the node's
+    `ui` dict, so `supplied` reports on all eleven `CONTEXT_FIELDS` but
+    `values` is built from `SAMPLER_FIELDS` alone, never the full set.
+
+    Built entirely from `context_supplied`/`context_value` — both already
+    fail closed for a garbage/non-dict/`None` context (every `supplied`
+    entry `False`, `context_value` never raises), so a garbage `context`
+    here simply produces `{"supplied": {every field: False}, "values": {}}`
+    — never a raised exception, matching every other reader in this module.
+    A field that's `supplied` but whose wire legitimately carried `None`
+    still gets a `values` entry (`None`) rather than being omitted — the
+    frontend is the one that decides whether "supplied but no value" falls
+    back to a settings value; this function's job is only to report the
+    truth it actually has.
+    """
+    supplied = {field: context_supplied(context, field) for field in CONTEXT_FIELDS}
+    values = {
+        field: context_value(context, field)
+        for field in SAMPLER_FIELDS
+        if supplied[field]
+    }
+    return {"supplied": supplied, "values": values}
+
+
 __all__ = (
     "MISSING", "CONTEXT_FIELDS", "CONTEXT_FIELD_SOCKET_NAMES",
     "ContextFieldMissing", "build_context", "context_supplied",
-    "context_value", "require_context_value",
+    "context_value", "require_context_value", "build_context_ui_payload",
 )

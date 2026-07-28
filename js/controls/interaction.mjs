@@ -77,6 +77,7 @@ import {
   duplicateRow,
   removeRow,
   reorderRows,
+  planHoleCompaction,
   clampSeedString,
   randomSeedString,
   clampNumeric,
@@ -1510,6 +1511,85 @@ function syncSlotLabel(node, row, out) {
 }
 
 /**
+ * Real "is this row's socket wired" oracle for `rows.mjs`'s
+ * `planHoleCompaction` — reads `node.outputs[slot-1].links` directly
+ * (litegraph's own connection bookkeeping: a non-empty array of link ids
+ * when something is plugged in, `null`/`undefined`/`[]` otherwise).
+ * `rows.mjs` stays free of any `node`/litegraph reference by design (see
+ * this module's top doc comment); `planHoleCompaction` takes an
+ * `isWiredBySlot` FUNCTION precisely so it never needs to know how
+ * "wired" is determined, only what the answer is for a given slot number.
+ */
+function isWiredBySlot(node, slot) {
+  const out = node.outputs && node.outputs[slot - 1];
+  return !!(out && Array.isArray(out.links) && out.links.length > 0);
+}
+
+/**
+ * Change 1 of the stray-output-dot fix (`rows.mjs`'s `planHoleCompaction`
+ * doc comment has the full mechanism/algorithm) — this function supplies
+ * the one thing that module can't know on its own (real wiredness, via
+ * `isWiredBySlot` above) and applies whatever plan comes back: for each
+ * `{from, to}` move, find the row currently AT slot `from` and rewrite its
+ * `slot` to `to` in place. Nothing else about the row changes — `syncOutputs`
+ * (the sole caller, immediately after this returns) is what re-derives
+ * `out.name`/`out.label`/`out.type`/`out.pos` for the row's NEW slot index,
+ * and what trims the now-fully-unowned top slot this leaves behind.
+ * Returns whether anything moved (the caller uses this to know whether a
+ * persist is needed, same as `syncSlotLabel`'s `claimedOwnership`).
+ *
+ * Ordering hazard checked, not assumed (per the task's citation of
+ * `../ComfyUI-Pixaroma/js/sliders/core.mjs:237-245`: `removeOutput` on a
+ * WIRED slot fires `onConnectionsChange` as a disconnect, which is why that
+ * pack — and `index.js`'s own `onConnectionsChange` hook here, which only
+ * special-cases the `isConnected === true` branch and otherwise falls
+ * through to the original handler untouched — has to care about "our own
+ * remove vs. the user unplugging" at all). This function never calls
+ * `node.removeOutput`/`node.addOutput` itself, and `planHoleCompaction`
+ * only ever proposes moving a row whose slot has ZERO links in the first
+ * place — so by the time `syncOutputs`'s trailing-trim calls
+ * `node.removeOutput` on the slot this leaves vacated, that slot was
+ * already unwired before this function ever touched it. There is no live
+ * connection for a disconnect event to report, and no special-casing for it
+ * to need.
+ *
+ * USER-ACTION-ONLY, NEVER ON LOAD: `syncOutputs` (the sole caller) skips
+ * this function entirely while `node._ctrlConfiguring` is truthy — the same
+ * flag, read the same way, that gates `setupNode`'s `applyNodeChrome` call
+ * (`index.js:262`) and `scheduleFit` (this module, above). Its own doc
+ * comment (`index.js:244-262`) is why it reliably means "a workflow restore
+ * is in flight, right now, for this node": `onConfigure`'s wrapper sets it
+ * SYNCHRONOUSLY before queuing anything async, and litegraph's
+ * construct-then-configure deserialize loop runs with no `await` in
+ * between, so by the time either `onNodeCreated`'s or `onConfigure`'s own
+ * queued `syncRows` call actually fires (both go through `loadMods().then`),
+ * the flag already reflects "was this node just restored" for the WHOLE
+ * loading window, however long the import takes. `compactHoles` renumbers a
+ * row's slot — exactly the mutation `assignSlot`'s doc comment (`rows.mjs`)
+ * calls out as safe ONLY when a genuine user action (add/remove/edit a row)
+ * triggers it; a saved workflow's interior hole is not a bug to silently
+ * repair on the way in, it is that workflow's own last-saved shape, and
+ * loading it must never call `removeOutput`/rewrite a slot on its own,
+ * unprompted (this pack's "a clean workflow must not open modified" rule —
+ * same rule `restoreNode`'s own doc comment in `index.js` states for size).
+ */
+function compactHoles(node, state) {
+  const plan = planHoleCompaction(state.rows, (slot) => isWiredBySlot(node, slot));
+  if (!plan.length) {
+    return false;
+  }
+  let changed = false;
+  for (const move of plan) {
+    const row = state.rows.find((r) => r.slot === move.from);
+    if (row && move.from !== move.to) {
+      row.slot = move.to;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
  * Keep `node.outputs` sized to the HIGHEST slot currently in use (never to
  * `rows.length` — see `rows.mjs`'s module doc comment: slot is a durable
  * output-array INDEX, not a display position). A freed slot below the
@@ -1530,20 +1610,131 @@ function syncSlotLabel(node, row, out) {
  * control" strip — a floating output dot with the removed row's own label
  * painted next to it. `markSlotVacant` now revisits every hole on every
  * sync and forces all three back to a blank, disconnectable-to-nothing
- * state.)
+ * state.
+ *
+ * That fix was itself incomplete — see `markSlotVacant`'s own doc comment
+ * for round two: deleting `.pos` outright hands the slot to litegraph's
+ * DEFAULT output stacking, which parks an unpositioned output at the TOP of
+ * the node, beside the title. `compactHoles` (above) is tried FIRST, every
+ * sync, so most holes never reach `markSlotVacant`/`parkVacantSlot` at all;
+ * the two of those are what keep a hole that genuinely can't be closed
+ * (its would-be filler is wired) from ever being visible either.
+ *
+ * `compactHoles` itself is skipped outright while `node._ctrlConfiguring` is
+ * truthy — see ITS doc comment for the full reasoning; this is what stops a
+ * loaded workflow's own saved hole from being silently renumbered on
+ * restore. Everything else below (the trailing-slot trim, the grow loop,
+ * `markSlotVacant`/`alignOutputsLegacy`/`parkVacantSlot`) runs unconditionally
+ * either way — a restored hole must still be BLANKED and PARKED exactly as
+ * it would be mid-session, it just must not be CLOSED.)
+ */
+/** Grab `node.size`'s current `[w, h]` as a fresh 2-entry array, or `null` if
+ * `node.size` isn't there or isn't shaped like one -- `restoreNodeSize`
+ * below already tolerates a `null` snapshot on its own; this just keeps that
+ * check in ONE place. Same helper `js/anima/interaction.mjs`'s
+ * `healNodeSockets` carries under this exact name, for this exact reason --
+ * see its doc comment for the full "shrinks to min on every refresh"
+ * mechanism this guards against; kept as a private duplicate here rather
+ * than a cross-track import (this pack's tracks stay independent modules). */
+function captureNodeSize(node) {
+  if (Array.isArray(node.size) && node.size.length >= 2 && typeof node.size[0] === "number" && typeof node.size[1] === "number") {
+    return [node.size[0], node.size[1]];
+  }
+  return null;
+}
+
+/** Write a `captureNodeSize` snapshot back onto `node.size`, IN PLACE --
+ * assigning the two array ENTRIES directly rather than calling
+ * `node.setSize(...)`, so this can never re-enter any `onResize` clamp chain
+ * installed elsewhere while a sync is still unwinding on the same call
+ * stack (this track has no such clamp today, unlike `js/anima/`'s, but the
+ * same defensive shape costs nothing and keeps the two tracks' fixes
+ * identical). A no-op if there was nothing captured, or nowhere left to
+ * write it into. Marks the canvas dirty so the restored size actually
+ * repaints. */
+function restoreNodeSize(node, saved) {
+  if (!saved || !Array.isArray(node.size) || node.size.length < 2) {
+    return;
+  }
+  node.size[0] = saved[0];
+  node.size[1] = saved[1];
+  if (typeof node.setDirtyCanvas === "function") {
+    node.setDirtyCanvas(true, true);
+  }
+}
+
+/**
+ * ## Size preserve/restore around the trim/grow loops below (the SAME
+ * "shrinks to min on every refresh" trap `js/anima/interaction.mjs`'s
+ * `healNodeSockets` doc comment covers in full)
+ *
+ * VERIFY-IN-COMFYUI: litegraph's own `removeOutput`/`addOutput` are
+ * documented as each ending with `this.size = this.computeSize()` -- so
+ * either while-loop below, if it actually calls the real API method (never
+ * the plain-splice/push fallback, which has no such side effect), discards
+ * whatever size litegraph just restored from the saved workflow. This is
+ * read from litegraph's documented behaviour, not exercised against a live
+ * process (none installed in this dev environment) -- same caveat as the
+ * Anima track's own fix.
+ *
+ * Unlike Anima's Python surface (a real breaking class-shape change,
+ * `d021c09`), this pack's own `RETURN_TYPES`/`MAX_ROWS` for
+ * `AnimaControlPanel`/`AnimaLoaderPanel` has never changed shape -- `node.
+ * outputs.length` and `state.rows`' own `maxSlot` are two views of the SAME
+ * saved workflow and are kept EXACTLY equal by this very function every time
+ * it runs (the trim/grow loops below converge them to match on every call,
+ * including the one that ran right before the save that produced whatever
+ * gets restored). So on a normal load, this pair is already consistent
+ * BEFORE either loop below ever runs, and neither loop's condition is even
+ * true -- no `removeOutput`/`addOutput` call, no size-clobbering side
+ * effect, nothing to restore. That is what makes a clean, already-current
+ * Control/Loader Panel workflow safe today without any extra guard.
+ *
+ * The preserve/restore below exists for the cases that invariant does NOT
+ * cover: a workflow saved by an OLDER build of this same file (before some
+ * now-fixed hole/compaction bug landed -- this module's own doc comments
+ * record more than one such fix) or a hand-edited workflow, either of which
+ * can hand this function a `node.outputs.length` that genuinely disagrees
+ * with `maxSlot` on the very FIRST sync a restore ever runs. That first sync
+ * happens from `setupNode` (via `onNodeCreated`, which litegraph fires
+ * BEFORE `onConfigure` even for a restored node, per `index.js`'s own top
+ * doc comment) while `node._ctrlConfiguring` is already true and BEFORE
+ * `restoreNode`'s own sync runs -- i.e. squarely on the load path, with
+ * nothing downstream (`scheduleFit` is deliberately never called from the
+ * load path either) left to correct a size a stray `removeOutput`/
+ * `addOutput` call clobbered. Preserving it here is what keeps that one case
+ * from reproducing the exact reported bug on this track too -- and per the
+ * VERIFY-IN-COMFYUI caveat above, it costs nothing on a litegraph build that
+ * turns out not to resize on these calls: restoring a size to itself is
+ * harmless. Only restored when the trim/grow loops actually removed or
+ * added something -- `compactHoles`'s own `_ctrlConfiguring` gate above is
+ * untouched, and an already-consistent load still writes `node.size`
+ * nowhere at all.
  */
 export function syncOutputs(node, ctx) {
   const state = ensureState(node, ctx);
   if (!node.outputs) {
     node.outputs = [];
   }
+  // `node._ctrlConfiguring` is a workflow restore IN FLIGHT right now for
+  // this exact node (see `compactHoles`'s doc comment for the full
+  // create-vs-restore reasoning) -- compaction renumbers a row's slot, which
+  // is a user-action-only mutation (`rows.mjs`'s `assignSlot` doc comment),
+  // so it must never run on the load path. Plain property read, no
+  // litegraph lookup involved -- a fake node under test can set this flag
+  // directly, same as `scheduleFit` already does.
+  const compacted = node._ctrlConfiguring ? false : compactHoles(node, state);
   const maxSlot = state.rows.reduce((m, r) => Math.max(m, Number(r.slot) || 0), 0);
+
+  const savedSize = captureNodeSize(node);
+  let outputsMutated = false;
 
   while (node.outputs.length > maxSlot) {
     const idx = node.outputs.length - 1;
     if (state.rows.some((r) => r.slot === idx + 1)) {
       break; // never shrink past an index a row still owns
     }
+    outputsMutated = true;
     if (typeof node.removeOutput === "function") {
       node.removeOutput(idx);
     } else {
@@ -1551,11 +1742,15 @@ export function syncOutputs(node, ctx) {
     }
   }
   while (node.outputs.length < maxSlot) {
+    outputsMutated = true;
     if (typeof node.addOutput === "function") {
       node.addOutput(ZW, "*");
     } else {
       node.outputs.push({ name: ZW, type: "*" });
     }
+  }
+  if (outputsMutated) {
+    restoreNodeSize(node, savedSize);
   }
 
   if (!node._ctrlLastLabel) {
@@ -1607,17 +1802,30 @@ export function syncOutputs(node, ctx) {
   // Every index NOT in `ownedSlots` is an interior "hole" (a slot freed by
   // a row removal, per this function's top doc comment) -- revisit ALL of
   // them, EVERY sync, not just the moment a row is removed: a hole can sit
-  // unclaimed for an arbitrary number of syncs before `assignSlot` reuses
-  // it, and each of those syncs must keep re-asserting the blank state
-  // rather than trusting whatever the previous call left behind.
+  // unclaimed for an arbitrary number of syncs before `assignSlot`/
+  // `compactHoles` reuses or closes it, and each of those syncs must keep
+  // re-asserting the blank state rather than trusting whatever the previous
+  // call left behind.
+  const holeIdxs = [];
   for (let idx = 0; idx < node.outputs.length; idx++) {
     if (ownedSlots.has(idx + 1)) {
       continue;
     }
+    holeIdxs.push(idx);
     markSlotVacant(node.outputs[idx], idx + 1);
   }
 
   alignOutputsLegacy(node);
+
+  // Park every surviving hole's dot NOW that live rows' own dots are
+  // positioned (`parkVacantSlot`, below `markSlotVacant`) -- ordering here
+  // is cosmetic, `parkVacantSlot` only ever READS a live widget's `.y`,
+  // which `alignOutputsLegacy` never changes, but doing it right after
+  // keeps every output's `.pos` freshly written in one clearly-sequenced
+  // pass rather than interleaved with the owned-row loop above.
+  holeIdxs.forEach((idx, holeRank) => {
+    parkVacantSlot(node, node.outputs[idx], holeRank);
+  });
 
   // A row's `slotLabelOwned` flag is part of the serialized row (`rows.mjs`)
   // -- if `syncSlotLabel` just claimed it for the FIRST time this call, that
@@ -1629,7 +1837,11 @@ export function syncOutputs(node, ctx) {
   // square one (`isBlankSlotLabel`/`_ctrlLastLabel` both fresh, but the
   // restored `out.label` no longer matches either since it's the user's real
   // text -- exactly the scenario `syncSlotLabel`'s doc comment walks through).
-  if (claimedOwnership) {
+  // `compacted` needs the exact same "persist now, not on some later unrelated
+  // edit" treatment -- `compactHoles` already rewrote `row.slot` in place, so
+  // skipping this would leave the very fix this pair of functions exists for
+  // unsaved until something else happens to trigger a persist.
+  if (claimedOwnership || compacted) {
     persistState(node, ctx);
   }
 }
@@ -1639,7 +1851,8 @@ export function syncOutputs(node, ctx) {
  * output no current row owns — see `syncOutputs` above) must be in on
  * every sync, unconditionally — there is no row behind it to own an
  * exception the way `syncSlotLabel` preserves a user's own rename of a
- * LIVE slot.
+ * LIVE slot. Only reached for a hole `compactHoles` could NOT close this
+ * sync (its would-be filler is wired — `rows.mjs`'s `planHoleCompaction`).
  *
  *  - `out.name` stays `value_${slot}` — same Python-contract reasoning as
  *    the owned-row branch above: `RETURN_NAMES` is a fixed tuple for the
@@ -1653,13 +1866,27 @@ export function syncOutputs(node, ctx) {
  *    accept a wire from anything in the graph, silently binding it to a
  *    slot with no row behind it: a worse bug than the visible dot this
  *    function exists to fix.
- *  - `out.pos` is deleted outright, not left at whatever the vacated row
- *    last set it to. `alignOutputsLegacy` below only ever WRITES `.pos`
- *    for indices a live row owns, so a hole's stale `.pos` is exactly the
- *    reported bug: a dot parked over the "+ Add control" strip (or
- *    wherever the vacated row's widget last sat). Deleting it hands the
- *    slot back to litegraph's own default output stacking, which never
- *    overlaps our DOM rows or the add strip.
+ *  - `out.hidden = true`, IN ADDITION to everything below — UNVERIFIED
+ *    against this pack's actual litegraph build: legacy litegraph's
+ *    `drawNode` iterates `node.outputs` unconditionally as far as could be
+ *    confirmed here, so this is not claimed to suppress the dot BY ITSELF.
+ *    It costs nothing to set on a renderer that ignores it, and is a clean
+ *    win on any renderer (present or future) that honours it — `out.pos`
+ *    (via `parkVacantSlot` below) is what actually does the work today.
+ *  - `out.pos` is PARKED (`parkVacantSlot`, below), not deleted.
+ *    HISTORY: deleting outright USED TO BE the fix here — the original
+ *    reported bug was a stale `.pos` inherited from whichever row last
+ *    vacated this slot, typically left sitting over the "+ Add control"
+ *    strip, and `delete out.pos` correctly cleared that (see the paragraph
+ *    above this function, still accurate for the bug it describes). But
+ *    deleting a slot's `.pos` entirely hands it to litegraph's own DEFAULT
+ *    output stacking — and that default parks an unpositioned output at
+ *    the TOP of the node, beside the title, which is a SECOND, DIFFERENT
+ *    stray-dot bug (confirmed live, on a real graph, by a console probe:
+ *    a hole `compactHoles` could not close because the row above it was
+ *    wired). A deliberately parked, explicit `.pos` — in the socket gutter
+ *    below the last live row, never at either failure mode's location —
+ *    is the fix that survives both at once.
  */
 function markSlotVacant(out, slot) {
   if (!out) {
@@ -1675,19 +1902,31 @@ function markSlotVacant(out, slot) {
   if (out.type !== VACANT_SLOT_TYPE) {
     out.type = VACANT_SLOT_TYPE;
   }
-  if (out.pos) {
-    delete out.pos;
+  if (out.hidden !== true) {
+    out.hidden = true;
   }
+}
+
+/** `[x, y]` for an output dot given DOM-widget-space `y` (a widget's own
+ * `.y`, no margin baked in) and that widget's `margin` — the ONE formula
+ * both `alignOutputsLegacy` (a live row's own dot) and `parkVacantSlot` (a
+ * surviving hole's dot, below) need, so neither hardcodes a second copy of
+ * it. `x` is always the node's own width (legacy litegraph paints every
+ * output dot at the node's right edge); `y` is half a row down from the
+ * widget's DOM-element top, offset by legacy's own DOM-widget inset
+ * (`margin`, `DEFAULT_MARGIN = 10` if unset): the element paints at
+ * `node.pos + margin + widget.y`, while `widget.y` itself carries no
+ * margin — omitting it lands the dot ~10px above the row's true center. */
+function dotPos(node, y, margin) {
+  const m = Number.isFinite(margin) ? margin : 10;
+  return [node.size[0], y + m + ROW_H * 0.5];
 }
 
 /** Park each row's output dot at ITS OWN row widget's Y (legacy litegraph
  * reads `output.pos` verbatim — ported from ComfyUI-Pixaroma's
  * `alignOutputsLegacy`, `js/sliders/ui.mjs`, keyed here by `row.slot - 1`
  * instead of positional index so reordering only moves the dot's Y, never
- * which `node.outputs` entry it is). `w.margin` accounts for legacy's own
- * DOM-widget-element inset (`DEFAULT_MARGIN = 10`): the element paints at
- * `node.pos + margin + widget.y`, while `widget.y` itself carries no
- * margin — omitting it lands the dot ~10px above the row's true center. */
+ * which `node.outputs` entry it is). */
 export function alignOutputsLegacy(node) {
   const entries = node._ctrlRows || [];
   if (!node.outputs || !entries.length) {
@@ -1709,12 +1948,64 @@ export function alignOutputsLegacy(node) {
       continue;
     }
     const margin = Number.isFinite(w.margin) ? w.margin : 10;
-    const nx = node.size[0];
-    const ny = y + margin + ROW_H * 0.5;
+    const [nx, ny] = dotPos(node, y, margin);
     if (!out.pos || out.pos[0] !== nx || Math.abs(out.pos[1] - ny) > 0.5) {
       out.pos = [nx, ny];
     }
   }
+}
+
+/** The widget-space `y` (no margin — same convention as `alignOutputsLegacy`
+ * reads off a live row's `w.y`) a vacant slot ranked `holeRank` (0 for the
+ * first surviving hole this sync, 1 for the next, …) should park its dot
+ * at: one row-pitch (`ROW_H + ROW_GAP` — litegraph's own spacing between
+ * two consecutive row widgets, the exact numbers this module already
+ * imports from `render.mjs` for everything else) below the LOWEST live
+ * row's own `widget.y`, then one further pitch per rank so several
+ * survivors stack rather than overlap — never beside the title (row 0's
+ * own `y`), never over the "+ Add control" strip (which sits ABOVE any of
+ * this, not below the last row).
+ *
+ * Falls back to `2` (`widgets_start_y` — render.mjs/rows.mjs's shared
+ * "before any row" convention, see this module's top doc comment) when
+ * there is no live row to measure from at all. That edge case can't
+ * actually produce an interior hole in the first place (nothing above an
+ * empty panel for one to be "interior" under — `rows.mjs`'s
+ * `planHoleCompaction` never returns a hole with nothing above it, and
+ * `syncOutputs`'s own trim already deletes a trailing one before this is
+ * ever called) — kept only so this degrades gracefully instead of reading
+ * off a missing row if that invariant is ever wrong.
+ */
+function vacantSlotY(node, holeRank) {
+  const entries = node._ctrlRows || [];
+  let maxY = null;
+  for (const entry of entries) {
+    const w = entry.widget;
+    const row = entry.refs && entry.refs.row;
+    if (!w || !row || !Number.isFinite(row.slot) || !Number.isFinite(w.y)) {
+      continue;
+    }
+    if (maxY === null || w.y > maxY) {
+      maxY = w.y;
+    }
+  }
+  const pitch = ROW_H + ROW_GAP;
+  const base = maxY === null ? 2 : maxY + pitch;
+  return base + pitch * holeRank;
+}
+
+/** Give a surviving vacant slot (`syncOutputs`'s `markSlotVacant`, called
+ * right before this — see ITS doc comment for why `delete out.pos` stopped
+ * being enough) a `.pos` that can never land beside the title or over the
+ * "+ Add control" strip: `vacantSlotY` above for the Y, `dotPos` (shared
+ * with `alignOutputsLegacy`) for turning that into an actual `[x, y]`. No
+ * margin override — a vacant slot has no DOM widget of its own to read one
+ * off, so this always uses `dotPos`'s own `DEFAULT_MARGIN = 10` fallback. */
+function parkVacantSlot(node, out, holeRank) {
+  if (!out) {
+    return;
+  }
+  out.pos = dotPos(node, vacantSlotY(node, holeRank), undefined);
 }
 
 // ---------------------------------------------------------------------------

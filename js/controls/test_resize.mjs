@@ -81,6 +81,7 @@ import {
   defaultSlotLabel,
   ROW_PRESETS,
   applyResolvedKind,
+  planHoleCompaction,
 } from "./rows.mjs";
 
 import {
@@ -323,7 +324,22 @@ function fireWin(win, type, evtOverrides = {}) {
 // Fake litegraph node
 // ---------------------------------------------------------------------------
 
-function makeFakeNode(initialStateJSON) {
+// A "small computed" size, distinct from any size a test explicitly sets --
+// used only by the `clobberSizeOnOutputChange` opt-in below, to mimic
+// litegraph's own documented `this.size = this.computeSize()` side effect on
+// `removeOutput`/`addOutput` (see `syncOutputs`'s own doc comment in
+// `interaction.mjs` for the full "shrinks to min on every refresh" mechanism
+// this proves the fix against; matches `js/anima/test_resize.mjs`'s own
+// `_MOCK_COMPUTED_SIZE` in spirit, kept as an independent constant here).
+const _MOCK_COMPUTED_SIZE = [80, 32];
+
+/** `opts.clobberSizeOnOutputChange` (default `false`, so every EXISTING
+ * caller of `makeFakeNode()` is unaffected) makes `addOutput`/`removeOutput`
+ * additionally overwrite `node.size` with `_MOCK_COMPUTED_SIZE`, mimicking
+ * litegraph's own real API methods -- opt-in rather than the default so this
+ * doesn't change behaviour for the ~150 other tests in this file that build
+ * a node with rows/outputs but never touch `node.size` at all. */
+function makeFakeNode(initialStateJSON, opts = {}) {
   const node = {
     size: [DEFAULT_W, 100],
     properties: {},
@@ -362,10 +378,16 @@ function makeFakeNode(initialStateJSON) {
     addOutput(name, type) {
       const out = { name, type, links: [] };
       node.outputs.push(out);
+      if (opts.clobberSizeOnOutputChange) {
+        node.size = _MOCK_COMPUTED_SIZE.slice();
+      }
       return out;
     },
     removeOutput(idx) {
       node.outputs.splice(idx, 1);
+      if (opts.clobberSizeOnOutputChange) {
+        node.size = _MOCK_COMPUTED_SIZE.slice();
+      }
     },
     setSize(size) {
       node.size = size.slice();
@@ -926,6 +948,20 @@ test("syncOutputs sizes node.outputs to the HIGHEST slot in use, not to rows.len
   state.rows.push({ id: 1, slot: 1, kind: "int", name: "a", value: 1, opts: { min: 0, max: 10, step: 1 } });
   state.rows.push({ id: 2, slot: 5, kind: "float", name: "b", value: 1, opts: { min: 0, max: 10, step: 1 } }); // a gap at 2/3/4
   persistState(node, ctx);
+  // Pre-seed `node.outputs` as if a real reload had already restored them
+  // (litegraph configures `node.outputs`/`.links` wholesale from the saved
+  // workflow BEFORE this pack's own JS ever runs) -- with slot 5's own
+  // output WIRED, so `compactHoles` (rows.mjs's `planHoleCompaction`)
+  // leaves this gap alone and this test keeps testing "sizes to highest
+  // slot," not the separate hole-compaction behaviour (covered in its own
+  // section below).
+  node.outputs = [
+    { name: "value_1", type: "*" },
+    { name: "value_2", type: "*" },
+    { name: "value_3", type: "*" },
+    { name: "value_4", type: "*" },
+    { name: "value_5", type: "*", links: [999] },
+  ];
   syncRows(node, ctx);
   assert.equal(node.outputs.length, 5);
   assert.equal(node.outputs[0].type, "INT"); // slot 1
@@ -952,7 +988,8 @@ test("syncOutputs: every OCCUPIED slot's name is exactly value_${slot} (matching
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
   const a = addRowAndSync(node, ctx, "int"); // slot 1
   addRowAndSync(node, ctx, "float"); // slot 2
-  addRowAndSync(node, ctx, "seed"); // slot 3
+  const c = addRowAndSync(node, ctx, "seed"); // slot 3
+  node.outputs[c.slot - 1].links = [123]; // wired -- keep slot 1's gap genuinely open below it, not auto-compacted
   removeRowAndSync(node, ctx, a.id); // frees slot 1 -- a real gap below the max
   addRowAndSync(node, ctx, "sampler"); // reuses slot 1
   addRowAndSync(node, ctx, "latent"); // slot 4 -- a real slot ABOVE 3, not the lowest
@@ -1025,13 +1062,26 @@ test("syncOutputs is diff-gated: a second call against UNCHANGED state writes to
 // (typically over the "+ Add control" strip, since a removed row is
 // usually the last one added). `markSlotVacant` is what these tests pin
 // down: EVERY index no row owns must have a blank label, a connection-
-// refusing type, and no stale `.pos`, on every single sync -- not just the
-// one right after a removal.
+// refusing type, and a hidden/parked (never stale) `.pos`, on every single
+// sync -- not just the one right after a removal.
+//
+// `compactHoles` (`rows.mjs`'s `planHoleCompaction`) now tries to CLOSE a
+// hole outright before any of that even applies -- so every test below that
+// wants a hole to actually SURVIVE (to exercise `markSlotVacant`/
+// `parkVacantSlot`) must WIRE the row above it first, exactly the
+// precondition that blocks compaction. Tests that want to see compaction
+// actually happen live in their own section, "C0c" below.
 // ---------------------------------------------------------------------------
 
-/** Assert output index `idx` (0-based) is a fully inert hole: contract-
- * correct name, blank label, a type that refuses every connection, and no
- * leftover screen position. */
+/** Assert output index `idx` (0-based) is a fully inert, SURVIVING hole (one
+ * `compactHoles` could not close because the row that would have filled it
+ * is wired): contract-correct name, blank label, a type that refuses every
+ * connection, `hidden`, and a DELIBERATELY PARKED `.pos` sitting below every
+ * live row's own dot -- never simply absent (see `interaction.mjs`'s
+ * `markSlotVacant`/`parkVacantSlot` doc comments for why `delete out.pos`
+ * stopped being enough: it handed the slot to litegraph's own default
+ * output stacking, which parks it at the TOP of the node, beside the
+ * title). */
 function assertSlotIsVacant(node, idx, msgSuffix = "") {
   const out = node.outputs[idx];
   assert.ok(out, `expected an output object at index ${idx}${msgSuffix}`);
@@ -1039,7 +1089,20 @@ function assertSlotIsVacant(node, idx, msgSuffix = "") {
   assert.equal(out.label, ZW, `vacant slot ${idx + 1} label must be blanked to ZW${msgSuffix}`);
   assert.equal(out.type, VACANT_SLOT_TYPE, `vacant slot ${idx + 1} type must refuse connections${msgSuffix}`);
   assert.notEqual(out.type, "*", `vacant slot ${idx + 1} must never be wildcard-typed (accepts any wire)${msgSuffix}`);
-  assert.ok(!out.pos, `vacant slot ${idx + 1} must not have a stale .pos parked over live content${msgSuffix}`);
+  assert.equal(out.hidden, true, `vacant slot ${idx + 1} must be hidden${msgSuffix}`);
+  assert.ok(
+    Array.isArray(out.pos) && out.pos.length === 2 && Number.isFinite(out.pos[1]),
+    `vacant slot ${idx + 1} must have a real, parked .pos, not merely absent${msgSuffix}`,
+  );
+  const liveYs = node.outputs
+    .filter((o) => o && o !== out && o.type !== VACANT_SLOT_TYPE && Array.isArray(o.pos))
+    .map((o) => o.pos[1]);
+  liveYs.forEach((y) => {
+    assert.ok(
+      out.pos[1] > y,
+      `vacant slot ${idx + 1}'s parked dot (y=${out.pos[1]}) must sit BELOW every live row's own dot (y=${y})${msgSuffix}`,
+    );
+  });
 }
 
 test("removeRowAndSync: removing the FIRST of several rows leaves an inert hole at slot 1, not an orphan label/dot", () => {
@@ -1048,7 +1111,8 @@ test("removeRowAndSync: removing the FIRST of several rows leaves an inert hole 
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
   const first = addRowAndSync(node, ctx, "int"); // slot 1
   addRowAndSync(node, ctx, "float"); // slot 2
-  addRowAndSync(node, ctx, "seed"); // slot 3
+  const seed = addRowAndSync(node, ctx, "seed"); // slot 3
+  node.outputs[seed.slot - 1].links = [999]; // wired -- keep this a genuinely un-closable hole
 
   removeRowAndSync(node, ctx, first.id);
 
@@ -1103,7 +1167,8 @@ test("removeRowAndSync: a hole is re-blanked on EVERY subsequent sync, not just 
   const doc = makeDocStub();
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
   const a = addRowAndSync(node, ctx, "int"); // slot 1
-  addRowAndSync(node, ctx, "float"); // slot 2
+  const b = addRowAndSync(node, ctx, "float"); // slot 2
+  node.outputs[b.slot - 1].links = [999]; // wired -- keep this a genuinely un-closable hole
   removeRowAndSync(node, ctx, a.id); // slot 1 becomes a hole
   assertSlotIsVacant(node, 0);
 
@@ -1128,7 +1193,8 @@ test("addRowAndSync: adding a row after removing one reuses the freed slot and r
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
   const a = addRowAndSync(node, ctx, "int"); // slot 1
   const removedSlot = a.slot;
-  addRowAndSync(node, ctx, "float"); // slot 2
+  const b = addRowAndSync(node, ctx, "float"); // slot 2
+  node.outputs[b.slot - 1].links = [999]; // wired -- keep the freed slot below it genuinely open, not auto-compacted away
   removeRowAndSync(node, ctx, a.id); // frees slot 1
   assertSlotIsVacant(node, removedSlot - 1);
 
@@ -1154,6 +1220,227 @@ test("removeRowAndSync: removing every row down to zero leaves a clean node -- n
   removeRowAndSync(node, ctx, c.id);
 
   assert.equal(node.outputs.length, 0, "a fully emptied panel must leave zero outputs, not lingering vacant holes");
+});
+
+// ---------------------------------------------------------------------------
+// C0c. planHoleCompaction (rows.mjs) -- the actual stray-output-dot fix.
+// Diagnosed live on a real graph: add a row (takes slot 6), remove it ->
+// slot 6 becomes an interior hole while slot 7 is still live. Before this
+// fix, `markSlotVacant` blanked the hole but `delete out.pos` handed it to
+// litegraph's own default output stacking, which parks an unpositioned
+// output at the TOP of the node, beside the title -- the reported bug.
+// `planHoleCompaction` is the pure planner; these tests exercise it
+// directly (no node/litegraph involved at all), and the end-to-end block
+// right after exercises the whole pipeline through a stubbed node.
+// ---------------------------------------------------------------------------
+
+// The exact probe layout from the live bug report: live slots 1,2,3,4,5,7,
+// hole at 6.
+const PROBE_SLOTS = [1, 2, 3, 4, 5, 7];
+
+function slotsRows(slots) {
+  return slots.map((slot) => ({ slot }));
+}
+
+test("planHoleCompaction: the live-bug-report probe layout (1,2,3,4,5,7 + hole at 6), slot 7 unwired -> moves 7 into 6", () => {
+  const plan = planHoleCompaction(slotsRows(PROBE_SLOTS), () => false);
+  assert.deepEqual(plan, [{ from: 7, to: 6 }]);
+});
+
+test("planHoleCompaction: the exact same probe layout, slot 7 WIRED -> empty plan (never renumber a wired row)", () => {
+  const plan = planHoleCompaction(slotsRows(PROBE_SLOTS), (slot) => slot === 7);
+  assert.deepEqual(plan, []);
+});
+
+test("planHoleCompaction: several holes (1,2,4,6,8 -- holes at 3,5,7) with everything unwired collapses fully to 1..5", () => {
+  const plan = planHoleCompaction(slotsRows([1, 2, 4, 6, 8]), () => false);
+  assert.deepEqual(plan, [
+    { from: 6, to: 3 },
+    { from: 8, to: 5 },
+  ]);
+});
+
+test("planHoleCompaction: several holes, but the row that would have to move to reach the LOWEST hole is wired -- partial compaction, one hole survives", () => {
+  // Same layout as above, but slot 6's own row (the one that would have to
+  // move to close hole 3, per the cascade) is wired -- so hole 3 must
+  // survive even though slot 8's row (unwired) still closes hole 5.
+  const plan = planHoleCompaction(slotsRows([1, 2, 4, 6, 8]), (slot) => slot === 6);
+  assert.deepEqual(plan, [{ from: 8, to: 5 }]);
+});
+
+test("planHoleCompaction: no holes at all -> empty plan", () => {
+  const plan = planHoleCompaction(slotsRows([1, 2, 3]), () => false);
+  assert.deepEqual(plan, []);
+});
+
+test("planHoleCompaction: a hole with nothing above it (the removed row WAS the top slot) is not interior -- empty plan, the existing trailing trim already handles it", () => {
+  // Rows as they stand AFTER removing what used to be slot 4 (the max) --
+  // there is no slot above 3 for this function to even consider a hole
+  // under, so it must not manufacture one.
+  const plan = planHoleCompaction(slotsRows([1, 2, 3]), () => false);
+  assert.deepEqual(plan, []);
+});
+
+test("planHoleCompaction: no rows at all -> empty plan (nothing to compact)", () => {
+  assert.deepEqual(planHoleCompaction([], () => false), []);
+});
+
+test("planHoleCompaction: never mutates the rows it was given -- pure planner", () => {
+  const rows = slotsRows(PROBE_SLOTS);
+  const snapshot = JSON.parse(JSON.stringify(rows));
+  planHoleCompaction(rows, () => false);
+  assert.deepEqual(rows, snapshot, "planHoleCompaction must not rewrite row.slot itself -- that's compactHoles's job");
+});
+
+test("end-to-end (stubbed node): add-then-remove reproducing the user's exact sequence leaves NO __wtn_ctl_vacant__ entry when the row above the hole is unwired", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+
+  // sampler, scheduler, int, int, float, latent -- slots 1..6, matching the
+  // probe's kinds/order (COMBO, COMBO, INT, INT, FLOAT, LATENT).
+  addRowAndSync(node, ctx, "sampler"); // slot 1
+  addRowAndSync(node, ctx, "scheduler"); // slot 2
+  addRowAndSync(node, ctx, "int"); // slot 3
+  addRowAndSync(node, ctx, "int"); // slot 4
+  addRowAndSync(node, ctx, "float"); // slot 5
+  const extra = addRowAndSync(node, ctx, "latent"); // slot 6 -- "add a row (it takes slot 6)"
+  assert.equal(extra.slot, 6, "test setup expected the new row to take slot 6, per the live bug report");
+  const seventh = addRowAndSync(node, ctx, "int"); // slot 7 -- still live, per the probe
+  assert.equal(seventh.slot, 7);
+
+  removeRowAndSync(node, ctx, extra.id); // "remove it -> slot 6 becomes an interior hole"
+
+  assert.equal(node.outputs.length, 6, "compaction should have closed the hole and let the trailing trim shrink past the old top slot");
+  node.outputs.forEach((out, idx) => {
+    assert.notEqual(out.type, VACANT_SLOT_TYPE, `slot ${idx + 1} must not be a __wtn_ctl_vacant__ hole -- compaction should have closed it`);
+  });
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows.find((r) => r.id === seventh.id).slot, 6, "the row that was at slot 7 must have moved down into the closed hole");
+});
+
+test("end-to-end (stubbed node): the SAME sequence, but the row above the hole is wired, leaves ONE surviving __wtn_ctl_vacant__ entry, parked below the live rows -- never beside the title", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+
+  addRowAndSync(node, ctx, "sampler"); // slot 1
+  addRowAndSync(node, ctx, "scheduler"); // slot 2
+  addRowAndSync(node, ctx, "int"); // slot 3
+  addRowAndSync(node, ctx, "int"); // slot 4
+  addRowAndSync(node, ctx, "float"); // slot 5
+  const extra = addRowAndSync(node, ctx, "latent"); // slot 6
+  const seventh = addRowAndSync(node, ctx, "int"); // slot 7
+  node.outputs[seventh.slot - 1].links = [999]; // wired -- the graph really is using this one
+
+  removeRowAndSync(node, ctx, extra.id);
+  // `removeRowAndSync` rebuilds row DOM (row count changed), which mints
+  // fresh widgets with no `.y` yet -- `fakeArrange` + a bare repaint mirror
+  // what a real litegraph `arrange()` pass would already have done before
+  // `alignOutputsLegacy`/`parkVacantSlot` ever run (see this file's own
+  // `fakeArrange` doc comment / the "alignOutputsLegacy parks..." test).
+  fakeArrange(node);
+  syncOutputs(node, ctx);
+
+  assert.equal(node.outputs.length, 7, "node.outputs must NOT shrink past the wired slot 7");
+  const vacant = node.outputs.filter((out) => out.type === VACANT_SLOT_TYPE);
+  assert.equal(vacant.length, 1, "exactly one surviving __wtn_ctl_vacant__ hole");
+  assertSlotIsVacant(node, 5, " (surviving hole at slot 6)"); // asserts hidden + parked pos below every live row
+  // Never beside the title: the title sits above every row, i.e. above the
+  // FIRST live row's own y -- the parked hole must be well below that.
+  const firstLiveY = node.outputs[0].pos[1];
+  assert.ok(vacant[0].pos[1] > firstLiveY, "the surviving hole's dot must never land up near the title");
+});
+
+test("a surviving vacant slot is hidden, has a real parked .pos, and that .pos sits below every live row's own dot -- never beside the title, never over '+ Add control'", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const a = addRowAndSync(node, ctx, "int"); // slot 1
+  const b = addRowAndSync(node, ctx, "float"); // slot 2
+  node.outputs[b.slot - 1].links = [999]; // wired -- forces the hole below it to survive
+
+  removeRowAndSync(node, ctx, a.id);
+  fakeArrange(node); // see the previous test's comment
+  syncOutputs(node, ctx);
+
+  const hole = node.outputs[0];
+  assert.equal(hole.hidden, true);
+  assert.ok(Array.isArray(hole.pos) && Number.isFinite(hole.pos[1]));
+  assert.ok(hole.pos[1] > node.outputs[b.slot - 1].pos[1], "the hole's dot must sit below the surviving live row's own dot");
+});
+
+// ---------------------------------------------------------------------------
+// C0d. Load-path regression: `syncOutputs` must skip `compactHoles` entirely
+// while `node._ctrlConfiguring` is truthy (index.js's own restore-vs-create
+// flag -- `restoreNode`/`setupNode` both call `syncRows` -> `syncOutputs`
+// while it's set for a node being loaded from a saved workflow). A saved
+// hole is that workflow's own last-saved shape; loading it must reproduce it
+// unchanged, never "fix" it by renumbering a row and calling `removeOutput`
+// the way a genuine user-driven remove/add would. Same probe layout as the
+// C0c end-to-end tests above (live slots 1,2,3,4,5,7, hole at 6, slot 7
+// unwired) so this is a direct paired comparison against "today's" behavior.
+// ---------------------------------------------------------------------------
+
+function buildProbeLayout(node, ctx) {
+  addRowAndSync(node, ctx, "sampler"); // slot 1
+  addRowAndSync(node, ctx, "scheduler"); // slot 2
+  addRowAndSync(node, ctx, "int"); // slot 3
+  addRowAndSync(node, ctx, "int"); // slot 4
+  addRowAndSync(node, ctx, "float"); // slot 5
+  const extra = addRowAndSync(node, ctx, "latent"); // slot 6
+  const seventh = addRowAndSync(node, ctx, "int"); // slot 7
+  assert.equal(extra.slot, 6, "test setup expected the new row to take slot 6");
+  assert.equal(seventh.slot, 7, "test setup expected the probe's trailing row to take slot 7");
+  return { extra, seventh };
+}
+
+test("syncOutputs: _ctrlConfiguring=true (simulated workflow restore) keeps the probe layout's hole intact -- never renumbers slot 7's row into it", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const { extra, seventh } = buildProbeLayout(node, ctx);
+
+  node._ctrlConfiguring = true; // a workflow load is "in flight" for this node
+  removeRowAndSync(node, ctx, extra.id); // frees slot 6 -- an interior hole, per the probe
+
+  assert.equal(node.outputs.length, 7, "a restore must never shrink node.outputs past slot 7, which a live row still occupies");
+  assert.equal(node.outputs[5].type, VACANT_SLOT_TYPE, "the hole at slot 6 must survive a restore untouched, not get closed");
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows.find((r) => r.id === seventh.id).slot, 7, "slot 7's row must NOT be renumbered while _ctrlConfiguring is set");
+});
+
+test("syncOutputs: the IDENTICAL probe layout with _ctrlConfiguring unset compacts exactly as it does today -- the hole closes and slot 7's row moves down into it", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  const { extra, seventh } = buildProbeLayout(node, ctx);
+
+  // node._ctrlConfiguring deliberately left unset -- a genuine user-driven
+  // remove, mid-session.
+  removeRowAndSync(node, ctx, extra.id);
+
+  assert.equal(node.outputs.length, 6, "compaction should have closed the hole and let the trailing trim shrink past the old top slot");
+  node.outputs.forEach((out, idx) => {
+    assert.notEqual(out.type, VACANT_SLOT_TYPE, `slot ${idx + 1} must not be a __wtn_ctl_vacant__ hole -- compaction should have closed it`);
+  });
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows.find((r) => r.id === seventh.id).slot, 6, "the row that was at slot 7 must have moved down into the closed hole");
+});
+
+test("syncOutputs: the trailing-slot trim still runs while _ctrlConfiguring is set -- only compactHoles is gated, not the trim/grow loop", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getKnownLists: () => ({ sampler: ["euler"], scheduler: ["normal"] }) });
+  addRowAndSync(node, ctx, "sampler"); // slot 1
+  addRowAndSync(node, ctx, "scheduler"); // slot 2
+  const last = addRowAndSync(node, ctx, "int"); // slot 3 -- the current top slot, nothing above it
+
+  node._ctrlConfiguring = true;
+  removeRowAndSync(node, ctx, last.id); // frees the TOP slot -- a trailing hole, not an interior one
+
+  assert.equal(node.outputs.length, 2, "the trailing slot must still be trimmed outright during a simulated restore, exactly as mid-session");
+  node.outputs.forEach((out) => assert.notEqual(out.type, VACANT_SLOT_TYPE, "no lingering vacant hole should exist after a trailing trim"));
 });
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1554,8 @@ test("a slot number freed by one removed row and reused by a DIFFERENT new row g
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
   const intRow = addRowAndSync(node, ctx, "int"); // slot 1, label "int"
   addRowAndSync(node, ctx, "float"); // slot 2
-  addRowAndSync(node, ctx, "seed"); // slot 3
+  const seedRow = addRowAndSync(node, ctx, "seed"); // slot 3
+  node.outputs[seedRow.slot - 1].links = [999]; // wired -- keep slot 1's hole genuinely open below it
   assert.equal(node.outputs[intRow.slot - 1].label, "int");
 
   removeRowAndSync(node, ctx, intRow.id); // frees slot 1; its output's label is untouched leftover text
@@ -1456,6 +1744,120 @@ test("alignOutputsLegacy parks each row's dot at its OWN widget's Y, offset by m
   });
 });
 
+// ---------------------------------------------------------------------------
+// C2. Size preserve/restore around syncOutputs's trim/grow loops -- the SAME
+// "shrinks to min on every refresh" trap `js/anima/interaction.mjs`'s
+// `healNodeSockets` fix covers, audited onto this track too. `node.outputs`
+// is set up here to deliberately MISMATCH the saved rows' own highest slot
+// -- simulating a workflow saved by an older build (before some now-fixed
+// hole/compaction bug) or a hand-edited one -- which is the one case
+// `syncOutputs`'s own doc comment identifies as still reaching
+// `removeOutput`/`addOutput` on the LOAD path (`_ctrlConfiguring` true,
+// nothing downstream to fix a clobbered size back up). `clobberSizeOnOutputChange`
+// makes the fake node's `removeOutput`/`addOutput` mimic litegraph's own
+// documented `this.size = this.computeSize()` side effect, so these cases
+// would fail WITHOUT the fix.
+// ---------------------------------------------------------------------------
+
+test("syncOutputs preserves the ORIGINAL node.size across a load-time output-count mismatch, even though removeOutput clobbers it along the way", () => {
+  const node = makeFakeNode(
+    JSON.stringify({
+      version: 1,
+      rows: [
+        { slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } },
+        { slot: 2, kind: "float", value: 1, opts: { min: 0, max: 10, step: 0.1 } },
+      ],
+    }),
+    { clobberSizeOnOutputChange: true },
+  );
+  // The saved rows only ever own slots 1/2 -- but `node.outputs` (as
+  // litegraph would have restored it from an older/hand-edited save) still
+  // carries four. This is the mismatch this fix guards against.
+  node.outputs = [
+    { name: "value_1", type: "*", links: [] },
+    { name: "value_2", type: "*", links: [] },
+    { name: "value_3", type: "*", links: [] },
+    { name: "value_4", type: "*", links: [] },
+  ];
+  node.size = [512, 900];
+  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+  node._ctrlConfiguring = true; // the load path -- compactHoles is skipped, trim/grow are not
+
+  syncOutputs(node, ctx);
+
+  assert.equal(node.outputs.length, 2, "sanity: the mismatch must actually get trimmed, or this test proves nothing");
+  assert.deepEqual(node.size, [512, 900], "syncOutputs must restore the node's ORIGINAL saved size, not whatever removeOutput clobbered it to");
+});
+
+test("syncOutputs: a too-SMALL pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp up to any floor", () => {
+  const node = makeFakeNode(
+    JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
+    { clobberSizeOnOutputChange: true },
+  );
+  node.outputs = [
+    { name: "value_1", type: "*", links: [] },
+    { name: "value_2", type: "*", links: [] },
+  ];
+  node.size = [10, 10];
+  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+  node._ctrlConfiguring = true;
+
+  syncOutputs(node, ctx);
+
+  assert.equal(node.outputs.length, 1);
+  assert.deepEqual(node.size, [10, 10], "a tiny saved size must come back exactly as tiny -- the fix never clamps it up");
+});
+
+test("syncOutputs: a too-LARGE pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp down to the mocked computed size", () => {
+  const node = makeFakeNode(
+    JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
+    { clobberSizeOnOutputChange: true },
+  );
+  node.outputs = [
+    { name: "value_1", type: "*", links: [] },
+    { name: "value_2", type: "*", links: [] },
+  ];
+  node.size = [9000, 9000];
+  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+  node._ctrlConfiguring = true;
+
+  syncOutputs(node, ctx);
+
+  assert.equal(node.outputs.length, 1);
+  assert.deepEqual(node.size, [9000, 9000], "a huge saved size must come back exactly as huge -- the fix never clamps it down");
+});
+
+test("syncOutputs never touches node.size at all when node.outputs already matches the saved rows -- same array reference AND same values, and addOutput/removeOutput are never even called", () => {
+  const node = makeFakeNode(
+    JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
+    { clobberSizeOnOutputChange: true },
+  );
+  node.outputs = [{ name: "value_1", type: "*", links: [] }];
+  node.size = [777, 333];
+  const originalSize = node.size;
+  let addCalled = false;
+  let removeCalled = false;
+  const realAdd = node.addOutput;
+  const realRemove = node.removeOutput;
+  node.addOutput = (...a) => {
+    addCalled = true;
+    return realAdd.apply(node, a);
+  };
+  node.removeOutput = (...a) => {
+    removeCalled = true;
+    return realRemove.apply(node, a);
+  };
+  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+  node._ctrlConfiguring = true;
+
+  syncOutputs(node, ctx);
+
+  assert.equal(addCalled, false, "already-consistent load must never call addOutput");
+  assert.equal(removeCalled, false, "already-consistent load must never call removeOutput");
+  assert.equal(node.size, originalSize, "no-op sync must never even touch the size array reference");
+  assert.deepEqual(node.size, [777, 333]);
+});
+
 // =========================================================================
 // D. Structural mutations
 // =========================================================================
@@ -1489,7 +1891,8 @@ test("removeRowAndSync frees the slot and rebuilds the widget list", () => {
   const doc = makeDocStub();
   const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
   const a = addRowAndSync(node, ctx, "int");
-  addRowAndSync(node, ctx, "float");
+  const b = addRowAndSync(node, ctx, "float");
+  node.outputs[b.slot - 1].links = [999]; // wired -- keep a's freed slot open for the next add to reuse
   assert.ok(removeRowAndSync(node, ctx, a.id));
   assert.equal(node._ctrlRows.length, 1);
   const nextRow = addRowAndSync(node, ctx, "int");

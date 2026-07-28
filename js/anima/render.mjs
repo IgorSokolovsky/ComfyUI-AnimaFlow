@@ -143,6 +143,12 @@
 
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
 import { injectFieldStyles, buildSwitch, buildInfoIcon } from "../shared/fields.mjs";
+// Re-exported below (never redefined here) so `index.js` can reach it as
+// `mods.render.applyNodeChrome`, matching every other lazily-loaded helper
+// it calls -- see `../shared/node_chrome.mjs`'s own doc comment for the full
+// constraints (single implementation shared with `js/controls/render.mjs`,
+// never-stomp-an-explicit-colour, fresh-node-path-only).
+import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
 
 const STYLE_ID = "wtn-anima-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -816,3 +822,8 @@ export function measurePreviewMinHeight(root) {
 // Re-export the shared cap so callers only need one import for both the
 // state-mutation helpers (state.mjs) and this display-only constant.
 export { MAX_DETAILER_PASSES, isBuiltinDetailerBlock };
+
+// Re-export the shared node-chrome painter (`../shared/node_chrome.mjs`) --
+// see this file's top import comment for why it's re-exported rather than
+// imported directly by `index.js`.
+export { applyNodeChrome, CHROME_BODY, CHROME_TITLE };

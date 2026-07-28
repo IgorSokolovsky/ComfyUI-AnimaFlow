@@ -52,6 +52,28 @@ Upstream line numbers were correct as of `0ad756b`. **Re-verify before trusting 
   PNG back into ComfyUI restored nothing. **Never fixed.** Declaring the two hidden inputs
   and passing them through is the whole fix.
 
+### 1b-0. The Upscale stage's second backend — **ResShift** (needs a new dependency; noted 2026-07-28)
+
+Upstream's Upscale panel has a **Mode** dropdown we never ported. It's `upscale.backend`, with
+exactly two values — `AIO_FINAL_UPSCALE_BACKENDS = ("usdu", "resshift")`
+(`aio/generation_defaults.py:457`, default `"usdu"` at `:205`):
+
+- **`usdu`** — Ultimate SD Upscale: an ESRGAN-type model upscale, then re-diffusion in overlapping
+  tiles (all our `usdu.tile_*`/`seam_fix_*`/`mask_blur` settings). This is the one we ship, and the
+  only one our `pipeline.py` knows about.
+- **`resshift`** — a distilled diffusion super-resolution model: one shot, no tiling, no sampler
+  settings at all. Its own settings sub-tree is `{scale: "x2"|"x4", student_name: "(auto-download)",
+  dtype, chop, overlap, tile_batch}` (`:267-274`). It **requires a third-party pack we don't
+  otherwise depend on, `ComfyUI-Distilled-ResShift`** (`ResShiftLoader` + `ResShiftUpscale`,
+  hard-required with a readable error at `aio/legacy_generation.py:550-557`).
+
+Not built, and this is now a recorded decision rather than an oversight: our `upscale` settings carry
+no `backend` field at all, so there is nothing to pick between. Adding the Mode control is only
+worth it alongside the ResShift branch itself — a lone dropdown with one usable option is worse than
+no dropdown. If it's built: soft-import gate per this repo's third-party rule (absent pack ⇒ that
+backend greys out, everything else unchanged), settings sub-tree mirroring `usdu`'s shape, one
+branch in the upscale path.
+
 ### 1b. Four upstream features worth having — none need a new dependency
 
 1. **First-pass cache** — biggest workflow win. Keys on resources + file revisions + prompt

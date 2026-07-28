@@ -12,11 +12,27 @@
  *     doc: document,                  // or a stub, under test
  *     getCanvasEl(): HTMLCanvasElement|null,   // app.canvas.canvas, live
  *     havePackages(): {spectrum, usdu, impact},// soft-import presence, live
+ *     getKnownLists(): {checkpoints, upscale_models},// installed-file lists, live
  *   }
  *
- * `getCanvasEl`/`havePackages` are the only two places this whole feature
- * needs `window`/`app`/`LiteGraph` — kept OUT of this file (index.js owns
- * them) so this module stays testable with a stub.
+ * `getCanvasEl`/`havePackages`/`getKnownLists` are the only three places this
+ * whole feature needs `window`/`app`/`LiteGraph` — kept OUT of this file
+ * (index.js owns them) so this module stays testable with a stub.
+ * `getKnownLists` mirrors `js/controls/index.js`'s identical-purpose
+ * `readKnownLists`: each of `checkpoints`/`upscale_models` is either the
+ * live installed-file array for that ComfyUI folder (read off
+ * `CheckpointLoaderSimple.ckpt_name`/`UpscaleModelLoader.model_name`'s own
+ * registered combo spec — `js/controls/rows.mjs`'s `getComboOptions`,
+ * reused rather than reimplemented, per that module's own cross-track
+ * precedent already established by `js/shared/fields.mjs`) or `null` if that
+ * node class isn't registered at all. Feeds the Detailer section's SAM3
+ * checkpoint picker and the Upscale section's `upscale_model_name` picker
+ * (both used to be hardcoded upstream defaults with no frontend control at
+ * all — this task's whole point) — see `buildDetailerBody`/
+ * `buildUpscaleSection` below. A `null`/empty list degrades HONESTLY: the
+ * picker still shows whatever value the settings tree already holds
+ * (never silently rewritten), just rendered disabled (`ce0528f`'s lesson:
+ * never default to `list[0]` in place of a saved value).
  *
  * ## 2026-07-28 reversal (inline-sections dispatch, `docs/generator-
  * design.md` §12) — sections expand IN PLACE, no more popover to protect
@@ -76,6 +92,16 @@
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 import { buildNumericField, buildStepperField, hideActiveInfoTip } from "../shared/fields.mjs";
+// `getComboOptions` -- reused, not reimplemented, from the Controls track
+// (`js/shared/fields.mjs` already imports OTHER pure helpers from this same
+// module, one-directional `shared`/`anima` -> `controls/rows.mjs`, per that
+// file's own top doc comment; this is the identical precedent, just for a
+// different function). Re-exported below purely so `index.js` -- which
+// deliberately never statically imports `js/controls/rows.mjs` itself, to
+// stay inside the JS download budget -- can reach it through this module's
+// own LAZILY-loaded `mods.interaction`, exactly like `js/controls/index.js`
+// reaches its own copy through `mods.rows`.
+export { getComboOptions } from "../controls/rows.mjs";
 
 import {
   MAX_DETAILER_PASSES,
@@ -439,6 +465,48 @@ function reconcileSocketArray(node, key, defNames) {
   return { changed: removedIdx.length > 0 || !alreadyInOrder, removedNames };
 }
 
+/** Grab `node.size`'s current `[w, h]` as a fresh 2-entry array, or `null`
+ * if `node.size` isn't there or isn't shaped like one -- `restoreNodeSize`
+ * below already tolerates a `null` snapshot on its own (nothing to put
+ * back), this just keeps that check in ONE place. */
+function captureNodeSize(node) {
+  if (Array.isArray(node.size) && node.size.length >= 2 && typeof node.size[0] === "number" && typeof node.size[1] === "number") {
+    return [node.size[0], node.size[1]];
+  }
+  return null;
+}
+
+/** Write a `captureNodeSize` snapshot back onto `node.size`, IN PLACE --
+ * assigning the two array ENTRIES directly rather than calling
+ * `node.setSize(...)`, so this can never re-enter `index.js`'s own
+ * `onResize` clamp chain (`clampGeneratorSize`/`clampPreviewSize`) while a
+ * healing pass is still unwinding on the same call stack. A no-op if there
+ * was nothing captured, or nowhere left to write it into (`node.size`
+ * vanished, or shrank under 2 entries, between the capture and here --
+ * shouldn't happen, but this stays defensive rather than throwing).
+ *
+ * Also marks the canvas dirty, since nothing else on `healNodeSockets`' own
+ * call path necessarily will: `index.js`'s `onConfigure` wrapper calls
+ * `mountNode` (via `restoreNode`) AFTER healing, but `mountNode` early-
+ * returns on `node._anMounted` -- already `true` by the time healing runs,
+ * because `onNodeCreated`'s own `loadMods().then(...)` is always ATTACHED
+ * before `onConfigure`'s (litegraph's construct-then-configure deserialize
+ * order), so that callback's `mountNode` call -- the one that actually sets
+ * `_anMounted` and calls `setDirtyCanvas` -- has already run and returned by
+ * the time this one fires. Without this call, a restored size fix would sit
+ * correct in `node.size` but never actually repaint until some UNRELATED
+ * later dirty flag happened to fire. */
+function restoreNodeSize(node, saved) {
+  if (!saved || !Array.isArray(node.size) || node.size.length < 2) {
+    return;
+  }
+  node.size[0] = saved[0];
+  node.size[1] = saved[1];
+  if (typeof node.setDirtyCanvas === "function") {
+    node.setDirtyCanvas(true, true);
+  }
+}
+
 /**
  * The one entry point `index.js` calls -- from the SAME deferred
  * `onConfigure` callback `restoreNode` already runs in, deliberately NOT
@@ -463,16 +531,47 @@ function reconcileSocketArray(node, key, defNames) {
  * call) is read from litegraph's documented deserialize sequence, not
  * exercised against a live process (none installed in this dev
  * environment).
+ *
+ * ## Size preserve/restore around the mutation (the "shrinks to min on every
+ * refresh" fix)
+ *
+ * VERIFY-IN-COMFYUI: litegraph's own `removeInput`/`removeOutput`/
+ * `addInput`/`addOutput` are documented as each ending with
+ * `this.size = this.computeSize()` -- i.e. every one of `reconcileSocketArray`'s
+ * add/remove calls, below, throws away whatever size litegraph JUST restored
+ * from the saved workflow and replaces it with the node's freshly-computed
+ * MINIMUM. This is read from litegraph's documented behaviour, not exercised
+ * against a live ComfyUI process (none installed in this dev environment) --
+ * but it is exactly the reported bug ("our generator height and width is
+ * sized down on refresh page to min"): a workflow saved before the Context
+ * Bridge landed carries stale sockets, `healNodeSockets` heals it on EVERY
+ * load (the user never re-saves), and every one of those heals used to
+ * re-snap the node back to its minimum, silently, every single refresh.
+ *
+ * The fix: snapshot `node.size` BEFORE either `reconcileSocketArray` call,
+ * and write it straight back (`restoreNodeSize`) afterward -- but ONLY when
+ * healing actually changed something. A load that heals nothing must stay
+ * byte-for-byte unchanged (no size write at all), so a clean, already-
+ * current workflow still cannot open "modified". Removing this preserve/
+ * restore silently reintroduces the exact bug above -- and per the
+ * VERIFY-IN-COMFYUI caveat, keeping it costs nothing even if some litegraph
+ * build turns out NOT to resize on these calls: a no-op restore of the size
+ * to itself is harmless either way.
  */
 export function healNodeSockets(node, nodeData) {
   const def = computeNodeDefinition(nodeData);
   if (!def) {
     return { changed: false, removedInputs: [], removedOutputs: [] };
   }
+  const savedSize = captureNodeSize(node);
   const inputResult = reconcileSocketArray(node, "inputs", def.inputOrder);
   const outputResult = reconcileSocketArray(node, "outputs", def.outputs.map((o) => o.name));
+  const changed = inputResult.changed || outputResult.changed;
+  if (changed) {
+    restoreNodeSize(node, savedSize);
+  }
   return {
-    changed: inputResult.changed || outputResult.changed,
+    changed,
     removedInputs: inputResult.removedNames,
     removedOutputs: outputResult.removedNames,
   };
@@ -573,6 +672,172 @@ export function computeContextSupplied(node) {
   return { bridgeFound: true, bridge, supplied };
 }
 
+const GENERATOR_TYPE = "AnimaGenerator";
+
+/** Every real litegraph node immediately fed by `nodeLike`'s `outputName`
+ * OUTPUT, in link order — `output.links` (an array of link ids) ->
+ * `graph.links[id].target_id` -> `graph.getNodeById(...)`. Mirrors
+ * `resolveLinkOrigin`'s backward failure contract: no such output, no
+ * links, no graph/link table, a dangling link, or a target id that doesn't
+ * resolve all simply contribute nothing to the result, never throw. Unlike
+ * an input (which carries at most one link), an output can fan out to
+ * several — every one of them is followed. */
+function resolveLinkTargets(nodeLike, outputName) {
+  const output = (nodeLike.outputs || []).find((o) => o && o.name === outputName);
+  const linkIds = output && Array.isArray(output.links) ? output.links : [];
+  if (!linkIds.length) {
+    return [];
+  }
+  const graph = nodeLike.graph;
+  if (!graph || typeof graph.getNodeById !== "function" || !graph.links) {
+    return [];
+  }
+  const targets = [];
+  for (const linkId of linkIds) {
+    const link = graph.links[linkId];
+    if (!link || link.target_id == null) {
+      continue;
+    }
+    const target = graph.getNodeById(link.target_id);
+    if (target) {
+      targets.push(target);
+    }
+  }
+  return targets;
+}
+
+/**
+ * Walk FORWARD from `bridge`'s "context" OUTPUT to every real
+ * `AnimaGenerator` reachable from it, tunnelling through any number of
+ * single-input/single-output pass-through nodes (Reroute and similar,
+ * matched GENERICALLY by "exactly one output" — the forward mirror of
+ * `resolveContextBridge`'s own "exactly one input" backward tolerance) and
+ * fanning out across every link a single output can carry (an input has at
+ * most one; an output can drive several, so this walk — unlike the
+ * backward one — can branch). Returns every distinct generator found, in
+ * discovery order; `[]` for a dead end (unwired, dangling, every branch a
+ * cycle, or a `bridge` that isn't real) — never throws, since every failure
+ * path routes through `resolveLinkTargets`, which already fails closed. A
+ * node reached that is neither a pass-through nor an `AnimaGenerator` (a
+ * real node with more than one output, wired to something else entirely) is
+ * simply not followed past — it contributes nothing, exactly like a
+ * dangling link.
+ *
+ * This is what makes the Generator's "context-supplied" panel repaint when
+ * a socket is wired/unwired on the BRIDGE rather than on the Generator
+ * itself — the Bridge mounts no UI of its own (`js/anima/index.js`'s
+ * `mountsUi` gate) and so never gets its own `onConnectionsChange` repaint
+ * hook the way the Generator does for its OWN `context` link; this walk is
+ * what lets that hook, installed on the Bridge, find every Generator
+ * downstream of it and repaint THEM instead.
+ *
+ * VERIFY-IN-COMFYUI: same caveat as `resolveContextBridge` — read from
+ * litegraph's documented link-table shape (`output.links`/`graph.links[id]`/
+ * `target_id`), not exercised against a live process (none installed in
+ * this dev environment).
+ */
+export function resolveDownstreamGenerators(bridge) {
+  if (!bridge) {
+    return [];
+  }
+  const found = [];
+  const foundSet = new Set();
+  const visited = new Set([bridge]);
+
+  function walk(node, outputName, hop) {
+    if (hop >= MAX_PASSTHROUGH_HOPS) {
+      return;
+    }
+    for (const target of resolveLinkTargets(node, outputName)) {
+      if (visited.has(target)) {
+        continue; // a cycle -- already walked this node, never re-enter it
+      }
+      if (target.type === GENERATOR_TYPE || target.comfyClass === GENERATOR_TYPE) {
+        if (!foundSet.has(target)) {
+          foundSet.add(target);
+          found.push(target);
+        }
+        continue; // a generator is a leaf for this walk -- don't walk past it
+      }
+      const outputs = target.outputs || [];
+      if (outputs.length !== 1) {
+        continue; // not a pass-through (and not a generator) -- this branch dead-ends
+      }
+      visited.add(target);
+      walk(target, outputs[0].name, hop + 1);
+    }
+  }
+
+  walk(bridge, "context", 0);
+  return found;
+}
+
+/**
+ * Wipes whatever the last run reported for `node`'s context-supplied
+ * fields (`node._anContextRun`, `handleGeneratorExecuted`'s own stash) --
+ * the ONE place `index.js`'s two `onConnectionsChange` hooks (the
+ * Generator's own, and the Bridge's forward-walk one) both route through,
+ * so a stale "supplied" from before a rewire can never outlive the wiring
+ * it described. A no-op (never throws) for a falsy `node` or one that never
+ * had anything stashed.
+ */
+export function clearContextRun(node) {
+  if (node) {
+    node._anContextRun = null;
+  }
+}
+
+/**
+ * Merges the LIVE litegraph-link view (`computeContextSupplied`, above)
+ * with the LAST RUN's own report (`node._anContextRun`, stashed by
+ * `handleGeneratorExecuted` off `AnimaGenerator`'s `anima_context` `ui`
+ * payload — `src/anima/context.build_context_ui_payload`'s shape) — post-
+ * run is authoritative for anything the live link walk can't see at all
+ * (Use Everywhere never rides a litegraph link), so EITHER signal being
+ * true is enough to treat a field as context-supplied.
+ *
+ * `node._anContextRun` is cleared on every connection change (both the
+ * Generator's own `onConnectionsChange` hook and the Bridge's forward-walk
+ * one, both in `index.js`) specifically so a stale "supplied" from before a
+ * rewire can never outlive the wiring it described — this function only
+ * ever reads whatever's CURRENTLY stashed, it doesn't do that clearing
+ * itself.
+ *
+ * -> `{ bridgeFound, bridge, supplied: {field: bool}, source: {field:
+ * "live"|"run"|null}, runSupplied: {field: bool}, values: {field: value} }`.
+ * `source` is which signal EXPLAINS the "supplied" state (live wins when
+ * both are true, since it's the more concrete of the two to name in a
+ * tooltip); `runSupplied` is the run's OWN flag independently of `source`
+ * (a caller needs this to tell "the run said supplied but carried no
+ * value" apart from "never run at all"); `values` carries the run's own
+ * sampler scalar for a field the run reported supplied for AND actually
+ * had a value for — never invented, never present for a field the run
+ * didn't report a real value for (`build_context_ui_payload`'s own
+ * "supplied but None" case included).
+ */
+export function computeEffectiveContextSupplied(node) {
+  const live = computeContextSupplied(node);
+  const run = (node && node._anContextRun) || null;
+  const runSuppliedAll = (run && run.supplied) || {};
+  const runValuesAll = (run && run.values) || {};
+
+  const supplied = {};
+  const source = {};
+  const runSupplied = {};
+  const values = {};
+  for (const field of CONTEXT_FIELDS) {
+    const isLive = !!live.supplied[field];
+    const isRun = !!runSuppliedAll[field];
+    runSupplied[field] = isRun;
+    supplied[field] = isLive || isRun;
+    source[field] = isLive ? "live" : (isRun ? "run" : null);
+    if (isRun && runValuesAll[field] !== undefined && runValuesAll[field] !== null) {
+      values[field] = runValuesAll[field];
+    }
+  }
+  return { bridgeFound: live.bridgeFound, bridge: live.bridge, supplied, source, runSupplied, values };
+}
+
 const SAMPLERS = ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddim"];
 const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 
@@ -659,20 +924,49 @@ function setSwitchAndExpand(state, key, entry) {
 // too, always present, no enable switch") + Mod Guidance section.
 // ---------------------------------------------------------------------------
 
+/** The "supplied but the source didn't say what" tail every disabled
+ * sampler field's tooltip gets appended when `eff.runSupplied[field]` is
+ * true but `eff.values` carries nothing for it — the run's own "don't
+ * invent a value" contract (`computeEffectiveContextSupplied`'s doc
+ * comment / `src/anima/context.build_context_ui_payload`'s "supplied but
+ * None" case) surfacing as readable text instead of a silently-stale
+ * number. */
+const NO_RUN_VALUE_NOTE = " The last run reported it supplied but carried no value for this field — showing the settings value.";
+
 /** One SAMPLER_FIELDS entry -- editable (`buildNumericField`/
- * `buildStepperField`) when the Context Bridge doesn't supply it, or the
- * SAME field shape genuinely disabled (`disabledReason`) with a yellow ⓘ
- * beside it when it does (this module's top doc comment; `render.mjs`'s for
- * why the value shown is this settings tree's own). */
-function buildSamplerField(doc, node, field, sampler, supplied) {
-  const isSupplied = !!supplied[field];
-  const disabledReason = isSupplied
-    ? "Supplied by the Context Bridge upstream — disconnect that socket to edit here."
-    : undefined;
+ * `buildStepperField`) when nothing supplies it (live wire NOR last run),
+ * or the SAME field shape genuinely disabled (`disabledReason`) with a
+ * yellow ⓘ beside it when either does (this module's top doc comment).
+ * `eff` is `computeEffectiveContextSupplied(node)`'s own return shape --
+ * see that function's doc comment for `source`/`runSupplied`/`values`.
+ *
+ * The disabled value shown is the RUN's own (`eff.values[field]`) when the
+ * last run actually reported one for this field, REGARDLESS of whether
+ * `source` picked "live" or "run" for the TOOLTIP text (a field can be
+ * both currently live-wired AND have a real run value -- showing the real
+ * number beats a guess either way); it falls back to this settings tree's
+ * own value whenever there's no run value to show (never run at all, or a
+ * run that reported supplied with none -- `NO_RUN_VALUE_NOTE` covers that
+ * second case in the tooltip). */
+function buildSamplerField(doc, node, field, sampler, eff) {
+  const isSupplied = !!eff.supplied[field];
+  const hasRunValue = !!eff.runSupplied[field] && Object.prototype.hasOwnProperty.call(eff.values, field);
+  const displayValue = hasRunValue ? eff.values[field] : sampler[field];
+
+  let disabledReason;
+  if (isSupplied) {
+    disabledReason = eff.source[field] === "live"
+      ? "Supplied by the Context Bridge upstream — disconnect that socket to edit here."
+      : "Supplied at run time — from the Context Bridge or Use Everywhere; this frontend cannot see UE wires at edit time.";
+    if (eff.runSupplied[field] && !hasRunValue) {
+      disabledReason += NO_RUN_VALUE_NOTE;
+    }
+  }
+
   let fieldRoot;
   if (field === "sampler_name" || field === "scheduler") {
     const options = field === "sampler_name" ? SAMPLERS : SCHEDULERS;
-    fieldRoot = buildStepperField(doc, { label: field, value: sampler[field], options, disabledReason }, {
+    fieldRoot = buildStepperField(doc, { label: field, value: displayValue, options, disabledReason }, {
       onChange: (v) => { sampler[field] = v; persistGenState(node); },
     }).root;
   } else {
@@ -682,18 +976,34 @@ function buildSamplerField(doc, node, field, sampler, supplied) {
     const kind = field === "cfg" ? "float" : "int";
     fieldRoot = buildNumericField(doc, {
       label: field, kind, opts, disabledReason,
-      getValue: () => sampler[field], setValue: (v) => { sampler[field] = v; },
+      getValue: () => displayValue, setValue: (v) => { sampler[field] = v; },
     }, () => persistGenState(node)).root;
   }
   return withInfoIcon(doc, fieldRoot, disabledReason, true);
 }
 
+/** One SAMPLER_FIELDS entry's summary-line text -- the run's own value
+ * (formatted, if given) when supplied AND the run actually had one, `"—"`
+ * when supplied but the run didn't, or this settings tree's own value when
+ * nothing supplies it at all. `format` is optional (defaults to plain
+ * `String`), used for `cfg`'s one-decimal display. */
+function summaryFieldText(field, eff, sampler, format) {
+  const fmt = format || ((v) => String(v));
+  if (eff.supplied[field]) {
+    return eff.runSupplied[field] && Object.prototype.hasOwnProperty.call(eff.values, field)
+      ? fmt(eff.values[field])
+      : "—";
+  }
+  return fmt(sampler[field]);
+}
+
 function buildSamplerSection(doc, node, ctx, state) {
   const expanded = !!state.ui_expanded.sampler;
   const sampler = state.sampler;
-  const { bridgeFound, supplied } = computeContextSupplied(node);
-  const summary = `${supplied.sampler_name ? "—" : sampler.sampler_name} / ${supplied.scheduler ? "—" : sampler.scheduler} · `
-    + `${supplied.steps ? "—" : sampler.steps} steps · cfg ${supplied.cfg ? "—" : Number(sampler.cfg).toFixed(1)}`;
+  const eff = computeEffectiveContextSupplied(node);
+  const { bridgeFound } = eff;
+  const summary = `${summaryFieldText("sampler_name", eff, sampler)} / ${summaryFieldText("scheduler", eff, sampler)} · `
+    + `${summaryFieldText("steps", eff, sampler)} steps · cfg ${summaryFieldText("cfg", eff, sampler, (v) => Number(v).toFixed(1))}`;
   const infoTooltip = bridgeFound
     ? "Fields the Anima Context Bridge has wired drive this run; everything else comes from here."
     : "No Anima Context Bridge resolved upstream of ‘context’ (unwired, or wired through something that isn't a bridge) -- every field below comes from here.";
@@ -707,7 +1017,7 @@ function buildSamplerSection(doc, node, ctx, state) {
     },
     buildBody: (body) => {
       SAMPLER_FIELDS.forEach((field) => {
-        body.appendChild(buildSamplerField(doc, node, field, sampler, supplied));
+        body.appendChild(buildSamplerField(doc, node, field, sampler, eff));
       });
       body.appendChild(buildNumericField(doc, {
         label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
@@ -823,6 +1133,32 @@ function appendStageSamplerFields(doc, container, stageSettings, firstPassSample
   }
 }
 
+/**
+ * A `buildStepperField` bound to a live installed-file list from
+ * `ctx.getKnownLists()` (`checkpoints`/`upscale_models` — this module's top
+ * doc comment) — the SAM3 checkpoint / upscale model pickers, both
+ * previously hardcoded upstream defaults with no frontend control at all
+ * (this task's whole point).
+ *
+ * Degrades HONESTLY when `listKey`'s list is empty or unobtainable (no
+ * models installed, or the owning node class isn't registered): the field
+ * still shows `getValue()`'s current SAVED value, but renders DISABLED
+ * (`buildStepperField`'s own `disabledReason` — no arrows, no cycling)
+ * rather than an empty, clickable-but-useless picker. Never silently
+ * substitutes `list[0]` for a saved value the list doesn't happen to
+ * contain — `ce0528f`'s lesson: a value the user already has saved wins
+ * over anything guessed from a list.
+ */
+function buildModelFilePicker(doc, ctx, listKey, label, missingText, getValue, setValue, onCommit) {
+  const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
+  const list = Array.isArray(lists && lists[listKey]) ? lists[listKey] : [];
+  return buildStepperField(doc, {
+    label, value: getValue(), options: list, disabledReason: list.length ? undefined : missingText,
+  }, {
+    onChange: (v) => { setValue(v); onCommit(); },
+  }).root;
+}
+
 // ---------------------------------------------------------------------------
 // Stage sections -- Highres, Detailer, Upscale, Postprocess. Each is a
 // `buildSection` with its own enable switch (design brief); `stageSummary`/
@@ -917,7 +1253,11 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
         label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
         getValue: () => u.scale_by, setValue: (v) => { u.scale_by = v; },
       }, () => persistGenState(node)).root);
-      body.appendChild(buildTextField(doc, "upscale_model", u.usdu.upscale_model_name).root);
+      body.appendChild(buildModelFilePicker(
+        doc, ctx, "upscale_models", "upscale_model_name",
+        "No upscale models installed (UpscaleModelLoader's own list is empty or unavailable) -- showing the saved value.",
+        () => u.usdu.upscale_model_name, (v) => { u.usdu.upscale_model_name = v; }, () => persistGenState(node),
+      ));
       body.appendChild(buildStepperField(doc, { label: "mode_type", value: u.usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
         onChange: (v) => { u.usdu.mode_type = v; persistGenState(node); },
       }).root);
@@ -974,6 +1314,20 @@ function buildDetailerBody(doc, node, ctx, state, box) {
     node._anDetailerTab = detailer.order[0] || "face";
   }
   const activeId = node._anDetailerTab;
+
+  // SAM3 checkpoint (`detailer.sam3.checkpoint`) -- shared by EVERY block in
+  // this stage (upstream's own `ctx_SAM3` loads once, per
+  // `src/anima/pipeline.py`'s `run_detailer`), so it renders ONCE here,
+  // above the per-block tabs, rather than duplicated inside each block's own
+  // fields below. Previously a hardcoded upstream default with no frontend
+  // control at all -- this task's whole point (see this module's top doc
+  // comment on `getKnownLists`).
+  box.appendChild(buildSublabel(doc, "sam3"));
+  box.appendChild(buildModelFilePicker(
+    doc, ctx, "checkpoints", "checkpoint",
+    "No checkpoints installed (CheckpointLoaderSimple's own list is empty or unavailable) -- showing the saved value.",
+    () => detailer.sam3.checkpoint, (v) => { detailer.sam3.checkpoint = v; }, () => persistGenState(node),
+  ));
 
   const tabs = el(doc, "div", "wtn-an-passtabs");
   detailer.order.forEach((id) => {
@@ -1194,6 +1548,43 @@ export function repaintGenerator(node, ctx) {
     node.setDirtyCanvas(true, true);
   }
   return refs;
+}
+
+/**
+ * `AnimaGenerator`'s `onExecuted` handler -- `message.anima_context` is
+ * `nodes/anima/generator.py`'s own `"ui": {"anima_context": {...}}}`
+ * payload (`src/anima/context.build_context_ui_payload`'s shape:
+ * `{supplied: {field: bool, ...}, values: {field: value, ...}}`) -- the
+ * only signal that can see a sampler scalar Use Everywhere injected
+ * straight into the prompt at submit time (this module's top doc comment /
+ * `computeEffectiveContextSupplied`'s own doc comment).
+ *
+ * Stashes the payload verbatim as `node._anContextRun` and repaints --
+ * **`node._anContextRun` must NEVER be persisted into the settings blob**;
+ * it is run output, not settings (this function never calls
+ * `persistGenState`, deliberately), so a reload legitimately loses it. It
+ * is cleared on every connection change instead (`index.js`'s
+ * `onConnectionsChange` hooks, both the Generator's own and the Bridge's
+ * forward-walk one), so a stale "supplied" can never outlive the wiring it
+ * described.
+ *
+ * Reads ONLY `message.anima_context` -- no fallback to any other key
+ * (dynamic-node-frontend skill §5: a stray `images` key is ComfyUI's OWN
+ * native-preview trigger, never this node's data; matches `handleExecuted`
+ * below reading ONLY `anima_stages`).
+ *
+ * VERIFY-IN-COMFYUI: that `onExecuted`'s `message` argument really is the
+ * node's own `ui` dict verbatim, and that a non-`OUTPUT_NODE`'s `ui` dict
+ * genuinely reaches it at all -- no live ComfyUI process in this dev
+ * environment to confirm against (matches `nodes/anima/generator.py`'s own
+ * VERIFY-IN-COMFYUI note on the Python side of this same channel).
+ */
+export function handleGeneratorExecuted(node, ctx, message) {
+  if (!message || !message.anima_context || typeof message.anima_context !== "object" || Array.isArray(message.anima_context)) {
+    return;
+  }
+  node._anContextRun = message.anima_context;
+  repaintGenerator(node, ctx);
 }
 
 // ---------------------------------------------------------------------------

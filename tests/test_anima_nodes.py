@@ -162,6 +162,59 @@ def test_generator_generation_settings_is_a_real_string_widget_not_hidden():
     assert "generation_settings" not in input_types.get("hidden", {})
 
 
+def _fake_run_generator_result():
+    return (["IMG_BASE"], {"samples": "LATENT"}, "{}")
+
+
+def _with_faked_pipeline(fn):
+    """Monkeypatches `src.anima.pipeline.run_generator` at the MODULE level
+    (same convention as `test_anima_preview_images.py`'s writer fakes) so
+    `AnimaGenerator.generate()` can be exercised end-to-end -- shape only --
+    without a real ComfyUI/torch environment to actually sample in. Restores
+    the original unconditionally, `fn` raising or not."""
+    from src.anima import pipeline as pipeline_mod
+
+    original = pipeline_mod.run_generator
+    pipeline_mod.run_generator = lambda **kwargs: _fake_run_generator_result()
+    try:
+        fn()
+    finally:
+        pipeline_mod.run_generator = original
+
+
+def test_generator_generate_returns_a_ui_result_dict_not_a_bare_tuple():
+    # `AnimaGenerator` is NOT an OUTPUT_NODE (still asserted below) --
+    # ComfyUI's documented shape for an ordinary node to ALSO emit a `ui`
+    # payload is `{"ui": ..., "result": (...)}`, not a bare tuple.
+    from src.anima.context import build_context
+
+    def run():
+        node = AnimaGenerator()
+        context = build_context({"model": "M", "seed": 7})
+        payload = node.generate(context=context, generation_settings="{}")
+        assert isinstance(payload, dict)
+        assert set(payload) == {"ui", "result"}
+        assert "anima_context" in payload["ui"]
+        assert "images" not in payload["ui"]  # never the native-preview trigger key
+        result = payload["result"]
+        assert isinstance(result, tuple)
+        assert result == _fake_run_generator_result()
+
+    _with_faked_pipeline(run)
+
+
+def test_generator_ui_context_payload_matches_build_context_ui_payload():
+    from src.anima.context import build_context, build_context_ui_payload
+
+    def run():
+        node = AnimaGenerator()
+        context = build_context({"model": "M", "seed": 7, "cfg": 6.0})
+        payload = node.generate(context=context, generation_settings="{}")
+        assert payload["ui"]["anima_context"] == build_context_ui_payload(context)
+
+    _with_faked_pipeline(run)
+
+
 def test_generator_missing_context_field_raises_readable_error_not_attributeerror():
     from src.anima.context import ContextFieldMissing, build_context
 
@@ -256,6 +309,8 @@ ALL_TESTS = [
     test_generator_every_input_has_a_tooltip,
     test_generator_every_output_has_a_tooltip,
     test_generator_generation_settings_is_a_real_string_widget_not_hidden,
+    test_generator_generate_returns_a_ui_result_dict_not_a_bare_tuple,
+    test_generator_ui_context_payload_matches_build_context_ui_payload,
     test_generator_missing_context_field_raises_readable_error_not_attributeerror,
     test_preview_is_an_output_node,
     test_preview_declares_input_is_list,

@@ -33,6 +33,8 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import context as context_mod
+from . import model_files as model_files_mod
+from . import node_result as node_result_mod
 from . import postprocess as postprocess_mod
 from . import resources as resources_mod
 from . import sampler as sampler_mod
@@ -63,19 +65,68 @@ def _comfy_node(class_name: str):
     return cls
 
 
-def _output0(result: Any) -> Any:
-    """Every ComfyUI node call returns a tuple; take the first item, with a
-    readable error on the (never-expected) empty case instead of an
-    `IndexError`."""
-    if not isinstance(result, tuple) or not result:
-        raise RuntimeError("[AnimaFlow] a ComfyUI node call returned no outputs.")
-    return result[0]
+def _unrecognized_shape_error(node_name: str, method_name: str, unrecognized_type: str) -> RuntimeError:
+    return RuntimeError(
+        f"[AnimaFlow] {node_name}.{method_name}() returned a result shape "
+        f"this pack doesn't recognise ({unrecognized_type}). Expected a "
+        f"tuple/list of outputs (ComfyUI's V2 node shape), an object with a "
+        f"'.result' tuple (the V3 NodeOutput shape), or a "
+        f"{{'ui': ..., 'result': (...)}} dict — got a bare {unrecognized_type} "
+        f"instead. This usually means {node_name}'s call signature or return "
+        f"shape has changed upstream."
+    )
+
+
+def _output0(result: Any, *, node_name: str = "a ComfyUI node", method_name: str = "call") -> Any:
+    """Every CORE ComfyUI node call's first output — tolerant of ComfyUI's
+    three legal return shapes (V2 tuple/list, V3 `NodeOutput`-with-`.result`,
+    or a `{"ui": ..., "result": ...}` dict; see `node_result.
+    normalize_node_result`, the pure function that tells them apart, for why
+    this exists at all: ComfyUI 0.28.3's `execution.py` gained `v3_data`
+    support, and `comfy_extras.nodes_sam3.SAM3_Detect`'s `execute()` returns
+    the V3 shape, not the bare tuple this function used to require).
+
+    Two DISTINCT readable errors instead of one shared "returned no
+    outputs" message, both naming `node_name`/`method_name`:
+
+    - a RECOGNISED shape whose outputs are genuinely EMPTY (e.g. a detector
+      that found nothing this run);
+    - an UNRECOGNISED shape entirely — names `type(result).__name__` too, so
+      the next person sees e.g. `NodeOutput` in the message instead of
+      guessing at ComfyUI's internals.
+
+    `node_name`/`method_name` default to a generic phrase so this stays
+    backward compatible for any future call site that doesn't pass real
+    context — every call site in this file DOES pass its own, though.
+    """
+    normalized = node_result_mod.normalize_node_result(result)
+    if normalized.unrecognized_type is not None:
+        raise _unrecognized_shape_error(node_name, method_name, normalized.unrecognized_type)
+    if not normalized.outputs:
+        raise RuntimeError(f"[AnimaFlow] {node_name}.{method_name}() returned no outputs.")
+    return normalized.outputs[0]
 
 
 def _image_size(image: Any) -> Tuple[int, int]:
     """An `IMAGE` tensor's `(width, height)` — ComfyUI's own layout is
     `[batch, height, width, channels]`."""
     return int(image.shape[2]), int(image.shape[1])
+
+
+def _lookup_filename_list(folder_name: str) -> Optional[List[str]]:
+    """ComfyUI's own installed-file listing for `folder_name`
+    (`folder_paths.get_filename_list`), or `None` if it can't be obtained at
+    all — no `folder_paths` module (a bare unit-test environment with no
+    ComfyUI installed) or the call itself raising both degrade to `None`
+    rather than guessing (`model_files.find_missing_model_files`'s own
+    contract: `None` SKIPS that folder's check entirely — never block a run
+    because we couldn't enumerate)."""
+    try:
+        import folder_paths  # ComfyUI's own; lazy -- see module docstring.
+
+        return folder_paths.get_filename_list(folder_name)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +138,10 @@ def _image_size(image: Any) -> Tuple[int, int]:
 def patch_shift(model: Any, shift: float) -> Any:
     """Anima's recommended `ModelSamplingAuraFlow` shift — always applied, a
     CORE ComfyUI node, not a dependency (design doc §8)."""
-    return _output0(_comfy_node("ModelSamplingAuraFlow")().patch_aura(model, float(shift)))
+    return _output0(
+        _comfy_node("ModelSamplingAuraFlow")().patch_aura(model, float(shift)),
+        node_name="ModelSamplingAuraFlow", method_name="patch_aura",
+    )
 
 
 def apply_mod_guidance(
@@ -132,7 +186,7 @@ def apply_mod_guidance(
         result = patch(model, clip, quality_tags, quality_neg, profile, positive, negative)
     else:
         result = patch(model, clip, quality_tags, profile, positive, negative)
-    return _output0(result)
+    return _output0(result, node_name="AnimaModGuidance", method_name="patch")
 
 
 # ---------------------------------------------------------------------------
@@ -148,23 +202,35 @@ def run_ksampler(
         model, int(seed), int(steps), float(cfg), str(sampler_name), str(scheduler),
         positive, negative, latent, denoise=float(denoise),
     )
-    return _output0(result)
+    return _output0(result, node_name="KSampler", method_name="sample")
 
 
 def vae_decode(vae: Any, samples: Dict[str, Any]) -> Any:
-    return _output0(_comfy_node("VAEDecode")().decode(vae, samples))
+    return _output0(
+        _comfy_node("VAEDecode")().decode(vae, samples),
+        node_name="VAEDecode", method_name="decode",
+    )
 
 
 def vae_encode(vae: Any, image: Any) -> Dict[str, Any]:
-    return _output0(_comfy_node("VAEEncode")().encode(vae, image))
+    return _output0(
+        _comfy_node("VAEEncode")().encode(vae, image),
+        node_name="VAEEncode", method_name="encode",
+    )
 
 
 def empty_latent(width: int, height: int, batch: int) -> Dict[str, Any]:
-    return _output0(_comfy_node("EmptyLatentImage")().generate(int(width), int(height), int(batch)))
+    return _output0(
+        _comfy_node("EmptyLatentImage")().generate(int(width), int(height), int(batch)),
+        node_name="EmptyLatentImage", method_name="generate",
+    )
 
 
 def latent_upscale_by(samples: Dict[str, Any], upscale_method: str, scale_by: float) -> Dict[str, Any]:
-    return _output0(_comfy_node("LatentUpscaleBy")().upscale(samples, str(upscale_method), float(scale_by)))
+    return _output0(
+        _comfy_node("LatentUpscaleBy")().upscale(samples, str(upscale_method), float(scale_by)),
+        node_name="LatentUpscaleBy", method_name="upscale",
+    )
 
 
 def resize_image(image: Any, target_width: int, target_height: int, method: str = "bicubic") -> Any:
@@ -176,7 +242,7 @@ def resize_image(image: Any, target_width: int, target_height: int, method: str 
     result = _comfy_node("ImageScale")().upscale(
         image, str(method), int(target_width), int(target_height), "disabled",
     )
-    return _output0(result)
+    return _output0(result, node_name="ImageScale", method_name="upscale")
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +367,21 @@ def _run_detailer_block(
     (the block's own `detect_prompt`, formatted `"prompt:count"` per
     upstream's `_format_sam3_detection_prompt`), not a raw string.
 
-    VERIFY-IN-COMFYUI: `comfy_extras.nodes_sam3.SAM3_Detect`'s exact
-    `execute()` signature was not independently confirmed against a live
-    ComfyUI build in this task — see the build report.
+    CONFIRMED against a live ComfyUI 0.28.3 build (2026-07-28): the SAM3
+    checkpoint loads fine and `SAM3_Detect.execute()` IS reached with these
+    kwargs — the only thing that was ever actually wrong was this file's own
+    result-unwrapping, not the call shape above. `execute()` is a live
+    reproduction of exactly the failure `node_result.normalize_node_result`
+    exists to fix: 0.28.3's `execution.py` carries `v3_data`, i.e. it
+    supports the V3 node schema, and `SAM3_Detect` being a recent built-in
+    is very likely V3 — its `execute()` returning a `comfy_api`/`io.
+    NodeOutput` (outputs on `.result`, not the return value itself) rather
+    than a bare tuple is the working hypothesis for why the old
+    `isinstance(result, tuple)` check in `_output0` rejected it. That
+    hypothesis is exactly what `_output0` now handles either way — V2 tuple
+    or V3 `NodeOutput` — via `node_result.normalize_node_result`, so this call
+    site needs no further change regardless of which shape `SAM3_Detect`
+    actually returns on a given build.
     """
     if not block.get("enabled"):
         return image
@@ -321,21 +399,27 @@ def _run_detailer_block(
     sam3_cls = soft_imports.find_sam3_detect_class()
     if sam3_cls is None:
         return image  # built-in absent (old ComfyUI) -> inert, not an error.
-    mask = _output0(sam3_cls().execute(
-        model=sam3_model, image=image, conditioning=conditioning,
-        threshold=float(block.get("threshold", 0.5)),
-        refine_iterations=int(block.get("refine_iterations", 2)),
-        individual_masks=bool(block.get("individual_masks", True)),
-    ))
+    mask = _output0(
+        sam3_cls().execute(
+            model=sam3_model, image=image, conditioning=conditioning,
+            threshold=float(block.get("threshold", 0.5)),
+            refine_iterations=int(block.get("refine_iterations", 2)),
+            individual_masks=bool(block.get("individual_masks", True)),
+        ),
+        node_name="SAM3_Detect", method_name="execute",
+    )
 
     mask_to_segs_cls = soft_imports.find_node_class("MaskToSEGS")
     if mask_to_segs_cls is None:
         return image  # Impact absent -> inert (§11).
-    segs = _output0(mask_to_segs_cls().doit(
-        mask, bool(block.get("combined", False)), float(block.get("crop_factor", 4.0)),
-        bool(block.get("bbox_fill", False)), int(block.get("drop_size", 100)),
-        bool(block.get("contour_fill", True)),
-    ))
+    segs = _output0(
+        mask_to_segs_cls().doit(
+            mask, bool(block.get("combined", False)), float(block.get("crop_factor", 4.0)),
+            bool(block.get("bbox_fill", False)), int(block.get("drop_size", 100)),
+            bool(block.get("contour_fill", True)),
+        ),
+        node_name="MaskToSEGS", method_name="doit",
+    )
     if not segs or not segs[1]:
         return image  # nothing detected -> pass through, not an error.
 
@@ -382,11 +466,7 @@ def _run_detailer_block(
         key: value for key, value in kwargs.items() if key in signature.parameters
     }
     result = method(**call_kwargs)
-    if isinstance(result, dict) and isinstance(result.get("result"), tuple) and result["result"]:
-        return result["result"][0]
-    if isinstance(result, tuple) and result:
-        return result[0]
-    raise RuntimeError("[AnimaFlow] Impact DetailerForEach returned no image.")
+    return _output0(result, node_name="DetailerForEach", method_name="doit")
 
 
 def run_detailer(
@@ -412,7 +492,8 @@ def run_detailer(
     sam3_settings = detailer_settings.get("sam3") if isinstance(detailer_settings.get("sam3"), dict) else {}
     checkpoint_name = str(sam3_settings.get("checkpoint") or "sam3.1_multiplex_fp16.safetensors")
     sam3_model, sam3_clip, _sam3_vae = _output0_multi(
-        _comfy_node("CheckpointLoaderSimple")().load_checkpoint(checkpoint_name)
+        _comfy_node("CheckpointLoaderSimple")().load_checkpoint(checkpoint_name),
+        node_name="CheckpointLoaderSimple", method_name="load_checkpoint",
     )
 
     order = detailer_settings.get("order") if isinstance(detailer_settings.get("order"), list) else list(blocks)
@@ -428,10 +509,26 @@ def run_detailer(
     return result
 
 
-def _output0_multi(result: Any) -> Tuple[Any, Any, Any]:
-    if not isinstance(result, tuple) or len(result) < 3:
-        raise RuntimeError("[AnimaFlow] CheckpointLoaderSimple returned fewer than 3 outputs.")
-    return result[0], result[1], result[2]
+def _output0_multi(
+    result: Any, *, node_name: str = "a ComfyUI node", method_name: str = "call",
+) -> Tuple[Any, Any, Any]:
+    """Like `_output0`, but for `CheckpointLoaderSimple.load_checkpoint`'s
+    MODEL/CLIP/VAE triple — the pipeline's only three-output-needed core
+    call. Same shape-normalization + two distinct readable errors as
+    `_output0` (see its own docstring): an unrecognised shape names
+    `type(result).__name__`; a recognised-but-short one names how many
+    outputs actually came back."""
+    normalized = node_result_mod.normalize_node_result(result)
+    if normalized.unrecognized_type is not None:
+        raise _unrecognized_shape_error(node_name, method_name, normalized.unrecognized_type)
+    outputs = normalized.outputs
+    got = 0 if outputs is None else len(outputs)
+    if outputs is None or got < 3:
+        raise RuntimeError(
+            f"[AnimaFlow] {node_name}.{method_name}() returned {got} output(s), "
+            f"fewer than the 3 (MODEL, CLIP, VAE) required."
+        )
+    return outputs[0], outputs[1], outputs[2]
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +552,12 @@ def run_upscale(
     stage_sampler = sampler_mod.resolve_stage_sampler(upscale_settings, base_sampler)
 
     upscale_model_cls = soft_imports.find_node_class("UpscaleModelLoader") or _comfy_node("UpscaleModelLoader")
-    upscale_model = _output0(upscale_model_cls().load_model(
-        str(usdu_settings.get("upscale_model_name") or "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors")
-    ))
+    upscale_model = _output0(
+        upscale_model_cls().load_model(
+            str(usdu_settings.get("upscale_model_name") or "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors")
+        ),
+        node_name="UpscaleModelLoader", method_name="load_model",
+    )
 
     result = usdu_cls().upscale(
         image=image, model=model, positive=positive, negative=negative, vae=vae,
@@ -485,7 +585,7 @@ def run_upscale(
         tiled_decode=bool(usdu_settings.get("tiled_decode", False)),
         batch_size=int(usdu_settings.get("batch_size", 1)),
     )
-    return _output0(result)
+    return _output0(result, node_name="UltimateSDUpscale", method_name="upscale")
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +651,30 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     """
     settings = settings_mod.normalize_generation_settings(generation_settings)
 
+    # Model-file pre-flight (readable error instead of a `FileNotFoundError`
+    # seven frames deep mid-sample) — needs `detailer_live`/`upscale_live`
+    # computed BEFORE the first pass even runs, so a missing SAM3 checkpoint
+    # or upscale model surfaces before any real sampling happens, not after
+    # a (possibly expensive) first pass/highres/detailer has already run.
+    # `have_impact`/`have_usdu`/`detailer_settings`/`upscale_settings`/
+    # `detailer_live`/`upscale_live` computed here are reused UNCHANGED at
+    # their original call sites further down — nothing here is recomputed.
+    have_impact = soft_imports.has_impact_detailer()
+    detailer_settings = settings.get("detailer", {})
+    detailer_live = stages_mod.detailer_is_live(
+        detailer_enabled=bool(detailer_settings.get("enabled")),
+        have_impact=have_impact, blocks=detailer_settings.get("blocks"),
+    )
+    upscale_settings = settings.get("upscale", {})
+    have_usdu = soft_imports.has_usdu()
+    upscale_live = bool(upscale_settings.get("enabled")) and have_usdu
+    model_files_mod.raise_if_missing(model_files_mod.find_missing_model_files(
+        detailer_settings=detailer_settings, detailer_live=detailer_live,
+        upscale_settings=upscale_settings, upscale_live=upscale_live,
+        checkpoint_files=_lookup_filename_list("checkpoints"),
+        upscale_model_files=_lookup_filename_list("upscale_models"),
+    ))
+
     model = context_mod.require_context_value(context, "model")
     clip = context_mod.require_context_value(context, "clip")
     vae = context_mod.require_context_value(context, "vae")
@@ -581,12 +705,9 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     image_after_highres = vae_decode(vae, highres_latent) if highres_enabled else image_base
     final_latent = highres_latent
 
-    have_impact = soft_imports.has_impact_detailer()
-    detailer_settings = settings.get("detailer", {})
-    detailer_live = stages_mod.detailer_is_live(
-        detailer_enabled=bool(detailer_settings.get("enabled")),
-        have_impact=have_impact, blocks=detailer_settings.get("blocks"),
-    )
+    # `have_impact`/`detailer_settings`/`detailer_live` and
+    # `upscale_settings`/`have_usdu`/`upscale_live` were already computed
+    # above (before the model-file pre-flight check) — reused unchanged here.
     image_after_detailer = run_detailer(
         image=image_after_highres, model=model, clip=clip, vae=vae,
         positive=positive, negative=negative, detailer_settings=detailer_settings,
@@ -594,9 +715,6 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     )
     image_mid = image_after_detailer  # design doc §5: "after detailer, before upscale"
 
-    upscale_settings = settings.get("upscale", {})
-    have_usdu = soft_imports.has_usdu()
-    upscale_live = bool(upscale_settings.get("enabled")) and have_usdu
     image_after_upscale = run_upscale(
         image=image_after_detailer, model=model, clip=clip, vae=vae,
         positive=positive, negative=negative, upscale_settings=upscale_settings,

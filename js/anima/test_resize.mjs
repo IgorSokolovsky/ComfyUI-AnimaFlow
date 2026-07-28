@@ -63,6 +63,25 @@
  *      off the same (saved) widget value; the deleted popover mechanism
  *      (`buildPopoverShell`/`buildClickRow`/`buildNote`, every `openXPopover`,
  *      `closeActiveOverlay`) has no surviving export anywhere in `js/anima/`.
+ *   E3. Post-run context truth (2026-07-28, Bridge-repaint + Use-Everywhere
+ *      dispatch) — `resolveDownstreamGenerators` walks FORWARD from a
+ *      bridge's own "context" output: direct bridge -> generator; through
+ *      one and through several pass-throughs; fanning out to MULTIPLE
+ *      generators from one output; unwired / a dangling link / a cycle all
+ *      resolve to `[]`; a real node that's neither a pass-through nor a
+ *      generator is simply not followed past. `handleGeneratorExecuted`
+ *      stashes `message.anima_context` onto `node._anContextRun` and
+ *      repaints; a payload with no `anima_context` key (e.g. one that only
+ *      carries `images`) is ignored outright. `computeEffectiveContextSupplied`
+ *      merges the live link view with the last run's own report: live-only,
+ *      run-only (the Use-Everywhere case — no bridge resolves at all),
+ *      both (live wins the TOOLTIP text, the run's own value still shows),
+ *      and neither; `clearContextRun` (what both `index.js`
+ *      `onConnectionsChange` hooks call on every rewire) wipes it back to
+ *      "neither". A run-supplied field's disabled value is the RUN's own
+ *      number; a run that reported supplied with no value falls back to
+ *      the settings value. `node._anContextRun` never reaches the
+ *      serialized `generation_settings` widget.
  *   F. State still reaches the SERIALIZED widget after every edit — a
  *      stage toggle, a drag-to-set numeric field, a stepper cycle, a boolean
  *      switch, a detailer block add/remove — never just in-memory state.
@@ -128,6 +147,7 @@ import path from "node:path";
 
 import { scrollRegionWantsWheel } from "../shared/canvas_zoom.mjs";
 import * as fields from "../shared/fields.mjs";
+import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
 
 import {
   GENERATION_SETTINGS_SCHEMA,
@@ -177,12 +197,16 @@ import {
   persistGenState,
   resolveContextBridge,
   computeContextSupplied,
+  resolveDownstreamGenerators,
+  computeEffectiveContextSupplied,
+  clearContextRun,
   mountGeneratorUI,
   repaintGenerator,
   mountPreviewUI,
   repaintPreview,
   wipeXFromEvent,
   handleExecuted,
+  handleGeneratorExecuted,
   installZoomPassthrough,
   teardownNode,
   computeNodeDefinition,
@@ -515,12 +539,17 @@ function makePreviewNode({ preview_state = "{}", imagesLink = null, metadataLink
   return node;
 }
 
-function makeBridgeNode(id, wiredFields = []) {
+function makeBridgeNode(id, wiredFields = [], outputLinks = []) {
   const ALL = ["model", "clip", "vae", "positive", "negative", "latent", "seed", "steps", "cfg", "sampler_name", "scheduler"];
   return {
     id,
     type: "AnimaContextBridge",
     inputs: ALL.map((name) => ({ name, link: wiredFields.includes(name) ? 99 : null })),
+    // The forward walk (`resolveDownstreamGenerators`) reads THIS -- the
+    // bridge's own "context" OUTPUT, fanning out across every link id here.
+    // Absent/empty by default so every EXISTING backward-walk fixture (none
+    // of which cares about outputs) is unaffected.
+    outputs: [{ name: "context", type: "ANIMA_CONTEXT", links: outputLinks }],
   };
 }
 
@@ -529,6 +558,16 @@ function makeCtx(doc, overrides = {}) {
     doc,
     getCanvasEl: overrides.getCanvasEl || (() => null),
     havePackages: overrides.havePackages || (() => ({ spectrum: true, usdu: true, impact: true })),
+    // Default stub: both installed-file lists are non-empty and contain the
+    // exact upstream defaults `state.mjs`'s `DEFAULT_GENERATION_SETTINGS`
+    // ships (`sam3.1_multiplex_fp16.safetensors` / `2x-AnimeSharpV4_Fast_
+    // RCAN_PU.safetensors`) -- the "happy path" every OTHER Detailer/Upscale
+    // test in this suite already exercises, unaffected by this task's own
+    // model-file-picker tests overriding it explicitly.
+    getKnownLists: overrides.getKnownLists || (() => ({
+      checkpoints: ["sam3.1_multiplex_fp16.safetensors"],
+      upscale_models: ["2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"],
+    })),
   };
 }
 
@@ -1310,6 +1349,260 @@ test("fail-closed cases (context unwired, wired to a non-bridge, wired through a
 });
 
 // ===========================================================================
+// E3. Post-run context truth -- resolveDownstreamGenerators (forward walk),
+//     handleGeneratorExecuted, computeEffectiveContextSupplied/
+//     clearContextRun, and the disabled field's/summary's displayed value.
+// ===========================================================================
+
+/** A bare litegraph node stub for the forward walk's own fixtures -- unlike
+ * `makeGeneratorNode`/`makeBridgeNode` (which carry the real declared
+ * socket shape), the walk itself only ever reads `type`/`comfyClass`,
+ * `inputs`, `outputs`, and `graph`, so a minimal stub is enough and keeps
+ * every fixture below reading as "just the graph shape being tested". */
+function stubNode(id, type, { inputs = [], outputs = [] } = {}) {
+  return { id, type, inputs, outputs };
+}
+
+test("resolveDownstreamGenerators: direct bridge -> generator", () => {
+  const bridge = makeBridgeNode(1, [], [10]);
+  const gen = stubNode(2, "AnimaGenerator", { inputs: [{ name: "context", link: 10 }] });
+  const graph = makeGraph({ 1: bridge, 2: gen }, { 10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 } });
+  bridge.graph = graph;
+  assert.deepEqual(resolveDownstreamGenerators(bridge), [gen]);
+});
+
+test("resolveDownstreamGenerators: through ONE Reroute-shaped pass-through node", () => {
+  const bridge = makeBridgeNode(1, [], [10]);
+  const reroute = stubNode(2, "Reroute", { inputs: [{ name: "", link: 10 }], outputs: [{ name: "", links: [20] }] });
+  const gen = stubNode(3, "AnimaGenerator", { inputs: [{ name: "context", link: 20 }] });
+  const graph = makeGraph({ 1: bridge, 2: reroute, 3: gen }, {
+    10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 },
+    20: { origin_id: 2, origin_slot: 0, target_id: 3, target_slot: 0 },
+  });
+  bridge.graph = graph;
+  reroute.graph = graph;
+  assert.deepEqual(resolveDownstreamGenerators(bridge), [gen]);
+});
+
+test("resolveDownstreamGenerators: through SEVERAL chained pass-through nodes", () => {
+  const bridge = makeBridgeNode(1, [], [10]);
+  const a = stubNode(2, "Reroute", { inputs: [{ name: "", link: 10 }], outputs: [{ name: "", links: [20] }] });
+  const b = stubNode(3, "Reroute", { inputs: [{ name: "", link: 20 }], outputs: [{ name: "", links: [30] }] });
+  const gen = stubNode(4, "AnimaGenerator", { inputs: [{ name: "context", link: 30 }] });
+  const graph = makeGraph({ 1: bridge, 2: a, 3: b, 4: gen }, {
+    10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 },
+    20: { origin_id: 2, origin_slot: 0, target_id: 3, target_slot: 0 },
+    30: { origin_id: 3, origin_slot: 0, target_id: 4, target_slot: 0 },
+  });
+  bridge.graph = graph;
+  a.graph = graph;
+  b.graph = graph;
+  assert.deepEqual(resolveDownstreamGenerators(bridge), [gen]);
+});
+
+test("resolveDownstreamGenerators: fans out to MULTIPLE generators from one output", () => {
+  const bridge = makeBridgeNode(1, [], [10, 11]);
+  const genA = stubNode(2, "AnimaGenerator", { inputs: [{ name: "context", link: 10 }] });
+  const genB = stubNode(3, "AnimaGenerator", { inputs: [{ name: "context", link: 11 }] });
+  const graph = makeGraph({ 1: bridge, 2: genA, 3: genB }, {
+    10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 },
+    11: { origin_id: 1, origin_slot: 0, target_id: 3, target_slot: 0 },
+  });
+  bridge.graph = graph;
+  assert.deepEqual(resolveDownstreamGenerators(bridge), [genA, genB]);
+});
+
+test("resolveDownstreamGenerators: unwired / dangling / a cycle / a non-generator dead end all resolve to []", () => {
+  assert.deepEqual(resolveDownstreamGenerators(null), [], "a null bridge itself");
+
+  const unwired = makeBridgeNode(1, [], []);
+  assert.deepEqual(resolveDownstreamGenerators(unwired), [], "no links on the context output at all");
+
+  const dangling = makeBridgeNode(1, [], [10]);
+  dangling.graph = makeGraph({ 1: dangling }, {}); // link 10 isn't in graph.links at all
+  assert.deepEqual(resolveDownstreamGenerators(dangling), [], "a dangling link");
+
+  const bridgeCycle = makeBridgeNode(1, [], [10]);
+  const a = stubNode(2, "Reroute", { inputs: [{ name: "", link: 10 }], outputs: [{ name: "", links: [20] }] });
+  const b = stubNode(3, "Reroute", { inputs: [{ name: "", link: 20 }], outputs: [{ name: "", links: [10] }] }); // b's own output loops back to a's link id
+  const cycleGraph = makeGraph({ 1: bridgeCycle, 2: a, 3: b }, {
+    10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 },
+    20: { origin_id: 2, origin_slot: 0, target_id: 3, target_slot: 0 },
+  });
+  bridgeCycle.graph = cycleGraph;
+  a.graph = cycleGraph;
+  b.graph = cycleGraph;
+  assert.deepEqual(resolveDownstreamGenerators(bridgeCycle), [], "a cycle -- never hangs");
+
+  const bridgeToOther = makeBridgeNode(1, [], [10]);
+  // Two outputs -- neither a pass-through NOR a generator, so this branch
+  // simply dead-ends rather than being followed past.
+  const other = stubNode(2, "SomeOtherNode", { inputs: [{ name: "in", link: 10 }], outputs: [{ name: "a", links: [] }, { name: "b", links: [] }] });
+  bridgeToOther.graph = makeGraph({ 1: bridgeToOther, 2: other }, {
+    10: { origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 0 },
+  });
+  assert.deepEqual(resolveDownstreamGenerators(bridgeToOther), [], "wired to a real node that's neither a pass-through nor a generator");
+});
+
+test("handleGeneratorExecuted: stashes message.anima_context onto node._anContextRun and repaints", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  const payload = { supplied: { seed: true }, values: { seed: 42 } };
+  handleGeneratorExecuted(node, ctx, { anima_context: payload });
+  assert.deepEqual(node._anContextRun, payload);
+});
+
+test("handleGeneratorExecuted: a payload with no anima_context key (e.g. only `images`) is ignored outright", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  node._anContextRun = { supplied: {}, values: {} };
+  const before = node._anContextRun;
+  handleGeneratorExecuted(node, ctx, { images: [{ filename: "x.png" }] });
+  assert.equal(node._anContextRun, before, "an images-only payload must not touch _anContextRun at all");
+
+  handleGeneratorExecuted(node, ctx, null);
+  assert.equal(node._anContextRun, before, "a falsy message is ignored too");
+});
+
+test("computeEffectiveContextSupplied: LIVE-only supplied (bridge wired, no run yet)", () => {
+  const bridge = makeBridgeNode(2, ["seed"]);
+  const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.bridgeFound, true);
+  assert.equal(eff.supplied.seed, true);
+  assert.equal(eff.source.seed, "live");
+  assert.equal(eff.runSupplied.seed, false);
+  assert.ok(!("seed" in eff.values), "no run value exists yet -- never invented");
+  assert.equal(eff.supplied.cfg, false);
+});
+
+test("computeEffectiveContextSupplied: RUN-only supplied -- the Use Everywhere case (no bridge resolves at all, no live link)", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  node._anContextRun = { supplied: { cfg: true }, values: { cfg: 9.5 } };
+
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.bridgeFound, false);
+  assert.equal(eff.supplied.cfg, true);
+  assert.equal(eff.source.cfg, "run");
+  assert.equal(eff.runSupplied.cfg, true);
+  assert.equal(eff.values.cfg, 9.5);
+  // Every other field the run didn't mention stays unsupplied.
+  assert.equal(eff.supplied.seed, false);
+});
+
+test("computeEffectiveContextSupplied: BOTH live and run agree -- source prefers 'live' for the tooltip, but the run's own value still shows", () => {
+  const bridge = makeBridgeNode(2, ["cfg"]);
+  const graph = makeGraph({ 2: bridge }, { 1: { origin_id: 2, origin_slot: 0 } });
+  const node = makeGeneratorNode({ contextLink: 1, graph });
+  node._anContextRun = { supplied: { cfg: true }, values: { cfg: 9.5 } };
+
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.supplied.cfg, true);
+  assert.equal(eff.source.cfg, "live");
+  assert.equal(eff.runSupplied.cfg, true);
+  assert.equal(eff.values.cfg, 9.5);
+});
+
+test("computeEffectiveContextSupplied: NEITHER live nor run -- editable, no values entry at all", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.supplied.cfg, false);
+  assert.equal(eff.source.cfg, null);
+  assert.ok(!("cfg" in eff.values));
+});
+
+test("computeEffectiveContextSupplied: the run reported supplied but carried no value for that field (None) -- runSupplied true, no values entry, settings value must win", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  node._anContextRun = { supplied: { cfg: true }, values: { cfg: null } };
+
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.supplied.cfg, true);
+  assert.equal(eff.runSupplied.cfg, true);
+  assert.ok(!("cfg" in eff.values), "a None run value must never be invented into a displayed number");
+});
+
+test("clearContextRun: wipes node._anContextRun back to 'neither' -- what BOTH index.js onConnectionsChange hooks call on every rewire", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  node._anContextRun = { supplied: { cfg: true }, values: { cfg: 9.5 } };
+  assert.equal(computeEffectiveContextSupplied(node).supplied.cfg, true);
+
+  clearContextRun(node);
+  assert.equal(node._anContextRun, null);
+  const eff = computeEffectiveContextSupplied(node);
+  assert.equal(eff.supplied.cfg, false);
+  assert.equal(eff.source.cfg, null);
+  assert.ok(!("cfg" in eff.values));
+
+  assert.doesNotThrow(() => clearContextRun(null), "must never throw for a falsy node");
+});
+
+test("a run-supplied sampler field's disabled value is the RUN's own number, not the settings tree's", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  node._anContextRun = { supplied: { seed: true }, values: { seed: 777 } };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(hasClass(seedField, "wtn-fld-disabled"), "run-supplied -- must render disabled");
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
+  assert.equal(val.textContent, "777", "must show the RUN's value, not the settings tree's default seed");
+
+  const seedWrap = seedField.parentNode;
+  const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
+  assert.match(seedIcon.attributes["aria-label"], /supplied at run time/i);
+  assert.match(seedIcon.attributes["aria-label"], /Use Everywhere/i);
+});
+
+test("a run that reported supplied with NO value falls back to rendering the settings value, and says so in the ⓘ", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  node._anContextRun = { supplied: { seed: true }, values: {} }; // supplied, but carried nothing
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  const settingsSeed = genState(node).sampler.seed;
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+  const seedField = findFieldByLabel(body, "seed");
+  assert.ok(hasClass(seedField, "wtn-fld-disabled"));
+  const val = seedField.children.find((c) => hasClass(c, "wtn-fld-num-val"));
+  assert.equal(val.textContent, String(settingsSeed), "no run value -- must show the settings tree's own value, never invent one");
+
+  const seedWrap = seedField.parentNode;
+  const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
+  assert.match(seedIcon.attributes["aria-label"], /carried no value/i, "the ⓘ must SAY it fell back, not just silently show a stale number");
+});
+
+test("node._anContextRun never reaches the serialized generation_settings widget", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(node, ctx);
+
+  handleGeneratorExecuted(node, ctx, { anima_context: { supplied: { cfg: true }, values: { cfg: 9.5 } } });
+  assert.ok(node._anContextRun, "sanity: it really did stash something");
+
+  const persistedRaw = getGenSettingsWidget(node).value;
+  assert.ok(!persistedRaw.includes("_anContextRun"), "the widget's own serialized JSON must carry no trace of it");
+  const persisted = JSON.parse(persistedRaw);
+  assert.ok(!("_anContextRun" in persisted) && !("anContextRun" in persisted));
+});
+
+// ===========================================================================
 // F. State reaches the SERIALIZED widget after every kind of edit -- never
 //    just in-memory state.
 // ===========================================================================
@@ -1408,6 +1701,140 @@ test("detailer section: adding respects MAX_DETAILER_PASSES and face/eye stay un
   body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
   const addBtnAgain = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "+");
   assert.ok(addBtnAgain.disabled, "MAX_DETAILER_PASSES reached -- the + button must refuse further adds");
+});
+
+// ---------------------------------------------------------------------------
+// Model-file pickers -- the SAM3 checkpoint (Detailer) and upscale model
+// (Upscale) previously hardcoded upstream defaults with NO frontend control
+// at all; now real `buildStepperField` picker rows fed by `ctx.getKnownLists()`.
+// ---------------------------------------------------------------------------
+
+test("Detailer section: the SAM3 checkpoint renders as a stepper fed by ctx.getKnownLists().checkpoints, not a text field", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: ["sam3.1_multiplex_fp16.safetensors", "other.safetensors"], upscale_models: [] }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+
+  const field = findFieldByLabel(body, "checkpoint");
+  assert.ok(field, "expected a 'checkpoint' field in the Detailer section");
+  assert.ok(hasClass(field, "wtn-fld-stepper"), "must be a stepper row, not buildTextField's .wtn-an-field");
+  assert.ok(!hasClass(field, "wtn-fld-disabled"), "a non-empty list must render enabled");
+  const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  assert.equal(val.textContent, "sam3.1_multiplex_fp16.safetensors");
+});
+
+test("Upscale section: upscale_model_name renders as a stepper fed by ctx.getKnownLists().upscale_models, not a text field", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: ["2x-AnimeSharpV4_Fast_RCAN_PU.safetensors", "other.pth"] }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
+
+  const field = findFieldByLabel(body, "upscale_model_name");
+  assert.ok(field, "expected an 'upscale_model_name' field in the Upscale section");
+  assert.ok(hasClass(field, "wtn-fld-stepper"), "must be a stepper row, not buildTextField's .wtn-an-field");
+  assert.ok(!hasClass(field, "wtn-fld-disabled"));
+  const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  assert.equal(val.textContent, "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors");
+});
+
+test("Detailer SAM3 checkpoint: an empty/missing list keeps showing the SAVED value, disabled -- never rewrites it, never renders an empty-but-clickable picker", () => {
+  const node = makeGeneratorNode({
+    generation_settings: JSON.stringify({ detailer: { sam3: { checkpoint: "a-value-not-in-any-list.safetensors" } } }),
+  });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: [] }) }); // nothing installed
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+
+  const field = findFieldByLabel(body, "checkpoint");
+  assert.ok(hasClass(field, "wtn-fld-disabled"), "an empty list must render the picker disabled, not silently rewrite the value");
+  const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  assert.equal(val.textContent, "a-value-not-in-any-list.safetensors", "the saved value must survive, not fall back to list[0] or the upstream default");
+
+  // Disabled means no click handlers were wired at all -- clicking an arrow
+  // (if it somehow fired) must not mutate the persisted state either.
+  const persisted = genState(node);
+  assert.equal(persisted.detailer.sam3.checkpoint, "a-value-not-in-any-list.safetensors");
+});
+
+test("Upscale upscale_model_name: a `null` (unobtainable) list ALSO keeps the saved value, disabled", () => {
+  const node = makeGeneratorNode({
+    generation_settings: JSON.stringify({ upscale: { usdu: { upscale_model_name: "my-custom-model.pth" } } }),
+  });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: null }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
+
+  const field = findFieldByLabel(body, "upscale_model_name");
+  assert.ok(hasClass(field, "wtn-fld-disabled"));
+  const val = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-combo")).children.find((c) => hasClass(c, "wtn-fld-combo-val"));
+  assert.equal(val.textContent, "my-custom-model.pth");
+});
+
+test("Detailer SAM3 checkpoint: cycling the stepper's arrow writes detailer.sam3.checkpoint (and persists) when the list is non-empty", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: ["sam3.1_multiplex_fp16.safetensors", "second.safetensors"], upscale_models: [] }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  let body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const field = findFieldByLabel(body, "checkpoint");
+  const rightArrow = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click");
+
+  const persisted = genState(node);
+  assert.equal(persisted.detailer.sam3.checkpoint, "second.safetensors");
+});
+
+test("Upscale upscale_model_name: cycling the stepper's arrow writes upscale.usdu.upscale_model_name (and persists) when the list is non-empty", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getKnownLists: () => ({ checkpoints: [], upscale_models: ["2x-AnimeSharpV4_Fast_RCAN_PU.safetensors", "other.pth"] }) });
+  const refs = mountGeneratorUI(node, ctx);
+
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  let body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
+  const field = findFieldByLabel(body, "upscale_model_name");
+  const rightArrow = field.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click");
+
+  const persisted = genState(node);
+  assert.equal(persisted.upscale.usdu.upscale_model_name, "other.pth");
+});
+
+test("index.js: MODEL_LIST_SOURCES/readKnownLists mirrors js/controls/index.js's readKnownLists shape -- CheckpointLoaderSimple.ckpt_name / UpscaleModelLoader.model_name, both ComfyUI built-ins", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(indexSource, /CheckpointLoaderSimple/);
+  assert.match(indexSource, /ckpt_name/);
+  assert.match(indexSource, /UpscaleModelLoader/);
+  assert.match(indexSource, /model_name/);
+  // getComboOptions is REUSED (imported/re-exported), never reimplemented.
+  assert.doesNotMatch(indexSource, /function getComboOptions/);
+});
+
+test("interaction.mjs still touches no window/LiteGraph directly -- getKnownLists rides the ctx injection, same contract as getCanvasEl/havePackages (a static source scan, comments stripped)", () => {
+  const src = readFileSync(path.join(__dirname, "interaction.mjs"), "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/.*$/gm, "");
+  assert.doesNotMatch(code, /window\./);
+  assert.doesNotMatch(code, /\bLiteGraph\b/);
 });
 
 test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/scheduler, both directions, and persists", () => {
@@ -1944,13 +2371,27 @@ function addLink(graph, id, originId, originSlot, targetId, targetSlot) {
  * every LATER slot's `target_slot`/`origin_slot` down by one) rather than a
  * bare splice -- so these tests actually exercise the "prefer the API
  * methods" contract `healNodeSockets` is built around, not a stand-in that
- * happens to pass regardless. */
-function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null } = {}) {
+ * happens to pass regardless.
+ *
+ * `size` defaults to a size that is NOT what `_MOCK_COMPUTED_SIZE` clobbers
+ * it to, below -- both `removeInput`/`removeOutput` additionally mimic
+ * litegraph's OWN documented `this.size = this.computeSize()` side effect
+ * (`healNodeSockets`'s own doc comment, "the reported bug"), overwriting
+ * `node.size` with `_MOCK_COMPUTED_SIZE` on every call, exactly like the real
+ * API methods are documented to do. This is what lets the size-preserving
+ * tests below actually exercise the fix rather than trivially pass because
+ * nothing in the stub ever touched `node.size` in the first place. */
+const _MOCK_COMPUTED_SIZE = [80, 32];
+function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null, size = [640, 480] } = {}) {
   const node = {
     id,
     graph,
+    size: Array.isArray(size) ? size.slice() : size,
     inputs: inputs.map((i) => ({ ...i })),
     outputs: outputs.map((o) => ({ ...o, links: (o.links || []).slice() })),
+    setDirtyCanvas() {
+      node._dirty = (node._dirty || 0) + 1;
+    },
     removeInput(idx) {
       const removed = node.inputs[idx];
       if (removed && removed.link != null && node.graph) {
@@ -1965,6 +2406,7 @@ function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null } = 
           node.graph.links[inp.link].target_slot = i;
         }
       });
+      node.size = _MOCK_COMPUTED_SIZE.slice();
     },
     removeOutput(idx) {
       const removed = node.outputs[idx];
@@ -1982,6 +2424,7 @@ function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null } = 
           }
         });
       });
+      node.size = _MOCK_COMPUTED_SIZE.slice();
     },
   };
   return node;
@@ -2233,6 +2676,105 @@ test("healNodeSockets: the fallback removal path (a node with no removeInput/rem
   assert.deepEqual(summary.removedInputs, ["positive"]);
 });
 
+// ---------------------------------------------------------------------------
+// Size preserve/restore across a heal -- the "shrinks to min on every
+// refresh" bug fix (`healNodeSockets`'s own doc comment). `makeHealableNode`'s
+// `removeInput`/`removeOutput` mimic litegraph's documented
+// `this.size = this.computeSize()` side effect (`_MOCK_COMPUTED_SIZE`, above)
+// -- every case here would fail WITHOUT the fix, since the stub genuinely
+// clobbers `node.size` on every remove call, exactly like the real API.
+// ---------------------------------------------------------------------------
+
+test("healNodeSockets: preserves the ORIGINAL node.size across a stale-socket heal, even though removeInput/removeOutput clobber it along the way", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 100, 0, 1, 0); // context's own link
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    size: [512, 900],
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: 1 },
+      { name: "positive", type: "CONDITIONING", link: null }, // stale -- removed
+    ],
+    outputs: [
+      { name: "images", type: "IMAGE", links: [] },
+      { name: "latent", type: "LATENT", links: [] },
+      { name: "metadata_json", type: "STRING", links: [] },
+      { name: "latent", type: "LATENT", links: [] }, // duplicate -- removed
+    ],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, true, "sanity: this case must actually heal something, or the test proves nothing");
+  assert.deepEqual(
+    node.size,
+    [512, 900],
+    "healing must restore the node's ORIGINAL saved size, not whatever the socket-mutation side effect clobbered it to",
+  );
+});
+
+test("healNodeSockets: a too-SMALL pre-existing size survives a heal unchanged -- the fix restores, it does not clamp up to any floor", () => {
+  const graph = makeLinkGraph();
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    size: [10, 10],
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: null },
+      { name: "stale", type: "STRING", link: null },
+    ],
+    outputs: [],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, true);
+  assert.deepEqual(node.size, [10, 10], "a tiny saved size must come back exactly as tiny -- healing never clamps it up");
+});
+
+test("healNodeSockets: a too-LARGE pre-existing size survives a heal unchanged -- the fix restores, it does not clamp down to any computed size", () => {
+  const graph = makeLinkGraph();
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    size: [9000, 9000],
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: null },
+      { name: "stale", type: "STRING", link: null },
+    ],
+    outputs: [],
+  });
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, true);
+  assert.deepEqual(node.size, [9000, 9000], "a huge saved size must come back exactly as huge -- healing never clamps it down");
+});
+
+test("healNodeSockets: a node with nothing to heal never writes node.size at all -- same array reference AND same values, no restore call happens", () => {
+  const graph = makeLinkGraph();
+  addLink(graph, 1, 10, 0, 1, 0);
+  const node = makeHealableNode({
+    id: 1,
+    graph,
+    size: [777, 333],
+    inputs: [{ name: "context", type: "ANIMA_CONTEXT", link: 1 }],
+    outputs: [
+      { name: "images", type: "IMAGE", links: [] },
+      { name: "latent", type: "LATENT", links: [] },
+      { name: "metadata_json", type: "STRING", links: [] },
+    ],
+  });
+  const originalSize = node.size;
+
+  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+  assert.equal(summary.changed, false);
+  assert.equal(node.size, originalSize, "no-op heal must never even touch the size array reference");
+  assert.deepEqual(node.size, [777, 333]);
+});
+
 test("index.js: socket healing (healNodeSockets) is wired into onConfigure only -- never onNodeCreated, so a freshly-created node is never healed (only a restored one)", () => {
   const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
   const createdIdx = indexSource.indexOf("nodeType.prototype.onNodeCreated = function");
@@ -2251,6 +2793,98 @@ test("index.js: socket healing (healNodeSockets) is wired into onConfigure only 
   // explaining why it is NOT called from `onNodeCreated`.
   assert.doesNotMatch(onNodeCreatedBlock, /healNodeSockets\(/, "onNodeCreated must never heal -- a fresh node is already correct");
   assert.match(onConfigureBlock, /healNodeSockets\(/, "onConfigure must be the one place healing runs");
+});
+
+// ===========================================================================
+// I. Node chrome (dark body + darker title bar) -- `../shared/node_chrome.mjs`
+//    is the single shared implementation (`js/controls/render.mjs` delegates
+//    to the same module); these cases cover it directly, mirroring
+//    `js/controls/test_resize.mjs`'s own `applyNodeChrome` coverage so the
+//    shared module itself -- not just one track's re-export of it -- is
+//    under test here too.
+// ===========================================================================
+
+test("applyNodeChrome paints bgcolor/color on a fresh Generator node (litegraph's actual undefined default)", () => {
+  const node = makeGeneratorNode();
+  assert.equal(node.bgcolor, undefined);
+  assert.equal(node.color, undefined);
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_TITLE);
+});
+
+test("applyNodeChrome paints bgcolor/color on a fresh Preview node (litegraph's actual undefined default)", () => {
+  const node = makePreviewNode();
+  assert.equal(node.bgcolor, undefined);
+  assert.equal(node.color, undefined);
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_TITLE);
+});
+
+test("applyNodeChrome also paints a fresh node with explicit null (not just undefined)", () => {
+  const node = { bgcolor: null, color: null };
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, CHROME_BODY);
+  assert.equal(node.color, CHROME_TITLE);
+});
+
+test("applyNodeChrome NEVER overwrites a node that already has an explicit bgcolor/color -- the user's own right-click Colors pick must survive", () => {
+  const node = makeGeneratorNode();
+  node.bgcolor = "#ff00ff";
+  node.color = "#00ff00";
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, "#ff00ff");
+  assert.equal(node.color, "#00ff00");
+});
+
+test("applyNodeChrome fills in only the ONE still-null field, leaving an explicitly-set sibling alone (the mixed case)", () => {
+  const node = { bgcolor: "#ff00ff", color: null };
+  applyNodeChrome(node);
+  assert.equal(node.bgcolor, "#ff00ff"); // untouched
+  assert.equal(node.color, CHROME_TITLE); // filled in
+
+  const node2 = { bgcolor: null, color: "#00ff00" };
+  applyNodeChrome(node2);
+  assert.equal(node2.bgcolor, CHROME_BODY); // filled in
+  assert.equal(node2.color, "#00ff00"); // untouched
+});
+
+test("applyNodeChrome is a no-op (never throws) against a null/undefined node", () => {
+  assert.doesNotThrow(() => applyNodeChrome(null));
+  assert.doesNotThrow(() => applyNodeChrome(undefined));
+});
+
+test("index.js: node chrome is painted from the standalone setupNode() function only (the fresh-node path, reached via onNodeCreated), gated on !node._anConfiguring, and never from restoreNode()", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const setupIdx = indexSource.indexOf("function setupNode(node, mods, isGenerator)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(node, mods, isGenerator)");
+  const afterRestoreIdx = indexSource.indexOf("app.registerExtension({", restoreIdx);
+  assert.ok(setupIdx >= 0, "setupNode() must exist");
+  assert.ok(restoreIdx > setupIdx, "restoreNode() must be defined after setupNode()");
+  assert.ok(afterRestoreIdx > restoreIdx, "app.registerExtension(...) must come after restoreNode()");
+
+  const setupNodeBody = indexSource.slice(setupIdx, restoreIdx);
+  const restoreNodeBody = indexSource.slice(restoreIdx, afterRestoreIdx);
+
+  assert.match(setupNodeBody, /applyNodeChrome\(/, "setupNode's fresh-node path must call applyNodeChrome");
+  assert.match(setupNodeBody, /!node\._anConfiguring/, "setupNode's chrome call must be gated on !node._anConfiguring");
+  assert.doesNotMatch(restoreNodeBody, /applyNodeChrome\(/, "restoreNode (the restore path) must never call applyNodeChrome");
+
+  // The guard flag itself: set at the very TOP of onConfigure, BEFORE the
+  // loadMods() promise -- setupNode runs in a deferred microtask (this
+  // file's own top doc comment), so a loaded-workflow's onNodeCreated could
+  // otherwise run its (also-deferred) setupNode call AFTER onConfigure has
+  // already reset the flag, missing the window entirely. Setting it
+  // synchronously, before any async gap, guarantees the flag is still true
+  // for the whole load window regardless of how long the (one-time, cached)
+  // import takes -- matching js/controls/index.js's identical
+  // `_ctrlConfiguring` ordering rule.
+  const configureIdx = indexSource.indexOf("nodeType.prototype.onConfigure = function");
+  assert.ok(configureIdx >= 0, "onConfigure patch must exist");
+  const configureFnBody = indexSource.slice(configureIdx, indexSource.indexOf("loadMods()", configureIdx));
+  assert.match(configureFnBody, /this\._anConfiguring\s*=\s*true/, "_anConfiguring must be set at the top of onConfigure, before loadMods()");
+  assert.match(indexSource, /_anConfiguring\s*=\s*false/, "the restore path must clear _anConfiguring once mods have resolved (or failed)");
 });
 
 console.log(`\n${count - failures}/${count} passed`);

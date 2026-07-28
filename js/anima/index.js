@@ -26,8 +26,16 @@
  * index.js`'s cross-class `readKnownLists`) and runs for all three classes'
  * `onConfigure`, never `onNodeCreated` (a freshly-placed node is already
  * built correctly by ComfyUI itself). `AnimaContextBridge` has no DOM UI of
- * its own and never will just for this — it only needs the healing hook,
- * so it's patched here with nothing else installed (see `mountsUi` below).
+ * its own and never will just for this — `mountsUi` below still gates every
+ * hook that mounts/paints one. **2026-07-28 (context-forward-repaint
+ * dispatch)**: the Bridge DOES get one more hook past healing —
+ * `onConnectionsChange`, forwarding to every `AnimaGenerator` downstream of
+ * its own "context" output (`interaction.mjs`'s `resolveDownstreamGenerators`)
+ * so THEIR "context-supplied" panel repaints when a socket is wired/unwired
+ * on the Bridge itself, not just on the Generator's own `context` link. That
+ * hook paints nothing on the Bridge — it only reaches into an ALREADY-
+ * mounted Generator's own `_anMods`/`_anCtx` — so it doesn't need `mountsUi`
+ * either, and it's installed before that gate for exactly that reason.
  *
  * ## `state.mjs`/`render.mjs`/`interaction.mjs` are LAZY, not static
  *
@@ -67,7 +75,8 @@ import { app } from "/scripts/app.js";
 // `AnimaContextBridge` is included ONLY for socket self-healing (see this
 // file's top doc comment) -- `mountsUi` below is what actually gates every
 // DOM/UI hook so the Bridge never gets `setupNode`/`restoreNode` treatment.
-const NODE_CLASS_NAMES = ["AnimaGenerator", "AnimaPreview", "AnimaContextBridge"];
+const CONTEXT_BRIDGE_NAME = "AnimaContextBridge";
+const NODE_CLASS_NAMES = ["AnimaGenerator", "AnimaPreview", CONTEXT_BRIDGE_NAME];
 
 // The two settings-blob-only STRING widgets, hidden-for-rendering-only on
 // EVERY node instance (each class carries only its own; `find` below is a
@@ -148,11 +157,52 @@ function getCanvasEl() {
   return (app.canvas && app.canvas.canvas) || null;
 }
 
+// ---------------------------------------------------------------------------
+// Known model-file lists -- the SAM3 checkpoint (Detailer) and upscale model
+// (Upscale) pickers, both previously hardcoded upstream defaults with no
+// frontend control at all (this task's whole point). Modelled directly on
+// `js/controls/index.js`'s `readKnownLists`/`NODE_DEF_SOURCE` pair: two
+// ComfyUI BUILT-IN node classes' own registered combo specs are the source
+// of truth for "what's actually installed," so there's no backend route to
+// maintain and the lists always track whatever the live install actually
+// has. `getComboOptions` itself is `js/controls/rows.mjs`'s (reused via
+// `mods.interaction`'s re-export -- see that file's own doc comment for why
+// THIS file never statically imports `js/controls/rows.mjs` directly: doing
+// so would pull it into the JS download budget for every page, whether or
+// not any Anima node is ever placed).
+// ---------------------------------------------------------------------------
+
+const MODEL_LIST_SOURCES = {
+  checkpoints: { className: "CheckpointLoaderSimple", field: "ckpt_name" },
+  upscale_models: { className: "UpscaleModelLoader", field: "model_name" },
+};
+
+let _listsCache = null;
+let _listsCacheAt = 0;
+const LISTS_CACHE_MS = 1000; // node defs don't change mid-session; a light cache is still cheap insurance -- same TTL as js/controls/index.js's own readKnownLists.
+
+function readKnownLists(mods) {
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (_listsCache && now - _listsCacheAt < LISTS_CACHE_MS) {
+    return _listsCache;
+  }
+  const registry = (typeof window !== "undefined" && window.LiteGraph && window.LiteGraph.registered_node_types) || {};
+  const lists = {};
+  for (const key of Object.keys(MODEL_LIST_SOURCES)) {
+    const src = MODEL_LIST_SOURCES[key];
+    lists[key] = mods.interaction.getComboOptions(registry, src.className, src.field);
+  }
+  _listsCache = lists;
+  _listsCacheAt = now;
+  return lists;
+}
+
 function buildCtx(mods) {
   return {
     doc: typeof document !== "undefined" ? document : null,
     getCanvasEl,
     havePackages: readHavePackages,
+    getKnownLists: () => readKnownLists(mods),
   };
 }
 
@@ -281,6 +331,26 @@ function mountNode(node, mods, isGenerator) {
 
 function setupNode(node, mods, isGenerator) {
   mountNode(node, mods, isGenerator);
+
+  // Paint the node's own litegraph chrome (body/title strip) in our theme --
+  // ONLY for a genuinely fresh node, never one being restored from a saved
+  // workflow. `setupNode` runs from `onNodeCreated`, which fires for BOTH a
+  // brand-new node AND a restored one (this file's top doc comment); the
+  // reliable way to tell them apart at this point is `node._anConfiguring`
+  // -- `onConfigure`'s wrapper below sets that flag SYNCHRONOUSLY, before
+  // queuing its own `loadMods().then(...)`, and litegraph's own
+  // node-deserialize loop (construct -> configure, for every node) runs
+  // fully synchronously with no `await` in between. So for a node being
+  // loaded from a workflow, `onConfigure` has already set the flag by the
+  // time this microtask-deferred `setupNode` call actually runs, even
+  // though `onNodeCreated` fired first. A truly fresh, user-placed node
+  // never has `onConfigure` invoked at all, so the flag stays unset here.
+  // Matches `js/controls/index.js`'s identical `_ctrlConfiguring` guard on
+  // its own `applyNodeChrome` call site, byte-for-byte reasoning.
+  if (!node._anConfiguring) {
+    mods.render.applyNodeChrome(node);
+  }
+
   // `Math.max(..., PREVIEW_MIN_H)` on the Preview -- its floor (`480`, see
   // render.mjs's `PREVIEW_MIN_H` doc comment) is now taller than its own
   // `PREVIEW_DEFAULT_H` (`420`, unchanged), and this node's panel is
@@ -371,6 +441,14 @@ app.registerExtension({
     // assembled yet at the point `onConfigure` synchronously runs).
     const _configure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (...args) {
+      // Set BEFORE anything else runs (including the original _configure
+      // call and the async mods load) -- `setupNode`'s `applyNodeChrome`
+      // guard (above) must see this flag for the WHOLE loading window,
+      // however long the (one-time, cached) import takes, since
+      // `onNodeCreated`'s own `setupNode` call is likewise deferred to a
+      // microtask and could otherwise run before this flag lands. Matches
+      // `js/controls/index.js`'s identical `_ctrlConfiguring` ordering.
+      this._anConfiguring = true;
       const result = _configure ? _configure.apply(this, args) : undefined;
       const node = this;
       loadMods()
@@ -385,12 +463,53 @@ app.registerExtension({
         })
         .catch((err) => {
           console.error("[AnimaFlow Anima] failed to load js/anima modules:", err);
+        })
+        .finally(() => {
+          node._anConfiguring = false;
         });
       return result;
     };
 
+    // `AnimaContextBridge` ONLY, and deliberately BEFORE the `!mountsUi`
+    // early-out just below -- the Bridge mounts no UI of its own (`mountsUi`
+    // is `false` for it) so it never gets the Generator/Preview
+    // `onConnectionsChange` repaint hook a few lines down, but a socket
+    // wired/unwired HERE is exactly what `computeContextSupplied` reads for
+    // every Generator downstream of it. `resolveDownstreamGenerators`
+    // (interaction.mjs) walks FORWARD from this node's own "context" output
+    // to find them; each one that's ALREADY mounted gets repainted directly
+    // through its OWN `_anMods`/`_anCtx` (the Bridge has neither -- it
+    // mounts nothing), and its stale `_anContextRun` is cleared first (same
+    // "a stale run can't outlive the wiring it described" rule the
+    // Generator's own hook below applies to itself). A generator not yet
+    // mounted is skipped -- it will build with the CURRENT wiring anyway, so
+    // there's nothing stale to fix there.
+    if (nodeData.name === CONTEXT_BRIDGE_NAME) {
+      const _bridgeConn = nodeType.prototype.onConnectionsChange;
+      nodeType.prototype.onConnectionsChange = function (...args) {
+        const result = _bridgeConn ? _bridgeConn.apply(this, args) : undefined;
+        const bridge = this;
+        loadMods()
+          .then((mods) => {
+            const generators = mods.interaction.resolveDownstreamGenerators(bridge);
+            generators.forEach((gen) => {
+              if (gen._anMods) {
+                gen._anMods.interaction.clearContextRun(gen);
+              }
+              if (gen._anMods && gen._anRefs) {
+                gen._anMods.interaction.repaintGenerator(gen, gen._anCtx);
+              }
+            });
+          })
+          .catch((err) => {
+            console.error("[AnimaFlow Anima] failed to repaint downstream generators:", err);
+          });
+        return result;
+      };
+    }
+
     if (!mountsUi) {
-      return; // AnimaContextBridge: healing only -- no UI hooks below.
+      return; // AnimaContextBridge: healing + downstream repaint only -- no UI hooks below.
     }
 
     // Refresh the Generator's "context-supplied" field badges (design doc
@@ -403,6 +522,16 @@ app.registerExtension({
     const _conn = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function (...args) {
       const result = _conn ? _conn.apply(this, args) : undefined;
+      if (isGenerator && this._anMods) {
+        // A stale post-run "supplied" must never outlive the wiring it
+        // described -- clear it on the Generator's OWN context link
+        // changing too, not just the Bridge's forward-walk hook above.
+        // Safe to gate on `_anMods` alone (not also `_anRefs`):
+        // `_anContextRun` is only EVER set by `handleGeneratorExecuted`,
+        // itself gated on `_anMods` being loaded, so it can never hold a
+        // stale value while `_anMods` is still unset.
+        this._anMods.interaction.clearContextRun(this);
+      }
       if (this._anMods && this._anRefs) {
         if (isGenerator) {
           this._anMods.interaction.repaintGenerator(this, this._anCtx);
@@ -436,6 +565,29 @@ app.registerExtension({
         const result = _executed ? _executed.apply(this, arguments) : undefined;
         if (this._anMods) {
           this._anMods.interaction.handleExecuted(this, this._anCtx, message);
+        }
+        return result;
+      };
+    }
+
+    // `AnimaGenerator` only -- the post-run truth for "context-supplied"
+    // (this file's top doc comment / `interaction.mjs`'s
+    // `computeEffectiveContextSupplied`): `message.anima_context` is the
+    // ONLY thing that can see a sampler scalar Use Everywhere injected
+    // straight into the prompt at submit time, since that never rides a
+    // litegraph link the live wire-walk above can see at all. Same
+    // never-ready-yet tolerance as the Preview's own `onExecuted` above --
+    // `handleGeneratorExecuted` simply isn't called if `_anMods` hasn't
+    // loaded, and there is nothing to paint late in that case (the data
+    // isn't stashed anywhere for a next repaint to pick up, unlike the
+    // Preview's image cache, but a run finishing before this file's own
+    // lazy modules load is exactly as improbable here as it is there).
+    if (isGenerator) {
+      const _genExecuted = nodeType.prototype.onExecuted;
+      nodeType.prototype.onExecuted = function (message) {
+        const result = _genExecuted ? _genExecuted.apply(this, arguments) : undefined;
+        if (this._anMods) {
+          this._anMods.interaction.handleGeneratorExecuted(this, this._anCtx, message);
         }
         return result;
       };

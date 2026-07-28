@@ -133,16 +133,51 @@ class AnimaGenerator:
             # `nodes/prompt_rules/_rules_helpers.py`'s import of
             # `src.prompt_rules.core`.
             from ...src.anima import pipeline  # type: ignore
+            from ...src.anima.context import build_context_ui_payload  # type: ignore
         except ImportError:
             # Standalone context (plain-script tests, repo root on
             # `sys.path`): fall back to the bare form.
             from src.anima import pipeline
+            from src.anima.context import build_context_ui_payload
 
         images, latent_out, metadata_json = pipeline.run_generator(
             context=context,
             generation_settings=generation_settings,
         )
-        return (images, latent_out, metadata_json)
+
+        # Post-run truth for the frontend (`js/anima/interaction.mjs`'s
+        # `handleGeneratorExecuted`): which of the eleven context fields
+        # actually arrived this run, and what the five sampler scalars were
+        # -- the ONLY signal that can see a sampler value Use Everywhere
+        # injected straight into the prompt at submit time, since that never
+        # rides a litegraph link the frontend can walk at edit time (this
+        # node's own live "context wired?" badge only sees the Bridge's
+        # SOCKETS, never a UE injection). The key is `anima_context`,
+        # DELIBERATELY never `images` -- `"ui": {"images": [...]}}` is
+        # ComfyUI's OWN trigger for drawing a native image preview inside a
+        # node's body (dynamic-node-frontend skill §5; `nodes/anima/
+        # preview.py`'s own `anima_stages` rename fixes the exact same trap
+        # for the node that actually previews) -- this node draws nothing of
+        # its own, but reusing that key would still hijack whatever native
+        # rendering ComfyUI does for `images`-shaped node outputs, so every
+        # `ui` channel in this pack stays named for what it actually
+        # carries.
+        #
+        # VERIFY-IN-COMFYUI: `AnimaGenerator` is NOT an `OUTPUT_NODE` (checked
+        # in `tests/test_anima_nodes.py` and must STAY that way -- see this
+        # class's own module docstring, "a graph with no Preview wired runs
+        # nothing at all" is load-bearing). Returning `{"ui": ..., "result":
+        # ...}` from an ordinary (non-output) node's FUNCTION is ComfyUI's
+        # documented way to still emit a `ui` payload (routed to the
+        # frontend's `onExecuted`) alongside its real outputs, but that a
+        # non-output node's `ui` dict genuinely reaches `onExecuted` isn't
+        # confirmable in this dev environment -- no live ComfyUI process here
+        # to run it against; flagged so a reviewer checks it live before
+        # relying on it.
+        return {
+            "ui": {"anima_context": build_context_ui_payload(context)},
+            "result": (images, latent_out, metadata_json),
+        }
 
 
 NODE_CLASS_MAPPINGS = {"AnimaGenerator": AnimaGenerator}

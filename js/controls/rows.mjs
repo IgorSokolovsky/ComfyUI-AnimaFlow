@@ -598,7 +598,36 @@ export function commitRename(row, raw) {
 /** Hand `row` the lowest unused positive integer among every OTHER row's
  * slot, and stamp it in place. This is the entire "never renumber" contract:
  * called exactly once per row, at creation (fresh add) or re-creation
- * (duplicate) — never on reorder. */
+ * (duplicate) — never on reorder.
+ *
+ * NARROW, DELIBERATE EXCEPTION: `planHoleCompaction` (below) is the ONE
+ * other place a row's `slot` is ever changed after this call, and only
+ * under a precondition this function does not itself enforce — every row
+ * whose slot it proposes to move must be UNWIRED
+ * (`interaction.mjs`'s `compactHoles` supplies the real wiredness, read off
+ * `node.outputs[slot-1].links`). That's safe specifically BECAUSE it's
+ * unwired: the entire reason "never renumber" exists is that a row's slot
+ * is the durable output-array INDEX a downstream link is bound to (design
+ * doc §4, "display order and slot order are separate" — renumbering a
+ * WIRED row would silently retarget someone's wire out from under them). A
+ * row with no link has nothing for a renumber to retarget, so closing a
+ * hole underneath it costs nothing a user could ever notice except making
+ * the stray dot the hole itself was causing go away (the actual bug —
+ * see `interaction.mjs`'s `markSlotVacant`/`parkVacantSlot`). If this
+ * exception ever needs to widen past "compact an interior hole downward,"
+ * treat that as a fresh design question, not an extension of this comment.
+ *
+ * SECOND, EQUALLY LOAD-BEARING PRECONDITION: `interaction.mjs`'s
+ * `compactHoles` only ever calls `planHoleCompaction` (and only ever applies
+ * what it returns) as a result of a genuine USER ACTION — add/remove/edit a
+ * row — never while a saved workflow is being restored
+ * (`node._ctrlConfiguring`, gated at `syncOutputs`'s call site). A hole is
+ * part of that workflow's own last-saved shape; loading it must reproduce
+ * that shape exactly, not "fix" it on the way in. So in practice this
+ * exception only ever fires in the same session, off the same live
+ * wiredness read, that a row was just added/removed/duplicated/resolved —
+ * never as a side effect of opening a file.
+ */
 export function assignSlot(rows, row) {
   const used = new Set(rows.filter((r) => r !== row && Number.isFinite(r.slot)).map((r) => r.slot));
   let s = 1;
@@ -607,6 +636,103 @@ export function assignSlot(rows, row) {
   }
   row.slot = s;
   return row;
+}
+
+/**
+ * Change 1 of the stray-output-dot fix (diagnosed live: an interior "hole"
+ * left by `assignSlot` handing out the LOWEST free slot, then a later
+ * removal freeing a slot BELOW one still in use — `interaction.mjs`'s
+ * `syncOutputs`/`markSlotVacant` is what keeps a hole invisible for as long
+ * as it exists, but it can't make one stop existing). Given the CURRENT
+ * `rows` and a real `isWiredBySlot(slot) -> boolean` oracle, decide which
+ * interior holes can be closed WITHOUT ever renumbering a wired row's slot,
+ * and return the `{from, to}` moves that close them — `from`/`to` are both
+ * plain slot NUMBERS, never row objects or `node.outputs` array indices.
+ * Each row moves AT MOST once in the returned plan, even if it conceptually
+ * hops through several holes to get to its final slot (see "Algorithm"
+ * below). Never mutates `rows` — purely a planner; `interaction.mjs`'s
+ * `compactHoles` is the one place that actually rewrites `row.slot`.
+ *
+ * ## Algorithm
+ *
+ * Repeatedly: find the highest INTERIOR hole under the current highest USED
+ * slot (`maxSlot`). The only possible candidate to fill it is whichever row
+ * currently sits AT `maxSlot` — by construction nothing between the hole and
+ * `maxSlot` outranks it, and nothing above `maxSlot` exists at all. If that
+ * row is wired, STOP ENTIRELY: it is the SAME row blocking every remaining
+ * hole too, since `maxSlot` sits above every one of them, not just the one
+ * just checked. If it's unwired, "move" it into the hole — bookkept via a
+ * slot -> origin-slot map so a row that cascades down through several
+ * closed holes in one call still nets out to a single final `{from, to}` —
+ * and recompute `maxSlot`. Stop when no interior hole remains.
+ *
+ * This fully compacts the exact reported-bug shape (live 1,2,3,4,5,7 + hole
+ * at 6, slot 7 unwired — see `test_resize.mjs`'s regression test), and
+ * partially compacts a more tangled multi-hole layout up to the first wired
+ * row it meets counting DOWN from the top, leaving that row's hole (and
+ * every hole below it that would have needed the SAME row) alone, per this
+ * function's unwired-only contract.
+ *
+ * Returns `[]` for no rows, no interior holes at all (including a
+ * "hole" that isn't interior — nothing above the highest used slot, the
+ * ordinary trailing case `syncOutputs`'s own trim already handles), or a
+ * `maxSlot` row that's wired on the very first check.
+ */
+export function planHoleCompaction(rows, isWiredBySlot) {
+  const wired = typeof isWiredBySlot === "function" ? isWiredBySlot : () => false;
+
+  const used = new Set();
+  for (const r of rows) {
+    if (Number.isFinite(r.slot) && r.slot > 0) {
+      used.add(r.slot);
+    }
+  }
+  if (!used.size) {
+    return [];
+  }
+
+  // Current slot (as this simulation stands right now) -> the ORIGINAL slot
+  // number of the row that occupies it -- lets a row that cascades through
+  // several closed holes in one call collapse to a single final move.
+  const origin = new Map();
+  for (const s of used) {
+    origin.set(s, s);
+  }
+
+  let maxSlot = Math.max(...used);
+  const finalTo = new Map(); // originalSlot -> latest destination slot
+
+  for (;;) {
+    let hole = -1;
+    for (let s = maxSlot - 1; s >= 1; s--) {
+      if (!used.has(s)) {
+        hole = s;
+        break;
+      }
+    }
+    if (hole < 0) {
+      break; // nothing interior left to close
+    }
+    const originSlot = origin.get(maxSlot);
+    if (wired(originSlot)) {
+      break; // the ONLY candidate above every remaining hole is wired
+    }
+    used.delete(maxSlot);
+    used.add(hole);
+    origin.set(hole, originSlot);
+    origin.delete(maxSlot);
+    finalTo.set(originSlot, hole);
+    maxSlot = Math.max(...used);
+  }
+
+  const plan = [];
+  for (const [from, to] of finalTo) {
+    if (from !== to) {
+      plan.push({ from, to });
+    }
+  }
+  plan.sort((a, b) => a.to - b.to);
+  return plan;
 }
 
 // ---------------------------------------------------------------------------
