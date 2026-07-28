@@ -201,13 +201,34 @@ const CSS = `
 .wtn-an-sec .wtn-an-cnt { color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 
 /* ── expandable SECTION header (2026-07-28 inline-sections dispatch) --
-   replaces every popover-opening row this track used to have. Clicking
-   anywhere on \`.wtn-an-shead\` itself toggles expand/collapse
-   (\`interaction.mjs\` wires that); the switch and the ⓘ each stop their own
-   click from bubbling into that toggle, so flipping "enabled" or reading a
-   tooltip never also opens/closes the section. \`.wtn-an-expanded\` is purely
-   a hook for the chevron glyph/hover state -- the actual body is a SIBLING
-   element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
+   replaces every popover-opening row this track used to have.
+
+   **NO-JUMP INVARIANT (2026-07-28, wheel/header-order dispatch) -- DOM
+   order is FIXED: chevron -> switch (if any) -> label -> ⓘ (if any) ->
+   summary. Every one of those first four is \`flex: none\` (pinned,
+   never resized); the summary is the ONLY element with \`margin-left:
+   auto\` + ellipsis (\`overflow: hidden; text-overflow: ellipsis;
+   white-space: nowrap; min-width: 0\`), so it is the ONLY thing whose
+   width ever varies, and it varies into the empty space on the right --
+   nothing else ever shifts position when a section is turned on/off or
+   its summary text changes length. Do NOT reorder these back to
+   chevron/label/summary/ⓘ/switch (the pre-dispatch order): that let the
+   ⓘ and the switch slide left/right depending on whether a summary
+   existed, which read as the row jittering every time "enabled" flipped.
+   If you add a new header child, decide up front whether it's a FIXED
+   affordance (append it before the summary, \`flex: none\`) or content
+   that should ellipsize (there should only ever be one of those: the
+   summary).**
+
+   As of the inline-sections-expand-is-the-switch's-job dispatch (this same
+   day, later), clicking \`.wtn-an-shead\` itself only toggles expand/collapse
+   for a SWITCHLESS section (Sampler) -- see \`interaction.mjs\`'s
+   \`buildSection\` for the split. The switch's own click (stopPropagation'd)
+   now flips BOTH \`enabled\` and expand/collapse together for every section
+   that has one. The ⓘ's click is always stopPropagation'd only, on both
+   kinds of section -- it never toggles anything. \`.wtn-an-expanded\` is
+   purely a hook for the chevron glyph/hover state -- the actual body is a
+   SIBLING element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
    collapsed, not a max-height: 0 hide. ── */
 .wtn-an-shead { position: relative; display: flex; align-items: center; gap: 8px; height: 27px;
   margin-bottom: 4px; padding: 0 8px; border-radius: 6px; cursor: pointer;
@@ -414,8 +435,14 @@ export { buildSwitch, buildInfoIcon };
  * header via `.wtn-an-dep` when a required soft-import package is missing --
  * display only, never disables the switch itself (a user may install the
  * package later; the switch already tolerated this before this dispatch).
- * Returns `{ root, chev, sumEl, infoEl, switchEl }` -- any of the optional
- * three may be `null`.
+ *
+ * **DOM child order is fixed: chevron -> switch (if any) -> label -> ⓘ (if
+ * any) -> summary (if any)** -- see this file's `.wtn-an-shead` CSS comment
+ * for the no-jump invariant this preserves (only the summary's width ever
+ * varies, and only into empty space on the right; the other four never move
+ * regardless of whether a switch/ⓘ/summary is present or how long the
+ * summary text is). Returns `{ root, chev, sumEl, infoEl, switchEl }` -- any
+ * of the optional three may be `null`.
  */
 export function buildSectionHeader(doc, spec) {
   const { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep } = spec;
@@ -423,24 +450,24 @@ export function buildSectionHeader(doc, spec) {
   const chev = el(doc, "span", "wtn-an-chev");
   chev.textContent = expanded ? "▾" : "▸";
   header.appendChild(chev);
+  let switchEl = null;
+  if (hasSwitch) {
+    switchEl = buildSwitch(doc, !!switchOn);
+    header.appendChild(switchEl);
+  }
   const nm = el(doc, "span", "wtn-an-shead-nm");
   nm.textContent = label;
   header.appendChild(nm);
-  let sumEl = null;
-  if (summary) {
-    sumEl = el(doc, "span", "wtn-an-shead-sum");
-    sumEl.textContent = summary;
-    header.appendChild(sumEl);
-  }
   let infoEl = null;
   if (infoTooltip) {
     infoEl = buildInfoIcon(doc, infoTooltip, infoWarn);
     header.appendChild(infoEl);
   }
-  let switchEl = null;
-  if (hasSwitch) {
-    switchEl = buildSwitch(doc, !!switchOn);
-    header.appendChild(switchEl);
+  let sumEl = null;
+  if (summary) {
+    sumEl = el(doc, "span", "wtn-an-shead-sum");
+    sumEl.textContent = summary;
+    header.appendChild(sumEl);
   }
   return { root: header, chev, sumEl, infoEl, switchEl };
 }

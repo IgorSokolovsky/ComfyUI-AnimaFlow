@@ -28,7 +28,49 @@
  * Nodes 2.0 check Pixaroma imports from its own `shared/nodes2.mjs` is
  * inlined here (`isVueNodes` below) rather than standing up a whole parallel
  * module for one boolean.
+ *
+ * ## Quiet-period lock — one continuous wheel gesture never both scrolls AND
+ * zooms
+ *
+ * Without this, the INSTANT a wheel gesture that's scrolling `.wtn-an-panel`/
+ * `.wtn-ctl-menu` (etc.) hits either end of its range, `scrollRegionWantsWheel`
+ * starts returning `false` and the very next wheel EVENT of that same
+ * continuing gesture (still the same physical scroll motion, no pause) falls
+ * straight through to the canvas and zooms it — read by a user as the node
+ * randomly jumping/zooming mid-scroll, not as "I scrolled past the end." The
+ * fix is a per-INSTALL (per-root/per-node — deliberately a closure variable,
+ * never module-level, so two different nodes' locks never interfere with each
+ * other) quiet-period lock: every wheel event a scroll region CONSUMES stamps
+ * `lastConsumedAt`; a wheel event that ISN'T consumed, arriving less than
+ * `WHEEL_LOCK_MS` after that stamp, is dropped entirely — no
+ * `preventDefault`, no re-dispatch to the canvas, the gesture just ends with
+ * no visible effect. Only once the user has stopped wheeling for a full
+ * `WHEEL_LOCK_MS` does an unconsumed wheel event reach the canvas again.
+ * `scrollRegionWantsWheel` itself stays a pure, timing-free per-direction
+ * predicate on purpose — this lock lives ONLY in `installCanvasZoomPassthrough`,
+ * so the pure function keeps being trivially unit-testable with no clock at
+ * all.
+ *
+ * `Date.now()` is neither available nor desirable inside the headless test
+ * harness, so the clock is an INJECTABLE third argument
+ * (`installCanvasZoomPassthrough(root, getCanvasEl, { now, lockMs })`),
+ * defaulting `now` to `() => Date.now()` and `lockMs` to `WHEEL_LOCK_MS` — the
+ * existing two-argument call form (`js/shared/overlay.mjs`, every `index.js`)
+ * is completely unchanged by this, since both options are optional.
+ *
+ * This module is imported by BOTH `js/anima/` and `js/controls/` (see the
+ * exports below), so this fix — and every other behaviour in this file —
+ * lands for both tracks at once, from this one place. That's intentional,
+ * not a scope leak: it's the same module either track would otherwise have
+ * to duplicate.
  */
+
+/** Default quiet period (ms): once a wheel event is consumed by an internal
+ * scroll region, an unconsumed wheel event arriving sooner than this after
+ * it is dropped rather than zooming the canvas — see this module's own top
+ * doc comment ("Quiet-period lock"). Exported so it's tunable from one
+ * place; callers can also override it per-install via the `lockMs` option. */
+export const WHEEL_LOCK_MS = 450;
 
 /**
  * True when ComfyUI's Nodes 2.0 (Vue) renderer is active — driven by
@@ -135,18 +177,36 @@ function defaultGetCanvasEl() {
  * `js/prompt_rules/node/index.js`) already has a genuine `app` import and
  * should pass `() => app.canvas && app.canvas.canvas` explicitly;
  * `defaultGetCanvasEl` above is only a best-effort fallback if one doesn't.
+ *
+ * `options.now`/`options.lockMs` (both optional, both third-argument-only —
+ * see this module's top doc comment's "Quiet-period lock" section) drive the
+ * per-install quiet-period lock: `now()` defaults to `() => Date.now()`,
+ * `lockMs` defaults to `WHEEL_LOCK_MS`. The lock's own `lastConsumedAt` state
+ * lives in THIS closure, one per call to this function — never module-level —
+ * so installing it on two different nodes' roots never lets one node's
+ * scrolling arm the other node's lock.
  */
-export function installCanvasZoomPassthrough(root, getCanvasEl) {
+export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
   if (!root || typeof root.addEventListener !== "function") {
     return () => {};
   }
   const resolveCanvas = typeof getCanvasEl === "function" ? getCanvasEl : defaultGetCanvasEl;
+  const nowFn = options && typeof options.now === "function" ? options.now : () => Date.now();
+  const lockMs = options && typeof options.lockMs === "number" ? options.lockMs : WHEEL_LOCK_MS;
+  let lastConsumedAt = -Infinity;
   const onWheel = (e) => {
     if (isVueNodes()) {
       return; // Nodes 2.0 forwards the wheel to the canvas itself
     }
     if (scrollRegionWantsWheel(e.target, root, e.deltaX, e.deltaY)) {
+      lastConsumedAt = nowFn(); // arms the quiet-period lock
       return; // a scrollable region still has room in this direction -- let it scroll
+    }
+    if (nowFn() - lastConsumedAt < lockMs) {
+      // The SAME continuing gesture just finished scrolling an internal
+      // region to one of its ends -- don't let it zoom the canvas too. The
+      // gesture simply ends here: no preventDefault, no dispatch.
+      return;
     }
     const canvasEl = resolveCanvas(); // read lazily -- the canvas can be recreated
     if (!canvasEl) {

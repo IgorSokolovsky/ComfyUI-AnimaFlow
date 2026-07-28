@@ -813,6 +813,35 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   bodies used to carry (e.g. the "shift 3.0 is Anima's recommended default" note) — one consistent
   hover-for-more-detail glyph instead of prose eating vertical space in a surface that now has to fit
   everything at once.
+
+  **Amended later the same day, from live use — the switch owns expand/collapse, and the header
+  never jumps.** Three corrections to the paragraph above, all from actually clicking it:
+    - **The header row is no longer a click target.** For a section that HAS an enable switch, the
+      switch is the only control: flipping it on enables the stage *and* expands it; flipping it off
+      disables and collapses. Clicking anywhere else on the header does nothing. Consequence, and
+      accepted: an enabled section can't be collapsed while it stays enabled. **A switchless section
+      (Sampler) keeps the header-click toggle** — it has no switch to drive it, so without that its
+      body would be unreachable.
+    - **Header child order is fixed: chevron → switch → label → ⓘ → summary.** Everything but the
+      summary is `flex: none`, pinned left; the summary alone takes `margin-left: auto` and
+      ellipsizes into the space on the right. The old order (chevron → label → summary → ⓘ → switch)
+      let the ⓘ *and* the switch slide horizontally by however long the summary happened to be, so
+      the row visibly jittered every time a stage was toggled. Only the summary's width may vary.
+    - **The ⓘ is a real tooltip now, not the native `title` attribute** — `title` gave the browser's
+      own ~1s delay, which nothing can tune. It's the house `.wtn-tip` component, shown after
+      `INFO_TIP_DELAY_MS` (250ms), mounted on `document.body` so a panel with `overflow: hidden`
+      (§7's Preview) can't clip it, viewport-clamped, and torn down by `hideActiveInfoTip()` on every
+      repaint so a rebuilt body can't orphan one. It carries the `wtn` class itself and its rule is
+      two-class (`.wtn-tip.wtn-fld-tip`) — a `document.body`-mounted element sits outside every
+      `.wtn` subtree, so without both it loses the theme's custom properties to `theme.css`'s own
+      fallback-free `.wtn-tip` rule and renders unstyled.
+
+  **Wheel handling got a quiet period at the same time** (`js/shared/canvas_zoom.mjs`, so
+  `js/controls/` benefits too): reaching either end of a scrollable region used to hand the *same
+  continuing* gesture straight to the canvas, which suddenly zoomed the graph mid-scroll. A wheel
+  event consumed by an internal scroll region now arms a per-node lock, and an unconsumed one inside
+  `WHEEL_LOCK_MS` (450) is dropped rather than dispatched — the canvas only starts zooming again once
+  wheeling has actually stopped for that long.
 - Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
   are both settled (§6a).
 

@@ -17,11 +17,16 @@
  *       identically.
  *   [ ] Nodes 2.0 (`Comfy.VueNodes.Enabled`) is unaffected — wheel behaves
  *       exactly as ComfyUI's own Vue renderer already handles it.
+ *   [ ] Wheeling a Control Panel/Anima scrollable region to either end and
+ *       CONTINUING the same physical scroll gesture (no pause) does NOT
+ *       start zooming the canvas mid-gesture — the quiet-period lock below
+ *       is only exercised against injected fake time in this headless
+ *       harness, never real wheel timing.
  */
 
 import assert from "node:assert/strict";
 
-import { isVueNodes, scrollRegionWantsWheel, installCanvasZoomPassthrough } from "./canvas_zoom.mjs";
+import { isVueNodes, scrollRegionWantsWheel, installCanvasZoomPassthrough, WHEEL_LOCK_MS } from "./canvas_zoom.mjs";
 
 let failures = 0;
 let count = 0;
@@ -333,6 +338,151 @@ test("teardown (the returned uninstall fn) removes the listener -- a further whe
     assert.equal((root._listeners.wheel || []).length, 0);
     fireWheel(root);
     assert.equal(canvas._dispatched.length, 0);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Quiet-period lock -- see canvas_zoom.mjs's own top doc comment ("Quiet-
+// period lock"). Driven entirely by an injected `now()` -- no real timers.
+// ---------------------------------------------------------------------------
+
+/** A fake clock: `{ now, advance }` -- `now()` reads the current fake time,
+ * `advance(ms)` moves it forward. Deterministic, no real timers anywhere in
+ * this section. */
+function makeClock(start = 0) {
+  let t = start;
+  return { now: () => t, advance: (ms) => { t += ms; } };
+}
+
+test("WHEEL_LOCK_MS default is exported and tunable in one place", () => {
+  assert.equal(WHEEL_LOCK_MS, 450);
+});
+
+test("a consumed wheel arms the lock: the VERY NEXT unconsumed wheel (0ms later) does not reach the canvas", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const scrollable = makeScrollable({ scrollTop: 50, scrollHeight: 100, clientHeight: 50 }); // at the bottom
+    const canvas = makeEl();
+    const clock = makeClock(1000);
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, lockMs: WHEEL_LOCK_MS });
+
+    // First wheel: still has room (not at bottom yet from THIS delta's
+    // perspective -- craft one that's consumed).
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 }); // consumed -- arms the lock at t=1000
+
+    // Immediately after (same fake time, 0ms elapsed), a wheel over a
+    // NON-scrollable target would normally zoom -- the lock must block it.
+    const { prevented } = fireWheel(root, { target: scrollable /* at its end -- not consumed */, deltaY: 100 });
+    assert.equal(prevented, false, "the lock must block the canvas dispatch (no preventDefault)");
+    assert.equal(canvas._dispatched.length, 0, "the lock must block the canvas dispatch (no re-dispatched wheel)");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("an unconsumed wheel arriving BEFORE the lock window elapses is still blocked", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    const clock = makeClock(0);
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, lockMs: 450 });
+
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 }); // consumed at t=0
+
+    clock.advance(449); // one ms short of the lock window
+    const { prevented } = fireWheel(root, { deltaY: 100 }); // plain, non-scrollable target
+    assert.equal(prevented, false);
+    assert.equal(canvas._dispatched.length, 0);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("an unconsumed wheel arriving AFTER the lock window elapses reaches the canvas normally", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    const clock = makeClock(0);
+    installCanvasZoomPassthrough(root, () => canvas, { now: clock.now, lockMs: 450 });
+
+    const midScroll = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(root, { target: midScroll, deltaY: 100 }); // consumed at t=0
+
+    clock.advance(450); // exactly the lock window -- no longer "less than" it
+    const { prevented } = fireWheel(root, { deltaY: 100 });
+    assert.ok(prevented, "past the quiet period, the wheel must zoom the canvas again");
+    assert.equal(canvas._dispatched.length, 1);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("the lock is per-root/per-install: one node's consumed scroll never blocks a DIFFERENT node's zoom", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const rootA = makeEl();
+    const canvasA = makeEl();
+    const rootB = makeEl();
+    const canvasB = makeEl();
+    const clock = makeClock(0); // both installs share the SAME clock -- proves the lock state itself, not timing, is what's isolated
+    installCanvasZoomPassthrough(rootA, () => canvasA, { now: clock.now, lockMs: 450 });
+    installCanvasZoomPassthrough(rootB, () => canvasB, { now: clock.now, lockMs: 450 });
+
+    const midScrollA = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 });
+    fireWheel(rootA, { target: midScrollA, deltaY: 100 }); // arms ONLY rootA's lock
+
+    // Same instant, root B's own (unrelated) wheel must zoom normally --
+    // root A's lock must not leak into root B's closure.
+    const { prevented } = fireWheel(rootB, { deltaY: 100 });
+    assert.ok(prevented, "root B's own lock was never armed -- its wheel must reach its own canvas");
+    assert.equal(canvasB._dispatched.length, 1);
+    assert.equal(canvasA._dispatched.length, 0, "root A's canvas must never receive root B's wheel");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
+test("the existing two-argument call form still behaves exactly as before (no options -- real Date.now() clock, default 450ms lock)", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    installCanvasZoomPassthrough(root, () => canvas); // TWO args, exactly the pre-existing call form
+    const { prevented } = fireWheel(root); // plain target, no scroll region involved at all
+    assert.ok(prevented, "with no prior consumed wheel, the two-arg form must zoom immediately, same as before this dispatch");
+    assert.equal(canvas._dispatched.length, 1);
   } finally {
     delete globalThis.window;
     delete globalThis.WheelEvent;

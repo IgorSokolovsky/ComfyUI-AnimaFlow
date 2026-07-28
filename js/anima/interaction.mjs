@@ -75,7 +75,7 @@
  */
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
-import { buildNumericField, buildStepperField } from "../shared/fields.mjs";
+import { buildNumericField, buildStepperField, hideActiveInfoTip } from "../shared/fields.mjs";
 
 import {
   MAX_DETAILER_PASSES,
@@ -577,18 +577,39 @@ const SAMPLERS = ["euler", "euler_ancestral", "er_sde", "dpmpp_2m", "heun", "ddi
 const SCHEDULERS = ["simple", "sgm_uniform", "karras", "normal", "beta", "exponential"];
 
 // ---------------------------------------------------------------------------
-// Expandable section (2026-07-28 inline-sections dispatch) -- the ONE shape
-// every section (Sampler, Mod Guidance, Highres, Detailer, Upscale,
-// Postprocess, Save) is built from: a `buildSectionHeader` (render.mjs)
-// whose click toggles `expanded`, an optional enable switch whose click
-// (stopPropagation'd first) toggles it independently, and -- only while
-// `expanded` -- a `.wtn-an-sbody` `buildBody` fills in. There is no more
-// "this popover's own local refresh" concept (this module's top doc
-// comment): every mutation, including a tab switch inside the Detailer
-// section, just calls `onToggleExpand`'s/`onToggleSwitch`'s sibling
-// `repaintGenerator`/`repaintPreview` directly -- one full-body repaint is
-// already how every OTHER action here works, and there is no separate
-// floating layer left to protect from that.
+// Expandable section (2026-07-28 inline-sections dispatch, THEN the
+// switch-owns-expand/collapse dispatch the same day) -- the ONE shape every
+// section (Sampler, Mod Guidance, Highres, Detailer, Upscale, Postprocess,
+// Save) is built from: a `buildSectionHeader` (render.mjs), an optional
+// enable switch, and -- only while `expanded` -- a `.wtn-an-sbody`
+// `buildBody` fills in. There is no more "this popover's own local refresh"
+// concept (this module's top doc comment): every mutation, including a tab
+// switch inside the Detailer section, just calls `onToggleExpand`'s/
+// `onToggleSwitch`'s sibling `repaintGenerator`/`repaintPreview` directly --
+// one full-body repaint is already how every OTHER action here works, and
+// there is no separate floating layer left to protect from that.
+//
+// **Expand/collapse is the SWITCH's job, not the header's, for any section
+// that HAS a switch.** Clicking the header row of a switched section (Mod
+// Guidance, Highres, Detailer, Upscale, Postprocess, Save) does nothing at
+// all -- no listener is even attached for that case. The switch's own click
+// (still `stopPropagation`'d, so it never ALSO reaches a header listener)
+// now does double duty: `onToggleSwitch` flips `enabled` AND sets that
+// section's `ui_expanded[key]` to match (on => expanded, off => collapsed),
+// in ONE persist + ONE repaint -- see `setSwitchAndExpand` below, which
+// every switched section's `onToggleSwitch` calls so this isn't
+// reimplemented seven times. Consequence, intentional: a section that's
+// currently enabled cannot be collapsed while it STAYS enabled -- turning it
+// off is what collapses it. `onToggleExpand` is still accepted in every
+// call site's spec object (kept for symmetry / in case a future switchless
+// section needs it wired the old way), it is simply never invoked by this
+// function when `hasSwitch` is true.
+//
+// **Carve-out: a SWITCHLESS section (Sampler, no enable switch at all --
+// design brief: "Sampler is a section too, always present") keeps the
+// header-click expand/collapse toggle.** Without a switch there is nothing
+// else on the header that could open/close it, so removing the header
+// listener for this case would make its body permanently unreachable.
 // ---------------------------------------------------------------------------
 
 /**
@@ -601,7 +622,11 @@ function buildSection(doc, spec) {
   const { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep, onToggleExpand, onToggleSwitch, buildBody } = spec;
   const frag = el(doc, "div", "wtn-an-section");
   const head = buildSectionHeader(doc, { label, expanded, hasSwitch, switchOn, infoTooltip, infoWarn, summary, dep });
-  head.root.addEventListener("click", () => onToggleExpand());
+  if (!hasSwitch) {
+    // Switchless section (Sampler) -- see this section's own top doc comment
+    // for why the header click keeps doing this job here and ONLY here.
+    head.root.addEventListener("click", () => onToggleExpand());
+  }
   if (head.switchEl) {
     head.switchEl.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -615,6 +640,18 @@ function buildSection(doc, spec) {
     frag.appendChild(body);
   }
   return frag;
+}
+
+/**
+ * The combined write a switched section's switch now performs (this
+ * section's own top doc comment): flip `entry.enabled` and set
+ * `state.ui_expanded[key]` to match it, in one pure mutation -- every call
+ * site still owns its own single `persist*`/`repaint*` call around this, so
+ * there is exactly one persist and one repaint per click, never two.
+ */
+function setSwitchAndExpand(state, key, entry) {
+  entry.enabled = !entry.enabled;
+  state.ui_expanded[key] = entry.enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +733,7 @@ function buildModGuidanceSection(doc, node, ctx, state, have) {
     infoTooltip: missing ? missingText : null, infoWarn: missing, dep: missing,
     summary: !missing && mg.enabled ? mg.profile : null,
     onToggleExpand: () => { state.ui_expanded.mod_guidance = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
-    onToggleSwitch: () => { mg.enabled = !mg.enabled; persistGenState(node); repaintGenerator(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "mod_guidance", mg); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       if (missing) {
         body.appendChild(buildMissing(doc, missingText));
@@ -839,7 +876,7 @@ function buildHighresSection(doc, node, ctx, state, have) {
     // only gates on a soft-import for detailer/upscale); passing it through
     // anyway would always be `false` and reads as a meaningless dead check.
     onToggleExpand: () => { state.ui_expanded.highres = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
-    onToggleSwitch: () => { h.enabled = !h.enabled; persistGenState(node); repaintGenerator(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "highres", h); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       body.appendChild(buildNumericField(doc, {
         label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
@@ -871,7 +908,7 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
     infoTooltip, infoWarn: missing, dep: u.enabled && missing,
     summary: u.enabled ? stageSummary("upscale", state, have) : null,
     onToggleExpand: () => { state.ui_expanded.upscale = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
-    onToggleSwitch: () => { u.enabled = !u.enabled; persistGenState(node); repaintGenerator(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "upscale", u); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       if (missing) {
         body.appendChild(buildMissing(doc, missingText));
@@ -905,7 +942,7 @@ function buildPostprocessSection(doc, node, ctx, state) {
     infoTooltip: "The output size cap.",
     summary: post.enabled ? stageSummary("postprocess", state, {}) : null,
     onToggleExpand: () => { state.ui_expanded.postprocess = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
-    onToggleSwitch: () => { post.enabled = !post.enabled; persistGenState(node); repaintGenerator(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "postprocess", post); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       body.appendChild(buildStepperField(doc, { label: "mode", value: fit.mode, options: ["max_long_edge", "megapixels"] }, {
         onChange: (v) => { fit.mode = v; persistGenState(node); },
@@ -1098,7 +1135,7 @@ function buildDetailerSection(doc, node, ctx, state, have) {
     infoTooltip, infoWarn: missing, dep: detailer.enabled && stageBlocked("detailer", state, have),
     summary: detailer.enabled ? stageSummary("detailer", state, have) : null,
     onToggleExpand: () => { state.ui_expanded.detailer = !expanded; persistGenState(node); repaintGenerator(node, ctx); },
-    onToggleSwitch: () => { detailer.enabled = !detailer.enabled; persistGenState(node); repaintGenerator(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "detailer", detailer); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => buildDetailerBody(doc, node, ctx, state, body),
   });
 }
@@ -1142,6 +1179,11 @@ export function mountGeneratorUI(node, ctx) {
 
 export function repaintGenerator(node, ctx) {
   const refs = mountGeneratorUI(node, ctx);
+  // The old body's icons (and any tip one of them is showing right now) are
+  // about to be discarded wholesale -- see js/shared/fields.mjs's
+  // `wireInfoTip` doc comment for the orphaned-tooltip trap this call
+  // prevents.
+  hideActiveInfoTip();
   const newBody = buildGeneratorBody(refs.doc, node, ctx);
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);
@@ -1279,7 +1321,7 @@ function buildSaveSection(doc, node, ctx, state) {
     infoTooltip: "Saving lives here, not on the Generator -- this node holds the images, so it's the only place base/mid/final can be saved under different names.",
     summary: save.enabled ? `${save.which} · ${save.extension}` : null,
     onToggleExpand: () => { state.ui_expanded.save = !expanded; persistPreviewState(node); repaintPreview(node, ctx); },
-    onToggleSwitch: () => { save.enabled = !save.enabled; persistPreviewState(node); repaintPreview(node, ctx); },
+    onToggleSwitch: () => { setSwitchAndExpand(state, "save", save); persistPreviewState(node); repaintPreview(node, ctx); },
     buildBody: (body) => {
       body.appendChild(buildStepperField(doc, { label: "which", value: save.which, options: SAVE_WHICH_OPTIONS }, {
         onChange: (v) => { save.which = v; persistPreviewState(node); },
@@ -1334,6 +1376,8 @@ export function mountPreviewUI(node, ctx) {
 
 export function repaintPreview(node, ctx) {
   const refs = mountPreviewUI(node, ctx);
+  // Same orphaned-tooltip guard as `repaintGenerator` above.
+  hideActiveInfoTip();
   const { body, wipeEl } = buildPreviewBody(refs.doc, node, ctx);
   if (refs.body && refs.body.parentNode) {
     refs.body.parentNode.removeChild(refs.body);
@@ -1454,6 +1498,11 @@ export function teardownNode(node) {
     refs.zoomUninstall();
     refs.zoomUninstall = null;
   }
+  // The node's own DOM (icons included) is about to be torn down by
+  // litegraph -- close whatever tip might still be showing rather than
+  // leaving it orphaned on `doc.body` (js/shared/fields.mjs's
+  // `wireInfoTip` doc comment).
+  hideActiveInfoTip();
 }
 
 // ---------------------------------------------------------------------------

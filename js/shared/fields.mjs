@@ -44,6 +44,25 @@
  * under plain `node` (`js/anima/test_resize.mjs` does exactly that), same
  * convention as every other `render.mjs` in this pack.
  *
+ * ## `buildInfoIcon`'s ⓘ — a real hover tooltip, not the native `title`
+ *
+ * The native `title` attribute's tooltip delay is the BROWSER's own
+ * (~1s+) and isn't adjustable, so it read as "too slow" in live use.
+ * `buildInfoIcon` no longer sets `title` at all (it sets `aria-label`
+ * instead, so the text is still exposed to assistive tech) — it wires a
+ * themed `.wtn-tip` element (the same component `js/shared/theme.css`
+ * already defines) that shows after `INFO_TIP_DELAY_MS` of hover, hides
+ * immediately on `mouseleave`/`pointerdown`/Escape, and is appended to
+ * `doc.body` (never inside the icon's own node/panel — the Preview's panel
+ * is `overflow: hidden` and would clip a tip mounted inside it).
+ * `hideActiveInfoTip` (exported below) is the safety valve every full-body
+ * repaint in this pack MUST call before replacing a body wholesale (`js/
+ * anima/interaction.mjs`'s `repaintGenerator`/`repaintPreview`/
+ * `teardownNode` do exactly that) — see `wireInfoTip`'s own doc comment for
+ * why a rebuilt body would otherwise orphan a currently-showing tip
+ * permanently on `document.body` (the old icon is discarded, but nothing
+ * else would ever remove the tip it left behind).
+ *
  * ## Importing `theme.mjs` — GUARDED dynamic import
  *
  * Same reasoning as every other themed module in this pack: this file is
@@ -97,6 +116,39 @@ const CSS = `
 .wtn-fld-info { flex: none; font-size: 11px; line-height: 1; cursor: help;
   color: var(--wtn-info, ${TOKENS.info}); }
 .wtn-fld-info-warn { color: var(--wtn-warn, ${TOKENS.warn}); }
+
+/* ── ⓘ hover tooltip -- this module's own fallback for js/shared/theme.css's
+   \`.wtn-tip\` (this pack's convention: theme.css may not have landed). The
+   tip element is appended to \`doc.body\` directly (see \`wireInfoTip\`'s doc
+   comment), so it sits OUTSIDE any node's own \`.wtn\`-classed subtree and
+   would never see that stylesheet's custom properties (they're scoped to
+   \`.wtn\` itself) -- \`wireInfoTip\` gives the element the \`wtn\` class
+   directly for exactly this reason (same fix \`js/anima/render.mjs\`'s old
+   popover shell used for its own \`document.body\`-mounted element,
+   \`"wtn-an-pop wtn"\`).
+
+   Keeping BOTH \`wtn-tip\` (the house vocabulary -- theme.css's own rule, if
+   it's landed, still applies) and \`wtn-fld-tip\` (this module's own
+   fallback) on the same element is a cascade hazard on its own: theme.css's
+   \`.wtn-tip\` rule has no hardcoded fallbacks and is injected via a LATER
+   async \`import()\` (this file's own \`injectFieldStyles\`, below, runs its
+   own CSS synchronously first), so at EQUAL specificity theme.css's rule
+   wins by injection order and this module's fallbacks/10030 z-index never
+   apply. The selector below is deliberately the TWO-CLASS compound
+   \`.wtn-tip.wtn-fld-tip\` (specificity 0-2-0) rather than \`.wtn-fld-tip\`
+   alone (0-1-0) -- that beats theme.css's single-class \`.wtn-tip\` (0-1-0)
+   regardless of injection order, so the fallback hex values and the 10030
+   z-index (js/controls/'s own overlays sit at 10020 -- a tooltip must sit
+   above that) hold whether or not theme.css ever lands. Do NOT relax this
+   back to \`.wtn-fld-tip\` alone -- that's exactly the invisible-until-live
+   regression this comment exists to prevent. ── */
+.wtn-tip.wtn-fld-tip { position: fixed; z-index: 10030; max-width: 250px; pointer-events: none;
+  background: var(--wtn-console, ${TOKENS.console}); color: var(--wtn-ink, ${TOKENS.ink});
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px; padding: 8px 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,.55);
+  opacity: 0; transition: opacity .12s; }
+.wtn-tip.wtn-fld-tip.show { opacity: 1; }
 
 /* ── numeric drag row (Control Panel's own drag-to-set-by-dragging-the-row
    maths, ported behaviour -- see rangeOf/clampNumeric/numericPercent
@@ -189,19 +241,177 @@ export function buildSwitch(doc, on, small) {
   return el(doc, "span", `wtn-fld-switch${small ? " wtn-fld-sm" : ""}${on ? " wtn-fld-on" : ""}`);
 }
 
+/** Delay (ms) between a hover starting and the ⓘ's tooltip actually
+ * appearing -- see this module's top doc comment for why this replaces the
+ * native `title` attribute's unadjustable browser delay. Exported so it's
+ * tunable from one place. */
+export const INFO_TIP_DELAY_MS = 250;
+
+function winOf(doc) {
+  return (doc && doc.defaultView) || (typeof window !== "undefined" ? window : null);
+}
+
+/** Only one ⓘ tooltip is ever shown pack-wide at a time (mirrors
+ * `js/shared/overlay.mjs`'s `activeOverlayRef` singleton, same reasoning:
+ * only one such floating thing should ever be open across the whole page).
+ * Holds the CURRENTLY showing tip's own `hide` closure, or `null`. */
+let activeTipHide = null;
+
+/** The safety valve every full-body repaint MUST call before tearing down
+ * the DOM subtree an open tooltip's icon lives in -- see `wireInfoTip`'s own
+ * doc comment for the orphan this prevents. A no-op when nothing is
+ * showing. */
+export function hideActiveInfoTip() {
+  if (activeTipHide) {
+    activeTipHide();
+  }
+}
+
+/** Clamp a `{left, top}` tooltip position so it never runs off the
+ * right/bottom edge of the viewport -- same flip-if-off-screen idea as
+ * `js/shared/overlay.mjs`'s own `reposition()`, reused here in miniature
+ * (that module's own clamp is entangled with its "below"/"right" placement
+ * modes and outside-click teardown, so this re-derives just the clamp
+ * arithmetic rather than importing something shaped for a different job).
+ * `null` viewport width/height (every existing headless test, and any host
+ * with no live `window`) means never clamp -- same "no real viewport, don't
+ * guess" contract `overlay.mjs`'s `viewportSize` uses. */
+function clampTipPosition(doc, anchorRect, tipRect) {
+  const win = winOf(doc);
+  const vw = win && typeof win.innerWidth === "number" ? win.innerWidth : null;
+  const vh = win && typeof win.innerHeight === "number" ? win.innerHeight : null;
+  const w = (tipRect && tipRect.width) || 0;
+  const h = (tipRect && tipRect.height) || 0;
+  let left = anchorRect.left;
+  let top = anchorRect.bottom + 6;
+  if (vw != null && w && left + w > vw) {
+    left = vw - w - 4; // clamp off the right edge
+  }
+  if (vh != null && h && top + h > vh) {
+    top = anchorRect.top - h - 6; // flip: open ABOVE the icon instead
+  }
+  if (vw != null) {
+    left = Math.max(4, Math.min(left, vw - 4));
+  }
+  if (vh != null) {
+    top = Math.max(4, Math.min(top, vh - 4));
+  }
+  return { left, top };
+}
+
+/** Wires the real hover tooltip behind one ⓘ icon -- see this module's top
+ * doc comment. One tip element per icon, created lazily on the FIRST show
+ * and torn down completely (removed from `doc.body`, its own keydown
+ * listener detached) on every hide, never left around hidden-but-attached.
+ *
+ * **Why a rebuilt body can't orphan this**: this track (`js/anima/`)
+ * replaces its ENTIRE body on every repaint, discarding the old icon
+ * element outright -- if that icon's tip happened to be showing at that
+ * exact moment, nothing would ever fire `mouseleave` on the now-detached
+ * icon to clean it up, and the tip (appended to `doc.body`, NOT inside the
+ * body being replaced) would sit there forever. `activeTipHide`/
+ * `hideActiveInfoTip` above is the fix: a caller that's about to replace a
+ * body calls `hideActiveInfoTip()` FIRST, which closes whatever tip is
+ * currently showing (there is only ever at most one, pack-wide) before the
+ * icon that owns it is discarded. */
+function wireInfoTip(doc, icon, tooltip) {
+  const win = winOf(doc);
+  let tipEl = null;
+  let pendingToken = null;
+
+  function onKeydown(e) {
+    if (e && e.key === "Escape") {
+      hide();
+    }
+  }
+
+  function hide() {
+    pendingToken = null;
+    if (tipEl) {
+      if (tipEl.parentNode && typeof tipEl.parentNode.removeChild === "function") {
+        tipEl.parentNode.removeChild(tipEl);
+      }
+      tipEl = null;
+      if (win) {
+        win.removeEventListener("keydown", onKeydown, true);
+      }
+    }
+    if (activeTipHide === hide) {
+      activeTipHide = null;
+    }
+  }
+
+  function show() {
+    if (tipEl || !doc.body || typeof doc.body.appendChild !== "function") {
+      return;
+    }
+    if (activeTipHide && activeTipHide !== hide) {
+      activeTipHide(); // only one tip visible pack-wide at a time
+    }
+    activeTipHide = hide;
+    // `wtn` is REQUIRED here, not decorative -- this element is appended to
+    // `doc.body`, outside any node's own `.wtn`-classed subtree, so without
+    // it theme.css's custom properties (`--wtn-console`/`--wtn-ink`/etc,
+    // scoped to `.wtn`) never resolve on it at all. See this file's CSS
+    // comment on `.wtn-tip.wtn-fld-tip` for the matching specificity fix.
+    tipEl = el(doc, "div", "wtn-tip wtn-fld-tip wtn");
+    tipEl.textContent = tooltip;
+    doc.body.appendChild(tipEl);
+    const rect = typeof icon.getBoundingClientRect === "function"
+      ? icon.getBoundingClientRect()
+      : { left: 0, top: 0, right: 0, bottom: 0 };
+    const tipRect = typeof tipEl.getBoundingClientRect === "function" ? tipEl.getBoundingClientRect() : null;
+    const { left, top } = clampTipPosition(doc, rect, tipRect);
+    tipEl.style.left = `${left}px`;
+    tipEl.style.top = `${top}px`;
+    if (tipEl.classList && typeof tipEl.classList.add === "function") {
+      tipEl.classList.add("show");
+    }
+    if (win) {
+      win.addEventListener("keydown", onKeydown, true);
+    }
+  }
+
+  icon.addEventListener("mouseenter", () => {
+    const token = {};
+    pendingToken = token;
+    if (win && typeof win.setTimeout === "function") {
+      win.setTimeout(() => {
+        if (pendingToken === token) {
+          pendingToken = null;
+          show();
+        }
+      }, INFO_TIP_DELAY_MS);
+    } else {
+      pendingToken = null;
+      show();
+    }
+  });
+  // A pointer leaving before the delay elapses cancels the pending show
+  // (the `pendingToken` guard inside the timer callback above); a pointer
+  // leaving AFTER the tip is already showing hides it immediately -- same
+  // handler covers both, `hide()` is a no-op if nothing is showing yet.
+  icon.addEventListener("mouseleave", hide);
+  icon.addEventListener("pointerdown", hide);
+}
+
 /** The one ⓘ affordance this pack's `js/anima/` sections use for BOTH
  * section-level help (default, `--wtn-info`) and "this value is driven from
  * somewhere else" (`warn: true`, `--wtn-warn` -- the yellow the Context
- * Bridge dispatch specifically asked for, never invented). `tooltip` is set
- * as the native `title` attribute -- this glyph has no click behaviour of
- * its own (`stopPropagation` on click only, so a click never bubbles into a
- * section header's own expand/collapse toggle if a caller nests this INSIDE
- * a clickable header). */
+ * Bridge dispatch specifically asked for, never invented). `tooltip` is
+ * exposed via `aria-label` (assistive tech still gets the text) rather than
+ * the native `title` attribute -- see this module's top doc comment for why
+ * (the browser's own tooltip delay isn't adjustable, and setting BOTH would
+ * show two tooltips at once). This glyph has no click behaviour of its own
+ * beyond `stopPropagation`, so a click never bubbles into a section
+ * header's own expand/collapse toggle if a caller nests this INSIDE a
+ * clickable header. */
 export function buildInfoIcon(doc, tooltip, warn) {
   const icon = el(doc, "span", `wtn-fld-info${warn ? " wtn-fld-info-warn" : ""}`);
   icon.textContent = "ⓘ";
   if (tooltip) {
-    icon.title = tooltip;
+    icon.setAttribute("aria-label", tooltip);
+    wireInfoTip(doc, icon, tooltip);
   }
   icon.addEventListener("click", (e) => {
     if (typeof e.stopPropagation === "function") {

@@ -114,5 +114,23 @@ root.innerHTML = `<button class="wtn-btn wtn-btn--primary">Apply</button>`;
   `overflow: auto` silently clips them — it reads as "the menu is cut", not as a sizing bug.
   Declare `box-sizing: border-box` on any popover/overlay root you give an explicit width
   (`js/anima/render.mjs`'s `.wtn-an-pop` is the worked example).
+- **Anything you mount on `document.body` must carry the `wtn` class ITSELF, and its own rule needs
+  a specificity bump.** Two separate traps, one victim (popovers, tooltips, overlays — everything
+  that escapes the node's subtree to avoid being clipped):
+  1. The tokens live on `.wtn`, so an element outside every `.wtn` subtree resolves
+     `var(--wtn-console)` to *nothing*. Most component rules here are written
+     `var(--wtn-x, #hex)` and survive that; **`theme.css`'s own `.wtn-tip` is not** — it has no
+     fallbacks, so its properties compute to `unset`: transparent background, inherited text
+     colour, initial border.
+  2. `injectTheme()` arrives via an **async dynamic `import()`**, so `theme.css` lands *after* a
+     module's own injected `<style>`. At equal specificity the later sheet wins — so a bare
+     `.wtn-my-tip` rule loses to `.wtn-tip` even though yours is the specific one, and you also
+     inherit `.wtn-tip`'s `z-index: 999` (below this pack's own overlays at 10020).
+
+  Fix both at once: put `wtn` in the element's class list, and write your rule as the two-class
+  compound (`.wtn-tip.wtn-fld-tip`, 0-2-0) rather than the single class.
+  `js/shared/fields.mjs`'s ⓘ tooltip is the worked example. **This class of bug is invisible to a
+  headless suite** — the DOM is correct, only the cascade is wrong — so assert the selector shape
+  and the class list in a test, as `js/anima/test_resize.mjs` now does.
 
 Swap any token value in ONE place (`theme.mjs`/`theme.css`) and the whole pack retunes.

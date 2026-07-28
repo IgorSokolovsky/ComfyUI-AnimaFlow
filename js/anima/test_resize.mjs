@@ -1003,7 +1003,7 @@ test("a manual resize survives every kind of repaint -- toggling a stage, expand
   fire(switchOf(highresHeader), "click"); // toggles a stage -> repaintGenerator internally
   assert.deepEqual(node.size, [DEFAULT_W, 150], "a stage toggle (and its repaint) must not touch node.size");
 
-  fire(findSectionHeader(refs.body, "Detailer"), "click"); // expand -> repaintGenerator internally
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click"); // expand -> repaintGenerator internally (Detailer has a switch -- task 3)
   assert.deepEqual(node.size, [DEFAULT_W, 150], "expanding a section must not touch node.size");
 
   const detailerBody = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
@@ -1011,7 +1011,7 @@ test("a manual resize survives every kind of repaint -- toggling a stage, expand
   fire(addBtn, "click"); // adds a detailer block, persists, and repaints in place
   assert.deepEqual(node.size, [DEFAULT_W, 150], "adding a detailer block must not touch node.size either");
 
-  fire(findSectionHeader(refs.body, "Detailer"), "click"); // collapse -> repaintGenerator internally
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click"); // collapse -> repaintGenerator internally
   assert.deepEqual(node.size, [DEFAULT_W, 150], "collapsing the section (and its repaint) must not touch node.size");
 });
 
@@ -1115,7 +1115,7 @@ test("teardownNode is safe to call on a node with a section left expanded -- the
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
   installZoomPassthrough(node, ctx);
-  fire(findSectionHeader(refs.body, "Highres"), "click"); // leave a section expanded
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // leave a section expanded (Highres has a switch -- task 3)
   assert.ok(sectionBodyOf(findSectionHeader(node._anRefs.body, "Highres")));
 
   assert.doesNotThrow(() => teardownNode(node));
@@ -1206,8 +1206,12 @@ test("a context-supplied sampler field renders as the SAME field shape, genuinel
   assert.ok(hasClass(seedWrap, "wtn-an-fieldrow"), "a disabled field is paired with its ⓘ inside a .wtn-an-fieldrow wrapper");
   const seedIcon = seedWrap.children.find((c) => hasClass(c, "wtn-fld-info"));
   assert.ok(seedIcon && hasClass(seedIcon, "wtn-fld-info-warn"), "the ⓘ beside a context-supplied field must be the YELLOW warn variant");
-  assert.match(seedIcon.title, /Context Bridge/, "the ⓘ's tooltip must say WHERE the value comes from");
-  assert.match(seedIcon.title, /disconnect that socket/i, "the tooltip must say how to get it back, not just that it's disabled");
+  // The tooltip lives in `aria-label` now, NOT the native `title` attribute
+  // -- js/shared/fields.mjs's `buildInfoIcon` doc comment (the native
+  // tooltip's browser-controlled delay is what this whole dispatch replaces).
+  assert.equal(seedIcon.title, "", "buildInfoIcon must set no `title` -- the native tooltip would double up with the themed one");
+  assert.match(seedIcon.attributes["aria-label"], /Context Bridge/, "the ⓘ's tooltip must say WHERE the value comes from");
+  assert.match(seedIcon.attributes["aria-label"], /disconnect that socket/i, "the tooltip must say how to get it back, not just that it's disabled");
 
   const stepsField = findFieldByLabel(body, "steps");
   assert.ok(stepsField && hasClass(stepsField, "wtn-fld-num") && !hasClass(stepsField, "wtn-fld-disabled"),
@@ -1225,7 +1229,8 @@ test("no Context Bridge resolved -- every sampler field renders editable, and th
   const header = findSectionHeader(refs.body, "Sampler");
   const icon = header.children.find((c) => hasClass(c, "wtn-fld-info"));
   assert.ok(icon && !hasClass(icon, "wtn-fld-info-warn"), "no bridge resolved is the normal case -- the section's ⓘ is informational, not a warning");
-  assert.match(icon.title, /No Anima Context Bridge resolved/);
+  assert.equal(icon.title, "", "buildInfoIcon must set no `title`");
+  assert.match(icon.attributes["aria-label"], /No Anima Context Bridge resolved/);
 
   const body = sectionBodyOf(header);
   assert.ok(!queryAll(body, (n) => hasClass(n, "wtn-fld-disabled")).length, "nothing should render disabled with no bridge resolved");
@@ -1386,7 +1391,7 @@ test("detailer section: adding respects MAX_DETAILER_PASSES and face/eye stay un
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
 
-  fire(findSectionHeader(refs.body, "Detailer"), "click"); // expand -- inline, no popover
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click"); // Detailer has a switch -- expand via it (task 3)
   let body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
 
   const builtinBtn = queryAll(body, (n) => n.tagName === "button").find((b) => b.textContent === "built in");
@@ -1411,7 +1416,9 @@ test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/s
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
   const refs = mountGeneratorUI(node, ctx);
-  fire(findSectionHeader(refs.body, "Highres"), "click"); // expand -- inline, no popover
+  // Highres HAS a switch -- expand/collapse is the switch's job now (task 3),
+  // not the header's; the header click test below covers the no-op case.
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // expand -- inline, no popover
   let body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
   assert.ok(findFieldByLabel(body, "steps"));
   assert.ok(findFieldByLabel(body, "denoise"));
@@ -1434,7 +1441,7 @@ test("inherit_sampler_settings toggle (Highres) hides exactly cfg/sampler_name/s
 //     popover mechanism is genuinely gone (not just unreferenced by luck).
 // ===========================================================================
 
-test("a section's expand/collapse state persists across a rebuild, and reaches the serialized generation_settings widget", () => {
+test("a switched section's expand/collapse state (driven by its SWITCH, not its header -- task 3) persists across a rebuild, and reaches the serialized generation_settings widget", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
@@ -1443,8 +1450,9 @@ test("a section's expand/collapse state persists across a rebuild, and reaches t
   assert.equal(genState(node).ui_expanded.highres, false, "Highres starts collapsed by default");
   assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Highres")), "collapsed -- no body rendered at all");
 
-  fire(findSectionHeader(refs.body, "Highres"), "click");
-  assert.equal(genState(node).ui_expanded.highres, true, "expanding must reach the serialized widget");
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
+  assert.equal(genState(node).ui_expanded.highres, true, "flipping the switch on must reach the serialized widget as expanded");
+  assert.equal(genState(node).highres.enabled, true, "the SAME click also flips enabled -- the switch's whole point");
   assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Highres")), "expanded -- the body actually renders");
 
   // A REBUILD (repaintGenerator, standing in for a fresh mount off the same
@@ -1453,9 +1461,207 @@ test("a section's expand/collapse state persists across a rebuild, and reaches t
   const rebuilt = repaintGenerator(node, ctx);
   assert.ok(sectionBodyOf(findSectionHeader(rebuilt.body, "Highres")), "still expanded after a repaint");
 
-  fire(findSectionHeader(rebuilt.body, "Highres"), "click");
-  assert.equal(genState(node).ui_expanded.highres, false, "collapsing must reach the widget too");
+  fire(switchOf(findSectionHeader(rebuilt.body, "Highres")), "click");
+  assert.equal(genState(node).ui_expanded.highres, false, "switching off must collapse (reach the widget) too");
+  assert.equal(genState(node).highres.enabled, false);
   assert.ok(!sectionBodyOf(findSectionHeader(node._anRefs.body, "Highres")), "collapsed again -- no body rendered");
+});
+
+test("a switched section's HEADER click does nothing at all -- neither ui_expanded nor enabled changes, and no body appears", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  const before = JSON.parse(JSON.stringify(genState(node)));
+  fire(findSectionHeader(refs.body, "Highres"), "click");
+  const after = genState(node);
+  assert.equal(after.ui_expanded.highres, before.ui_expanded.highres, "a switched section's header click must not touch ui_expanded");
+  assert.equal(after.highres.enabled, before.highres.enabled, "a switched section's header click must not touch enabled either");
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Highres")), "still collapsed -- the header click is a genuine no-op for a switched section");
+});
+
+test("a SWITCHLESS section (Sampler) still expands/collapses on a header click -- the required carve-out, or its body would be unreachable", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  // Sampler starts expanded by default; collapse it via the header first.
+  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Sampler")), "Sampler starts expanded by default");
+  fire(findSectionHeader(refs.body, "Sampler"), "click");
+  assert.equal(genState(node).ui_expanded.sampler, false, "Sampler's own header click must still toggle ui_expanded (no switch exists to do it instead)");
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Sampler")), "collapsed after the header click");
+
+  fire(findSectionHeader(refs.body, "Sampler"), "click");
+  assert.equal(genState(node).ui_expanded.sampler, true);
+  assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Sampler")), "re-expands on a second header click");
+});
+
+// ===========================================================================
+// Header child order -- the no-jump invariant (task 2). chevron -> switch
+// (if any) -> label -> ⓘ (if any) -> summary (if any), regardless of which
+// optional pieces are present, so turning a section on/off never shifts
+// anything but the summary itself.
+// ===========================================================================
+
+/** The real ORDER of a header's own direct children, as short class-derived
+ * tags -- "chev"/"switch"/"label"/"info"/"summary" -- so a test can assert
+ * on sequence without hand-walking `.children` at every call site. */
+function headerChildKinds(header) {
+  return header.children.map((c) => {
+    if (hasClass(c, "wtn-an-chev")) return "chev";
+    if (hasClass(c, "wtn-fld-switch")) return "switch";
+    if (hasClass(c, "wtn-an-shead-nm")) return "label";
+    if (hasClass(c, "wtn-fld-info")) return "info";
+    if (hasClass(c, "wtn-an-shead-sum")) return "summary";
+    return "?";
+  });
+}
+
+test("header child order is chevron -> switch -> label -> ⓘ (no summary while disabled -- Highres always carries an ⓘ AND a switch)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Highres"); // starts disabled -> summary is null
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info"], "no summary while disabled -- but the first four never move");
+});
+
+test("header child order is the SAME (chevron -> switch -> label -> ⓘ) once a summary appears -- enabling only APPENDS the summary, never reorders anything else", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click"); // enable -> gets a summary
+  const header = findSectionHeader(refs.body, "Highres");
+  assert.deepEqual(headerChildKinds(header), ["chev", "switch", "label", "info", "summary"], "chevron/switch/label/ⓘ must be in the EXACT same order as the disabled case above, with the summary appended at the end");
+});
+
+test("header child order for a SWITCHLESS section (Sampler): chevron -> label -> ⓘ -> summary -- switch is simply absent, nothing else shifts", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const header = findSectionHeader(refs.body, "Sampler");
+  assert.deepEqual(headerChildKinds(header), ["chev", "label", "info", "summary"]);
+});
+
+// ===========================================================================
+// ⓘ hover tooltip -- task 4. Delay constant, no native `title`, `aria-label`
+// carries the text instead, and hide/cleanup actually removes the element
+// from `doc.body` (never orphaned).
+// ===========================================================================
+
+test("INFO_TIP_DELAY_MS is exported and is 250", () => {
+  assert.equal(fields.INFO_TIP_DELAY_MS, 250);
+});
+
+test("buildInfoIcon sets no native `title` (would double up with the themed tooltip) -- it sets `aria-label` instead", () => {
+  const doc = makeDocStub();
+  const icon = fields.buildInfoIcon(doc, "hello there");
+  assert.equal(icon.title, "", "no native title attribute");
+  assert.equal(icon.attributes["aria-label"], "hello there");
+});
+
+test("buildInfoIcon with no tooltip text sets neither title nor aria-label, and wires no hover behaviour", () => {
+  const doc = makeDocStub();
+  const icon = fields.buildInfoIcon(doc, "");
+  assert.equal(icon.title, "");
+  assert.equal(icon.attributes["aria-label"], undefined);
+});
+
+test("ⓘ hover tooltip: shows after the delay (mouseenter, driven by the stub window's synchronous setTimeout), appended to doc.body, and mouseleave removes it completely -- no orphan left behind", () => {
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const icon = fields.buildInfoIcon(doc, "explains the field");
+  assert.equal(doc.body.children.length, 0, "nothing shown before any hover");
+
+  fire(icon, "mouseenter");
+  assert.equal(doc.body.children.length, 1, "the tip mounts onto doc.body, not inside the icon's own tree");
+  const tip = doc.body.children[0];
+  assert.ok(hasClass(tip, "wtn-tip") && hasClass(tip, "wtn-fld-tip"));
+  // `wtn` itself is REQUIRED, not decorative -- this element is appended to
+  // doc.body, OUTSIDE any node's own `.wtn`-classed subtree, so without this
+  // class theme.css's custom properties never resolve on it at all (a
+  // live-only bug the headless stub can't otherwise catch, since jsdom-less
+  // `getComputedStyle` here never evaluates `var()` at all).
+  assert.ok(hasClass(tip, "wtn"), "the tip element must carry the `wtn` class itself so theme.css's custom properties resolve on it");
+  assert.equal(tip.textContent, "explains the field");
+
+  fire(icon, "mouseleave");
+  assert.equal(doc.body.children.length, 0, "mouseleave must remove the tip element from doc.body entirely");
+});
+
+test("the shipped CSS's tooltip rule is the TWO-CLASS compound `.wtn-tip.wtn-fld-tip` (specificity 0-2-0), not `.wtn-fld-tip` alone -- that's what keeps this module's fallback colours/z-index winning over theme.css's un-fallback'd, later-injected `.wtn-tip` rule regardless of load order", () => {
+  const doc = makeDocStub();
+  fields.injectFieldStyles(doc);
+  const style = doc.getElementById("wtn-fields-style");
+  assert.ok(style, "js/shared/fields.mjs's own stylesheet must be injected");
+  assert.match(style.textContent, /\.wtn-tip\.wtn-fld-tip\s*\{/, "the base rule must be the two-class compound selector");
+  assert.match(style.textContent, /\.wtn-tip\.wtn-fld-tip\.show\s*\{/, "the .show rule must be the three-class compound selector too");
+  // The regression this guards: a bare `.wtn-fld-tip` selector has the SAME
+  // specificity (0-1-0) as theme.css's own `.wtn-tip` rule, so whichever
+  // stylesheet lands LAST in document order would silently win -- and
+  // theme.css's own dynamic `import()` always lands after this module's
+  // synchronous injection.
+  assert.ok(!/(^|[^.\w-])\.wtn-fld-tip\s*\{/.test(style.textContent), "must not ALSO ship a single-class `.wtn-fld-tip { ... }` rule that could out-order the compound one");
+});
+
+test("ⓘ hover tooltip: pointerdown and Escape both hide it too, and hiding twice is safe (no throw, no double-remove)", () => {
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const iconA = fields.buildInfoIcon(doc, "tip A");
+  fire(iconA, "mouseenter");
+  assert.equal(doc.body.children.length, 1);
+  fire(iconA, "pointerdown");
+  assert.equal(doc.body.children.length, 0);
+
+  const iconB = fields.buildInfoIcon(doc, "tip B");
+  fire(iconB, "mouseenter");
+  assert.equal(doc.body.children.length, 1);
+  assert.doesNotThrow(() => fire(iconB, "mouseleave"));
+  assert.doesNotThrow(() => fire(iconB, "mouseleave")); // a second hide must be a safe no-op
+  assert.equal(doc.body.children.length, 0);
+});
+
+test("hideActiveInfoTip closes whatever tip is currently showing -- the safety valve a full-body repaint calls before discarding its old icons (js/anima/interaction.mjs's repaintGenerator/repaintPreview/teardownNode)", () => {
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const icon = fields.buildInfoIcon(doc, "won't be orphaned");
+  fire(icon, "mouseenter");
+  assert.equal(doc.body.children.length, 1, "showing before the repaint-equivalent cleanup runs");
+  fields.hideActiveInfoTip();
+  assert.equal(doc.body.children.length, 0, "the old icon is about to be discarded -- its tip must not be left attached to doc.body");
+  assert.doesNotThrow(() => fields.hideActiveInfoTip()); // nothing showing -- must still be a safe no-op
+});
+
+test("only one ⓘ tooltip is ever shown pack-wide at a time -- hovering a second icon closes the first icon's tip", () => {
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const iconA = fields.buildInfoIcon(doc, "tip A");
+  const iconB = fields.buildInfoIcon(doc, "tip B");
+  fire(iconA, "mouseenter");
+  assert.equal(doc.body.children.length, 1);
+  fire(iconB, "mouseenter");
+  assert.equal(doc.body.children.length, 1, "still exactly one tip element -- A's own was closed, not left behind alongside B's");
+  assert.equal(doc.body.children[0].textContent, "tip B");
+});
+
+test("repaintGenerator hides an active ⓘ tooltip before rebuilding the body -- the exact orphan case this dispatch guards against", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  // Sampler's header ⓘ is always present (bridge-found or not-found text,
+  // never null) -- unlike Mod Guidance's, which is only shown when its
+  // package is missing.
+  const icon = findSectionHeader(refs.body, "Sampler").children.find((c) => hasClass(c, "wtn-fld-info"));
+  fire(icon, "mouseenter");
+  assert.equal(doc.body.children.length, 1, "tip showing on the OLD Sampler header, right before its body is discarded");
+  repaintGenerator(node, ctx);
+  assert.equal(doc.body.children.length, 0, "repaintGenerator must have closed it -- otherwise it's now orphaned, since the old icon is gone");
 });
 
 test("ui_expanded round-trips through a FRESH mount off a saved widget value -- a workflow reopens with the same sections expanded it was saved with", () => {
@@ -1617,19 +1823,39 @@ test("Preview: the Save section's own header switch reaches the preview_state wi
   assert.equal(previewState(node).save.enabled, false);
 });
 
-test("Preview: ui_expanded.save persists across a repaint and reaches the serialized preview_state widget, same contract as the Generator's sections", () => {
+test("Preview: ui_expanded.save (driven by the Save section's own SWITCH, not its header) persists across a repaint and reaches the serialized preview_state widget, same contract as the Generator's sections", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
 
   assert.equal(previewState(node).ui_expanded.save, false);
-  fire(findSectionHeader(refs.body, "Save"), "click");
+  // Save HAS a switch -- a header click is a no-op for it (task 3); flip
+  // the switch instead. `makePreviewNode`'s default state has save.enabled
+  // already true, so this first click turns it OFF (and collapses it);
+  // click again to land on enabled+expanded.
+  fire(switchOf(findSectionHeader(refs.body, "Save")), "click");
+  fire(switchOf(findSectionHeader(refs.body, "Save")), "click");
   assert.equal(previewState(node).ui_expanded.save, true);
+  assert.equal(previewState(node).save.enabled, true);
   assert.ok(sectionBodyOf(findSectionHeader(refs.body, "Save")));
 
   const rebuilt = repaintPreview(node, ctx);
   assert.ok(sectionBodyOf(findSectionHeader(rebuilt.body, "Save")), "still expanded after a repaint");
+});
+
+test("Preview: the Save section's HEADER click does nothing -- neither ui_expanded nor enabled changes, and no body appears", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const before = JSON.parse(JSON.stringify(previewState(node)));
+  fire(findSectionHeader(refs.body, "Save"), "click");
+  const after = previewState(node);
+  assert.equal(after.ui_expanded.save, before.ui_expanded.save);
+  assert.equal(after.save.enabled, before.save.enabled);
+  assert.ok(!sectionBodyOf(findSectionHeader(refs.body, "Save")), "still collapsed -- header click is a no-op");
 });
 
 test("normalizeExpandedSections applied against DEFAULT_EXPANDED_PREVIEW_SECTIONS (the Preview's own defaults, distinct from the Generator's) defaults 'save' to collapsed", () => {
