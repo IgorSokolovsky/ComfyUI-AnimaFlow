@@ -1,6 +1,8 @@
 """Plain-script tests for `src/anima/preview_settings.py` (the Preview
-node's own settings blob, design doc §8, and its §7a filename-token
-formatter).
+node's own settings blob, design doc §8, its §7a filename-token formatter,
+and the PURE stage-routing decisions -- `resolve_wired_stages`/
+`resolve_shown_stage`/`resolve_save_stages`/`split_preview_stages` -- that
+`nodes/anima/_preview_helpers.py`'s impure writers are driven by).
 
 Run directly: `python tests/test_anima_preview_settings.py` (no pytest, per project convention).
 """
@@ -118,6 +120,73 @@ def test_hostile_template_never_raises():
     assert isinstance(ps.format_filename(123, stage="base", seed=0, width=1, height=1, counter=0, now=_FIXED_NOW), str)
 
 
+# ---------------------------------------------------------------------------
+# Stage-routing -- resolve_wired_stages/resolve_shown_stage/resolve_save_stages/
+# split_preview_stages. All pure: no comfy/torch import, `wired` is just a
+# dict of socket-name -> "is something non-None wired there" stand-ins.
+# ---------------------------------------------------------------------------
+
+
+def _wired(**kwargs):
+    """`_wired(image_a=True, image_c=True)` -> the `wired` dict shape these
+    functions expect (`None` for an unwired socket, any truthy sentinel for
+    a wired one -- the functions only ever check `is not None`)."""
+    sockets = {"image_a": None, "image_b": None, "image_c": None}
+    for key, value in kwargs.items():
+        sockets[key] = value if value else "wired"
+    return sockets
+
+
+def test_resolve_wired_stages_returns_only_wired_in_stable_order():
+    assert ps.resolve_wired_stages(_wired()) == []
+    assert ps.resolve_wired_stages(_wired(image_b=True)) == ["mid"]
+    assert ps.resolve_wired_stages(_wired(image_c=True, image_a=True)) == ["base", "final"]
+    assert ps.resolve_wired_stages(_wired(image_a=True, image_b=True, image_c=True)) == ["base", "mid", "final"]
+
+
+def test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired():
+    # compare.b wired -> that's shown.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(image_a=True, image_c=True)) == "final"
+    # compare.b named but NOT wired -> falls back to most-finished wired stage.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired(image_a=True, image_b=True)) == "mid"
+    # compare off entirely -> same fallback priority.
+    assert ps.resolve_shown_stage({"enabled": False, "a": "base", "b": "final"}, _wired(image_a=True)) == "base"
+    # nothing wired -> None, never raises.
+    assert ps.resolve_shown_stage({"enabled": True, "a": "base", "b": "final"}, _wired()) is None
+
+
+def test_resolve_save_stages_which_semantics():
+    wired = _wired(image_a=True, image_b=True, image_c=True)
+    compare = {"enabled": True, "a": "base", "b": "final"}
+
+    assert ps.resolve_save_stages({"which": "every wired input"}, compare, wired) == ["base", "mid", "final"]
+    assert ps.resolve_save_stages({"which": "both compared"}, compare, wired) == ["base", "final"]
+    assert ps.resolve_save_stages({"which": "shown"}, compare, wired) == ["final"]
+    # Garbage `which` falls back to "shown"'s behaviour, never raises.
+    assert ps.resolve_save_stages({"which": "not-a-real-option"}, compare, wired) == ["final"]
+    # "both compared" only returns stages that are ACTUALLY wired.
+    assert ps.resolve_save_stages({"which": "both compared"}, compare, _wired(image_a=True)) == ["base"]
+
+
+def test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp():
+    routing = ps.split_preview_stages(["base", "mid", "final"], ["final"])
+    assert routing == {"output": ["final"], "temp": ["base", "mid"]}
+
+    # Nothing saved (save off, or stages_to_save empty) -> everything previewed lands in temp.
+    routing_none_saved = ps.split_preview_stages(["base", "final"], [])
+    assert routing_none_saved == {"output": [], "temp": ["base", "final"]}
+
+    # Every previewed stage also saved -> nothing left for temp.
+    routing_all_saved = ps.split_preview_stages(["base", "final"], ["base", "final"])
+    assert routing_all_saved == {"output": ["base", "final"], "temp": []}
+
+    # A stage in `stages_to_save` that ISN'T in `preview_stages` (shouldn't
+    # happen -- save_stages is itself derived from wired sockets -- but must
+    # not fabricate a preview entry for it) never appears in either list.
+    routing_extra_save = ps.split_preview_stages(["final"], ["base", "final"])
+    assert routing_extra_save == {"output": ["final"], "temp": []}
+
+
 ALL_TESTS = [
     test_defaults_shape,
     test_unknown_keys_survive,
@@ -134,6 +203,10 @@ ALL_TESTS = [
     test_full_template_combining_every_token,
     test_template_with_no_tokens_passes_through_unchanged,
     test_hostile_template_never_raises,
+    test_resolve_wired_stages_returns_only_wired_in_stable_order,
+    test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,
+    test_resolve_save_stages_which_semantics,
+    test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp,
 ]
 
 

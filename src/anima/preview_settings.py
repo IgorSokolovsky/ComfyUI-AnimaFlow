@@ -8,7 +8,7 @@ duplicating them.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from .settings import _deep_merge_defaults, migrate_version
 
@@ -36,10 +36,108 @@ DEFAULT_PREVIEW_SETTINGS: Dict[str, Any] = {
 }
 
 # `compare.a`/`compare.b` and `save.which` are free-standing enums the
-# (not-yet-built) frontend will present as pickers; kept here so
-# `pipeline`/node code has one place to validate against.
+# frontend (`js/anima/`) presents as pickers; kept here so `pipeline`/node
+# code has one place to validate against.
 COMPARE_SLOTS = ("base", "mid", "final")
 SAVE_WHICH_OPTIONS = ("shown", "both compared", "every wired input")
+
+# ---------------------------------------------------------------------------
+# Stage <-> Preview-socket routing -- PURE (no comfy/torch import anywhere in
+# this section). Moved here from `nodes/anima/_preview_helpers.py` per
+# `.claude/CLAUDE.md`'s pure/impure rule ("keep every pure decision in
+# src/anima/... only the actual file writing touches comfy"): which stages
+# are wired, which stage a socket represents, and which stages get SAVED vs.
+# PREVIEWED are all decisions, not I/O, so they belong here where they're
+# importable/testable without ComfyUI or PIL installed.
+#
+# INTERIM SOCKET CONVENTION (still true, still flagged -- there is no
+# per-socket stage label from `js/anima/` yet): the Generator's three outputs
+# are wired positionally -- `image_base -> image_a`, `image_mid -> image_b`,
+# `image -> image_c` -- and `compare.a`/`compare.b`/`save.which` all name a
+# STAGE (`"base"`/`"mid"`/`"final"`), resolved through `STAGE_TO_SOCKET` to
+# find the actual wired tensor.
+# ---------------------------------------------------------------------------
+
+STAGE_TO_SOCKET = {"base": "image_a", "mid": "image_b", "final": "image_c"}
+STAGE_ORDER = COMPARE_SLOTS
+# The order "shown" falls back to when compare is off and more than one
+# socket happens to be wired: prefer the most-finished result.
+_SHOWN_PRIORITY = ("final", "mid", "base")
+
+
+def resolve_wired_stages(wired: Dict[str, Any]) -> List[str]:
+    """Every stage whose socket is actually wired, in stable `base, mid,
+    final` order. THIS is the PREVIEW set the node always shows -- every
+    wired stage, unconditionally, because the hover wipe needs whichever two
+    the user picks in `compare.a`/`compare.b` regardless of what `save.which`
+    scopes for saving. Conflating "what to preview" with "what to save" is
+    exactly how the "saving off means the wipe shows nothing" bug happened
+    (see `nodes/anima/preview.py`'s own comment) -- keep the two questions
+    answered by two different functions, this one and `resolve_save_stages`.
+    """
+    return [stage for stage in STAGE_ORDER if wired.get(STAGE_TO_SOCKET[stage]) is not None]
+
+
+def resolve_shown_stage(compare_settings: Dict[str, Any], wired: Dict[str, Any]) -> Optional[str]:
+    """Which stage name is "the shown image" right now? If compare is
+    enabled, it's `compare.b` (the "after" pane — design doc §7's default
+    `base` vs `final` makes `b` the natural "current result" pane). If
+    compare is off, or `b`'s socket isn't actually wired, fall back to the
+    most-finished wired stage. Returns `None` if nothing at all is wired.
+    """
+    if isinstance(compare_settings, dict) and compare_settings.get("enabled", True):
+        b = compare_settings.get("b")
+        if b in STAGE_TO_SOCKET and wired.get(STAGE_TO_SOCKET[b]) is not None:
+            return b
+    for stage in _SHOWN_PRIORITY:
+        if wired.get(STAGE_TO_SOCKET[stage]) is not None:
+            return stage
+    return None
+
+
+def resolve_save_stages(save_settings: Dict[str, Any], compare_settings: Dict[str, Any], wired: Dict[str, Any]) -> List[str]:
+    """`save.which` -> which stage names actually get SAVED this run, in a
+    stable `base, mid, final` order:
+      - `"shown"` -> whatever `resolve_shown_stage` names, if wired.
+      - `"both compared"` -> `compare.a` + `compare.b`, each only if wired.
+      - `"every wired input"` -> every stage whose socket is actually wired.
+    Never raises on garbage `which` — falls back to `"shown"`'s behaviour.
+    This is the SAVE set, not the preview set -- see `resolve_wired_stages`'s
+    docstring for why those are deliberately two different questions.
+    """
+    which = save_settings.get("which") if isinstance(save_settings, dict) else None
+    order = resolve_wired_stages(wired)
+
+    if which == "every wired input":
+        return order
+    if which == "both compared":
+        wanted = set()
+        if isinstance(compare_settings, dict):
+            if compare_settings.get("a") in STAGE_TO_SOCKET:
+                wanted.add(compare_settings["a"])
+            if compare_settings.get("b") in STAGE_TO_SOCKET:
+                wanted.add(compare_settings["b"])
+        return [s for s in order if s in wanted]
+
+    # Default / "shown" / anything unrecognized.
+    shown = resolve_shown_stage(compare_settings, wired)
+    return [shown] if shown else []
+
+
+def split_preview_stages(preview_stages: List[str], stages_to_save: List[str]) -> Dict[str, List[str]]:
+    """The PURE routing decision behind every UI entry `AnimaPreview` emits:
+    for each stage in the (always-every-wired) preview set, does it get a
+    real OUTPUT file (it's also in `stages_to_save`) or an ephemeral TEMP one
+    (wired for compare but not this run's save scope -- e.g. `save.which ==
+    "shown"` while two stages are being compared)? Exactly one of the two,
+    never both, per stage -- one run must not produce two files for the same
+    stage. Order of each returned list follows `preview_stages`' own order.
+    """
+    save_set = set(stages_to_save)
+    return {
+        "output": [stage for stage in preview_stages if stage in save_set],
+        "temp": [stage for stage in preview_stages if stage not in save_set],
+    }
 
 
 def normalize_preview_settings(raw: Any) -> Dict[str, Any]:

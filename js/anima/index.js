@@ -290,5 +290,25 @@ app.registerExtension({
       }
       return _removed ? _removed.apply(this, args) : undefined;
     };
+
+    // `AnimaPreview` only -- the hover wipe's actual images (design doc §7/
+    // §7a's fix: previewing must not depend on saving being on). `onExecuted`
+    // is a node-instance/server-message hook, not a `window`/`app`/
+    // `LiteGraph` global reference, so -- like `onConnectionsChange` above --
+    // it's fine to call straight into `interaction.mjs`. If `_anMods`/
+    // `_anRefs` aren't ready yet (a run finishing improbably fast, before the
+    // lazy modules load), the image data is still stashed on the node by
+    // `handleExecuted` and simply isn't painted until the next repaint --
+    // never a crash, just a one-frame-late paint.
+    if (!isGenerator) {
+      const _executed = nodeType.prototype.onExecuted;
+      nodeType.prototype.onExecuted = function (message) {
+        const result = _executed ? _executed.apply(this, arguments) : undefined;
+        if (this._anMods) {
+          this._anMods.interaction.handleExecuted(this, this._anCtx, message);
+        }
+        return result;
+      };
+    }
   },
 });

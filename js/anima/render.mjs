@@ -326,6 +326,58 @@ export function buildGear(doc, title) {
   return gear;
 }
 
+// ---------------------------------------------------------------------------
+// Preview node -- wipe pane images. `nodes/anima/preview.py`'s
+// `"ui": {"images": [...]}}` payload (`build_preview_ui_images`, design doc
+// §7/§7a's fix) is `{filename, subfolder, type, stage}` per entry; these two
+// helpers turn ONE such entry into a real `<img>` the wipe can show.
+// ---------------------------------------------------------------------------
+
+/** ComfyUI's own `/view` endpoint URL for a UI image entry. `cacheBust` is
+ * deliberately a PARAMETER, not read from `Date.now()` in here -- this stays
+ * a pure, testable function, and `interaction.mjs`'s `handleExecuted` is the
+ * one place that decides the value (once per `executed` message, shared by
+ * every stage from that run). Skipping it is not an option: a fixed,
+ * token-free `save.filename` template (a real, user-reachable case) writes
+ * the SAME literal filename on every run, and without a cache-busting query
+ * param a second run's `<img>` would keep showing the FIRST run's cached
+ * bytes -- reads as "the node is stuck" rather than "it saved over itself".
+ * Returns `null` for a missing/malformed entry so a caller renders nothing
+ * rather than a broken `<img src="null">`. */
+export function buildPreviewImageUrl(entry, cacheBust) {
+  if (!entry || typeof entry.filename !== "string" || !entry.filename) {
+    return null;
+  }
+  const params = new URLSearchParams();
+  params.set("filename", entry.filename);
+  params.set("subfolder", entry.subfolder || "");
+  params.set("type", entry.type || "output");
+  if (cacheBust !== undefined && cacheBust !== null) {
+    params.set("t", String(cacheBust));
+  }
+  return `/view?${params.toString()}`;
+}
+
+/** One wipe pane: an absolutely positioned `.wtn-an-layer` (interaction.mjs's
+ * CSS clips `.wtn-an-b` to the wipe fraction) containing an `<img>` for
+ * `stage` IF `previewImages` (`node._anPreviewImages`, keyed by stage) has
+ * an entry for it yet -- a stage that's wired but hasn't executed a single
+ * time is legitimately empty, not an error. Maps by `stage`, never by array
+ * position -- see this module's/`handleExecuted`'s own doc comments for why
+ * position was never a safe key here. */
+export function buildWipeLayer(doc, previewImages, stage, extraClass) {
+  const layer = el(doc, "div", `wtn-an-layer${extraClass ? ` ${extraClass}` : ""}`);
+  const entry = previewImages && previewImages[stage];
+  const url = buildPreviewImageUrl(entry, entry && entry._cacheBust);
+  if (url) {
+    const img = el(doc, "img");
+    img.src = url;
+    img.alt = stage;
+    layer.appendChild(img);
+  }
+  return layer;
+}
+
 export function sectionLabel(doc, label, count) {
   const sec = el(doc, "div", "wtn-an-sec");
   const span = el(doc, "span");

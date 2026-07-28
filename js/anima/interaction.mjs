@@ -86,6 +86,7 @@ import {
   buildNote,
   buildMissing,
   buildPopoverShell,
+  buildWipeLayer,
   measureMinHeight,
   refitNode,
   scheduleRefit,
@@ -1143,6 +1144,12 @@ function previewShownStages(node) {
 export function buildPreviewBody(doc, node, ctx) {
   const state = node._anPreviewState;
   const shown = previewShownStages(node);
+  // `node._anPreviewImages`, keyed by stage, set by `handleExecuted` from
+  // this node's own `onExecuted` payload (`nodes/anima/preview.py`'s
+  // `"ui": {"images": [...]}}`, each entry carrying a `stage` key) --
+  // ABSENT until the first run, which is legitimate (pre-run, every layer
+  // below just renders empty).
+  const previewImages = node._anPreviewImages || {};
   const body = el(doc, "div", "wtn-an-body");
 
   body.appendChild(buildStatusRow(doc, { name: "image_a", type: "IMAGE", wired: shown.base }));
@@ -1150,42 +1157,51 @@ export function buildPreviewBody(doc, node, ctx) {
   body.appendChild(buildStatusRow(doc, { name: "image_c", type: "IMAGE", wired: shown.final }));
 
   const compare = state.compare;
-  const on = !!compare.enabled;
-  const wipe = el(doc, "div", `wtn-an-wipe${on ? "" : " wtn-an-single"}`);
-  wipe.style.setProperty("--wipe-x", "50%");
-
+  const wantsDual = !!compare.enabled;
   const haveA = shown[compare.a];
   const haveB = shown[compare.b];
+  // Dual-pane wipe only when BOTH named stages are actually wired. A
+  // selected `compare.a`/`compare.b` that ISN'T wired can't render its own
+  // pane -- degrade to the SAME single-image branch the "compare off" case
+  // already uses (below) rather than a broken pane with one permanently
+  // blank layer.
+  const dualPane = wantsDual && haveA && haveB;
+  const wipe = el(doc, "div", `wtn-an-wipe${dualPane ? "" : " wtn-an-single"}`);
+  wipe.style.setProperty("--wipe-x", "50%");
+
   if (!haveA && !haveB) {
     const empty = el(doc, "div", "wtn-an-empty");
     empty.textContent = "nothing wired yet";
     wipe.appendChild(empty);
+  } else if (dualPane) {
+    wipe.appendChild(buildWipeLayer(doc, previewImages, compare.a, "wtn-an-a"));
+    wipe.appendChild(buildWipeLayer(doc, previewImages, compare.b, "wtn-an-b"));
+    const divider = el(doc, "div", "wtn-an-divider");
+    wipe.appendChild(divider);
+    const labL = el(doc, "div", "wtn-an-plab wtn-an-l");
+    labL.textContent = compare.a;
+    const labR = el(doc, "div", "wtn-an-plab wtn-an-r");
+    labR.textContent = compare.b;
+    wipe.appendChild(labL);
+    wipe.appendChild(labR);
   } else {
-    const layerA = el(doc, "div", "wtn-an-layer wtn-an-a");
-    wipe.appendChild(layerA);
-    if (on) {
-      const layerB = el(doc, "div", "wtn-an-layer wtn-an-b");
-      wipe.appendChild(layerB);
-      const divider = el(doc, "div", "wtn-an-divider");
-      wipe.appendChild(divider);
-      const labL = el(doc, "div", "wtn-an-plab wtn-an-l");
-      labL.textContent = compare.a;
-      const labR = el(doc, "div", "wtn-an-plab wtn-an-r");
-      labR.textContent = compare.b;
-      wipe.appendChild(labL);
-      wipe.appendChild(labR);
-    } else {
-      const labL = el(doc, "div", "wtn-an-plab wtn-an-l");
-      labL.textContent = compare.b;
-      wipe.appendChild(labL);
-    }
+    // Single-pane: compare off BY CHOICE, or degraded because one of the two
+    // named stages isn't wired -- either way, show whichever side actually
+    // resolves (prefer `compare.b`, the "current result" side; `haveA ||
+    // haveB` is true here, so exactly one of these two branches applies when
+    // only one is wired, and `compare.b` wins the tie when both are).
+    const soloStage = haveB ? compare.b : compare.a;
+    wipe.appendChild(buildWipeLayer(doc, previewImages, soloStage, "wtn-an-a"));
+    const labL = el(doc, "div", "wtn-an-plab wtn-an-l");
+    labL.textContent = soloStage;
+    wipe.appendChild(labL);
   }
   body.appendChild(wipe);
 
   const pvbar = el(doc, "div", "wtn-an-pvbar");
-  const sw = buildSwitch(doc, on);
+  const sw = buildSwitch(doc, wantsDual);
   sw.addEventListener("click", () => {
-    compare.enabled = !on;
+    compare.enabled = !wantsDual;
     persistPreviewState(node);
     repaintPreview(node, ctx);
   });
@@ -1202,7 +1218,7 @@ export function buildPreviewBody(doc, node, ctx) {
   saveRow.root.addEventListener("click", () => openSavePopover(node, ctx, saveRow.root));
   body.appendChild(saveRow.root);
 
-  if (on) {
+  if (wantsDual) {
     const segRow = el(doc, "div", "wtn-an-pvbar");
     const segA = el(doc, "div", "wtn-an-seg");
     COMPARE_SLOTS.forEach((slot) => {
@@ -1301,6 +1317,58 @@ export function repaintPreview(node, ctx) {
     node.setDirtyCanvas(true, true);
   }
   return refs;
+}
+
+/**
+ * `AnimaPreview`'s `onExecuted` handler -- `index.js` installs the actual
+ * litegraph `onExecuted` hook (it's a node-instance/server-message hook, not
+ * a `window`/`app`/`LiteGraph` global reference, so it's fine to call
+ * straight into this module the same way `onConnectionsChange` already
+ * does) and forwards `message` here unchanged. `message.images` is
+ * `nodes/anima/preview.py`'s own `"ui": {"images": [...]}}` payload -- see
+ * `_preview_helpers.build_preview_ui_images`'s docstring for the exact
+ * shape: `{filename, subfolder, type, stage}` per entry, `type` `"output"`
+ * or `"temp"`, ALWAYS one entry per wired stage regardless of `save.
+ * enabled` (design doc §7/§7a's fix -- this is the frontend half of it).
+ *
+ * VERIFY-IN-COMFYUI: that `onExecuted`'s `message` argument really is the
+ * node's own `ui` dict verbatim (i.e. `message.images` reaches here, not
+ * `message.ui.images` or some other wrapping) -- this pack has no live
+ * ComfyUI process to confirm against; the shape matches every other node in
+ * this repo's `../ComfyUI-Pixaroma` sibling that reads `message.<key>`
+ * straight off `onExecuted` (`js/find_replace/index.js`'s
+ * `message?.pixaroma_find_replace?.[0]`), and stock `SaveImage`/
+ * `PreviewImage` are widely documented to work the same way, but neither is
+ * a substitute for confirming live.
+ */
+export function handleExecuted(node, ctx, message) {
+  if (!message || !Array.isArray(message.images)) {
+    return;
+  }
+  // ONE cache-bust token per `executed` message, shared by every stage from
+  // THIS run -- see `buildPreviewImageUrl`'s doc comment in render.mjs for
+  // why a run-stable (not per-stage-random) value is what's needed here.
+  const cacheBust = Date.now();
+  const byStage = {};
+  for (const entry of message.images) {
+    // Map by STAGE, never by array position -- `build_preview_ui_images`
+    // orders entries by its own preview-stage order, not a fixed schema, and
+    // a batch > 1 stage can carry more than one entry (the FIRST one seen
+    // wins; the wipe only ever shows one image per pane).
+    if (entry && typeof entry.stage === "string" && !(entry.stage in byStage)) {
+      byStage[entry.stage] = { ...entry, _cacheBust: cacheBust };
+    }
+  }
+  node._anPreviewImages = byStage;
+  // No `_anMods` check needed here -- `index.js` only ever reaches this
+  // function THROUGH `this._anMods.interaction.handleExecuted(...)`, so
+  // `_anMods` being truthy is already guaranteed by the caller; testing it
+  // again here would just make this function harder to call directly (as
+  // this pack's own `test_resize.mjs` does). `mountPreviewUI` is idempotent
+  // (returns the cached `node._anRefs` if already mounted, mounts fresh
+  // otherwise), so this always ends up painting the stashed image data
+  // somewhere, never silently drops it.
+  repaintPreview(node, ctx);
 }
 
 /** The hover wipe -- design doc §7. `pointermove` with NO button gate is

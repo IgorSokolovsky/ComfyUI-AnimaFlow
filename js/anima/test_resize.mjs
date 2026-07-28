@@ -102,6 +102,7 @@ import {
   buildSwitch,
   sectionLabel,
   measureMinHeight,
+  buildPreviewImageUrl,
   DEFAULT_W,
   DEFAULT_H,
 } from "./render.mjs";
@@ -117,6 +118,7 @@ import {
   mountPreviewUI,
   repaintPreview,
   wipeXFromEvent,
+  handleExecuted,
   installZoomPassthrough,
   teardownNode,
   closeActiveOverlay,
@@ -977,6 +979,92 @@ test("Preview: save popover fields write the preview_state WIDGET", () => {
   fire(whichField.children[1], "change");
   assert.equal(previewState(node).save.which, "every wired input");
   assert.ok(SAVE_WHICH_OPTIONS.includes(previewState(node).save.which));
+});
+
+// ===========================================================================
+// F2. onExecuted -- stage-keyed mapping (never array position), the
+//     degrade-to-single-pane contract, and the cache-busting URL builder.
+// ===========================================================================
+
+function imgsInWipe(refs) {
+  return queryAll(refs.wipeEl, (n) => n.tagName === "img");
+}
+function layerImgSrc(refs, extraClass) {
+  const layer = queryAll(refs.wipeEl, (n) => hasClass(n, "wtn-an-layer") && hasClass(n, extraClass))[0];
+  const img = layer && layer.children.find((c) => c.tagName === "img");
+  return img ? img.src : undefined;
+}
+
+test("buildPreviewImageUrl: builds ComfyUI's /view URL and includes a cache-busting param", () => {
+  const url = buildPreviewImageUrl({ filename: "foo.png", subfolder: "AnimaFlow", type: "output" }, 12345);
+  assert.ok(url.startsWith("/view?"));
+  assert.ok(url.includes("filename=foo.png"));
+  assert.ok(url.includes("subfolder=AnimaFlow"));
+  assert.ok(url.includes("type=output"));
+  assert.ok(url.includes("t=12345"), "must carry a cache-busting param, or a second run's identical filename shows the stale image");
+
+  // A second call with a DIFFERENT cacheBust for the SAME filename must
+  // produce a DIFFERENT url -- that's the whole point.
+  const urlAgain = buildPreviewImageUrl({ filename: "foo.png", subfolder: "AnimaFlow", type: "output" }, 99999);
+  assert.notEqual(url, urlAgain);
+
+  assert.equal(buildPreviewImageUrl(null, 1), null, "a missing entry must never build a broken src");
+  assert.equal(buildPreviewImageUrl({ subfolder: "x" }, 1), null, "an entry with no filename must never build a broken src");
+});
+
+test("handleExecuted: maps ui.images entries onto panes BY STAGE, never by array position", () => {
+  const node = makePreviewNode({}, { image_a: true, image_b: true, image_c: true });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  // Scrambled order on purpose -- final first, base last -- to prove the
+  // mapping reads `entry.stage`, not `images[0]`/`images[1]`/`images[2]`.
+  handleExecuted(node, ctx, {
+    images: [
+      { filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" },
+      { filename: "mid_temp.png", subfolder: "", type: "temp", stage: "mid" },
+      { filename: "base_temp.png", subfolder: "", type: "temp", stage: "base" },
+    ],
+  });
+
+  // default compare is base vs final -- dual pane, each layer showing the
+  // stage ITS class names, not array position.
+  assert.ok(layerImgSrc(node._anRefs, "wtn-an-a").includes("filename=base_temp.png"));
+  assert.ok(layerImgSrc(node._anRefs, "wtn-an-b").includes("filename=final.png"));
+});
+
+test("handleExecuted: a batch's SECOND entry for the same stage is ignored -- one image per pane", () => {
+  const node = makePreviewNode({}, { image_a: true });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+  handleExecuted(node, ctx, {
+    images: [
+      { filename: "first.png", subfolder: "", type: "temp", stage: "base" },
+      { filename: "second.png", subfolder: "", type: "temp", stage: "base" },
+    ],
+  });
+  assert.equal(node._anPreviewImages.base.filename, "first.png");
+});
+
+test("Preview: a selected compare stage that isn't wired degrades to a single-image view, not a broken pane", () => {
+  // compare.a = "mid" is picked but ONLY image_c (final) is wired -- must
+  // NOT render a dual pane with a permanently-blank "mid" side.
+  const node = makePreviewNode(
+    { preview_state: JSON.stringify({ compare: { enabled: true, a: "mid", b: "final" } }) },
+    { image_c: true },
+  );
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+  handleExecuted(node, ctx, {
+    images: [{ filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" }],
+  });
+
+  assert.ok(hasClass(node._anRefs.wipeEl, "wtn-an-single"), "must degrade to the single-pane class, not stay dual");
+  assert.equal(imgsInWipe(node._anRefs).length, 1, "exactly one image, not a blank second pane");
+  assert.ok(imgsInWipe(node._anRefs)[0].src.includes("filename=final.png"));
 });
 
 // ===========================================================================
