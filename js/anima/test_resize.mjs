@@ -32,9 +32,16 @@
  *      byte-for-byte; `deepMergeDefaults`/`migrateVersion`/detailer-block
  *      mutation edge cases (unaffected by this reversal, kept for
  *      regression).
- *   B. `render.mjs` — the panel respects `PANEL_MIN_H`/`PANEL_MAX_H`
- *      (measureMinHeight clamps the panel child's contribution both ways);
- *      `GENERATOR_MIN_W`/`PREVIEW_MIN_W` clamp on `onResize`.
+ *   B. `render.mjs` — 2026-07-28 (this dispatch) reversal: the panel now
+ *      FILLS the node's height (CSS `flex: 1 1 auto`, no `max-height`) and
+ *      the node is freely resizable; `measureMinHeight` reports ONLY a fixed
+ *      `PANEL_MIN_H` floor (never the panel's real, stretched offsetHeight,
+ *      so there's no ceiling left anywhere); `refitNode`/`scheduleRefit`/
+ *      `scheduleInitialFit`/`setNodeHeight`/`PANEL_MAX_H` are gone entirely
+ *      (asserted absent, so nothing can silently reappear and start fighting
+ *      a manual resize again); a manual `node.setSize` survives a repaint
+ *      unchanged; `GENERATOR_MIN_W`/`PREVIEW_MIN_W` still clamp width on
+ *      `onResize`, untouched by this reversal.
  *   C. Wheel scrolls-vs-zooms per direction, exercised against the REAL
  *      built panel DOM (not a bespoke check — `js/shared/canvas_zoom.mjs`'s
  *      own `scrollRegionWantsWheel`).
@@ -57,23 +64,27 @@
  * MANUAL-IN-COMFYUI CHECKLIST (this headless harness cannot confirm any of
  * this — the real `addDOMWidget`/legacy-litegraph runtime contract, actual
  * screen-space overlay placement, the real litegraph link-table shape
- * (`getInputLink` vs. `graph.links[id]`), and actual CSS `max-height`/
+ * (`getInputLink` vs. `graph.links[id]`), and actual CSS flex-fill/
  * `overflow-y` enforcement only exist live):
  *   [ ] A fresh Generator/Preview node renders with the house theme applied
  *       and real litegraph sockets line up sensibly above this DOM body.
  *   [ ] `generation_settings`/`preview_state` widgets are invisible on the
  *       node face but present (and correctly populated) in the saved
  *       workflow JSON / the queued API prompt.
- *   [ ] The `.wtn-an-panel` visually caps at `PANEL_MAX_H` and scrolls
- *       internally past it, without the node itself growing further.
+ *   [ ] Dragging the node TALLER makes `.wtn-an-panel` taller with it (no
+ *       cap); dragging it SHORTER shrinks the panel and it scrolls
+ *       internally rather than spilling; dragging below the floor clamps
+ *       there instead of shrinking further.
+ *   [ ] A workflow saved at a given size reopens at EXACTLY that size (no
+ *       jump on load, no false "modified" workflow indicator).
  *   [ ] `resolveContextBridge`'s `getInputLink`/`graph.links[id]` fallback
  *       chain actually resolves against a real litegraph graph.
  *   [ ] The ⚙ popovers actually appear beside the correct row on screen and
  *       flip to the other side when they'd overflow the viewport.
  *   [ ] The wipe's hover tracks the cursor smoothly with no jitter.
  *   [ ] Mouse wheel over the node body zooms the canvas, except while
- *       hovering the `.wtn-an-panel` itself once its content overflows
- *       `PANEL_MAX_H`, or a popover's own `overflow: auto`.
+ *       hovering the `.wtn-an-panel` itself once its content overflows the
+ *       panel's OWN current height, or a popover's own `overflow: auto`.
  */
 
 import assert from "node:assert/strict";
@@ -100,6 +111,7 @@ import {
   isBuiltinDetailerBlock,
 } from "./state.mjs";
 
+import * as render from "./render.mjs";
 import {
   injectStyles,
   buildSwitch,
@@ -112,7 +124,6 @@ import {
   GENERATOR_MIN_W,
   PREVIEW_MIN_W,
   PANEL_MIN_H,
-  PANEL_MAX_H,
 } from "./render.mjs";
 
 import {
@@ -638,7 +649,7 @@ test("Detailer block helpers: add respects MAX_DETAILER_PASSES, face/eye are unr
 });
 
 // ===========================================================================
-// B. render.mjs — panel min/max height, min width
+// B. render.mjs — panel height FLOOR (no ceiling any more), min width
 // ===========================================================================
 
 test("injectStyles is idempotent and guarded against a doc with no createElement", () => {
@@ -748,22 +759,51 @@ test("measureMinHeight floors the whole widget at PANEL_MIN_H even for a nearly-
   assert.equal(measureMinHeight(root), PANEL_MIN_H);
 });
 
-test("measureMinHeight caps the whole widget at PANEL_MAX_H even when the panel's real content is far taller -- this IS the 'node stops growing, panel scrolls' contract", () => {
+test("measureMinHeight: NO CEILING -- a panel with a huge real (stretched) offsetHeight still reports just the PANEL_MIN_H floor, never scaling up with it. This is the 'panel follows the NODE's height, not the content's' contract: the floor this reports to litegraph must never grow just because the content grew, or a resize-drag could get stuck unable to shrink", () => {
   const root = makeDocStub().createElement("div");
   const panel = makeDocStub().createElement("div");
   panel.className = "wtn-an-panel";
   panel.offsetHeight = 5000; // a huge stack of expanded sections/detailer blocks
   root.appendChild(panel);
-  assert.equal(measureMinHeight(root), PANEL_MAX_H);
+  assert.equal(measureMinHeight(root), PANEL_MIN_H);
 });
 
-test("measureMinHeight tracks the panel's real height between the two bounds", () => {
-  const root = makeDocStub().createElement("div");
-  const panel = makeDocStub().createElement("div");
-  panel.className = "wtn-an-panel";
-  panel.offsetHeight = 300;
-  root.appendChild(panel);
-  assert.equal(measureMinHeight(root), 300);
+test("measureMinHeight is decoupled from the panel's real offsetHeight entirely -- 10px and 300px real heights report the identical floor (the panel is a flex-fill area now, not something whose content height this function tracks)", () => {
+  const rootSmall = makeDocStub().createElement("div");
+  const panelSmall = makeDocStub().createElement("div");
+  panelSmall.className = "wtn-an-panel";
+  panelSmall.offsetHeight = 10;
+  rootSmall.appendChild(panelSmall);
+
+  const rootBig = makeDocStub().createElement("div");
+  const panelBig = makeDocStub().createElement("div");
+  panelBig.className = "wtn-an-panel";
+  panelBig.offsetHeight = 300;
+  rootBig.appendChild(panelBig);
+
+  assert.equal(measureMinHeight(rootSmall), measureMinHeight(rootBig));
+  assert.equal(measureMinHeight(rootBig), PANEL_MIN_H);
+});
+
+test("injected CSS: .wtn-an-panel fills the node (flex grow, no max-height) with only a min-height floor, and still scrolls internally", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const body = cssRuleBody(cssText, ".wtn-an-panel");
+  assert.ok(body, "expected a .wtn-an-panel rule in the injected CSS");
+  assert.match(body, /flex:\s*1\s+1\s+auto/, ".wtn-an-panel must flex-grow to fill the node (flex: 1 1 auto)");
+  assert.ok(body.includes(`min-height: ${PANEL_MIN_H}px`), ".wtn-an-panel's CSS floor must match PANEL_MIN_H");
+  assert.ok(!body.includes("max-height"), "the ceiling must be gone -- no max-height on .wtn-an-panel any more");
+  assert.ok(body.includes("overflow-y: auto"), ".wtn-an-panel must still scroll internally past its own height");
+});
+
+test("the grow-biased auto-fit mechanism is gone from render.mjs entirely -- refitNode/scheduleRefit/scheduleInitialFit/setNodeHeight/PANEL_MAX_H no longer exist, so nothing can silently start fighting a manual resize again", () => {
+  assert.equal(render.refitNode, undefined);
+  assert.equal(render.scheduleRefit, undefined);
+  assert.equal(render.scheduleInitialFit, undefined);
+  assert.equal(render.setNodeHeight, undefined);
+  assert.equal(render.PANEL_MAX_H, undefined);
+  assert.equal(render.CHROME, undefined);
 });
 
 test("clampGeneratorSize / clampPreviewSize raise size[0] up to each node's own floor, never touch size[1]", () => {
@@ -785,6 +825,85 @@ test("clampGeneratorSize / clampPreviewSize raise size[0] up to each node's own 
   // Tolerant of a missing/non-numeric size.
   assert.doesNotThrow(() => clampGeneratorSize(null));
   assert.doesNotThrow(() => clampGeneratorSize(["nope"]));
+});
+
+// ===========================================================================
+// B2. Resize policy -- the panel follows the NODE's height, floors but
+//     never caps, and nothing in this module resizes the node on a repaint
+//     or a workflow load (the whole point of this dispatch's reversal).
+// ===========================================================================
+
+test("mounting a node never touches node.size -- a size litegraph already restored (a stand-in for a saved workflow's size) must come out of mountGeneratorUI/mountPreviewUI byte-identical", () => {
+  const genNode = makeGeneratorNode();
+  genNode.size = [503, 733]; // an arbitrary "already restored" size
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountGeneratorUI(genNode, ctx);
+  assert.deepEqual(genNode.size, [503, 733], "mounting the Generator UI must not resize the node");
+
+  const pvNode = makePreviewNode();
+  pvNode.size = [611, 899];
+  mountPreviewUI(pvNode, ctx);
+  assert.deepEqual(pvNode.size, [611, 899], "mounting the Preview UI must not resize the node");
+});
+
+test("a manual resize survives every kind of repaint -- toggling a stage, opening/editing a popover field, and a detailer block add all leave node.size exactly as the user (here, a direct setSize standing in for a manual drag) left it", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+
+  // Simulate the user manually shrinking the node well below whatever this
+  // module might otherwise have wanted -- there is no `_anAutoH`/"user
+  // enlarged" bookkeeping left anywhere in this module to second-guess this.
+  node.setSize([node.size[0], 150]);
+  assert.deepEqual(node.size, [DEFAULT_W, 150]);
+
+  const row = findStageRow(refs.body, "Highres");
+  fire(switchOf(row), "click"); // toggles a stage -> repaintGenerator internally
+  assert.deepEqual(node.size, [DEFAULT_W, 150], "a stage toggle (and its repaint) must not touch node.size");
+
+  const detailerRow = findStageRow(repaintGenerator(node, ctx).body, "Detailer");
+  fire(gearOf(detailerRow), "click");
+  const pop = popoverRoot(doc);
+  const addBtn = queryAll(pop, (n) => n.tagName === "button").find((b) => b.textContent === "+");
+  fire(addBtn, "click"); // adds a detailer block, persists, and refreshes the popover in place
+  assert.deepEqual(node.size, [DEFAULT_W, 150], "adding a detailer block must not touch node.size either");
+
+  closeActiveOverlay(); // closing runs onClosed -> repaintGenerator -- must not touch node.size either
+  assert.deepEqual(node.size, [DEFAULT_W, 150], "closing the popover (and its repaint) must not touch node.size");
+});
+
+test("a manual resize survives a Preview repaint too (save/compare toggles, handleExecuted)", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+  node.setSize([node.size[0], 180]);
+
+  handleExecuted(node, ctx, {
+    images: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
+  });
+  assert.deepEqual(node.size, [396, 180], "a run's onExecuted repaint must not touch node.size");
+
+  repaintPreview(node, ctx);
+  assert.deepEqual(node.size, [396, 180], "an explicit repaintPreview call must not touch node.size either");
+});
+
+test("index.js: the grow-biased refit call sites are gone -- no scheduleInitialFit/scheduleRefit/refitNode/setNodeHeight/PANEL_MAX_H reference survives in the file that wires up sizing", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.doesNotMatch(indexSource, /scheduleInitialFit\(/);
+  assert.doesNotMatch(indexSource, /scheduleRefit\(/);
+  assert.doesNotMatch(indexSource, /refitNode\(/);
+  assert.doesNotMatch(indexSource, /setNodeHeight\(/);
+  assert.doesNotMatch(indexSource, /PANEL_MAX_H/);
+  assert.doesNotMatch(indexSource, /_anConfigured/);
+  // The floor mechanism itself must still be wired to BOTH renderers.
+  assert.match(indexSource, /getMinHeight/);
+  assert.match(indexSource, /computeLayoutSize/);
+  assert.match(indexSource, /minWidth:\s*1/);
 });
 
 // ===========================================================================

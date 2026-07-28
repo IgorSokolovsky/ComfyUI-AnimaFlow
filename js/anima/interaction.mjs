@@ -84,9 +84,6 @@ import {
   buildPopoverShell,
   buildWipeLayer,
   measureMinHeight,
-  refitNode,
-  scheduleRefit,
-  scheduleInitialFit,
   DEFAULT_H,
   PREVIEW_DEFAULT_H,
 } from "./render.mjs";
@@ -1205,8 +1202,10 @@ export function teardownNode(node) {
 }
 
 // ---------------------------------------------------------------------------
-// Resize wrappers (legacy litegraph primary; see render.mjs's re-exports).
+// Resize wrappers (legacy litegraph primary; see render.mjs's "Resize"
+// section -- there is no refit/auto-fit left to re-export; the floor
+// (`measureMinHeight`) and the fresh-node defaults are all that's left).
 // ---------------------------------------------------------------------------
 
-export { measureMinHeight, refitNode, scheduleRefit, scheduleInitialFit, DEFAULT_H, PREVIEW_DEFAULT_H };
+export { measureMinHeight, DEFAULT_H, PREVIEW_DEFAULT_H };
 export { closeActiveOverlay };

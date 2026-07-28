@@ -139,8 +139,14 @@ function buildCtx(mods) {
 // per-row DOM widgets — see render.mjs's top doc comment) and the ONE DOM
 // widget (a single scrollable panel, not one widget per row/section — see
 // render.mjs's top doc comment for the 2026-07-28 rewrite) occupies the
-// body below them, sized via `getMinHeight` (legacy, PRIMARY) /
-// `computeLayoutSize` (Nodes 2.0, forward-compat only).
+// body below them. `getMinHeight` (legacy, PRIMARY) / `computeLayoutSize`
+// (Nodes 2.0, forward-compat only) report ONLY a FLOOR
+// (`measureMinHeight`) -- everything ABOVE that floor is the panel filling
+// whatever height the node is (render.mjs's `.wtn-an-panel` CSS, `flex: 1 1
+// auto`), never something this file measures or reacts to. That is
+// deliberate: this dispatch removed the grow-biased node-auto-fit
+// (`refitNode`/`scheduleRefit`) that used to fight a manual resize -- the
+// node's height is the user's to set, full stop.
 // ---------------------------------------------------------------------------
 
 function mountNode(node, mods, isGenerator) {
@@ -207,11 +213,15 @@ function mountNode(node, mods, isGenerator) {
 
 function setupNode(node, mods, isGenerator) {
   mountNode(node, mods, isGenerator);
-  const refs = node._anRefs;
   const defaultH = isGenerator ? mods.render.DEFAULT_H : mods.render.PREVIEW_DEFAULT_H;
-  // Floor a freshly-created node's size UP (never down) before the guarded
-  // initial fit -- mirrors `js/prompt_rules/node/index.js`'s
-  // `ensureInitialFloor`.
+  // Floor a freshly-created node's size UP (never down) to a comfortable
+  // starting size -- mirrors `js/prompt_rules/node/index.js`'s
+  // `ensureInitialFloor`. This is the ONLY sizing this module ever does for
+  // a fresh node: there is no follow-up grow-to-content fit (deleted --
+  // this file's top "Legacy litegraph sizing" comment). The panel fills
+  // whatever height that leaves it (render.mjs's CSS); if the defaults
+  // don't fit inside `defaultH` without scrolling, the user drags the node
+  // taller, same as any later resize.
   const curW = Array.isArray(node.size) && typeof node.size[0] === "number" ? node.size[0] : 0;
   const curH = Array.isArray(node.size) && typeof node.size[1] === "number" ? node.size[1] : 0;
   // Each node type has its own width floor (render.mjs's `GENERATOR_MIN_W`/
@@ -228,16 +238,15 @@ function setupNode(node, mods, isGenerator) {
       node.size[1] = h;
     }
   }
-  // GUARDED initial fit -- a no-op if this node turns out to be loading from
-  // a saved workflow (see render.mjs's `scheduleInitialFit` doc comment).
-  mods.render.scheduleInitialFit(node, refs.root, "_anConfigured", defaultH);
 }
 
 function restoreNode(node, mods, isGenerator) {
   mountNode(node, mods, isGenerator);
-  // Deliberately NO scheduleRefit/fitNode here -- trust the size litegraph
+  // Deliberately NO sizing call here at all -- trust the size litegraph
   // already restored from the saved workflow (never resize/rewrite on
-  // load — a clean workflow must not open "modified").
+  // load — a clean workflow must not open "modified"). There is no
+  // refit/fitNode left in this module to accidentally call either way (see
+  // this file's top "Legacy litegraph sizing" comment).
 }
 
 app.registerExtension({
@@ -267,11 +276,6 @@ app.registerExtension({
 
     const _configure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (...args) {
-      // Set BEFORE anything else (including the async mods load) -- the
-      // still-pending initial-fit rAF queued back in onNodeCreated must see
-      // this flag by the time it fires (mirrors js/controls/index.js's
-      // `_ctrlConfiguring` / js/prompt_rules/node's `_prConfigured`).
-      this._anConfigured = true;
       const result = _configure ? _configure.apply(this, args) : undefined;
       const node = this;
       loadMods()

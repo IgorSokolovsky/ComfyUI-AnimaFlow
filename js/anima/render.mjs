@@ -12,14 +12,23 @@
  * The whole body — every section, every stage row — now lives inside a
  * single bordered `.wtn-an-panel` (one child of the DOM widget's root),
  * modelled on upstream's AiO generator panel
- * (`../ComfyUI-EasyUseAnima/web/js/aio/generator_panel_runtime.js`): a fixed
- * `min-height`/`max-height` with `overflow-y: auto`, so the NODE stops
- * growing once the panel hits its ceiling and the panel scrolls internally
- * instead. `measureMinHeight` below enforces the same `[PANEL_MIN_H,
- * PANEL_MAX_H]` range in JS (not just via the CSS declaration), so the cap
- * is deterministic under this file's own headless test (no real layout
- * engine to enforce a CSS `max-height` there) and not just a hope that the
- * browser's computed `offsetHeight` happens to agree.
+ * (`../ComfyUI-EasyUseAnima/web/js/aio/generator_panel_runtime.js`).
+ *
+ * **2026-07-28 reversal (this dispatch): the panel FILLS the node, the node
+ * is the user's to resize.** The original cut here gave the panel a fixed
+ * `[PANEL_MIN_H, PANEL_MAX_H]` content range and had the NODE auto-fit to
+ * it (`refitNode`/`scheduleRefit`, now deleted). The user asked for the
+ * opposite relationship: drag the node taller and the panel gets taller
+ * with it; drag it shorter and the panel shrinks and scrolls internally
+ * (`overflow-y: auto`, unchanged). So `.wtn-an-panel` is now `flex: 1 1
+ * auto` — the sole flex child of `.wtn-an-root`'s column, it stretches to
+ * fill whatever height the node (hence the DOM widget's root) currently is
+ * — with only a `min-height`/`PANEL_MIN_H` FLOOR, no ceiling at all.
+ * `measureMinHeight` below reports that floor to litegraph's `getMinHeight`/
+ * `computeLayoutSize` so the node can't be dragged unusably small; it never
+ * reports anything else, so there is nothing left in this file that could
+ * grow OR shrink `node.size` on a repaint or a workflow load — see this
+ * module's "Resize" section for the full mechanism.
  *
  * The body is still rebuilt in full on every discrete action (see the old
  * version of this file's doc comment, carried forward): toggling a stage,
@@ -36,9 +45,11 @@
  * and that module's `scrollRegionWantsWheel` already walks from the wheel
  * event's target up to the root looking for a genuinely scrollable ancestor
  * with room in the wheel's own direction — `.wtn-an-panel`'s `overflow-y:
- * auto` is exactly such an ancestor once its content overflows
- * `PANEL_MAX_H`. No bespoke "is this scrollable" check is written here —
- * that duplication is exactly what the design brief warned against.
+ * auto` is exactly such an ancestor whenever its content overflows the
+ * panel's own current height (now the node's height, not a fixed ceiling —
+ * see this module's "Resize" section). No bespoke "is this scrollable"
+ * check is written here — that duplication is exactly what the design
+ * brief warned against.
  *
  * ## Real sockets are litegraph's, never re-drawn in this body
  *
@@ -123,12 +134,17 @@ const CSS = `
 .wtn-an-root, .wtn-an-root * { box-sizing: border-box; }
 
 /* ── the one bordered, scrollable panel -- see this module's top doc
-   comment. min-height/max-height here are the visual/live-browser half of
-   the cap; measureMinHeight below is the deterministic, testable half. ── */
+   comment. \`flex: 1 1 auto\` is the fill mechanism: as the sole flex child
+   of \`.wtn-an-root\`'s column, this stretches to whatever height the node
+   currently is. \`min-height\` is the ONLY bound -- a floor, matched by
+   PANEL_MIN_H below (measureMinHeight's deterministic, testable half of the
+   same floor) -- deliberately NO max-height: dragging the node taller must
+   make this taller too, with no ceiling. Shrink the node below its content
+   and this scrolls internally (\`overflow-y: auto\`) rather than spill. ── */
 .wtn-an-panel { display: flex; flex-direction: column; gap: 4px; padding: 6px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px;
   background: var(--wtn-surface, ${TOKENS.surface});
-  min-height: 220px; max-height: 480px; overflow-y: auto; overflow-x: hidden; }
+  flex: 1 1 auto; min-height: 220px; overflow-y: auto; overflow-x: hidden; }
 
 .wtn-an-sec { font-family: var(--wtn-font-mono, monospace); font-size: 9px; letter-spacing: .13em;
   text-transform: uppercase; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -224,7 +240,19 @@ const CSS = `
 .wtn-an-pbtn:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 .wtn-an-pbtn.wtn-an-danger:hover { color: var(--wtn-bad, ${TOKENS.bad}); border-color: var(--wtn-bad, ${TOKENS.bad}); }
 
-/* ── Preview node: hover wipe ── */
+/* ── Preview node: hover wipe ──
+   Aspect-ratio choice for this dispatch's "panel fills the node" change:
+   the wipe keeps its OWN size (width: 100% of the panel, height locked to
+   it via aspect-ratio: 1/1) rather than trying to flex-fill whatever extra
+   node height the user drags in -- stretching a square compare image to a
+   tall node's non-square remaining space would either distort it or need
+   letterboxing, and neither reads as "resize the node" the way a taller
+   panel obviously does elsewhere in this pack. So the image area takes
+   exactly what it needs, the save/compare rows below it (.wtn-an-pvbar) are
+   their own fixed height, and \`.wtn-an-panel\`'s \`overflow-y: auto\` (this
+   module's CSS above) is what handles a node too short to show all of it --
+   the whole body scrolls, image included, same as every other section in
+   this pack's panel. */
 .wtn-an-wipe { position: relative; width: 100%; aspect-ratio: 1/1; overflow: hidden; border-radius: 8px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-console, ${TOKENS.console});
   cursor: col-resize; touch-action: none; }
@@ -448,28 +476,43 @@ export function buildPopoverShell(doc, title) {
 }
 
 // ---------------------------------------------------------------------------
-// Resize (ComfyUI-Pixaroma find_replace mechanism -- matches
-// `js/prompt_rules/node/render.mjs`; see the frontend skill's "DOM-widget
-// resize mechanism" and that module's own doc comment for the full
-// two-renderer rationale). 2026-07-28: `measureMinHeight` now also enforces
-// `PANEL_MAX_H` as a ceiling, not just a floor -- see this module's top doc
-// comment.
+// Resize -- 2026-07-28 (this dispatch) reversal from the ComfyUI-Pixaroma
+// find_replace grow-biased-refit mechanism `js/prompt_rules/node/render.mjs`
+// still uses. THAT mechanism has the NODE auto-fit to the panel's content
+// (grow always, shrink only if the user hasn't manually enlarged past the
+// last auto height) -- exactly the behaviour the user asked to remove here:
+// "don't fight the user's resize". So there is no `refitNode`/`scheduleRefit`/
+// `setNodeHeight` in this file at all any more, for either node type -- the
+// node's height is the user's to set, full stop.
+//
+// What's left is ONLY a floor: `measureMinHeight` (wired to legacy
+// litegraph's `getMinHeight` and Nodes 2.0's `computeLayoutSize` in
+// `index.js`) reports the smallest height this node can sensibly be, so
+// litegraph clamps a resize-drag there -- and reports EXACTLY that floor
+// every time, never more, regardless of how tall the panel's real (stretched)
+// content is. The panel filling anything ABOVE that floor is pure CSS
+// (`.wtn-an-panel`'s `flex: 1 1 auto`, this module's CSS block above) --
+// nothing here measures or reacts to the node's current size, so nothing
+// here can ever rewrite it, on a repaint OR on load. That is what makes a
+// manual shrink permanent across a repaint, and a saved size restore exactly
+// on load with no resize firing at all: there is no code path left that
+// would.
 // ---------------------------------------------------------------------------
 
-export const CHROME = 40;
 export const DEFAULT_W = 360;
 export const DEFAULT_H = 340;
 export const PREVIEW_DEFAULT_H = 420;
 
-// The panel's own content-height range (excludes root padding/CHROME) --
-// mirrored in this module's CSS (`.wtn-an-panel`'s `min-height`/
-// `max-height`). Chosen so the COMMON case (sampler summary + mod-guidance
-// row + all four stage rows, nothing expanded) fits with no scrollbar
-// (~230px), while a node with several detailer blocks added, or every
-// stage's summary text at once, caps out at a size that still leaves most
-// of a crowded graph visible rather than growing without limit.
+// The node-height FLOOR (there is no ceiling any more -- see this section's
+// top comment). Mirrored in this module's CSS (`.wtn-an-panel`'s
+// `min-height`) and reported to litegraph via `measureMinHeight` below.
+// 220px is the common case (sampler summary + mod-guidance row + all four
+// stage rows, nothing expanded) with no scrollbar; a node dragged smaller
+// than that would clip a stage row, so litegraph refuses to go below it.
+// Beyond this floor the panel scrolls internally (a node with several
+// detailer blocks, or every stage's summary text at once) rather than the
+// node growing to meet it -- the user drags taller instead, if they want to.
 export const PANEL_MIN_H = 220;
-export const PANEL_MAX_H = 480;
 
 // Generator floor -- the user asked for a min WIDTH explicitly, same
 // treatment as `PREVIEW_MIN_W` below. 320px is the narrowest a stage row
@@ -495,7 +538,10 @@ function clampMinWidth(size, minW) {
 }
 
 /** litegraph's `onResize(size)` contract: mutate `size` IN PLACE. Never
- * touches `size[1]` (height stays owned by `getMinHeight`/`refitNode`). */
+ * touches `size[1]` -- height has no clamp of its own beyond the floor
+ * litegraph itself enforces from `getMinHeight`/`computeLayoutSize` (this
+ * module's top "Resize" comment: there is no ceiling, and nothing here
+ * rewrites height at all). */
 export function clampGeneratorSize(size) {
   return clampMinWidth(size, GENERATOR_MIN_W);
 }
@@ -504,14 +550,18 @@ export function clampPreviewSize(size) {
   return clampMinWidth(size, PREVIEW_MIN_W);
 }
 
-/** Sum of `root`'s children's `offsetHeight` (skipping display:none),
- * clamping the `.wtn-an-panel` child's OWN contribution to `[PANEL_MIN_H,
- * PANEL_MAX_H]` -- the same "substitute a fixed min/max for a growing
- * child's real offsetHeight" pattern the frontend skill documents for a
- * flex-fill preview child, generalized to a ceiling as well as a floor. This
- * is what makes the cap deterministic under this file's own headless test
- * (no real layout engine there to enforce the CSS `max-height` declaration)
- * as well as correct in a live browser (where the two agree). */
+/** The node-height FLOOR litegraph enforces on a resize-drag (legacy
+ * `getMinHeight`, Nodes 2.0 `computeLayoutSize` -- `index.js` wires both to
+ * this). Sum of `root`'s children's `offsetHeight` (skipping display:none),
+ * substituting the FIXED `PANEL_MIN_H` for the `.wtn-an-panel` child's own
+ * contribution instead of its real (CSS `flex: 1 1 auto`-stretched)
+ * `offsetHeight` -- the same "a growing/shrinking flex-fill child reports a
+ * fixed floor, not its live size" pattern the frontend skill documents (and
+ * `../ComfyUI-Pixaroma/js/find_replace/render.mjs`'s `PREVIEW_MIN`
+ * substitution mirrors), just with no matching ceiling substitution any
+ * more -- there IS no ceiling. Because the panel is this root's only child,
+ * this simplifies to a constant in practice, but the general sibling-sum
+ * stays in case a fixed-content sibling is ever added alongside the panel. */
 export function measureMinHeight(root) {
   if (!root) {
     return PANEL_MIN_H;
@@ -524,7 +574,7 @@ export function measureMinHeight(root) {
     }
     count += 1;
     if (child.classList && child.classList.contains("wtn-an-panel")) {
-      h += Math.max(PANEL_MIN_H, Math.min(PANEL_MAX_H, child.offsetHeight));
+      h += PANEL_MIN_H;
     } else {
       h += child.offsetHeight;
     }
@@ -536,56 +586,6 @@ export function measureMinHeight(root) {
   }
   h += (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
   return Math.max(PANEL_MIN_H, Math.round(h / 4) * 4);
-}
-
-export function setNodeHeight(node, h) {
-  node.size[1] = h;
-  if (typeof node.setSize === "function") {
-    node.setSize([node.size[0], h]);
-  }
-  node._anAutoH = h;
-}
-
-export function refitNode(node, root, defaultH) {
-  if (!root) {
-    return;
-  }
-  const want = Math.max(measureMinHeight(root) + CHROME, defaultH || DEFAULT_H);
-  const cur = node.size[1];
-  const autoH = node._anAutoH;
-  const userEnlarged = autoH != null && cur > autoH + 4;
-  let target = cur;
-  if (want > cur) {
-    target = want;
-  } else if (!userEnlarged && want < cur) {
-    target = want;
-  }
-  if (target !== cur) {
-    setNodeHeight(node, target);
-  }
-}
-
-export function scheduleRefit(node, root, defaultH) {
-  requestAnimationFrame(() => {
-    refitNode(node, root, defaultH);
-    if (node.setDirtyCanvas) {
-      node.setDirtyCanvas(true, true);
-    }
-  });
-}
-
-export function scheduleInitialFit(node, root, configuredFlag, defaultH) {
-  requestAnimationFrame(() => {
-    if (node[configuredFlag]) {
-      // Loaded from a saved workflow -- onConfigure already restored
-      // node.size; trust it, don't grow/shrink to content.
-      return;
-    }
-    refitNode(node, root, defaultH);
-    if (node.setDirtyCanvas) {
-      node.setDirtyCanvas(true, true);
-    }
-  });
 }
 
 // Re-export the shared cap so callers only need one import for both the
