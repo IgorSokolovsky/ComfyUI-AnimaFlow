@@ -37,6 +37,16 @@
  * mounted Generator's own `_anMods`/`_anCtx` — so it doesn't need `mountsUi`
  * either, and it's installed before that gate for exactly that reason.
  *
+ * **Subgraph boundaries (design doc §5a-0, later dispatch)**: a subgraph
+ * instance node's `type` is a per-instance UUID, so THIS prototype-level
+ * patching can never reach it at all — there is no shared node definition to
+ * register a hook against. `interaction.mjs`'s `ensureBoundaryRepaintHook`
+ * covers that gap by installing directly on the boundary INSTANCE, the
+ * first time `resolveContextProducer`/`computeContextSupplied` resolves one
+ * (i.e. from inside a Generator's own repaint, triggered by `buildCtx`'s
+ * `isSubmitting` field below reaching it) — nothing in this file calls it
+ * directly.
+ *
  * ## `state.mjs`/`render.mjs`/`interaction.mjs` are LAZY, not static
  *
  * `beforeRegisterNodeDef` runs for EVERY node type on EVERY ComfyUI page at
@@ -242,6 +252,17 @@ function buildCtx(mods) {
     getCanvasEl,
     havePackages: readHavePackages,
     getKnownLists: () => readKnownLists(mods),
+    // Threaded through to `interaction.mjs`'s `computeContextSupplied`/
+    // `resolveContextProducer`, reaching `ensureBoundaryRepaintHook`'s own
+    // Use-Everywhere submit-churn guard the SAME way the Bridge's own
+    // `onConnectionsChange` hook above uses this eagerly-imported
+    // `isSubmitting` -- `interaction.mjs` itself can never import
+    // `../shared/submit_guard.mjs` directly (its top-level `/scripts/app.js`
+    // import would 404 under the plain-`node` test harness that imports
+    // `interaction.mjs` statically), so this `ctx` field is the one place
+    // that boundary code can reach it at all (this file's own top doc
+    // comment / `ensureBoundaryRepaintHook`'s doc comment for the "why").
+    isSubmitting,
   };
 }
 

@@ -102,6 +102,24 @@
  * for why the value shown is this settings tree's own (this frontend still
  * cannot see inside the bridge's execution-time output; the tooltip says so
  * rather than guessing at it).
+ *
+ * **Subgraph boundaries (design doc §5a-0, later dispatch)**: the walk above
+ * used to give up the instant it hit a subgraph instance node standing in
+ * for a whole subgraph (`isVirtualNode` + a `subgraph` property, `type` a
+ * per-instance UUID rather than a class name), wrongly reporting no bridge
+ * upstream even when one was wired inside. `resolveContextProducer` now
+ * recognises that shape structurally and reads `supplied` straight off the
+ * boundary's own PROMOTED sockets (the same `link != null` check the real
+ * Bridge gets), descending into `subgraph.nodes`/`._nodes` only to try to
+ * CONFIRM a real Bridge lives inside (`bridgeConfirmed`) so the section's own
+ * ⓘ can stay honest about how sure it is — greying out a field never depends
+ * on that confirmation, only `supplied` does. The forward mirror
+ * (`resolveDownstreamGenerators`) gets the same recognition so a Bridge
+ * INSIDE a subgraph can still find Generators outside it. Because a subgraph
+ * instance's `type` is a per-instance UUID, `beforeRegisterNodeDef` can never
+ * patch its prototype to catch a rewire on its promoted sockets —
+ * `ensureBoundaryRepaintHook` installs directly on the instance instead, the
+ * first time any walk resolves it.
  */
 
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
@@ -645,20 +663,141 @@ function resolveLinkOrigin(nodeLike, inputName) {
 }
 
 /**
- * Walk backward from `node`'s "context" input to the real
- * `AnimaContextBridge` node, tolerating any number of single-input/
- * single-output pass-through nodes in between (Reroute and similar,
- * matched GENERICALLY by "exactly one input", not by class name — mirrors
- * the Control Panel's own tolerance of arbitrary "*" pass-through targets).
- * Returns the producer node, or `null` for unwired / dangling / a cycle / a
- * producer that isn't the bridge.
+ * Structural (NOT UUID/name-based) recognition of a subgraph BOUNDARY node —
+ * the instance litegraph puts in the OUTER graph standing in for a whole
+ * subgraph (design doc §5a-0, probed live 2026-07-28): `isVirtualNode ===
+ * true`, PLUS a `subgraph` property. Both are required — a Reroute-ish
+ * virtual node with no `subgraph` at all is NOT a boundary and must fall
+ * through to the ordinary single-input pass-through handling below it, and
+ * matching on `type` would be wrong on its face (a subgraph instance's
+ * `type` is a per-instance UUID, never a stable class name to compare
+ * against). */
+function isSubgraphBoundary(node) {
+  return !!(node && node.isVirtualNode === true && node.subgraph);
+}
+
+/** Descends into a (possibly nested) subgraph looking for a real
+ * `AnimaContextBridge` node, so `resolveContextProducer`'s boundary case can
+ * report an HONEST `bridgeConfirmed` rather than assuming one just because
+ * the boundary's promoted sockets look right (this function is what makes
+ * that honesty possible at all — see this module's top doc comment / design
+ * doc §5a-0's "confirm a real Bridge lives inside" language).
+ *
+ * VERIFY-IN-COMFYUI: `subgraph.nodes` is this dev environment's best guess at
+ * where a subgraph keeps its own node list (`subgraph._nodes` tried as a
+ * fallback) — neither shape was part of the live probe this task shipped
+ * with (that probe only covered the BOUNDARY node's own `inputs`). If
+ * neither array exists, this returns `false` — "couldn't confirm", not "no
+ * bridge" — and the caller (`resolveContextProducer`) treats that exactly
+ * like "not confirmed", never like "definitely no bridge".
+ *
+ * `visited`/depth-capped the same way every other walk in this module is
+ * (`MAX_PASSTHROUGH_HOPS`) — a subgraph nested inside itself (directly or
+ * through a longer chain) must terminate rather than recurse forever. */
+function subgraphContainsBridge(subgraph, visited, depth) {
+  if (!subgraph || depth >= MAX_PASSTHROUGH_HOPS) {
+    return false;
+  }
+  const nodes = Array.isArray(subgraph.nodes) ? subgraph.nodes
+    : Array.isArray(subgraph._nodes) ? subgraph._nodes
+      : null;
+  if (!nodes) {
+    return false; // can't confirm -- not "no bridge", just "unprobeable here"
+  }
+  for (const n of nodes) {
+    if (!n || visited.has(n)) {
+      continue; // already walked (a cyclic subgraph reference) -- skip, don't re-enter
+    }
+    visited.add(n);
+    if (n.type === CONTEXT_BRIDGE_TYPE || n.comfyClass === CONTEXT_BRIDGE_TYPE) {
+      return true;
+    }
+    if (isSubgraphBoundary(n) && subgraphContainsBridge(n.subgraph, visited, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const BOUNDARY_HOOK_FLAG = "_anBoundaryHookInstalled";
+
+/**
+ * Installs, at most ONCE per boundary-node INSTANCE, an `onConnectionsChange`
+ * hook that repaints every `AnimaGenerator` downstream of it — the mirror of
+ * `js/anima/index.js`'s own Bridge-side hook, needed here because a subgraph
+ * instance's `type` is a per-instance UUID: there is no shared prototype
+ * `beforeRegisterNodeDef` could ever patch for it (design doc §5a-0's
+ * "the harder half is the repaint TRIGGER" paragraph). Called from
+ * `resolveContextProducer` the moment ANY backward walk resolves a boundary
+ * node, so the very first repaint that discovers one also arms it for every
+ * later external rewire.
+ *
+ * - Chains whatever `onConnectionsChange` the instance already carries
+ *   (never clobbers it) — same shape as every prototype patch in `index.js`.
+ * - Gated on `ctx.isSubmitting()` exactly like the real Bridge's own hook,
+ *   for the identical reason (`../shared/submit_guard.mjs`'s doc comment):
+ *   Use Everywhere materializes and removes real links across every UE-fed
+ *   socket at submit time, firing this ~14 times a run for churn that was
+ *   never a real rewire. `ctx` is threaded in from whichever call ultimately
+ *   resolved the boundary (`computeContextSupplied`/
+ *   `computeEffectiveContextSupplied`'s own `ctx` parameter) — if none was
+ *   given (a headless call with no ctx, or a test that doesn't care), this
+ *   degrades to "never submitting", which fails OPEN (extra repaints, never
+ *   a missed one) rather than silently skipping the guard's whole purpose.
+ * - Marked on the instance (`BOUNDARY_HOOK_FLAG`) so a second resolution
+ *   (every repaint re-resolves the producer) can't stack a second handler.
+ * - Never throws: a generator with no `_anMods`/`_anRefs` yet is simply
+ *   skipped, mirroring `index.js`'s own tolerance for "not mounted yet".
+ */
+export function ensureBoundaryRepaintHook(boundaryNode, ctx) {
+  if (!boundaryNode || boundaryNode[BOUNDARY_HOOK_FLAG]) {
+    return;
+  }
+  boundaryNode[BOUNDARY_HOOK_FLAG] = true;
+  const isSubmittingFn = ctx && typeof ctx.isSubmitting === "function" ? ctx.isSubmitting : () => false;
+  const previous = boundaryNode.onConnectionsChange;
+  boundaryNode.onConnectionsChange = function (...args) {
+    const result = previous ? previous.apply(this, args) : undefined;
+    if (isSubmittingFn()) {
+      return result;
+    }
+    const generators = resolveDownstreamGenerators(this);
+    generators.forEach((gen) => {
+      if (gen._anMods) {
+        gen._anMods.interaction.clearContextRun(gen);
+      }
+      if (gen._anMods && gen._anRefs) {
+        gen._anMods.interaction.repaintGenerator(gen, gen._anCtx);
+      }
+    });
+    return result;
+  };
+}
+
+/**
+ * Walk backward from `node`'s "context" input to whatever's actually
+ * SUPPLYING it, tolerating any number of single-input/single-output
+ * pass-through nodes in between (Reroute and similar, matched GENERICALLY by
+ * "exactly one input", not by class name — mirrors the Control Panel's own
+ * tolerance of arbitrary "*" pass-through targets) — returning a
+ * discriminated result rather than a bare node, because a subgraph BOUNDARY
+ * (design doc §5a-0) is a producer worth reporting even though it isn't
+ * literally the Bridge:
+ *
+ *   { kind: "bridge", node }                          -- the real AnimaContextBridge
+ *   { kind: "boundary", node, bridgeConfirmed }        -- a subgraph instance
+ *                                                         standing in for one
+ *   null                                               -- unwired / dangling / a cycle / neither
+ *
+ * `ctx` (optional) is threaded straight through to `ensureBoundaryRepaintHook`
+ * when a boundary resolves — see that function's own doc comment.
  *
  * VERIFY-IN-COMFYUI: this walk (and the `getInputLink`/`graph.links`
  * fallback chain in `resolveLinkOrigin`) is read from litegraph's documented
  * API surface, not exercised against a live process (none installed in this
  * dev environment).
  */
-export function resolveContextBridge(node) {
+export function resolveContextProducer(node, ctx) {
   let current = node;
   let inputName = "context";
   const visited = new Set([node]);
@@ -669,7 +808,12 @@ export function resolveContextBridge(node) {
     }
     visited.add(producer);
     if (producer.type === CONTEXT_BRIDGE_TYPE || producer.comfyClass === CONTEXT_BRIDGE_TYPE) {
-      return producer;
+      return { kind: "bridge", node: producer };
+    }
+    if (isSubgraphBoundary(producer)) {
+      const bridgeConfirmed = subgraphContainsBridge(producer.subgraph, new Set(), 0);
+      ensureBoundaryRepaintHook(producer, ctx);
+      return { kind: "boundary", node: producer, bridgeConfirmed };
     }
     const pInputs = producer.inputs || [];
     if (pInputs.length === 1) {
@@ -682,20 +826,66 @@ export function resolveContextBridge(node) {
   return null;
 }
 
-/** `{bridgeFound, bridge, supplied: {field: bool}}` for every one of
- * `CONTEXT_FIELDS` — see this module's top doc comment for the fail-closed
- * contract when no bridge resolves. */
-export function computeContextSupplied(node) {
-  const bridge = resolveContextBridge(node);
-  if (!bridge) {
-    return { bridgeFound: false, bridge: null, supplied: {} };
+/** Backward-compatible narrow view of `resolveContextProducer` — the real
+ * `AnimaContextBridge` node only, or `null` for every other case INCLUDING a
+ * subgraph boundary (a boundary is a producer worth reporting through
+ * `computeContextSupplied`, but it genuinely isn't "the bridge" itself, so
+ * this stays `null` for it rather than silently returning something whose
+ * own `.inputs` don't mean what a caller of THIS function would expect). */
+export function resolveContextBridge(node) {
+  const producer = resolveContextProducer(node);
+  return producer && producer.kind === "bridge" ? producer.node : null;
+}
+
+/** `{bridgeFound, bridge, supplied: {field: bool}, viaBoundary, bridgeConfirmed}`
+ * for every one of `CONTEXT_FIELDS` — see this module's top doc comment for
+ * the fail-closed contract when nothing resolves.
+ *
+ * `supplied` is populated identically whether the producer is a real Bridge
+ * or a subgraph boundary standing in for one — design doc §5a-0's whole
+ * point is that a boundary's own promoted `inputs` carry the SAME
+ * `link != null` truth the Bridge's own sockets do, so `findInput` is reused
+ * verbatim against whichever node resolved. That is what actually fixes the
+ * reported bug: greying out a sampler field only ever reads `supplied`, not
+ * `bridgeFound` (see `buildSamplerField` below) — `bridgeFound`/
+ * `viaBoundary`/`bridgeConfirmed` exist ONLY to keep the section's own ⓘ
+ * honest about how sure this is, never to gate the disabling itself.
+ *
+ * - Real Bridge: `bridgeFound: true`, `viaBoundary: false`,
+ *   `bridgeConfirmed: null` (not applicable -- there was no boundary to
+ *   confirm anything about).
+ * - Boundary with a confirmed Bridge inside: `bridgeFound: true`,
+ *   `viaBoundary: true`, `bridgeConfirmed: true`.
+ * - Boundary where a Bridge could NOT be confirmed inside (unprobeable
+ *   subgraph shape, or genuinely none found): `bridgeFound: false`,
+ *   `viaBoundary: true`, `bridgeConfirmed: false` — deliberately NOT the same
+ *   as "no bridge resolved at all" (`viaBoundary: false`), so a caller can
+ *   render an honest THIRD message instead of flatly asserting "No Anima
+ *   Context Bridge resolved" while `supplied` may still show real fields
+ *   disabled underneath it.
+ * - Nothing resolves: `bridgeFound: false`, `bridge: null`, `supplied: {}`,
+ *   `viaBoundary: false`, `bridgeConfirmed: null`.
+ */
+export function computeContextSupplied(node, ctx) {
+  const producer = resolveContextProducer(node, ctx);
+  if (!producer) {
+    return { bridgeFound: false, bridge: null, supplied: {}, viaBoundary: false, bridgeConfirmed: null };
   }
   const supplied = {};
   for (const field of CONTEXT_FIELDS) {
-    const input = findInput(bridge, field);
+    const input = findInput(producer.node, field);
     supplied[field] = !!(input && input.link != null);
   }
-  return { bridgeFound: true, bridge, supplied };
+  if (producer.kind === "bridge") {
+    return { bridgeFound: true, bridge: producer.node, supplied, viaBoundary: false, bridgeConfirmed: null };
+  }
+  return {
+    bridgeFound: !!producer.bridgeConfirmed,
+    bridge: producer.bridgeConfirmed ? producer.node : null,
+    supplied,
+    viaBoundary: true,
+    bridgeConfirmed: !!producer.bridgeConfirmed,
+  };
 }
 
 const GENERATOR_TYPE = "AnimaGenerator";
@@ -757,10 +947,26 @@ function resolveLinkTargets(nodeLike, outputName) {
  * what lets that hook, installed on the Bridge, find every Generator
  * downstream of it and repaint THEM instead.
  *
+ * **Subgraph boundaries (design doc §5a-0, task item 2)**: a target that is
+ * structurally a subgraph boundary (`isSubgraphBoundary` — same predicate
+ * `resolveContextProducer` uses backward, never a UUID/name match) is
+ * tunnelled through exactly like a plain pass-through, EXCEPT the outbound
+ * socket name is resolved by NAME first (the boundary's own output matching
+ * the name just walked, e.g. "context" promoted straight through), falling
+ * back to "exactly one output" only when no same-named one exists — a
+ * boundary node can expose several promoted sockets at once, so the plain
+ * pass-through's "exactly one output" rule would wrongly dead-end on it even
+ * when the relevant one is right there under the same name. This is what
+ * lets a Bridge INSIDE a subgraph still reach a Generator outside it (or
+ * vice versa) when the forward walk crosses that boundary mid-tunnel.
+ *
  * VERIFY-IN-COMFYUI: same caveat as `resolveContextBridge` — read from
  * litegraph's documented link-table shape (`output.links`/`graph.links[id]`/
  * `target_id`), not exercised against a live process (none installed in
- * this dev environment).
+ * this dev environment). The boundary-crossing half above is EVEN LESS
+ * verified than the rest of this walk: the live probe this task shipped
+ * with only covered the BACKWARD (input-promotion) case, so this forward
+ * side is inferred by symmetry, not observed.
  */
 export function resolveDownstreamGenerators(bridge) {
   if (!bridge) {
@@ -784,6 +990,19 @@ export function resolveDownstreamGenerators(bridge) {
           found.push(target);
         }
         continue; // a generator is a leaf for this walk -- don't walk past it
+      }
+      if (isSubgraphBoundary(target)) {
+        visited.add(target);
+        const targetOutputs = target.outputs || [];
+        const namedOutput = targetOutputs.find((o) => o && o.name === outputName);
+        const nextOutputName = namedOutput ? namedOutput.name
+          : (targetOutputs.length === 1 ? targetOutputs[0].name : null);
+        if (nextOutputName) {
+          walk(target, nextOutputName, hop + 1);
+        }
+        // No resolvable outbound socket on the boundary -- dead-ends here,
+        // same as any other unfollowable branch (never throws).
+        continue;
       }
       const outputs = target.outputs || [];
       if (outputs.length !== 1) {
@@ -830,19 +1049,26 @@ export function clearContextRun(node) {
  * itself.
  *
  * -> `{ bridgeFound, bridge, supplied: {field: bool}, source: {field:
- * "live"|"run"|null}, runSupplied: {field: bool}, values: {field: value} }`.
- * `source` is which signal EXPLAINS the "supplied" state (live wins when
- * both are true, since it's the more concrete of the two to name in a
- * tooltip); `runSupplied` is the run's OWN flag independently of `source`
- * (a caller needs this to tell "the run said supplied but carried no
- * value" apart from "never run at all"); `values` carries the run's own
- * sampler scalar for a field the run reported supplied for AND actually
- * had a value for — never invented, never present for a field the run
- * didn't report a real value for (`build_context_ui_payload`'s own
- * "supplied but None" case included).
+ * "live"|"run"|null}, runSupplied: {field: bool}, values: {field: value},
+ * viaBoundary, bridgeConfirmed }`. `source` is which signal EXPLAINS the
+ * "supplied" state (live wins when both are true, since it's the more
+ * concrete of the two to name in a tooltip); `runSupplied` is the run's OWN
+ * flag independently of `source` (a caller needs this to tell "the run said
+ * supplied but carried no value" apart from "never run at all"); `values`
+ * carries the run's own sampler scalar for a field the run reported supplied
+ * for AND actually had a value for — never invented, never present for a
+ * field the run didn't report a real value for (`build_context_ui_payload`'s
+ * own "supplied but None" case included). `viaBoundary`/`bridgeConfirmed`
+ * pass `computeContextSupplied`'s own subgraph-boundary honesty straight
+ * through unchanged — see that function's doc comment.
+ *
+ * `ctx` (optional) reaches `computeContextSupplied`/`resolveContextProducer`
+ * unchanged — it's what lets a resolved subgraph boundary find
+ * `ctx.isSubmitting` for its own repaint-hook install
+ * (`ensureBoundaryRepaintHook`'s doc comment).
  */
-export function computeEffectiveContextSupplied(node) {
-  const live = computeContextSupplied(node);
+export function computeEffectiveContextSupplied(node, ctx) {
+  const live = computeContextSupplied(node, ctx);
   const run = (node && node._anContextRun) || null;
   const runSuppliedAll = (run && run.supplied) || {};
   const runValuesAll = (run && run.values) || {};
@@ -861,7 +1087,16 @@ export function computeEffectiveContextSupplied(node) {
       values[field] = runValuesAll[field];
     }
   }
-  return { bridgeFound: live.bridgeFound, bridge: live.bridge, supplied, source, runSupplied, values };
+  return {
+    bridgeFound: live.bridgeFound,
+    bridge: live.bridge,
+    supplied,
+    source,
+    runSupplied,
+    values,
+    viaBoundary: live.viaBoundary,
+    bridgeConfirmed: live.bridgeConfirmed,
+  };
 }
 
 // LAST-RESORT fallback ONLY -- see `resolveSamplerOptions` below. The real
@@ -1240,13 +1475,24 @@ function summaryFieldText(field, eff, sampler, format) {
 function buildSamplerSection(doc, node, ctx, state) {
   const expanded = !!state.ui_expanded.sampler;
   const sampler = state.sampler;
-  const eff = computeEffectiveContextSupplied(node);
-  const { bridgeFound } = eff;
+  const eff = computeEffectiveContextSupplied(node, ctx);
+  const { bridgeFound, viaBoundary } = eff;
   const summary = `${summaryFieldText("sampler_name", eff, sampler)} / ${summaryFieldText("scheduler", eff, sampler)} · `
     + `${summaryFieldText("steps", eff, sampler)} steps · cfg ${summaryFieldText("cfg", eff, sampler, (v) => Number(v).toFixed(1))}`;
+  // Three honest wordings (design doc §5a-0's subgraph-boundary case, task
+  // item 1) -- NEVER "no bridge resolved" when a boundary actually supplied
+  // some of the fields disabled below, and never "confirmed" when it wasn't:
+  //   1. a real Bridge resolved directly (or confirmed inside a subgraph).
+  //   2. a subgraph boundary resolved, but a Bridge inside it could not be
+  //      confirmed -- fields below may still show disabled (`supplied` reads
+  //      straight off the boundary's own promoted sockets, independent of
+  //      this wording), this text just can't vouch for WHY.
+  //   3. nothing resolved at all.
   const infoTooltip = bridgeFound
     ? "Fields the Anima Context Bridge has wired drive this run; everything else comes from here."
-    : "No Anima Context Bridge resolved upstream of ‘context’ (unwired, or wired through something that isn't a bridge) -- every field below comes from here.";
+    : viaBoundary
+      ? "‘context’ is wired through a subgraph boundary; a Context Bridge inside it could not be confirmed from here, but any field shown disabled below is still read off that boundary's own wiring."
+      : "No Anima Context Bridge resolved upstream of ‘context’ (unwired, or wired through something that isn't a bridge) -- every field below comes from here.";
 
   return buildSection(doc, {
     key: "sampler", label: "Sampler", expanded, hasSwitch: false, infoTooltip, summary,
