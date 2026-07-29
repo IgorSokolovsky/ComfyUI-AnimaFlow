@@ -44,6 +44,7 @@ off, open the modal and click a result card.
 | 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
 | 21 | **The node's picker ESCALATES to the 90% modal** on card click (query + filters + originating row carry over); no in-panel detail | §7c-ii |
+| 22 | **EVERY per-model info surface carries `View on Civitai ↗`** — the ⓘ panel, the modal detail, and the Loader Panel's model info | §7d |
 
 ### 0b. The ONE thing still open
 
@@ -719,6 +720,33 @@ Header row, final: `＋ Add LoRA` · *(slack)* · master switch · `N/M` · **�
 
 Remember the settings-id namespace is **append-only** (`settings.md`) — renaming an id silently
 abandons whatever the user had set.
+
+---
+
+## 7d. `View on Civitai ↗` on every per-model info surface (owner, 2026-07-29)
+
+The ⓘ panel already has it (§1a-i). **It belongs on every surface that shows one model's information**:
+
+| surface | milestone |
+|---|---|
+| the node's ⓘ panel | M1 |
+| the modal's detail view (which is also the picker's, §7c-ii) | M2b |
+| the Loader Panel's model info | M3 |
+
+**Why it is a rule rather than three separate buttons:** whatever we render is a *curated subset* of
+someone else's page. Civitai always has more — comments, the full image gallery, other versions'
+changelogs, the licence terms. An info surface with no way out is a dead end that quietly implies we
+showed you everything. One link keeps us honest about being a convenience layer over their catalogue.
+
+It also has to link to the **specific version** being viewed, not the model's landing page, since the
+detail view has a version selector (§"The detail view") and the trigger words and file size shown belong
+to *that* version.
+
+**Governed by the Civitai setting (decision 20).** With it off, this link is hidden too — even though
+opening a link is technically the *user's* network call and not the node's. Rationale: someone who turned
+Civitai off wants no Civitai, and "off means off everywhere" is a rule you can reason about, whereas
+"off, except the links" is one you have to remember. Cached sidecar info still displays; only the way out
+disappears.
 
 ---
 
