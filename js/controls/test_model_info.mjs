@@ -1,0 +1,841 @@
+/**
+ * test_model_info.mjs — regression tests for `model_info.mjs`: the pure
+ * helpers (`civitaiModelUrl`, `visibleChips`, `emptyStateMessage`,
+ * `lookupStateView`'s four Civitai lookup states) PLUS a DOM-level
+ * integration test of `openModelInfo` itself, via a minimal stub DOM
+ * mirroring `test_model_picker.mjs`'s own `makeDocStub` (that file's top doc
+ * comment explains why each track keeps its own copy rather than sharing
+ * one). Plain `node js/controls/test_model_info.mjs`.
+ */
+
+import assert from "node:assert/strict";
+
+import {
+  civitaiModelUrl,
+  visibleChips,
+  emptyStateMessage,
+  lookupStateView,
+  openModelInfo,
+} from "./model_info.mjs";
+import { invalidateInfo } from "./civitai_api.mjs";
+
+let failures = 0;
+let count = 0;
+function test(name, fn) {
+  count += 1;
+  try {
+    fn();
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL - ${name}`);
+    console.error(err && err.stack ? err.stack : err);
+  }
+}
+async function asyncTest(name, fn) {
+  count += 1;
+  try {
+    await fn();
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL - ${name}`);
+    console.error(err && err.stack ? err.stack : err);
+  }
+}
+
+// =========================================================================
+// civitaiModelUrl -- always the SPECIFIC VERSION, not the model landing page
+// (§7d), when a version id is usable.
+// =========================================================================
+
+test("civitaiModelUrl: model + version when both are usable", () => {
+  assert.equal(civitaiModelUrl(123, 456), "https://civitai.com/models/123?modelVersionId=456");
+});
+
+test("civitaiModelUrl: digit-only STRING ids are accepted too (a hand-edited sidecar)", () => {
+  assert.equal(civitaiModelUrl("123", "456"), "https://civitai.com/models/123?modelVersionId=456");
+});
+
+test("civitaiModelUrl: falls back to the model landing page when versionId isn't usable", () => {
+  assert.equal(civitaiModelUrl(123, null), "https://civitai.com/models/123");
+  assert.equal(civitaiModelUrl(123, "not-a-number"), "https://civitai.com/models/123");
+});
+
+test("civitaiModelUrl: null when modelId itself isn't usable -- nothing to link to", () => {
+  assert.equal(civitaiModelUrl(null, 456), null);
+  assert.equal(civitaiModelUrl(undefined, undefined), null);
+  assert.equal(civitaiModelUrl("nope", 456), null);
+  assert.equal(civitaiModelUrl(-5, 456), null);
+});
+
+// =========================================================================
+// visibleChips -- candidates from the ACTIVE source (never deletable) ∪
+// custom words (always deletable), deduped case-insensitively, selection
+// read from the caller's own Set.
+// =========================================================================
+
+test("visibleChips: file source shows file candidates + custom words, civitai candidates hidden", () => {
+  const chips = visibleChips({
+    source: "file",
+    fileTriggers: ["alpha", "beta"],
+    civitaiTriggers: ["gamma"],
+    customTriggers: ["delta"],
+    selected: new Set(["alpha", "delta"]),
+  });
+  assert.deepEqual(chips.map((c) => c.word), ["alpha", "beta", "delta"]);
+  assert.deepEqual(chips.map((c) => c.custom), [false, false, true]);
+  assert.deepEqual(chips.map((c) => c.selected), [true, false, true]);
+});
+
+test("visibleChips: civitai source shows civitai candidates instead, custom words still present", () => {
+  const chips = visibleChips({
+    source: "civitai",
+    fileTriggers: ["alpha"],
+    civitaiTriggers: ["gamma", "delta-word"],
+    customTriggers: ["custom-one"],
+    selected: new Set(),
+  });
+  assert.deepEqual(chips.map((c) => c.word), ["gamma", "delta-word", "custom-one"]);
+});
+
+test("visibleChips: a custom word matching a candidate case-insensitively is NOT duplicated", () => {
+  const chips = visibleChips({
+    source: "file",
+    fileTriggers: ["Alpha"],
+    civitaiTriggers: [],
+    customTriggers: ["alpha", "beta"],
+    selected: new Set(),
+  });
+  assert.deepEqual(chips.map((c) => c.word), ["Alpha", "beta"]);
+  assert.equal(chips[0].custom, false); // the CANDIDATE wins, never deletable
+});
+
+test("visibleChips: garbage input degrades to [], never throws", () => {
+  assert.deepEqual(visibleChips(), []);
+  assert.deepEqual(visibleChips({ source: "file", fileTriggers: "nope", customTriggers: null }), []);
+});
+
+test("visibleChips: `selected` also accepts a plain array, not just a Set", () => {
+  const chips = visibleChips({ source: "file", fileTriggers: ["a"], selected: ["a"] });
+  assert.equal(chips[0].selected, true);
+});
+
+// =========================================================================
+// emptyStateMessage -- names both remedies, exact wording for the file case
+// (design doc §1a-i).
+// =========================================================================
+
+test("emptyStateMessage: exact file-empty wording from the design doc", () => {
+  assert.equal(emptyStateMessage("file"), "No trigger words in this file — add your own below, or try Civitai");
+});
+
+test("emptyStateMessage: a distinct, honest line for the civitai-empty case", () => {
+  assert.notEqual(emptyStateMessage("civitai"), emptyStateMessage("file"));
+  assert.match(emptyStateMessage("civitai"), /civitai/i);
+});
+
+// =========================================================================
+// lookupStateView -- the four Civitai lookup states (§7e), each icon +
+// headline + one line + the one useful action; every non-idle state also
+// says what still works.
+// =========================================================================
+
+test("lookupStateView: null for idle/missing -- nothing to render", () => {
+  assert.equal(lookupStateView(null), null);
+  assert.equal(lookupStateView({ phase: "idle" }), null);
+});
+
+test("lookupStateView: searching -- spinner + Cancel", () => {
+  const view = lookupStateView({ phase: "searching" });
+  assert.equal(view.cssState, "searching");
+  assert.equal(view.headline, "Checking Civitai…");
+  assert.deepEqual(view.actions.map((a) => a.id), ["cancel"]);
+});
+
+test("lookupStateView: found -- Re-fetch + Forget cached", () => {
+  const view = lookupStateView({ phase: "result", response: { reason: "found", data: {} } });
+  assert.equal(view.cssState, "found");
+  assert.deepEqual(view.actions.map((a) => a.id), ["refetch", "forget"]);
+});
+
+test("lookupStateView: notfound -- explains the hash, offers search-by-name DISABLED (M2 doesn't exist)", () => {
+  const view = lookupStateView({ phase: "result", response: { reason: "notfound" } });
+  assert.equal(view.cssState, "notfound");
+  assert.match(view.why, /changes its hash/);
+  assert.match(view.why, /file's own trigger words are still shown/);
+  assert.equal(view.actions.length, 1);
+  assert.equal(view.actions[0].disabled, true);
+});
+
+test("lookupStateView: offline -- each offline_reason gets its OWN distinct headline, never collapsed", () => {
+  const cases = [
+    ["timeout", "Civitai timed out"],
+    ["dns_tls", "Couldn't reach Civitai (DNS)"],
+    ["unreadable", "Civitai sent an unreadable reply (a login or block page?)"],
+    ["rate_limited", "Civitai returned 429"],
+    ["unknown", "Could not reach Civitai"],
+    ["something-never-seen", "Could not reach Civitai"],
+  ];
+  const seen = new Set();
+  for (const [reason, headline] of cases) {
+    const view = lookupStateView({ phase: "result", response: { reason: "offline", offline_reason: reason } });
+    assert.equal(view.cssState, "offline");
+    assert.equal(view.headline, headline);
+    assert.match(view.why, /file's own words are still shown/);
+    seen.add(view.headline);
+  }
+  assert.ok(seen.size >= 5, "offline reasons must not collapse into one generic message");
+});
+
+test("lookupStateView: rate_limited names the key ladder", () => {
+  const view = lookupStateView({ phase: "result", response: { reason: "offline", offline_reason: "rate_limited" } });
+  assert.match(view.why, /API key/);
+});
+
+test("lookupStateView: missing_file -- a distinct, honest 'nothing to hash' message, no action", () => {
+  const view = lookupStateView({ phase: "result", response: { reason: "offline", offline_reason: "missing_file" } });
+  assert.equal(view.headline, "Can't check Civitai");
+  assert.deepEqual(view.actions, []);
+});
+
+// =========================================================================
+// openModelInfo -- DOM-level integration, via a minimal stub DOM.
+// =========================================================================
+
+function makeDocStub() {
+  let doc;
+  function makeElement(tag) {
+    const e = {
+      tagName: tag,
+      _listeners: {},
+      children: [],
+      style: {},
+      value: "",
+      textContent: "",
+      title: "",
+      type: "",
+      href: "",
+      disabled: false,
+      parentNode: null,
+      _rect: { left: 10, top: 10, right: 30, bottom: 40, width: 20, height: 30 },
+      get ownerDocument() {
+        return doc;
+      },
+      set innerHTML(_v) {
+        e.children = [];
+      },
+      classList: {
+        _set: new Set(),
+        add(...cls) {
+          cls.forEach((c) => this._set.add(c));
+        },
+        remove(...cls) {
+          cls.forEach((c) => this._set.delete(c));
+        },
+        contains(c) {
+          return this._set.has(c);
+        },
+        toggle(c, force) {
+          const on = force === undefined ? !this._set.has(c) : !!force;
+          if (on) {
+            this._set.add(c);
+          } else {
+            this._set.delete(c);
+          }
+          return on;
+        },
+      },
+      addEventListener(t, fn) {
+        (e._listeners[t] = e._listeners[t] || []).push(fn);
+      },
+      removeEventListener(t, fn) {
+        const arr = e._listeners[t];
+        if (!arr) {
+          return;
+        }
+        const i = arr.indexOf(fn);
+        if (i >= 0) {
+          arr.splice(i, 1);
+        }
+      },
+      click() {
+        (e._listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+      },
+      appendChild(child) {
+        const idx = e.children.indexOf(child);
+        if (idx >= 0) {
+          e.children.splice(idx, 1);
+        }
+        e.children.push(child);
+        child.parentNode = e;
+        return child;
+      },
+      removeChild(child) {
+        const idx = e.children.indexOf(child);
+        if (idx >= 0) {
+          e.children.splice(idx, 1);
+        }
+        child.parentNode = null;
+        return child;
+      },
+      getBoundingClientRect() {
+        return e._rect;
+      },
+      focus() {},
+      contains(node) {
+        let cur = node;
+        while (cur) {
+          if (cur === e) {
+            return true;
+          }
+          cur = cur.parentNode;
+        }
+        return false;
+      },
+    };
+    Object.defineProperty(e, "className", {
+      get() {
+        return [...e.classList._set].join(" ");
+      },
+      set(v) {
+        e.classList._set = new Set(String(v).split(/\s+/).filter(Boolean));
+      },
+    });
+    return e;
+  }
+  const win = {
+    _listeners: {},
+    innerWidth: 1200,
+    innerHeight: 800,
+    addEventListener(t, fn) {
+      (win._listeners[t] = win._listeners[t] || []).push(fn);
+    },
+    removeEventListener(t, fn) {
+      const arr = win._listeners[t];
+      if (!arr) {
+        return;
+      }
+      const i = arr.indexOf(fn);
+      if (i >= 0) {
+        arr.splice(i, 1);
+      }
+    },
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+  };
+  doc = {
+    createElement: makeElement,
+    getElementById() {
+      return null;
+    },
+    head: makeElement("head"),
+    body: makeElement("body"),
+    defaultView: win,
+  };
+  return doc;
+}
+
+function findAll(root, className) {
+  const out = [];
+  const walk = (e) => {
+    if (e.classList && e.classList.contains(className)) {
+      out.push(e);
+    }
+    (e.children || []).forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+async function settle(n = 3) {
+  for (let i = 0; i < n; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+const _origFetch = globalThis.fetch;
+
+await asyncTest("openModelInfo: renders identity + file trigger chips, auto-looks-up Civitai, and shows the link once found", async () => {
+  const kind = "loras";
+  const name = "info-dom-a.safetensors";
+  invalidateInfo(kind, name);
+  let lookupCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    lookupCalls += 1;
+    const body = JSON.parse(opts.body);
+    assert.equal(body.kind, kind);
+    assert.equal(body.name, name);
+    return {
+      json: async () => ({
+        reason: "found",
+        offline_reason: null,
+        message: "",
+        data: {
+          name: "Skin Detail XL",
+          base_model: "SDXL",
+          triggers: ["detailed skin"],
+          tags: ["character"],
+          description: "Works best at 0.6-0.8.",
+          model_id: 111,
+          version_id: 222,
+        },
+      }),
+    };
+  };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let lastSelected = null;
+    let lastCustom = null;
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      baseModel: "Anima",
+      fileTriggers: ["file-word-a", "file-word-b"],
+      customTriggers: [],
+      selectedTriggers: ["file-word-a"],
+      civitaiEnabled: true,
+      onChange: (sel, custom) => {
+        lastSelected = sel;
+        lastCustom = custom;
+      },
+    });
+
+    // Identity header, filename -- BEFORE the lookup resolves the title is
+    // just the prettified filename (no Civitai name known yet).
+    const titleEl = findAll(handle.overlay, "wtn-mi-title")[0];
+    assert.equal(titleEl.textContent, "info dom a");
+    const fileEl = findAll(handle.overlay, "wtn-mi-file")[0];
+    assert.equal(fileEl.textContent, name);
+    const baseEl = findAll(handle.overlay, "wtn-mi-base")[0];
+    assert.equal(baseEl.textContent, "Anima");
+
+    // File-derived chips render immediately, no need to wait on Civitai.
+    let chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.deepEqual(chips.map((c) => c.children[1].textContent), ["file-word-a", "file-word-b"]);
+    assert.ok(chips[0].classList.contains("wtn-mi-chip-on"), "the initially-selected word must show selected");
+    assert.equal(chips[0].children.length, 2, "a FILE candidate chip must carry NO delete control");
+
+    await settle();
+    assert.equal(lookupCalls, 1, "opening the panel triggers exactly one lookup");
+
+    const link = findAll(handle.overlay, "wtn-mi-civlink")[0];
+    assert.ok(link, "View on Civitai must appear once a version is found");
+    assert.equal(link.href, "https://civitai.com/models/111?modelVersionId=222");
+
+    // The title upgrades to Civitai's own display name once found.
+    assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Skin Detail XL");
+
+    const notes = findAll(handle.overlay, "wtn-mi-notes")[0];
+    assert.equal(notes.textContent, "Works best at 0.6-0.8.");
+
+    // Toggle a chip -- selection change reaches the caller via onChange.
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    chips[1].click(); // "file-word-b"
+    assert.ok(lastSelected.includes("file-word-b"));
+    assert.ok(lastSelected.includes("file-word-a"));
+    assert.deepEqual(lastCustom, []);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: showThumbnails === false renders NO thumbnail element at all (§7b 'Show preview thumbnails')", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumbs.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const docOn = makeDocStub();
+    const handleOn = openModelInfo({
+      ctx: { doc: docOn, getCanvasEl: () => null },
+      anchorEl: docOn.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(findAll(handleOn.overlay, "wtn-mi-thumb").length, 1, "default (omitted) renders the thumbnail, unchanged from Slice 4");
+    handleOn.close();
+    invalidateInfo(kind, name);
+
+    const docOff = makeDocStub();
+    const handleOff = openModelInfo({
+      ctx: { doc: docOff, getCanvasEl: () => null },
+      anchorEl: docOff.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+      showThumbnails: false,
+    });
+    await settle();
+    assert.equal(findAll(handleOff.overlay, "wtn-mi-thumb").length, 0, "showThumbnails: false must render NO thumbnail element at all");
+    // The rest of the identity block is unaffected.
+    assert.equal(findAll(handleOff.overlay, "wtn-mi-title").length, 1);
+    handleOff.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: a selected word with NO matching candidate is never silently lost -- it renders as a deletable chip", async () => {
+  const kind = "loras";
+  const name = "info-dom-orphan.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: [], // the file no longer carries this word (e.g. re-saved)
+      customTriggers: [],
+      selectedTriggers: ["orphaned word"], // but it's still what the row applies
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    const chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.equal(chips.length, 1);
+    assert.equal(chips[0].children[1].textContent, "orphaned word");
+    assert.ok(chips[0].classList.contains("wtn-mi-chip-on"), "still selected");
+    assert.equal(chips[0].children.length, 3, "no known origin -- rendered deletable, never just vanished");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: adding a custom word selects it and gives it a ✕; deleting it never toggles it first", async () => {
+  const kind = "loras";
+  const name = "info-dom-b.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let lastCustom = null;
+    let lastSelected = null;
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: [],
+      customTriggers: [],
+      selectedTriggers: [],
+      civitaiEnabled: true,
+      onChange: (sel, custom) => {
+        lastSelected = sel;
+        lastCustom = custom;
+      },
+    });
+    await settle();
+
+    const input = findAll(handle.overlay, "wtn-mi-add-input")[0];
+    const addBtn = findAll(handle.overlay, "wtn-mi-add-btn")[0];
+    input.value = "elf ears";
+    addBtn.click();
+
+    assert.deepEqual(lastCustom, ["elf ears"]);
+    assert.ok(lastSelected.includes("elf ears"), "a freshly-added custom word starts SELECTED");
+
+    let chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.equal(chips.length, 1);
+    assert.equal(chips[0].children.length, 3, "a CUSTOM chip must carry a delete (✕) control");
+
+    // Clicking the ✕ must delete, not merely toggle -- and must not ALSO
+    // fire the chip's own toggle handler (stopPropagation).
+    const delEl = chips[0].children[2];
+    delEl.click();
+    assert.deepEqual(lastCustom, []);
+    assert.deepEqual(lastSelected, []);
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.equal(chips.length, 0);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: all/none act on the CURRENTLY VISIBLE chips only, and never latch", async () => {
+  const kind = "loras";
+  const name = "info-dom-c.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let lastSelected = [];
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: ["a", "b", "c"],
+      customTriggers: [],
+      selectedTriggers: [],
+      civitaiEnabled: true,
+      onChange: (sel) => {
+        lastSelected = sel;
+      },
+    });
+    await settle();
+
+    const [allBtn, noneBtn] = findAll(handle.overlay, "wtn-mi-seg-act")[0].children;
+    allBtn.click();
+    assert.deepEqual(lastSelected.sort(), ["a", "b", "c"]);
+    noneBtn.click();
+    assert.deepEqual(lastSelected, []);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: civitaiEnabled=false always requests cached_only:true, and renders no LIVE network affordance", async () => {
+  const kind = "loras";
+  const name = "info-dom-d.safetensors";
+  invalidateInfo(kind, name);
+  let lastBody = null;
+  globalThis.fetch = async (url, opts) => {
+    lastBody = JSON.parse(opts.body);
+    // A real server, with the setting off, would answer offline/civitai_disabled
+    // on a cache miss (lookup.py's own cached_only contract) -- reproduced here
+    // rather than "found", so this test can't accidentally pass by the panel
+    // just happening to render nothing either way.
+    return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: ["a"],
+      civitaiEnabled: false,
+    });
+    await settle();
+
+    assert.ok(lastBody, "the panel DOES call the lookup route even with the setting off");
+    assert.equal(lastBody.cached_only, true, "it must ask for cached_only -- never a live lookup -- while the setting is off");
+    assert.equal(findAll(handle.overlay, "wtn-mi-status").length, 0, "no lookup status block -- it would misrepresent a cached-only read as a live one");
+    assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 0, "no View on Civitai link -- the 'way out' still disappears (§7d)");
+    assert.equal(findAll(handle.overlay, "wtn-mi-refetch").length, 0, "no ↻ Civitai footer button -- it would force a LIVE lookup");
+    // File-derived words still work -- the whole point of "degradation, not failure".
+    assert.equal(findAll(handle.overlay, "wtn-mi-chip").length, 1);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- notes/title/Civitai trigger candidates still display (§7d)", async () => {
+  const kind = "loras";
+  const name = "info-dom-cached-off.safetensors";
+  invalidateInfo(kind, name);
+  let lastBody = null;
+  globalThis.fetch = async (url, opts) => {
+    lastBody = JSON.parse(opts.body);
+    return {
+      json: async () => ({
+        reason: "found",
+        offline_reason: null,
+        message: "",
+        data: {
+          name: "Cached Display Name",
+          triggers: ["cached civitai word"],
+          description: "Cached author notes.",
+          model_id: 1,
+          version_id: 2,
+        },
+        source: "sidecar",
+      }),
+    };
+  };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: [],
+      civitaiEnabled: false,
+    });
+    await settle();
+
+    assert.equal(lastBody.cached_only, true);
+    // Cached data displays...
+    assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Cached Display Name");
+    assert.equal(findAll(handle.overlay, "wtn-mi-notes")[0].textContent, "Cached author notes.");
+    // ...but the "way out" and any LIVE-lookup affordance stay hidden regardless.
+    assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-status").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-refetch").length, 0);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when genuinely nothing is cached yet -- never merely because the setting is off", async () => {
+  const kind = "loras";
+  const nameNoCache = "info-notes-no-cache.safetensors";
+  const nameCachedNoDesc = "info-notes-cached-no-desc.safetensors";
+  invalidateInfo(kind, nameNoCache);
+  invalidateInfo(kind, nameCachedNoDesc);
+
+  // Case 1: off, and the cache genuinely misses.
+  globalThis.fetch = async () => ({ json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name: nameNoCache,
+      civitaiEnabled: false,
+    });
+    await settle();
+    assert.match(findAll(handle.overlay, "wtn-mi-notes")[0].textContent, /turn the Civitai setting on/);
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, nameNoCache);
+  }
+
+  // Case 2: off, but SOMETHING is cached (just no description in it) -- must
+  // read as "no notes from Civitai", never "turn the setting on" (we already
+  // know, turning it on wouldn't reveal anything more).
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X" }, source: "sidecar" }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name: nameCachedNoDesc,
+      civitaiEnabled: false,
+    });
+    await settle();
+    const notesText = findAll(handle.overlay, "wtn-mi-notes")[0].textContent;
+    assert.doesNotMatch(notesText, /turn the Civitai setting on/);
+    assert.match(notesText, /No author's notes yet/);
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, nameCachedNoDesc);
+  }
+});
+
+await asyncTest("openModelInfo: 'Forget cached' posts /forget and returns the panel to a clean, un-found state", async () => {
+  const kind = "loras";
+  const name = "info-dom-e.safetensors";
+  invalidateInfo(kind, name);
+  let forgetCalled = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/forget")) {
+      forgetCalled = true;
+      return { json: async () => ({ reason: "ok", deleted: true }) };
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { model_id: 1, version_id: 2 } }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.ok(findAll(handle.overlay, "wtn-mi-civlink").length, "sanity: found a version before forgetting");
+
+    const actionButtons = findAll(handle.overlay, "wtn-mi-status-actions")[0].children;
+    const forgetBtn = actionButtons.find((b) => b.textContent === "Forget cached");
+    assert.ok(forgetBtn, "found state must offer Forget cached");
+    forgetBtn.click();
+    await settle();
+
+    assert.ok(forgetCalled);
+    assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 0, "the link disappears once forgotten");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: a second call with the SAME ownerKey toggles the panel closed", async () => {
+  const kind = "loras";
+  const name = "toggle.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({ json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle1 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      ownerKey: "test-toggle-key",
+      civitaiEnabled: false,
+    });
+    assert.ok(handle1);
+    const handle2 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      ownerKey: "test-toggle-key",
+      civitaiEnabled: false,
+    });
+    assert.equal(handle2, null, "opening the SAME panel a second time just closes it");
+    await settle(); // let the first (now-cancelled) lookup's promise resolve harmlessly
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+console.log(`\n${count - failures}/${count} passed`);
+if (failures > 0) {
+  process.exitCode = 1;
+}

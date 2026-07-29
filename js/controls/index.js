@@ -79,6 +79,17 @@ import { isGraphLoading } from "../shared/graph_loading.mjs";
 // like `isGraphLoading` above -- cheap enough to import eagerly rather than
 // riding this file's own lazy `loadMods()`.
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS, registerAnimaFlowSettings } from "../shared/settings.mjs";
+// `AnimaLoraLoader`'s missing-file marks (`docs/lora-loader-design.md`
+// §1a-iii) must re-check on `R` (Refresh Node Definitions) AND WebSocket
+// reconnect -- the same moments native combos refresh. `installRefreshHook`
+// is a synchronous prototype wrap that has to land at REGISTRATION time
+// (`beforeRegisterNodeDef`, which fires for every node type unconditionally,
+// long before any node instance exists) -- it cannot itself wait on this
+// track's own lazy `loadLoraMods()`. Cheap + zero DOM/window reference at
+// module scope, like `isGraphLoading`/`settings.mjs` above, so eager here is
+// fine (this file's own "lazy, not static" rule is about the HEAVY row-
+// catalog/DOM/CSS stack, not a two-function Set-based signal).
+import { onNodeDefsRefresh, installRefreshHook } from "../shared/refresh.mjs";
 
 // CATEGORY is Title Case ("AnimaFlow/Controls") on the Python side; nothing
 // here needs to know that string, only the two class names.
@@ -126,6 +137,42 @@ function loadMods() {
     ]).then(([rows, render, interaction]) => ({ rows, render, interaction }));
   }
   return _modsPromise;
+}
+
+// `AnimaLoraLoader`'s OWN cached lazy import, entirely separate from
+// `loadMods()` above -- it is a SIBLING dispatch branch (see
+// `beforeRegisterNodeDef` below), not a `PANEL_CONFIGS` entry: those
+// prototype hooks (`onConnectionsChange`'s `resolveAutoOnConnect`,
+// `onConnectOutput`'s vacant-slot guard, `arrange`'s `alignOutputsLegacy`)
+// all assume the socket-per-row model this node doesn't have (design doc
+// §5 -- "this is NOT a layer-3 socket-rows consumer"). Sharing one promise
+// with `loadMods()` would mean placing EITHER node type on a page pays the
+// download cost of BOTH row-catalog stacks, defeating the whole point of
+// lazy-loading per node type.
+let _loraModsPromise = null;
+function loadLoraMods() {
+  if (!_loraModsPromise) {
+    _loraModsPromise = Promise.all([
+      import("./lora_state.mjs"),
+      import("./lora_render.mjs"),
+      import("./lora_interaction.mjs"),
+    ]).then(([state, render, interaction]) => ({ state, render, interaction }));
+  }
+  return _loraModsPromise;
+}
+
+/** `AnimaLoraLoader`'s ctx -- see `lora_interaction.mjs`'s own top doc
+ * comment for why this is so much smaller than `buildCtx` above (no combo
+ * option lists, no link-target inspection, no confirm dialog: this node has
+ * a fixed surface and no per-row output sockets to reconcile). Built fresh
+ * per call (cheap, no per-node closures needed) and cached on the node so
+ * every hook after the first shares one reference. */
+function buildLoraCtx() {
+  return {
+    doc: typeof document !== "undefined" ? document : null,
+    getCanvasEl,
+    isGraphLoading,
+  };
 }
 
 /** Hide `panel_state` from RENDERING only -- it keeps serializing normally
@@ -531,6 +578,11 @@ app.registerExtension({
     // enough (`settings.mjs`'s own doc comment).
     registerAnimaFlowSettings(app);
 
+    if (nodeData.name === "AnimaLoraLoader") {
+      registerLoraNodeType(nodeType);
+      return; // sibling branch -- never falls through to the panel dispatch below
+    }
+
     const panelConfig = CLASS_TO_PANEL[nodeData.name];
     if (!panelConfig) {
       return;
@@ -714,3 +766,185 @@ app.registerExtension({
   // right-click ON the row, wired by interaction.mjs. No extension-level
   // getNodeMenuItems needed for this build.
 });
+
+// ---------------------------------------------------------------------------
+// `AnimaLoraLoader` -- a SIBLING dispatch branch (see `beforeRegisterNodeDef`
+// above, which calls `registerLoraNodeType(nodeType)` -- a plain `function`
+// declaration is hoisted, so the CALL SITE above this definition is not a
+// forward-reference problem), deliberately NOT a `PANEL_CONFIGS` entry: no
+// per-row output sockets (design doc §5), so none of `syncOutputs`/
+// `alignOutputsLegacy`/`resolveAutoOnConnect`/the `onConnectOutput`
+// vacant-slot guard apply here. Everything ComfyUI-runtime-specific this
+// branch needs (`document`, `getCanvasEl`, `isGraphLoading`) is folded into
+// the small `buildLoraCtx()` above; the actual node lifecycle (mount/
+// restore/resize) lives in `lora_interaction.mjs` itself -- see that file's
+// own top doc comment for why, unlike the Control/Loader Panel, this
+// dispatch is thin enough to just call straight into it.
+//
+// Deliberately placed AFTER the Control/Loader Panel's own
+// `app.registerExtension({...})` block, not before it: `test_resize.mjs`'s
+// own `index.js: nodeType.prototype.onResize/onDrawForeground is wired...`
+// regression tests locate those hooks with a plain `indexSource.indexOf(...)`
+// over this file's raw text, not a real import -- this file's `onResize`/
+// `onDrawForeground` function signatures below are IDENTICAL text to the
+// Control Panel's own (`nodeType.prototype.onResize = function (size) {`),
+// so whichever occurrence comes FIRST in the file is what those tests read.
+// Keeping this block textually after the Control Panel's means their
+// `indexOf` still finds the Control Panel's own hook, exactly as before this
+// branch existed.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Missing-file marks -- re-check on `R`/WebSocket reconnect (design doc
+// §1a-iii). Registered ONCE (module-level guard, not per node instance):
+// `beforeRegisterNodeDef` runs unconditionally for `AnimaLoraLoader`'s own
+// registration whether or not the user ever places one, so the handler
+// itself must decide whether there's any actual work to do BEFORE paying
+// this track's own lazy-import cost -- walking `app.graph` for a real
+// `AnimaLoraLoader` instance needs no import at all (`n.type`/`n.comfyClass`
+// are plain string reads), so a page with none of our nodes anywhere never
+// fetches `lora_*.mjs`/`civitai_api.mjs`/`model_picker.mjs` just because the
+// user pressed R on an unrelated workflow.
+// ---------------------------------------------------------------------------
+
+let _lrRefreshWired = false;
+
+/** Every live `AnimaLoraLoader` node on the page, top-level and nested
+ * inside any subgraph -- mirrors `../ComfyUI-Pixaroma/js/lora_loader/
+ * index.js`'s own `buildIndex`/`walk` recursion (MIT,
+ * THIRD_PARTY_NOTICES.md), generalised to just collect nodes rather than
+ * build a prompt-id index (this track has no `graphToPrompt` injection to
+ * key one for -- design doc §3). */
+function findLoraNodes() {
+  const found = [];
+  const walk = (g) => {
+    for (const n of (g && (g._nodes || g.nodes)) || []) {
+      if (n && (n.comfyClass === "AnimaLoraLoader" || n.type === "AnimaLoraLoader")) {
+        found.push(n);
+      }
+      const sub = n && (n.subgraph || n.graph || n._graph);
+      if (sub && sub !== g) {
+        walk(sub);
+      }
+    }
+  };
+  walk(app.graph);
+  return found;
+}
+
+function wireLoraRefresh() {
+  if (_lrRefreshWired) {
+    return;
+  }
+  _lrRefreshWired = true;
+  onNodeDefsRefresh(() => {
+    const nodes = findLoraNodes();
+    if (!nodes.length) {
+      return; // nothing of ours on this page -- never pay the import cost
+    }
+    loadLoraMods()
+      .then((mods) => {
+        // `refreshLoraModels()` drops the cached `loras` list and forces a
+        // real re-fetch -- ONE fetch serves every node found above, not one
+        // per node (`civitai_api.mjs`'s own per-kind cache).
+        mods.interaction.refreshLoraModels().then(() => {
+          for (const node of nodes) {
+            if (node._lrMounted) {
+              mods.interaction.syncRows(node, node._lrCtx || buildLoraCtx());
+            }
+          }
+        });
+      })
+      .catch((err) => {
+        console.error("[AnimaFlow LoRA Loader] refresh hook failed to load js/controls/lora_*.mjs modules:", err);
+      });
+  });
+}
+
+function registerLoraNodeType(nodeType) {
+  if (nodeType.prototype._wtnLoraPatched) {
+    return; // hot-reload guard, same convention as `_wtnControlsPatched`
+  }
+  nodeType.prototype._wtnLoraPatched = true;
+
+  // Registration-time only -- see this section's own top doc comment for
+  // why this must NOT wait on `loadLoraMods()`.
+  installRefreshHook(nodeType);
+  wireLoraRefresh();
+
+  const _created = nodeType.prototype.onNodeCreated;
+  nodeType.prototype.onNodeCreated = function (...args) {
+    const result = _created ? _created.apply(this, args) : undefined;
+    const node = this;
+    const ctx = buildLoraCtx();
+    node._lrCtx = ctx;
+    loadLoraMods()
+      .then((mods) => {
+        node._lrMods = mods;
+        mods.interaction.setupLoraNode(node, ctx);
+      })
+      .catch((err) => {
+        console.error("[AnimaFlow LoRA Loader] failed to load js/controls/lora_*.mjs modules:", err);
+      });
+    return result;
+  };
+
+  const _configure = nodeType.prototype.onConfigure;
+  nodeType.prototype.onConfigure = function (...args) {
+    // Set BEFORE anything else -- see `js/anima/index.js`'s top doc comment
+    // (and this file's own `isGraphLoading` import comment) for why this
+    // flag must be set synchronously, ahead of the async mods load: a
+    // restored node's `onNodeCreated` microtask can run BEFORE this
+    // `onConfigure` call even starts, but `setupLoraNode` re-checks this
+    // flag at the moment IT runs (not at schedule time), which is what
+    // actually matters.
+    this._lrConfiguring = true;
+    const result = _configure ? _configure.apply(this, args) : undefined;
+    const node = this;
+    const ctx = node._lrCtx || buildLoraCtx();
+    node._lrCtx = ctx;
+    loadLoraMods()
+      .then((mods) => {
+        node._lrMods = mods;
+        mods.interaction.restoreLoraNode(node, ctx);
+      })
+      .catch((err) => {
+        console.error("[AnimaFlow LoRA Loader] failed to load js/controls/lora_*.mjs modules:", err);
+      })
+      .finally(() => {
+        node._lrConfiguring = false;
+      });
+    return result;
+  };
+
+  // Class A sizing -- three of the five layers are wired here (the fourth,
+  // `addDOMWidget`'s `getMinHeight`/`getMaxHeight`, lives in
+  // `mountLoraNode`; the fifth, the `setSize` wrap, is installed directly on
+  // the node by `setupLoraNode` itself, mirroring `js/controls/index.js`'s
+  // own `wrapSetSizeControls` call site). No-ops (falls through to any
+  // pre-existing handler) until `_lrMods`/`_lrCtx` have loaded, same
+  // convention as every hook in the Control/Loader Panel branch above.
+  const _resize = nodeType.prototype.onResize;
+  nodeType.prototype.onResize = function (size) {
+    if (this._lrMods && this._lrCtx) {
+      this._lrMods.interaction.onResizeLora(this, this._lrCtx, size);
+    }
+    return _resize ? _resize.apply(this, arguments) : undefined;
+  };
+
+  const _drawFg = nodeType.prototype.onDrawForeground;
+  nodeType.prototype.onDrawForeground = function (canvasCtx) {
+    if (this._lrMods && this._lrCtx) {
+      this._lrMods.interaction.onDrawForegroundLora(this, this._lrCtx);
+    }
+    return _drawFg ? _drawFg.apply(this, arguments) : undefined;
+  };
+
+  const _removed = nodeType.prototype.onRemoved;
+  nodeType.prototype.onRemoved = function (...args) {
+    if (this._lrMods) {
+      this._lrMods.interaction.teardownLoraNode(this);
+    }
+    return _removed ? _removed.apply(this, args) : undefined;
+  };
+}

@@ -18,6 +18,7 @@ from .nodes.anima.generator import AnimaGenerator
 from .nodes.anima.preview import AnimaPreview
 from .nodes.controls.control_panel import AnimaControlPanel
 from .nodes.controls.loader_panel import AnimaLoaderPanel
+from .nodes.controls.lora_loader import AnimaLoraLoader
 from .nodes.prompt_rules.prompt_rules import PromptRulesClip, PromptRulesText
 
 # Registers the `/wtn/rules/*` aiohttp routes as an import side effect (see
@@ -40,11 +41,20 @@ from .src.autocomplete import api as _autocomplete_api  # noqa: F401
 # node's own frontend calls, not a node in its own right.
 from .src.anima import api as _anima_api  # noqa: F401
 
+# Registers the `/wtn/model_browser/*` aiohttp routes as an import side
+# effect (see `src/model_browser/api.py`) -- the shared, kind-parameterised
+# model browser behind `AnimaLoraLoader`'s picker + Civitai lookup
+# (docs/lora-loader-design.md), guarded the same way as `rules_api`/
+# `autocomplete`/`anima_api` above. No node class here either — it's routes
+# a node's own frontend calls, not a node in its own right.
+from .src.model_browser import api as _model_browser_api  # noqa: F401
+
 NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,
     "AnimaControlPanel": AnimaControlPanel,
     "AnimaLoaderPanel": AnimaLoaderPanel,
+    "AnimaLoraLoader": AnimaLoraLoader,
     "AnimaContextBridge": AnimaContextBridge,
     "AnimaGenerator": AnimaGenerator,
     "AnimaPreview": AnimaPreview,
@@ -54,6 +64,7 @@ NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {
     "PromptRulesText": "Prompt Rules",
     "AnimaControlPanel": "Anima Control Panel",
     "AnimaLoaderPanel": "Anima Loader Panel",
+    "AnimaLoraLoader": "Anima LoRA Loader",
     "AnimaContextBridge": "Anima Context Bridge",
     "AnimaGenerator": "Anima Generator",
     "AnimaPreview": "Anima Preview",

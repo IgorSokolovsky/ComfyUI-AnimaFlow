@@ -202,8 +202,25 @@ const SHARED_DIR = path.dirname(__filename);
 // into `../anima/` or `../controls/` is the violation this test exists to
 // catch; a bare `/scripts/...` string never matches the relative-import
 // regex below at all, so it needs no special-casing.
-const FORBIDDEN_RE = /from\s+["'](\.\.\/(?:anima|controls)\/[^"']*)["']/g;
+//
+// TWO patterns, matching `js/controls/test_model_picker.mjs`'s own sibling
+// guard fix: a STATIC `import ... from "../controls/x.mjs"` and a DYNAMIC
+// `import("../controls/x.mjs")` are different syntax (no `from` precedes a
+// dynamic import's string at all), so a static-only regex silently misses
+// the dynamic form entirely -- proven on that guard, on a real Slice 3
+// review, before this one was extended to match.
+const FORBIDDEN_STATIC_RE = /from\s+["'](\.\.\/(?:anima|controls)\/[^"']*)["']/g;
+const FORBIDDEN_DYNAMIC_RE = /import\s*\(\s*["'](\.\.\/(?:anima|controls)\/[^"']*)["']/g;
 
+/** Every source `.mjs`/`.js` under `dir`, EXCLUDING `test_*` files --
+ * regression fixtures (this very file's own dynamic-import regression test,
+ * below) legitimately contain a forbidden-shaped string as a plain string
+ * literal, not a real import, and a naive raw-text scan can't tell those
+ * apart. Excluding the test suite itself from "shared code must not import a
+ * track" is the same boundary `test_model_picker.mjs`'s sibling guard keeps
+ * by construction (`GUARDED_FILES` there is an explicit list of non-test
+ * files) -- this scan is recursive, so it needs an explicit exclusion
+ * instead. */
 function listFilesRecursive(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -211,24 +228,27 @@ function listFilesRecursive(dir) {
     const st = statSync(full);
     if (st.isDirectory()) {
       out.push(...listFilesRecursive(full));
-    } else if (/\.(mjs|js)$/.test(entry)) {
+    } else if (/\.(mjs|js)$/.test(entry) && !entry.startsWith("test_")) {
       out.push(full);
     }
   }
   return out;
 }
 
-test("no file under js/shared/ imports from js/anima/ or js/controls/ -- shared code must not depend on a track", () => {
+test("no file under js/shared/ imports from js/anima/ or js/controls/ -- shared code must not depend on a track (static OR dynamic import)", () => {
   const files = listFilesRecursive(SHARED_DIR);
   assert.ok(files.length > 5, "sanity check: the scan actually found files");
+  assert.ok(files.every((f) => !path.basename(f).startsWith("test_")), "sanity check: no test file itself was scanned");
 
   const violations = [];
   for (const file of files) {
     const source = readFileSync(file, "utf8");
-    let match;
-    FORBIDDEN_RE.lastIndex = 0;
-    while ((match = FORBIDDEN_RE.exec(source))) {
-      violations.push(`${path.relative(SHARED_DIR, file)} imports "${match[1]}"`);
+    for (const re of [FORBIDDEN_STATIC_RE, FORBIDDEN_DYNAMIC_RE]) {
+      let match;
+      re.lastIndex = 0;
+      while ((match = re.exec(source))) {
+        violations.push(`${path.relative(SHARED_DIR, file)} imports "${match[1]}"`);
+      }
     }
   }
 
@@ -244,6 +264,30 @@ test("no file under js/shared/ imports from js/anima/ or js/controls/ -- shared 
       "it (docs/control-panel-design.md §6a). Violations found:\n  " +
       violations.join("\n  "),
   );
+});
+
+// Proves the DYNAMIC-import branch actually detects something -- same
+// false-green-verification reasoning as `test_model_picker.mjs`'s sibling.
+test("regression: a dynamic import(\"../controls/x.mjs\") is flagged exactly like a static one", () => {
+  const dynamicOnly = 'export async function bad() { return import("../controls/rows.mjs"); }';
+  const staticOnly = 'import { x } from "../anima/render.mjs";';
+  const clean = 'import { getSetting } from "./settings.mjs";\nexport async function ok() { return import("./canvas_zoom.mjs"); }';
+
+  function scan(source) {
+    const violations = [];
+    for (const re of [FORBIDDEN_STATIC_RE, FORBIDDEN_DYNAMIC_RE]) {
+      let match;
+      re.lastIndex = 0;
+      while ((match = re.exec(source))) {
+        violations.push(match[1]);
+      }
+    }
+    return violations;
+  }
+
+  assert.deepEqual(scan(dynamicOnly), ["../controls/rows.mjs"], "the dynamic-import regex must catch what the static one alone would miss");
+  assert.deepEqual(scan(staticOnly), ["../anima/render.mjs"]);
+  assert.deepEqual(scan(clean), [], "an in-js/shared/ import (static or dynamic) must never false-positive");
 });
 
 console.log(`\n${count - failures}/${count} passed`);

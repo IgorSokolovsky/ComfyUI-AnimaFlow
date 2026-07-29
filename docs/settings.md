@@ -1,8 +1,9 @@
 # Settings — the **AnimaFlow** section in ComfyUI's Settings dialog
 
-Seven knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
+Ten knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
 dialog, under an **AnimaFlow** entry in the sidebar — alongside EasyUseAnima, Pixaroma and Use
-Everywhere. Declared in [`js/shared/settings.mjs`](../js/shared/settings.mjs).
+Everywhere. Declared in [`js/shared/settings.mjs`](../js/shared/settings.mjs). (Count grows over
+time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number.)
 
 | Setting | Id | Type | Default | Reaches |
 |---|---|---|---|---|
@@ -13,9 +14,20 @@ Everywhere. Declared in [`js/shared/settings.mjs`](../js/shared/settings.mjs).
 | Themed node chrome | `AnimaFlow.Theme.NodeChrome` | bool | true | `js/shared/node_chrome.mjs` |
 | Keep post-run values across reload | `AnimaFlow.Anima.PersistPostRunValues` | bool | false | the Generator's post-run context report |
 | Confirm before removing a row | `AnimaFlow.Controls.ConfirmRemoveRow` | bool | true | the Control Panel's row delete |
+| Civitai | `AnimaFlow.Controls.CivitaiEnabled` | bool | **true** | `js/controls/lora_interaction.mjs`/`model_info.mjs` — off hides EVERY network affordance on `AnimaLoraLoader` (the ⓘ panel's lookup status, `↻ Civitai`, `View on Civitai ↗`), not just one button. Already-cached info (notes, trigger words, display name) still displays — it's read via `lookup.py`'s `cached_only` flag, whose cache-miss path is made unreachable to Civitai's network server-side, not merely unused client-side (`lora-loader-design.md` §7b decision 20/§7d) |
+| Hide file extension | `AnimaFlow.Controls.HideFileExtension` | bool | false | `js/controls/model_picker.mjs`'s `displayModelName` — strips the extension in the picker's list only; the row's own name label and the underlying file name are unaffected |
+| Show preview thumbnails | `AnimaFlow.Controls.ShowPreviewThumbnails` | bool | **true** | `js/controls/model_picker.mjs` (picker thumbnail column) and `model_info.mjs` (ⓘ panel identity thumbnail) |
 
 **The ids are the persistence key, so that namespace is append-only.** Renaming one silently
 abandons whatever the user had set. Same discipline as node widget order.
+
+**The LoRA Loader's own ⚙ dialog writes the last three of the above directly** (via
+`js/shared/settings.mjs`'s `setSetting`), even though they live in this pack-wide section rather
+than the node's own state blob — `docs/lora-loader-design.md` §7b explains the split: memory mode,
+trigger-words separator, separate-strengths and per-node strength defaults are genuinely per-node
+and live in `lora_state.mjs`'s own state; hiding the extension, showing thumbnails, and the Civitai
+switch are user-wide display/posture preferences, so the dialog's own toggles for those three read
+and write THIS section instead, immediately, with no separate "apply" step.
 
 ## Things that are not obvious
 

@@ -14,6 +14,7 @@ import {
   registerAnimaFlowSettings,
   _resetRegistrationForTests,
   getSetting,
+  setSetting,
 } from "./settings.mjs";
 
 let failures = 0;
@@ -31,13 +32,16 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — seven settings, all under the AnimaFlow category, ids
-// in the documented namespace, every one with a tooltip and a default
-// matching the table (task brief).
+// Declaration shape — ten settings (seven from the original task brief, plus
+// `CIVITAI_ENABLED` — docs/lora-loader-design.md §7b decision 20/§7d, Slice 4
+// — plus `HIDE_FILE_EXTENSION`/`SHOW_PREVIEW_THUMBNAILS`, Slice 5, the two
+// user-wide halves of the LoRA Loader's own ⚙ dialog per §7b's ownership
+// split), all under the AnimaFlow category, ids in the documented namespace,
+// every one with a tooltip and a default matching the table.
 // ---------------------------------------------------------------------------
 
-test("ANIMAFLOW_SETTINGS declares exactly the seven documented settings", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 7);
+test("ANIMAFLOW_SETTINGS declares exactly the ten documented settings", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 10);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   assert.deepEqual(ids, Object.values(SETTING_IDS).sort());
 });
@@ -68,7 +72,7 @@ test("every setting's defaultValue matches the documented table (SETTING_DEFAULT
   }
 });
 
-test("the seven documented defaults, by name (regression against the task's own table)", () => {
+test("the ten documented defaults, by name (regression against the task's own table)", () => {
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING], "off");
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.WHEEL_QUIET_PERIOD_MS], 450);
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.TOOLTIP_DELAY_MS], 250);
@@ -76,6 +80,15 @@ test("the seven documented defaults, by name (regression against the task's own 
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.NODE_CHROME], true);
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.PERSIST_CONTEXT_RUN], false);
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.CONFIRM_REMOVE_ROW], true);
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED], true);
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION], false);
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS], true);
+});
+
+test("the Civitai setting is a boolean, defaulting ON (must be explicitly turned off to go offline)", () => {
+  const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_ENABLED);
+  assert.equal(setting.type, "boolean");
+  assert.equal(setting.defaultValue, true);
 });
 
 test("the console-logging setting is a combo of exactly off/summary/debug, defaulting to off", () => {
@@ -211,6 +224,58 @@ test("getSetting prefers an injected appRef over window.app", () => {
 
 test("getSetting never throws with no window at all", () => {
   assert.doesNotThrow(() => getSetting("x", "fallback"));
+});
+
+// ---------------------------------------------------------------------------
+// setSetting — the write-side counterpart (Slice 5, docs/lora-loader-design.md
+// §7b: the LoRA Loader's own ⚙ dialog writes THREE of its eight fields
+// through here, not through the per-node state blob).
+// ---------------------------------------------------------------------------
+
+test("setSetting writes through the new API (app.extensionManager.setting.set) and returns true", () => {
+  const calls = [];
+  const app = { extensionManager: { setting: { set: (id, v) => calls.push([id, v]) } } };
+  assert.equal(setSetting("x", true, app), true);
+  assert.deepEqual(calls, [["x", true]]);
+});
+
+test("setSetting falls back to the OLD API (app.ui.settings.setSettingValue) when the new one is absent", () => {
+  const calls = [];
+  const app = { ui: { settings: { setSettingValue: (id, v) => calls.push([id, v]) } } };
+  assert.equal(setSetting("x", "hello", app), true);
+  assert.deepEqual(calls, [["x", "hello"]]);
+});
+
+test("setSetting prefers the new API over the old one when BOTH are present", () => {
+  const newCalls = [];
+  const oldCalls = [];
+  const app = {
+    extensionManager: { setting: { set: (id, v) => newCalls.push([id, v]) } },
+    ui: { settings: { setSettingValue: (id, v) => oldCalls.push([id, v]) } },
+  };
+  setSetting("x", 1, app);
+  assert.deepEqual(newCalls, [["x", 1]]);
+  assert.deepEqual(oldCalls, []);
+});
+
+test("setSetting returns false when no app is reachable, when the app is garbage, or when a write API throws -- never throws itself", () => {
+  assert.equal(setSetting("x", 1), false);
+  assert.equal(setSetting("x", 1, null), false);
+  assert.equal(setSetting("x", 1, {}), false);
+  const throwing = { extensionManager: { setting: { set: () => { throw new Error("boom"); } } } };
+  assert.doesNotThrow(() => setSetting("x", 1, throwing));
+  assert.equal(setSetting("x", 1, throwing), false);
+});
+
+test("setSetting falls back to window.app when no appRef is injected", () => {
+  const calls = [];
+  globalThis.window = { app: { extensionManager: { setting: { set: (id, v) => calls.push([id, v]) } } } };
+  try {
+    assert.equal(setSetting("x", "y"), true);
+    assert.deepEqual(calls, [["x", "y"]]);
+  } finally {
+    delete globalThis.window;
+  }
 });
 
 console.log(`\n${count - failures}/${count} passed`);

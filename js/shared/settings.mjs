@@ -8,7 +8,9 @@
  * `.claude/CLAUDE.md`'s JS download budget caps auto-loaded `.js` files at
  * 5 (one entry point per track, each registering every node class its own
  * track owns). This file is a plain `.mjs` — never auto-loaded, only fetched
- * when something `import()`s it — so declaring the seven settings here and
+ * when something `import()`s it — so declaring the settings here (count
+ * grows over time -- re-count `ANIMAFLOW_SETTINGS.length` rather than
+ * trusting a number in prose) and
  * having EVERY existing entry point (`js/anima/index.js`, `js/controls/
  * index.js`) call `registerAnimaFlowSettings(app)` from inside their own
  * `beforeRegisterNodeDef` (which already runs unconditionally, for every
@@ -79,6 +81,14 @@ export const SETTING_IDS = {
   NODE_CHROME: "AnimaFlow.Theme.NodeChrome",
   PERSIST_CONTEXT_RUN: "AnimaFlow.Anima.PersistPostRunValues",
   CONFIRM_REMOVE_ROW: "AnimaFlow.Controls.ConfirmRemoveRow",
+  CIVITAI_ENABLED: "AnimaFlow.Controls.CivitaiEnabled",
+  // Slice 5 (docs/lora-loader-design.md §7b): the LoRA Loader's own ⚙
+  // dialog shows these two alongside Civitai, but per §7b's ownership split
+  // they are USER-WIDE display/posture prefs, not per-node state -- so the
+  // dialog's own switches for them read/write THESE ids (`getSetting`/
+  // `setSetting`), never `lora_state.mjs`'s state blob.
+  HIDE_FILE_EXTENSION: "AnimaFlow.Controls.HideFileExtension",
+  SHOW_PREVIEW_THUMBNAILS: "AnimaFlow.Controls.ShowPreviewThumbnails",
 };
 
 // The documented default for each id, above — every consumer's own
@@ -93,6 +103,9 @@ export const SETTING_DEFAULTS = {
   [SETTING_IDS.NODE_CHROME]: true,
   [SETTING_IDS.PERSIST_CONTEXT_RUN]: false,
   [SETTING_IDS.CONFIRM_REMOVE_ROW]: true,
+  [SETTING_IDS.CIVITAI_ENABLED]: true,
+  [SETTING_IDS.HIDE_FILE_EXTENSION]: false,
+  [SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -194,6 +207,48 @@ export const ANIMAFLOW_SETTINGS = [
       + "is currently wired to something. Turn off to remove a wired row "
       + "(and its link) immediately, with no prompt.",
   },
+  {
+    id: SETTING_IDS.CIVITAI_ENABLED,
+    name: "Civitai",
+    category: ["AnimaFlow", "Controls", "Civitai"],
+    type: "boolean",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED],
+    tooltip:
+      "Allow the LoRA Loader (and, later, the Loader Panel) to reach Civitai "
+      + "at all. Off hides EVERY network affordance on the node -- the ⓘ "
+      + "panel's lookup status and its \"↻ Civitai\"/\"View on Civitai ↗\" "
+      + "controls, and the row menu's/header's Civitai-browsing entry points "
+      + "-- so the node is provably offline: there is no path left from "
+      + "which a request could originate. File-derived trigger words keep "
+      + "working either way, and so does anything ALREADY cached next to a "
+      + "file (its notes, its trigger words, its display name) -- that's "
+      + "read from disk, never re-fetched, so turning this off only removes "
+      + "the way to look up something new, not what's already known "
+      + "(docs/lora-loader-design.md §7b decision 20, §7d).",
+  },
+  {
+    id: SETTING_IDS.HIDE_FILE_EXTENSION,
+    name: "Hide file extension",
+    category: ["AnimaFlow", "Controls", "Hide file extension"],
+    type: "boolean",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION],
+    tooltip:
+      "Show a LoRA/model's name in the picker without its file extension "
+      + "(e.g. \"celica_v2\" instead of \"celica_v2.safetensors\"). Purely "
+      + "cosmetic -- the underlying file name used to load it never changes.",
+  },
+  {
+    id: SETTING_IDS.SHOW_PREVIEW_THUMBNAILS,
+    name: "Show preview thumbnails",
+    category: ["AnimaFlow", "Controls", "Show preview thumbnails"],
+    type: "boolean",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS],
+    tooltip:
+      "Show each LoRA/model's small local preview image in the picker list "
+      + "and its larger thumbnail in the ⓘ info panel. Turn off for less "
+      + "clutter or to avoid loading the (local, non-Civitai) preview files "
+      + "at all -- the picker/panel still work, just without the pictures.",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -278,4 +333,47 @@ export function getSetting(id, fallback, appRef) {
     // Fall through to the fallback below.
   }
   return fallback;
+}
+
+/**
+ * Writes `id`'s value through the live ComfyUI frontend -- the write-side
+ * counterpart to `getSetting`, above, added in Slice 5 for the LoRA Loader's
+ * own ⚙ dialog (`lora_interaction.mjs`'s `openLoraSettings`): three of its
+ * eight fields (Hide file extension / Civitai / Show preview thumbnails) are
+ * USER-WIDE settings per §7b's ownership split, so the node's own dialog
+ * must be able to CHANGE them, not just read them. Same two-API-then-give-up
+ * shape as `getSetting`: tries the current frontend's real setting store
+ * (`app.extensionManager.setting.set`), then an older frontend's
+ * `app.ui.settings.setSettingValue`, and returns `false` for anything else at
+ * all (no live `app`, no matching method, the method itself throwing) --
+ * never throws. Returns `true` iff a write API was actually called (NOT a
+ * guarantee ComfyUI's own persistence succeeded -- this pack has no way to
+ * observe that, same as every other fire-and-forget call into `app.*` in
+ * this codebase). `appRef` mirrors `getSetting`'s own optional third
+ * argument.
+ */
+export function setSetting(id, value, appRef) {
+  const appInst = resolveAppRef(appRef);
+  if (!appInst) {
+    return false;
+  }
+  try {
+    const manager = appInst.extensionManager;
+    if (manager && manager.setting && typeof manager.setting.set === "function") {
+      manager.setting.set(id, value);
+      return true;
+    }
+  } catch {
+    // Fall through to the older API below.
+  }
+  try {
+    const settings = appInst.ui && appInst.ui.settings;
+    if (settings && typeof settings.setSettingValue === "function") {
+      settings.setSettingValue(id, value);
+      return true;
+    }
+  } catch {
+    // Nothing left to try.
+  }
+  return false;
 }
