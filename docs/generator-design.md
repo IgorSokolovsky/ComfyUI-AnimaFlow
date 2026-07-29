@@ -103,6 +103,11 @@ Two consequences, both deliberate:
 So "I don't want preview" now means "I don't want output either". If a save-without-preview case ever
 turns up, the answer is the Preview node's compare toggle set off — it is still the saver.
 
+**"Saves them" is a capability, not a default (2026-07-29).** Being the only node that *can* save
+does not mean it saves unasked: `save.enabled` ships **off**, with a **Save now** button for the
+one-off case. §7a has the reversal and why the original "on by default, since it's the only saver"
+reasoning didn't survive live use.
+
 **Why the preview is not a live feed.** Upstream streams stage images over a websocket event
 (`easyuse-anima-aio-preview`, `aio/preview.py:15-27`) keyed by `unique_id`. A separate node
 cannot receive those over a wire mid-execution, so a live split would have to couple the two
@@ -623,8 +628,9 @@ compare row carries `[switch] compare` on the left and both pickers right-aligne
 (`render.mjs`'s `PREVIEW_MIN_W`, enforced Preview-only via an `onResize` clamp) — the switch + label
 + both groups measure ~340px, and a narrower node clipped the right-hand group. (The `save` *row*
 became the `Save` *section* in §12's inline-sections dispatch; its position in this order didn't
-change. Any older note here about popover geometry is void — there is no popover on this track any
-more.)
+change. Any older note here about popover geometry is void — **settings** are never a popover on this
+track any more. The overlay mechanism itself did return on 2026-07-29, for anchored ⚙ menus and option
+lists only; §12 carries that distinction.)
 
 **The image fills the node, and this panel never scrolls — reverses §12's call, for this node
 only (2026-07-28, later the same day).** §12's dispatch gave both nodes one `.wtn-an-panel` that
@@ -664,9 +670,38 @@ on disk under its `%stage%` name.
 because this is where embed-workflow happens (§9's third divergence — the deleted port never declared
 them anywhere, making its saves worse than stock `SaveImage`).
 
-- **On by default**, since it is the only node in the pair that saves.
-- `which`: the shown image / both compared / **every wired input**. The last is the interesting one —
-  it lands a whole comparison set in one run.
+- **OFF by default — reversed 2026-07-29 (`cec90cd`).** This entry used to read "**On** by default,
+  since it is the only node in the pair that saves", and that reasoning was wrong in a way only live
+  use showed: being the only saver argues that saving must be *reachable*, not that it must be *on*.
+  Default-on meant a brand-new Preview node started writing into the user's output folder the moment
+  it was dropped on the canvas, for a comparison they were still setting up. Now `save.enabled`
+  defaults `false` in **both** twins (`src/anima/preview_settings.py`'s
+  `DEFAULT_PREVIEW_SETTINGS`, `js/anima/state.mjs`'s), and the **Save now** button below is what buys
+  the reachability back. **This is a DEFAULT change only** — normalization fills in a key only when
+  it is *absent* from the raw blob, so a workflow that already saved an explicit `true` keeps it
+  verbatim on every future load and is never rewritten toward the new default.
+- **A `Save now` button, shown only while `save.enabled` is off** (`cec90cd`). Saves the single best
+  available image on click — `final` → `mid` → `base`, whichever is present — through the *same*
+  filename template and output path an enabled save would use. With save already on, the button is
+  absent rather than disabled: an enabled run saves on its own, so a second manual trigger would just
+  duplicate it (`js/anima/test_resize.mjs` asserts the absence).
+  - **It needs an aiohttp route**, `POST /wtn/anima/preview/save_now` (`src/anima/api.py`,
+    registered from `__init__.py` following `rules_api.py`'s precedent). Unavoidable: the stage images
+    are `temp` files and the click happens *outside* a graph execution, so there is no node run to
+    write them.
+  - **Every decision stays pure and server-side** — `resolve_save_now_stage` (which stage wins) and
+    `format_filename` (what it's called) live in `src/anima/preview_settings.py`, unit-tested with no
+    ComfyUI. `js/anima/interaction.mjs` is the fetch call plus a one-line status readout, never a
+    second copy of that logic. `resolve_save_now_stage` deliberately reuses `resolve_shown_stage`'s
+    `_SHOWN_PRIORITY` rather than inventing a second "most-finished result" ranking.
+  - **Two honest limits, and they are in the code comments rather than hidden.** Outside a run there
+    is no `PROMPT`/`EXTRA_PNGINFO`, so a Save-now file **cannot embed workflow metadata**
+    (`save.embed_workflow` is silently not honoured on this path), and **`%seed%` falls back
+    to `0`** for the same reason — the frontend posts only `{stages, preview_state}`, so
+    `src/anima/api.py`'s `payload.get("seed", 0)` always takes the fallback. Wrong-looking on disk;
+    tracked in [`TODO.md`](TODO.md).
+- `which`: the shown image / both compared / **every wired input** (`SAVE_WHICH_OPTIONS`, default
+  `"shown"`). The last is the interesting one — it lands a whole comparison set in one run.
 - Filename tokens: **`%stage%`** (`base`/`mid`/`final`) is the one that justifies putting save here at
   all, plus `%seed%`, `%date:FMT%`, `%counter:N%`, `%width%`, `%height%`.
 - Backend is stock `SaveImage`, not ComfyUI-Image-Saver (§4).
@@ -739,10 +774,18 @@ The Preview node keeps its **own** settings blob, same hidden-serialized-STRING 
 
 ```
 { schema, version,
-  compare: { enabled: true, a: "base", b: "final" },
-  save:    { enabled: true, which: "every wired input", extension: "png",
-             path, filename, embed_workflow: true } }
+  compare: { enabled: true,  a: "base", b: "final" },
+  save:    { enabled: false,                 // OFF -- reversed 2026-07-29, §7a
+             which: "shown", extension: "png",
+             path: "AnimaFlow", filename: "%date:yyyy-MM-dd%_%seed%_%stage%",
+             embed_workflow: true } }
 ```
+
+(`save.enabled` and `save.which` above are the shipped values —
+`src/anima/preview_settings.DEFAULT_PREVIEW_SETTINGS` and its `js/anima/state.mjs` twin, with
+`js/anima/fixture_default_preview_settings.json` pinning them in the JS suite. An earlier revision of
+this block showed `enabled: true, which: "every wired input"`; both were stale. There is **no**
+`ui_expanded` key in either fixture-tested defaults tree — see §12.)
 
 `shift = 3.0` is Anima's recommended default and is always applied
 (`ModelSamplingAuraFlow.patch_aura`, `aio/model_preparation.py:60-77`) — a core ComfyUI node, not
@@ -779,9 +822,11 @@ From `BACKLOG.md` §1a. All three were in files that no longer exist; recover th
 
 ## 10. Repo rules this touches
 
-- **The JS budget goes 4 → 5.** One `js/anima/index.js` registers *both* node classes and
-  lazily imports their per-node `.mjs`, so two nodes cost one auto-loaded file — the same trick
-  `js/controls/index.js` uses. Update the count and the reason in `.claude/CLAUDE.md` when built.
+- **The JS budget goes 4 → 5.** One `js/anima/index.js` covers *all three* of this track's node
+  classes and lazily imports the per-node `.mjs`, so three nodes cost one auto-loaded file — the same
+  trick `js/controls/index.js` uses. (Written when the track was two nodes; the Bridge, added by §3's
+  reversal, is patched in the same file for socket self-healing and cost no sixth `.js`.) `5` is the
+  ceiling, and `.claude/CLAUDE.md` carries the count.
 - **`THIRD_PARTY_NOTICES.md`** already credits EasyUseAnima (MIT © n0va39) at §1. Confirm the
   entry covers the generator port specifically when the first file lands — the existing text was
   written for the deleted line.
@@ -832,6 +877,11 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   stage-label mapping (`resolve_run_stage_labels`) prefers `metadata_json.stage_labels` and falls
   back to positional `base, mid, final` on anything hostile; a one-entry `images` list degrades to
   a single-image view, not a broken compare.
+- **Save now** (2026-07-29, `tests/test_anima_api.py` + `tests/test_anima_preview_images.py`):
+  `resolve_save_now_stage` picks `final` → `mid` → `base` and returns `None` — not a guess — on an
+  empty stage set, which is the route's "nothing to save yet" case (`SaveNowError`); the resolved
+  filename comes from the same `format_filename` an enabled save uses. On the JS side, the button is
+  **absent** while `save.enabled` is true, and posts `{stages, preview_state}` while it's false.
 - Frontend: `node js/anima/test_*.mjs` for the wipe geometry and settings round-trip. Mark
   what only a browser can confirm with `VERIFY-IN-COMFYUI:`. **The stale-suite gap this section
   used to flag is closed**: `js/anima/test_resize.mjs` now tests `resolveStageLabels` (the
@@ -873,9 +923,18 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   (`../ComfyUI-EasyUseAnima/web/js/aio/generator_panel_runtime.js`) actually does for its own
   always-on-panel fields (its `*_settings_dialog.js` siblings are real MODAL dialogs for a few
   advanced/rare controls, a different pattern this pack didn't adopt — everything routine stays
-  inline here instead). "Reuse the Control Panel's overlay helper" is RETRACTED for `js/anima/`
-  specifically: `js/shared/overlay.mjs` is untouched and still is `js/controls/`'s own mechanism,
-  but `js/anima/interaction.mjs` no longer imports it at all. A section's expand/collapse state
+  inline here instead). "Reuse the Control Panel's overlay helper" was RETRACTED for `js/anima/` at
+  this point — and **that retraction has since been un-done: as of 2026-07-29 the overlay is back in
+  this track, for anchored MENUS only.** `js/anima/interaction.mjs:137` imports
+  `openOverlayWithZoom` / `closeActiveOverlay` / `closeOverlayIfOwnedBy` /
+  `closeOverlaysNotAncestorOf` / `activeOverlayRef` from `../shared/overlay.mjs` — the exact same five
+  `js/controls/interaction.mjs` uses, sharing the SAME singleton bookkeeping rather than a second
+  instance of it, so only one overlay is ever open across the page regardless of which track owns the
+  click. What stayed dead is the popover as a *settings surface*: stage settings still expand inline,
+  and the ⚙ menus / option lists that now use the overlay are the "hybrid essentials/⚙ dispatch" this
+  module's top doc comment describes, not a return to the row popover. `js/shared/overlay.mjs` is
+  therefore also no longer "untouched" — see the 2026-07-29 amendment below, which rewrote its
+  single-slot core into a stack. A section's expand/collapse state
   persists in the settings blob itself, under a UI-only `ui_expanded` key kept OUT of the two
   fixture-tested defaults trees (`js/anima/state.mjs`'s own top doc comment) — so a workflow reopens
   with the same sections expanded it was saved with, same as any other setting. A context-supplied
@@ -913,6 +972,37 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   event consumed by an internal scroll region now arms a per-node lock, and an unconsumed one inside
   `WHEEL_LOCK_MS` (450) is dropped rather than dispatched — the canvas only starts zooming again once
   wheeling has actually stopped for that long.
+
+  **Amended again 2026-07-29 (`cec90cd`), all three from live use.** These are corrections to the
+  dispatch above, not a fifth iteration of it — the inline-sections shape is unchanged:
+    - **A bool row's switch IS its state; the on/off word is gone and the switch is right-aligned.**
+      The word was a second rendering of one value, and `buildBoolFieldInto` updated only the word,
+      never the switch's `wtn-fld-on` class — so the switch looked frozen while the word changed. Two
+      fixes, deliberately both: `buildBoolField` now returns a `setValue` that owns *both* halves
+      (this was the **third** "the component doesn't own its state" bug on this track, after `getValue`
+      capturing a snapshot and the stepper's `spec.value` — hence fixing it in the shared builder
+      rather than at the call site), and deleting the word removes the element that could desync at
+      all. The switch sits right via `.wtn-an-boolfield .wtn-fld-switch { margin-left: auto; }`
+      (`js/shared/fields.mjs`). **Where the word carried real information it moved into that row's ⓘ**
+      — the inherit row's "on · cfg/sampler/scheduler from the first pass" (§6b) is the case that
+      mattered — and a row's ⓘ now sits **next to its label**, not at the row's end. (Distinct from
+      the section-*header* order frozen above; this is the field row.)
+    - **`js/shared/overlay.mjs` keeps a real STACK, so a ⚙ menu survives opening a stepper inside
+      it.** It had ONE active-overlay slot, so opening a nested option list closed its own parent —
+      which detached the anchor, so `getBoundingClientRect()` returned zeros and the list positioned
+      at the screen's top-left. The contract now: **a child never closes its parent; closing a parent
+      closes everything nested inside it; outside-click and Escape reach only the innermost.**
+      `activeOverlayRef.current` is kept as a get/set *property* precisely so the existing call sites
+      that write it directly keep working against the stack unchanged. `js/controls/` only ever opens
+      one level, so it is unaffected — a stack of depth one behaves exactly like the old single slot,
+      which is what let that track's suite stay green at 164/164 with no edits.
+    - **Field labels are human, via a display-name map with a documented prettify fallback**
+      (`js/anima/state.mjs`'s `fieldLabel`, next to the settings tree). Rows read `Mode`, not
+      `mode_type` / `auto_tile_target` / `force_uniform_tiles`. **Display only — the settings PATH is
+      untouched**, and there is a test asserting exactly that, because a label map that quietly
+      became a key map would corrupt saved blobs. Single-word keys were deliberately left out of the
+      map rather than churning dozens of already-fine labels; the fallback means a newly added field
+      is never *worse* than it is today.
 - Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
   are both settled (§6a).
 
@@ -926,9 +1016,13 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - Generation profiles (upstream's Normal/Turbo/Optimized snapshots). Useful, but they only earn
   their keep once the settings tree is stable.
 
-**`js/anima/` has since shipped** — one auto-loaded `index.js` registering both nodes and lazily
-importing `render.mjs`/`interaction.mjs`/`state.mjs`, built against the mockup with §7's body-order
+**`js/anima/` has since shipped** — one auto-loaded `index.js` and lazy
+`render.mjs`/`interaction.mjs`/`state.mjs`, built against the mockup with §7's body-order
 reversal and §12's inline-sections dispatch (the "row/popover UI" this note used to call the
-missing piece is superseded by that dispatch — there is no popover on this track). Current work on
-the frontend is narrower and dated at the point it lands: see §8's `seed_after_generate` /
-seed-row-shape note for the one in-flight item as of 2026-07-29.
+missing piece is superseded by that dispatch — settings are not a popover here; §12's 2026-07-29
+correction covers the anchored menus that do use the overlay). That one file patches **three** node
+classes, not two: `AnimaGenerator` and `AnimaPreview` in full, plus `AnimaContextBridge` for **socket
+self-healing only** — the Bridge has no DOM UI of its own, but it needs `onConnectionsChange`
+forwarding so every downstream Generator repaints its context-supplied badges (§5a-0's mechanism 1).
+Current work on the frontend is narrower and dated at the point it lands: see §8's
+`seed_after_generate` / seed-row-shape note and §12's 2026-07-29 amendment.
