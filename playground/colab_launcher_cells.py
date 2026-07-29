@@ -4,7 +4,9 @@
 # Mirror of playground/colab-launcher.html, as real Colab cells.
 # Paste each block into its own Colab cell (markers below).
 # All state lives in {GDRIVE_BASE}/launcher_config.json and persists across runtimes.
-# Set cells 2 & 3 to Form view (⋮ → Form → Hide code) to get the code-hidden UI.
+# Every cell carries `#@title ... { display-mode: "form" }`, so Colab renders each
+# one as a titled form with its code hidden — no manual ⋮ → Form → Hide code step.
+# `#@title` must be the cell's FIRST line for that to work.
 # =============================================================================
 
 

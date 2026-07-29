@@ -55,11 +55,14 @@ If you run ComfyUI on Colab rather than locally, the repo ships a **launcher con
 ipywidgets UI that replaces the usual stack of setup cells with one form: pick node packs, install
 deps, download models, start the server, and watch the live log.
 
-**Files:** [`playground/colab_launcher_cells.py`](playground/colab_launcher_cells.py) (the real
-cells — copy/paste into Colab) and [`playground/colab-launcher.html`](playground/colab-launcher.html)
-(a static preview of the UI you can open in a browser first).
+**→ [`playground/colab-launcher.md`](playground/colab-launcher.md)** — the cells to copy, one code
+block each, with a map of what's inside them. Start here.
 
-**Setup** — paste each of the three marked blocks into its own Colab cell, in order:
+Also: [`playground/colab-recovery.md`](playground/colab-recovery.md) for when a tunnel or port is
+stuck after a runtime dies, and [`playground/colab-launcher.html`](playground/colab-launcher.html),
+a static preview of the panel you can open in a browser before running anything.
+
+**Setup** — copy each of the three blocks into its own Colab cell, in order:
 
 | Cell | What it does |
 |---|---|
@@ -67,7 +70,12 @@ cells — copy/paste into Colab) and [`playground/colab-launcher.html`](playgrou
 | **2 — Backend** | Defines the launcher logic. Run once per runtime. |
 | **3 — Control panel** | Renders the UI. |
 
-Set cells 2 & 3 to **Form view** (⋮ → *Form* → *Hide code*) to get the clean, code-hidden panel.
+Each cell carries a `#@title … { display-mode: "form" }` line, so Colab shows it as a titled form
+with the code hidden — no manual *Form view* step. Keep the cells in order and whole: cell 3 uses
+names cell 2 defines.
+
+<sub>The markdown is generated from [`playground/colab_launcher_cells.py`](playground/colab_launcher_cells.py)
+by [`build_colab_md.py`](playground/build_colab_md.py) — edit the `.py` if you're changing the launcher.</sub>
 
 **What the panel gives you:** environment setup (clone/symlink ComfyUI against Drive) · node-pack
 checklist with add-your-own-repo · extra pip packages · model downloader with present/missing
