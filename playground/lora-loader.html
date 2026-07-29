@@ -662,8 +662,14 @@ function toggleAll(){
 function bump(i,d){ LORAS[i].sm = Math.max(0, Math.min(2, LORAS[i].sm + d)); render(); }
 function addRow(){ LORAS.push({name:"(pick a LoRA)",on:true,sm:0.8,sc:0.8,missing:false}); render(); }
 function pickName(n){ const r=LORAS.find(x=>x.name==="(pick a LoRA)")||LORAS[1]; r.name=n; r.missing=false; render(); hide('pick'); }
-// Menu is TWO items now: reordering is drag, so the ↑/↓ arrows are gone.
-function menu(ev,i){ ev.preventDefault(); alert("Row menu:  ⧉ Duplicate   ⌫ Remove"); }
+// FOUR of upstream's six: only the ↑/↓ arrows go, because drag supersedes them.
+// More info and Disable stay -- a context menu should be the complete list of what
+// you can do to this row. Disable/Enable reads the row's current state.
+function menu(ev,i){
+  ev.preventDefault();
+  const on = LORAS[i].on;
+  alert(`Row menu:\n   ⓘ  More info\n   ⧉  Duplicate\n   ◉  ${on ? "Disable" : "Enable"}\n   ⌫  Remove`);
+}
 
 /* ── FLIP drag-reorder ──────────────────────────────────────────────
    measure -> mutate the array -> re-render -> transition transform from the
@@ -727,6 +733,44 @@ function syncTrig(){
   const on=[...document.querySelectorAll("#chipbox .chip.on")].map(wordOf).filter(Boolean);
   document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
 }
+/* ── the four Civitai lookup states ─────────────────────────────────
+   Same three-part shape every time: icon + headline, one line of cause and
+   consequence, and the ONE action that could change it. Two of the four are
+   failures, and a bare "not found" is a dead end. */
+const LOOKUP = {
+  searching: { cls:"searching", ic:"◌", h:"Checking Civitai…",
+    why:"hashing the file, then one request", acts:["Cancel"] },
+  found: { cls:"found", ic:"✓", h:"Matched on Civitai",
+    why:"cached next to the file — instant and offline from now on", acts:["Re-fetch","Forget cached"] },
+  notfound: { cls:"notfound", ic:"⌀", h:"This exact file isn't on Civitai",
+    why:"Re-saving, merging or quantising a LoRA <b>changes its hash</b>, so a published LoRA won't match once the file has been altered. Your file's own trigger words are still shown.",
+    acts:["Search Civitai by name →"] },
+  offline: { cls:"offline", ic:"⚠", h:"Civitai timed out",
+    why:"Nothing was lost — the file's own words are shown. A 429 instead would name the API-key option.",
+    acts:["Retry"] },
+};
+let lkState = "found";
+function renderLookup(){
+  const s = LOOKUP[lkState];
+  document.getElementById("lookup").innerHTML = `
+    <div class="status ${s.cls}" style="display:block;margin-bottom:7px">
+      <div style="display:flex;align-items:center;gap:7px">
+        <span style="font-size:13px">${s.ic}</span><b>${s.h}</b>
+        <span class="back" style="margin-left:auto;font-size:10px" onclick="cycleLookup()">next state ›</span>
+      </div>
+      <div style="font:11px var(--font);color:var(--ink-dim);margin:5px 0 6px;line-height:1.4">${s.why}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${s.acts.map(a=>`<button class="btn ghost" style="height:24px;font-size:11px">${a}</button>`).join("")}
+      </div>
+    </div>`;
+}
+function cycleLookup(){
+  const ks = Object.keys(LOOKUP);
+  lkState = ks[(ks.indexOf(lkState)+1) % ks.length];
+  renderLookup();
+}
+renderLookup();
+
 function delChip(ev,x){ ev.stopPropagation(); x.closest(".chip").remove(); syncTrig(); }
 
 /* ── modal detail view: master -> detail SWAP, filter rail stays put ──

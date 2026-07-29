@@ -45,6 +45,8 @@ off, open the modal and click a result card.
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
 | 21 | Node picker card click → **a new VERTICAL info panel** (sibling of the ⓘ panel), single-column gallery; **not** the modal, **not** an in-panel swap | §7c-ii |
 | 22 | **EVERY per-model info surface carries `View on Civitai ↗`** — the ⓘ panel, the modal detail, and the Loader Panel's model info | §7d |
+| 23 | Row menu keeps **four of six**: `More info` · `Duplicate` · `Disable/Enable` · `Remove` (only the arrows go) | §1a-iii |
+| 24 | The four lookup states each get **icon + cause + the one useful action**; `notfound` offers **search by name** and explains the hash | §7e |
 
 ### 0b. The ONE thing still open
 
@@ -109,16 +111,25 @@ node plus 445 lines of pure helpers.
 - **Per row:** searchable name picker (grouped by subfolder; typing searches *flat* across every
   LoRA), on/off, model + clip strength with ▲▼ steppers, an ⓘ button, and a right-click menu.
 
-### 1a-iii. Reordering is DRAG, and the menu shrinks to two items (owner, 2026-07-29)
+### 1a-iii. Reordering is DRAG; the menu keeps four of its six items (owner, 2026-07-29)
 
-Upstream's row menu is **↑ / ↓ / Duplicate / Remove**. **Drop the two arrows.** Rows reorder by
-**drag-and-drop**, so the menu is just **Duplicate / Remove** — the arrows were a workaround for not
-having a drag, and keeping both gives two ways to do one thing with the slower one taking two slots.
+Upstream's row menu, read off a reference shot, is **six** items — a source grep had shown me only four:
 
-**Drag needs a real animation, which this pack does not have yet.** The Control/Loader panels already
-drag-reorder, with no motion at all — the row simply appears somewhere else. So this is a **cross-track
-improvement**, not a LoRA-loader feature: build it here, then port it to `js/controls/rows.mjs` so all
-three row-based nodes share it.
+`ⓘ More info` · `↑ Move up` · `↓ Move down` · `⧉ Duplicate` · `◉ Disable` · `⌫ Remove`
+
+**Drop only the two arrows.** Rows reorder by **drag-and-drop**, so ours is:
+
+`ⓘ More info` · `⧉ Duplicate` · `◉ Disable / Enable` · `⌫ Remove`
+
+**Why `More info` and `Disable` stay even though each duplicates a visible control** (the `i` button and
+the row switch) — the distinction matters, because I nearly cut them by the same argument that removed the
+arrows: a context menu is *the complete list of what you can do to this row*, and one that omits the
+obvious actions reads as broken. The arrows are different: they were not omitted, they were **superseded**
+by a better mechanism. Duplication of a *control* is fine; two competing *mechanisms* for reordering is
+not.
+
+`Disable`/`Enable` reads the row's current state rather than being a fixed label, so the menu never offers
+an action that is already true.
 
 What "animated" means concretely:
 
@@ -732,6 +743,40 @@ Header row, final: `＋ Add LoRA` · *(slack)* · master switch · `N/M` · **�
 
 Remember the settings-id namespace is **append-only** (`settings.md`) — renaming an id silently
 abandons whatever the user had set.
+
+---
+
+## 7e. The four Civitai lookup states — dead ends are where UI quality shows
+
+Upstream has four (searching / found / notfound / offline) and renders them as a status strip. **Ours
+gives each one the same three-part shape**, because two of the four are failures and a bare "not found" is
+a dead end:
+
+> **icon + headline · one line of cause-and-consequence · the one action that could change it**
+
+| state | headline | says | action |
+|---|---|---|---|
+| **searching** | `Checking Civitai…` | (spinner) | `Cancel` |
+| **found** | `Matched on Civitai` | cached next to the file — instant and offline from now on | `Re-fetch` · `Forget cached` |
+| **notfound** | `This exact file isn't on Civitai` | **re-saving, merging or quantising a LoRA changes its hash**, so a LoRA that *is* published won't match once the file has been altered. Your file's own trigger words are still shown. | **`Search Civitai by name →`** |
+| **offline** | the *specific* reason — `Civitai timed out` / `Couldn't reach Civitai (DNS)` / `Civitai sent an unreadable reply (a login or block page?)` / `Civitai returned 429` | nothing was lost: the file's own words are shown | `Retry` — and for `429`, name the key ladder (§8), since a key relieves rate limits |
+
+Three things this buys that a status strip does not:
+
+1. **`notfound` stops being terminal.** By-hash failed, but **by-name might work** — and we have search
+   (M2). Turning the dead end into the feature we already built is the single best move available here,
+   and it is the *common* case: a merged or re-saved LoRA is very often on Civitai under a name.
+2. **The hash explanation prevents a wrong conclusion.** Without it, "not on Civitai" reads as *this LoRA
+   is unknown*, when the truth is usually *this exact file has been modified*. Users otherwise conclude
+   the lookup is broken.
+3. **`offline` keeps upstream's distinct reasons instead of flattening them.** Their route already
+   separates timeout / DNS / unreadable-reply / rate-limit and their code comment explains why
+   (collapsing them "defeats the point of showing the user a reason at all"). Surface that difference —
+   a timeout wants `Retry`, a block page wants a look at the network, a 429 wants a key.
+
+**Every state also says what still works.** The file-derived trigger words never depended on Civitai, so
+no failure state should imply the panel is useless — that is the difference between an error and a
+degradation.
 
 ---
 
