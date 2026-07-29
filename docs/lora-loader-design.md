@@ -12,6 +12,75 @@ browser so the Loader Panel's UNET/checkpoint side gets them too.
 
 ---
 
+## 0. START HERE — status, decisions, and the build plan
+
+**Nothing is built.** This doc plus [`playground/lora-loader.html`](../playground/lora-loader.html) are
+the whole artefact. The mockup is **interactive and is the behavioural reference** — open it before
+writing code; drag a row, toggle the master switch, add a custom trigger word, flip the Civitai setting
+off, open the modal and click a result card.
+
+### 0a. Everything settled (owner decisions, all 2026-07-29)
+
+| # | decision | where |
+|---|---|---|
+| 1 | **The node ships FIRST**, Civitai feature under it; Loader Panel reuses later | §9a |
+| 2 | Civitai **metadata needs NO API key** — hash → public endpoint, sidecar-cached | §2b |
+| 3 | **NOT** a layer-3 socket-rows consumer; that deferral stands | §5 |
+| 4 | `AnimaFlow/Controls` + `js/controls/` — **zero new auto-loaded `.js`** | §4a |
+| 5 | State is a **declared serialized STRING widget**, never `hidden` + `graphToPrompt` | §3 |
+| 6 | **Sizing Class A** — content height, width resizable; four enforcement layers | §6 |
+| 7 | Library is **kind-parameterised from commit one**, only `loras` wired; `kind` whitelisted server-side | §7a |
+| 8 | **Three surfaces**: two kind-locked pickers + one unscoped toolbar modal | §7c |
+| 9 | **All three get the full filter set**; only `type` is locked. Filters remembered user-wide | §7c-i |
+| 10 | Modal rail: **`<select>` adds a removable chip**, not Civitai's 19-chip grid | §7c-i |
+| 11 | Card click → **detail swap** (rail stays): version selector, description, **community gallery with prompt on hover + copy** | "The detail view" |
+| 12 | **One header row**: `＋ Add LoRA` (content+padding, **max 30%**) · master switch · `N/M` · 🔍 · ⚙ | §1a-ii |
+| 13 | Master switch **on only when all on**; mixed shows off, counter carries it; click = all on | §1a-ii |
+| 14 | Row order: **name · strength · ⓘ · switch(right)**; off row dimmed; missing = whole field red | §1a-ii |
+| 15 | **Drag-to-reorder with FLIP animation** (pack has none today); menu drops to **Duplicate / Remove** | §1a-iii |
+| 16 | ⓘ panel: identity → `<hr>` → triggers → `<hr>` → author's notes (collapsible) | §1a-i |
+| 17 | `all`/`none` is an **ACTION segment** — never latches | §1a-i |
+| 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
+| 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
+| 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
+
+### 0b. The ONE thing still open
+
+**§9 — the outbound-network policy.** It does **not block M1**, which is entirely offline apart from the
+hash lookup (no key, cacheable, and hideable by decision 20). Settle it before M2.
+
+### 0c. Build plan
+
+**M1 — the node, offline-capable.** `AnimaLoraLoader` (`nodes/controls/`, `AnimaFlow/Controls`,
+registered from the existing `js/controls/index.js`). Declared `lora_state` widget with tolerant
+normalization (§3). Rows, searchable subfolder-grouped picker, strengths, missing marks, the header row,
+animated drag-reorder, the ⓘ panel, the ⚙ dialog, Class A sizing. Python: apply in row order, `triggers`
+from **applied rows only**, three memory modes (port the `last`-mode fix, §1b). Hash lookup + sidecar.
+Tests per §10 — **including `Float64Array` size tests**.
+
+**M2 — search + download.** Needs §9. Kind-parameterised routes with a whitelisted `kind`, the full
+filter set (pills in the node picker, `type` locked), server-side streamed download with progress and a
+destination derived from `kind`, the key ladder and public-only mode (§8).
+
+**M2b — the toolbar modal.** Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
+modal; filter rail; result grid; detail view with version selector and community gallery.
+
+**M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only**.
+
+### 0d. Read these before touching code
+
+- `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md` — **mandatory** for anything sizing. `node.size`
+  is a `Float64Array`; `Array.isArray` guards are dead code.
+- `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` — the state handshake §3 depends on.
+- `.claude/skills/animaflow-shared-fields/SKILL.md` — and note `js/controls/` does **not** currently
+  import `js/shared/fields.mjs`.
+- [`control-panel-design.md`](control-panel-design.md) §7a — the Class A contract.
+
+> **Section order note:** the `1a-*` and `7*` sub-sections are not in numeric order — they were appended
+> as decisions arrived. The table in §0a is the index; follow it rather than reading top-to-bottom.
+
+---
+
 ## 1. The upstream reference — read it, it is good
 
 `../ComfyUI-Pixaroma/js/lora_loader/` + `nodes/node_lora_loader.py` + `nodes/_lora_helpers.py`.

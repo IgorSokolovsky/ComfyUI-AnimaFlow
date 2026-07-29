@@ -49,96 +49,36 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Next
 
-### 🎨 Our own LoRA loader — **SPEC WRITTEN 2026-07-29**: [`lora-loader-design.md`](lora-loader-design.md) + [`playground/lora-loader.html`](../playground/lora-loader.html)
+### 🎨 LoRA loader — **SPEC COMPLETE, READY TO BUILD** (2026-07-29)
 
-> The design doc is now the contract; the notes below are the raw input that fed it. **Three things this
-> section listed as open are settled there by reading the upstream code:** the Civitai metadata lookup
-> needs **no API key** (hash-based, public endpoint — §2b), this is **not** a layer-3 socket-rows
-> consumer so that deferral stands untouched (§5), and it lands in `AnimaFlow/Controls` / `js/controls/`
-> at **zero cost** to the 5-auto-loaded-`.js` ceiling (§4a). **One decision is genuinely open: the
-> outbound-network policy** (§9) — and it does **not block starting**, because milestone 1 needs no
-> network at all.
->
-> **Order settled (owner, 2026-07-29): the node ships FIRST**, with the Civitai feature under it; the
-> Loader Panel reuses the same library afterwards, scoped to checkpoints/models + UNET. The library is
-> **kind-parameterised from the first commit** (§7a) — that is the one thing not to defer, since
-> retrofitting `kind` touches folder resolution, download destination, sidecar paths, the search filter
-> and the path guard together.
+**→ [`lora-loader-design.md`](lora-loader-design.md) — read its §0 first.** It carries the status, a
+20-row decisions table, the build plan, and the required-reading list. **→
+[`playground/lora-loader.html`](../playground/lora-loader.html)** is the interactive behavioural
+reference (drag a row, toggle the master switch, add a custom trigger word, flip the Civitai setting off,
+open the modal and click a card).
 
-Wanted: an AnimaFlow LoRA loader, taking Pixaroma's as the starting point because it's the one the
-owner actually likes, and **carrying whatever it's missing** — plus spilling some of its capabilities
-back into our own Loader Panel (UNET/checkpoint).
+Everything that was open here on the morning of 2026-07-29 is settled in that doc — 20 owner decisions
+taken across a design session, several of them reversing what reading the upstream source suggested.
+The four that most change the shape of the work:
 
-**Baseline — what `../ComfyUI-Pixaroma`'s already does**, so we don't rediscover it (MIT © pixaroma;
-porting is fine *with attribution*, per `.claude/CLAUDE.md` and `THIRD_PARTY_NOTICES.md`):
+- **Civitai metadata needs NO API key** (hash → public endpoint, sidecar-cached), so the key ladder only
+  ever applied to search and gated downloads.
+- **Not a layer-3 socket-rows consumer** — that deferral below stands untouched.
+- **Zero new auto-loaded `.js`** — it registers from `js/controls/index.js`, and the toolbar modal
+  lazily imports.
+- **Three surfaces, one kind-parameterised library**: two kind-locked pickers plus an unscoped 90%
+  toolbar modal with a community-image gallery.
 
-| | |
-|---|---|
-| shape | many LoRAs stacked in one node, one row each; `MODEL` + optional `CLIP` in → `MODEL` + `CLIP` + **`triggers`** (STRING) out |
-| per row | model/clip strengths, on/off, drag to reorder |
-| triggers | trigger words picked per LoRA, joined as plain text for the prompt — the output that makes it more than a stack |
-| picker | searchable/filterable dropdown, **missing-file marks** that re-check on `R` (Refresh Node Definitions) and on websocket reconnect |
-| info | a **Civitai** panel — metadata, preview thumbnails |
-| memory | three cache modes — `last` (ComfyUI parity), `all` (fast re-runs, GBs), `none` (re-read every run), with entries released between applications so peak stays ~2 files, not the whole stack |
+**Milestones:** M1 the node (offline-capable, needs no network policy) · M2 search + download (needs the
+policy) · M2b the toolbar modal · M3 Loader Panel reuse for checkpoints + UNET.
 
-**What's missing (owner, 2026-07-29) — Civitai as a first-class source, not just a metadata peek:**
+**The one thing still open: §9's outbound-network policy** — the pack's first network call. It does
+**not** block M1.
 
-1. **The author's own description** from Civitai, not only the numeric metadata — the notes that say
-   how a LoRA is meant to be used.
-2. **Search Civitai from inside the node** — find a LoRA without leaving ComfyUI.
-3. **Download to local**, the way the **Civicomfy** custom node does it (installed on the owner's
-   Colab box) — pick a result, fetch it into the right `models/` folder, use it immediately.
-4. **The same for models**, not just LoRAs — so the UNET/checkpoint side of the Loader Panel gets it
-   too. That makes this a **shared Civitai browser** consumed by two nodes, not a LoRA feature.
-
-**Settled (owner, 2026-07-29):**
-
-- ✅ **Licence: Civicomfy is MIT** — [MoonGoblinDev/Civicomfy](https://github.com/MoonGoblinDev/Civicomfy),
-  verified on the repo page 2026-07-29. So porting is fine **with attribution**: add its own section
-  to `THIRD_PARTY_NOTICES.md` with a per-file derivation table, exactly as the Pixaroma and
-  EasyUseAnima entries do, at the moment anything is actually derived from it. (It isn't a sibling
-  clone here — pull it locally before porting, and re-verify the licence at that point rather than
-  trusting this line.)
-- ✅ **No API key required for basic use.** Search and public downloads must work with no key at all.
-  When an operation genuinely needs one (gated/early-access files, rate-limit relief), say so
-  **in the UI, naming what to do** — never fail with a bare 401 or, worse, silently return nothing.
-
-**Key handling — resolution order, and the one place it must never go:**
-
-1. our own ComfyUI setting (`AnimaFlow.*`, stored server-side in `comfy.settings.json`), then
-2. the **`CIVITAI_API_KEY`** environment variable — Civicomfy's own convention, so anyone already
-   running it gets ours working with zero extra setup, then
-3. no key ⇒ public-only mode, clearly indicated rather than silently degraded.
-
-**NEVER the node settings blob.** That blob is a *serialized STRING widget*, so it lands in the saved
-workflow — and the Preview **embeds the workflow into saved PNGs**. A key stored there would leak
-into every image the user shares. (This session's Colab notebook shipped a live tunnel token for the
-same class of reason: saved UI state is a credential sink, and it's invisible until someone looks.)
-
-**⚠️ Still to settle — this is the pack's first outbound network call.** Everything today is local.
-It needs: never blocking a graph run, degrading silently offline (a node must still load and execute
-with no network), rate limiting, and downloads done **server-side in Python** — the browser can't
-write to `models/`. The Colab launcher already has a model downloader with present/missing
-detection; read it for reusable shape before starting fresh.
-
-**Spillover to our Loader Panel** — candidates worth lifting even before the LoRA node exists:
-searchable picker, missing-file marks, the Civitai description/metadata panel, the downloader, and
-the memory-mode idea (our loader helpers already cache per `(kind, name, dtype)` —
-`control-panel-design.md` §2 — but expose no policy).
-
-**Sizing class is already decided for it: Class A** (owner, 2026-07-29) — content-fixed height, width
-resizable with a min, exactly like the two existing panels and like Pixaroma's own LoRA loader. The
-contract is [`control-panel-design.md`](control-panel-design.md) §7a; **read it before building this
-node's frontend**, because retrofitting a sizing class means touching resize, the drag floor and the
-load-race guard together.
-
-**Fits our layering:** a row-with-sockets node ⇒ it's a **layer 3** consumer, which would make it
-the *third* one and trigger the deferred `js/shared/socket_rows.mjs` move (see Deferred below).
-Worth deciding that up front rather than after.
-
-- **Controls' own gear glyph** duplicates `js/shared/fields.mjs`'s `buildGearIcon` — same purpose, two implementations, two sizes/hit-areas. Unifying changes that track's visuals, so it needs its own task and a look.
-- **Audit the remaining `VERIFY-IN-COMFYUI` markers** (~30 across the three tracks) now that a live box is available — several predate features that have since shipped.
-- **`docs/nodes-and-api.md`** — verified accurate 2026-07-29, but it has no entry for the settings section or the logging channel.
+Two unrelated things to settle while in `js/controls/index.js`, both found while locating the modal's
+mount point: the Rule Builder's `VERIFY-IN-COMFYUI` about whether its `commands` entry is reachable at
+all, and its user-visible label reading **"Webtoon: Rule Builder"** with `webtoon-rb-*` classes, left
+from the deleted webtoon line.
 
 ## Deferred — with the reason
 
