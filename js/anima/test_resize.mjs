@@ -1009,6 +1009,64 @@ test("⚙ pin-right mechanism (chevron/gear legibility fix, task item 2): .wtn-a
   assert.match(gearPin, /margin-left:\s*auto/, "the ⚙ must pin itself to the row's right edge when there is no summary to already claim the free space");
 });
 
+test("injected CSS: hover tint is scoped to .wtn-an-clickable (0-2-0, single class + one pseudo-class), NOT a blanket .wtn-an-shead:hover and NOT the two-class .wtn-an-shead.wtn-an-clickable:hover form, and sits BEFORE .wtn-an-expanded in source order (hover-tint-scoping dispatch)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+
+  const clickableHover = cssRuleBody(cssText, ".wtn-an-clickable:hover");
+  assert.ok(clickableHover, "expected a .wtn-an-clickable:hover rule in the injected CSS");
+  assert.match(clickableHover, /border-color:\s*var\(--wtn-accent-deep/, "hover must still tint with the same --wtn-accent-deep token as before");
+
+  assert.ok(!cssRuleBody(cssText, ".wtn-an-shead:hover"), "the old blanket .wtn-an-shead:hover rule must be GONE -- it used to tint every header, including ones that don't respond to a click");
+  assert.ok(!cssRuleBody(cssText, ".wtn-an-shead.wtn-an-clickable:hover"), "must NOT be the two-class form -- that's 0-3-0 specificity, which would newly BEAT .wtn-an-shead.wtn-an-expanded (also 0-2-0) regardless of source order, tinting an expanded header on hover (a regression)");
+
+  const stripped = cssText.replace(/\/\*[\s\S]*?\*\//g, " ");
+  const hoverIdx = stripped.indexOf(".wtn-an-clickable:hover {");
+  const expandedIdx = stripped.indexOf(".wtn-an-shead.wtn-an-expanded {");
+  assert.ok(hoverIdx > -1 && expandedIdx > -1, "expected to find both rules' selectors in the stylesheet");
+  assert.ok(hoverIdx < expandedIdx, ".wtn-an-clickable:hover must sit BEFORE .wtn-an-shead.wtn-an-expanded in source order -- both are 0-2-0, so source order is the only remaining tie-break that keeps an expanded, clickable (Sampler) header untinted on hover");
+});
+
+test("injected CSS: cursor: pointer is scoped to .wtn-an-clickable, NOT the bare .wtn-an-shead rule (cursor-scoping correction, same dispatch as the hover-tint fix -- a non-clickable header must not show a pointer either)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+
+  const sheadBody = cssRuleBody(cssText, ".wtn-an-shead");
+  assert.ok(sheadBody, "expected a bare .wtn-an-shead rule in the injected CSS");
+  assert.ok(!/cursor:\s*pointer/.test(sheadBody), "the bare .wtn-an-shead rule must NOT set cursor: pointer any more -- a switch-bearing header (or the Compare card) is not a click target and must not look like one");
+
+  const clickableBody = cssRuleBody(cssText, ".wtn-an-clickable");
+  assert.ok(clickableBody, "expected a .wtn-an-clickable rule in the injected CSS");
+  assert.match(clickableBody, /cursor:\s*pointer/, ".wtn-an-clickable must carry cursor: pointer -- it's the marker for headers that ARE real click targets (Sampler, Save)");
+});
+
+test("marker class wtn-an-clickable: present on the switchless Sampler header (the one section whose header click still expands/collapses it) AND on the Preview's Save header (its own head.root.addEventListener('click', ...) opens the Save menu -- a real click target, correcting an earlier pass here that wrongly excluded it), absent from a switch-bearing header (Highres) and from the Preview's Compare card (neither responds to a header click)", () => {
+  const genNode = makeGeneratorNode();
+  const genCtx = makeCtx(makeDocStub());
+  const genRefs = mountGeneratorUI(genNode, genCtx);
+  const samplerHeader = findSectionHeader(genRefs.body, "Sampler");
+  assert.ok(samplerHeader, "expected a Sampler header");
+  assert.ok(hasClass(samplerHeader, "wtn-an-clickable"), "Sampler (switchless) must carry wtn-an-clickable -- its header click is real (expand/collapse)");
+
+  const highresHeader = findSectionHeader(genRefs.body, "Highres");
+  assert.ok(highresHeader, "expected a Highres header");
+  assert.ok(!hasClass(highresHeader, "wtn-an-clickable"), "Highres (switch-bearing) must NOT carry wtn-an-clickable -- per §12 its own switch, not the header, drives expand/collapse");
+
+  const pvDoc = makeDocStub();
+  makeWindowStub(pvDoc);
+  const pvCtx = makeCtx(pvDoc);
+  const pvRefs = mountPreviewUI(makePreviewNode(), pvCtx);
+  const compareCard = findSectionHeader(pvRefs.body, "Compare");
+  assert.ok(compareCard, "expected a Compare card");
+  assert.ok(!hasClass(compareCard, "wtn-an-clickable"), "the Compare card must NOT carry wtn-an-clickable -- only its switch and its two pickers are click targets, not the header itself");
+
+  const saveHeader = findSectionHeader(pvRefs.body, "Save");
+  assert.ok(saveHeader, "expected a Save header");
+  assert.ok(hasClass(saveHeader, "wtn-an-clickable"), "the Save header MUST carry wtn-an-clickable -- buildSaveRow attaches its own head.root click listener (opens the Save menu), so it is a genuine click target and must tint/show a pointer like Sampler does");
+});
+
 test("chevron glyph CSS (chevron/gear legibility fix): .wtn-an-chev's font-size matches SHEAD_GLYPH_SIZE (bigger than 14px body text, not merely equal to it) and its colour is no longer --wtn-ink-faint", () => {
   const doc = makeDocStub();
   injectStyles(doc);
@@ -3431,6 +3489,63 @@ test("the shipped CSS's tooltip rule is the TWO-CLASS compound `.wtn-tip.wtn-fld
   assert.ok(!/(^|[^.\w-])\.wtn-fld-tip\s*\{/.test(style.textContent), "must not ALSO ship a single-class `.wtn-fld-tip { ... }` rule that could out-order the compound one");
 });
 
+// Extracts one `selector { ... }` rule's full text out of a stylesheet's
+// `textContent` (the base-rule regexes below deliberately require the
+// selector to be followed by only whitespace before `{`, so e.g.
+// `.wtn-fld-num {` never matches its own `-fill`/`-name`/`-val` or
+// `.wtn-fld-disabled` variants -- each of those has its own, separately
+// asserted rule below).
+function findRule(css, re) {
+  const m = css.match(re);
+  return m ? m[0] : "";
+}
+
+test("console-background dispatch (2026-07-29, owner live-use report): the enabled .wtn-fld-num/.wtn-fld-stepper/.wtn-fld-seed rows paint --wtn-console (the Control Panel's own input token), NOT --wtn-surface-2 (the section card they sit inside)", () => {
+  const doc = makeDocStub();
+  fields.injectFieldStyles(doc);
+  const css = doc.getElementById("wtn-fields-style").textContent;
+
+  const numRule = findRule(css, /\.wtn-fld-num\s*\{[^}]*\}/);
+  const stepperRule = findRule(css, /\.wtn-fld-stepper\s*\{[^}]*\}/);
+  const seedRule = findRule(css, /\.wtn-fld-seed\s*\{[^}]*\}/);
+  assert.ok(numRule, ".wtn-fld-num rule must exist");
+  assert.ok(stepperRule, ".wtn-fld-stepper rule must exist");
+  assert.ok(seedRule, ".wtn-fld-seed rule must exist");
+
+  for (const [name, rule] of [["num", numRule], ["stepper", stepperRule], ["seed", seedRule]]) {
+    assert.match(rule, /background:\s*var\(--wtn-console,/, `.wtn-fld-${name}'s enabled background must be --wtn-console`);
+    assert.ok(!/background:\s*var\(--wtn-surface-2,/.test(rule), `.wtn-fld-${name}'s enabled background must NOT be --wtn-surface-2 any more (that's the card's own surface, .wtn-an-sbody)`);
+  }
+});
+
+test("console-background dispatch: the .wtn-fld-disabled variant of each row keeps the OLD --wtn-surface-2 look, now reserved for disabled -- a disabled field recedes into its card, an editable one reads as a well", () => {
+  const doc = makeDocStub();
+  fields.injectFieldStyles(doc);
+  const css = doc.getElementById("wtn-fields-style").textContent;
+
+  const numDisabled = findRule(css, /\.wtn-fld-num\.wtn-fld-disabled\s*\{[^}]*\}/);
+  const stepperDisabled = findRule(css, /\.wtn-fld-stepper\.wtn-fld-disabled\s*\{[^}]*\}/);
+  const seedDisabled = findRule(css, /\.wtn-fld-seed\.wtn-fld-disabled\s*\{[^}]*\}/);
+  assert.ok(numDisabled, ".wtn-fld-num.wtn-fld-disabled rule must exist");
+  assert.ok(stepperDisabled, ".wtn-fld-stepper.wtn-fld-disabled rule must exist");
+  assert.ok(seedDisabled, ".wtn-fld-seed.wtn-fld-disabled rule must exist");
+
+  for (const [name, rule] of [["num", numDisabled], ["stepper", stepperDisabled], ["seed", seedDisabled]]) {
+    assert.match(rule, /background:\s*var\(--wtn-surface-2,/, `.wtn-fld-${name}.wtn-fld-disabled must paint --wtn-surface-2`);
+    // The opacity/cursor treatment that already existed must survive the swap.
+    assert.match(rule, /opacity:\s*\.55/, `.wtn-fld-${name}.wtn-fld-disabled must keep its existing opacity dimming`);
+  }
+});
+
+test("console-background dispatch: `.wtn-fld-combobtn` (buildComboButton) carries no background of its own to swap -- checked, not changed (it's meant to sit bare on whatever surface already hosts it)", () => {
+  const doc = makeDocStub();
+  fields.injectFieldStyles(doc);
+  const css = doc.getElementById("wtn-fields-style").textContent;
+  const comboBtnRule = findRule(css, /\.wtn-fld-combobtn\s*\{[^}]*\}/);
+  assert.ok(comboBtnRule, ".wtn-fld-combobtn rule must exist");
+  assert.ok(!/background/.test(comboBtnRule), ".wtn-fld-combobtn must not have grown a background -- it has never had one, by design");
+});
+
 test("ⓘ hover tooltip: pointerdown and Escape both hide it too, and hiding twice is safe (no throw, no double-remove)", () => {
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -3984,6 +4099,142 @@ test("\"Save now\" with no fetch available (ctx.fetchImpl unset and no global fe
       globalThis.fetch = savedGlobalFetch;
     }
   }
+});
+
+// ===========================================================================
+// G3. Save-now-beside-the-card + the Compare CARD (2026-07-29 dispatch) --
+//     `.wtn-an-saverow` (button LEFT, Save card taking the rest/all of the
+//     row) and `.wtn-an-comparecard` (replaces the old bottom `.wtn-an-pvbar`
+//     row; two `buildComboButton` pickers instead of segmented groups).
+// ===========================================================================
+
+function findSaveRowWrapper(body) {
+  return queryAll(body, (n) => hasClass(n, "wtn-an-saverow"))[0] || null;
+}
+
+test("Preview: the Save row is ONE flex wrapper -- \"Save now\" on the LEFT, the Save card on the right, in that order", () => {
+  const node = makePreviewNode(); // save.enabled defaults false -> button present
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const wrapper = findSaveRowWrapper(refs.body);
+  assert.ok(wrapper, "expected a .wtn-an-saverow wrapper");
+  assert.equal(wrapper.children.length, 2, "the button and the Save card, nothing else");
+  assert.ok(hasClass(wrapper.children[0], "wtn-an-savenow"), "\"Save now\" must be the FIRST (left) child");
+  assert.ok(hasClass(wrapper.children[1], "wtn-an-shead"), "the Save card must be the SECOND (right) child");
+  assert.ok(hasClass(wrapper.children[1], "wtn-an-menurow"), "the nested card is still the same Save menu row");
+});
+
+test("Preview: once save.enabled is true, \"Save now\" disappears and the Save card is the wrapper's ONLY child -- no leftover gap where the button was", () => {
+  const node = makePreviewNode({ preview_state: JSON.stringify({ save: { enabled: true } }) });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const wrapper = findSaveRowWrapper(refs.body);
+  assert.ok(wrapper, "expected a .wtn-an-saverow wrapper even with the button absent");
+  assert.equal(wrapper.children.length, 1, "only the Save card -- the button must be ABSENT, not hidden");
+  assert.ok(hasClass(wrapper.children[0], "wtn-an-shead"));
+
+  // The card's own CSS (render.mjs) is what actually claims the full row
+  // width when it's the sole flex child -- assert the rule that makes that
+  // true is really in the injected stylesheet, not just true by accident of
+  // this test's own DOM stub.
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const rule = cssRuleBody(cssText, ".wtn-an-saverow > .wtn-an-shead");
+  assert.ok(rule, "expected a .wtn-an-saverow > .wtn-an-shead rule");
+  assert.match(rule, /flex:\s*1 1 auto/, "the nested Save card must flex-grow to fill the row on its own");
+});
+
+function findCompareCard(body) {
+  return findSectionHeader(body, "Compare");
+}
+
+test("Preview: the Compare card is a real .wtn-an-shead (same chrome as a section/Save card), no chevron, no expandable body", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const card = findCompareCard(refs.body);
+  assert.ok(card, "expected a Compare card");
+  assert.ok(hasClass(card, "wtn-an-comparecard"));
+  assert.ok(!card.children.some((c) => hasClass(c, "wtn-an-chev")), "the Compare card must carry no chevron");
+  assert.ok(!sectionBodyOf(card), "the Compare card must never gain a .wtn-an-sbody -- it has no body to expand into");
+  assert.ok(switchOf(card), "expected the compare switch on the card itself");
+});
+
+test("Preview: the Compare card is ONE row -- both pickers + \"vs\" sit in a single right-aligned group after the label, and that group's own CSS pins it with margin-left: auto", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const card = findCompareCard(refs.body);
+  const pickers = card.children.find((c) => hasClass(c, "wtn-an-comparepix"));
+  assert.ok(pickers, "expected the .wtn-an-comparepix picker group as a child of the Compare card");
+  const combos = pickers.children.filter((c) => hasClass(c, "wtn-fld-combobtn"));
+  assert.equal(combos.length, 2, "expected exactly two combo-button pickers (a and b)");
+  const vs = pickers.children.find((c) => hasClass(c, "wtn-an-vs"));
+  assert.ok(vs, "expected a \"vs\" separator between the two pickers");
+  assert.equal(vs.textContent, "vs");
+  // Default fixture: compare.a = "base", compare.b = "final". Each combo's
+  // own value span is its FIRST child (`buildComboButton`, js/shared/fields.mjs).
+  assert.equal(combos[0].children[0].textContent, "base");
+  assert.equal(combos[1].children[0].textContent, "final");
+
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const rule = cssRuleBody(cssText, ".wtn-an-comparepix");
+  assert.ok(rule, "expected a .wtn-an-comparepix rule");
+  assert.match(rule, /margin-left:\s*auto/, "the picker group must be pinned right, same mechanism as a section header's own ⚙");
+
+  // Old segmented-group classes must be gone entirely -- `docs/generator-
+  // design.md`'s own §7 update records the removal.
+  assert.ok(!queryAll(refs.body, (n) => hasClass(n, "wtn-an-seg")).length, "no .wtn-an-seg segmented groups must remain");
+  assert.ok(!queryAll(refs.body, (n) => hasClass(n, "wtn-an-pvbar")).length, "the old bottom .wtn-an-pvbar row must be gone");
+});
+
+test("Preview: clicking a compare picker opens the SAME anchored option-list overlay a stepper's own combo uses, and picking an option persists to compare.a / compare.b", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc, { w: 1200, h: 900 });
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const card = findCompareCard(refs.body);
+  const pickers = card.children.find((c) => hasClass(c, "wtn-an-comparepix"));
+  const combos = pickers.children.filter((c) => hasClass(c, "wtn-fld-combobtn"));
+  const comboA = combos[0];
+
+  fire(comboA, "click");
+  assert.ok(activeOverlayRef.current, "clicking a picker must open an option-list overlay");
+  const menu = activeOverlayRef.current.overlay.children[0];
+  assert.ok(hasClass(menu, "wtn-an-optlist"), "must reuse the SAME scrollable option-list mechanism a stepper's combo opens");
+  const opts = queryAll(menu, (n) => hasClass(n, "wtn-an-opt"));
+  assert.deepEqual(opts.map((o) => o.textContent), ["base", "mid", "final"]);
+  const selected = opts.find((o) => hasClass(o, "wtn-an-opt-sel"));
+  assert.ok(selected && selected.textContent === "base", "compare.a's CURRENT value (base) must be marked selected");
+
+  const midOpt = opts.find((o) => o.textContent === "mid");
+  fire(midOpt, "click");
+  assert.equal(activeOverlayRef.current, null, "picking an option must close the list");
+  assert.equal(previewState(node).compare.a, "mid", "picking an option must write+persist compare.a");
+
+  // The SAME mechanism, for the SECOND picker, writing compare.b instead.
+  const card2 = findCompareCard(node._anRefs.body); // repainted after the edit above
+  const pickers2 = card2.children.find((c) => hasClass(c, "wtn-an-comparepix"));
+  const comboB = pickers2.children.filter((c) => hasClass(c, "wtn-fld-combobtn"))[1];
+  fire(comboB, "click");
+  assert.ok(activeOverlayRef.current);
+  const menu2 = activeOverlayRef.current.overlay.children[0];
+  const baseOpt = queryAll(menu2, (n) => hasClass(n, "wtn-an-opt")).find((o) => o.textContent === "base");
+  fire(baseOpt, "click");
+  assert.equal(previewState(node).compare.b, "base", "picking an option must write+persist compare.b");
 });
 
 // ===========================================================================
@@ -4658,6 +4909,12 @@ test("card CSS contract (task item 1): .wtn-an-sbody continues its header's own 
   assert.ok(bodyRule.includes("background: var(--wtn-surface-2"), ".wtn-an-sbody must share the header's OWN surface token");
   assert.ok(bodyRule.includes("border-top: none"), ".wtn-an-sbody must not double the header's own bottom border into a seam");
   assert.match(bodyRule, /border-radius:\s*0 0 8px 8px/, ".wtn-an-sbody must round ONLY its bottom corners");
+  // 2026-07-29, live review: the card border now carries the "nested under
+  // this header" signal, so the old 23px left indent (`padding: 3px 5px
+  // 10px 23px`) is gone -- left must match every OTHER side (5px), not a
+  // fourth, wider value.
+  assert.match(bodyRule, /padding:\s*3px 5px 10px\s*[;}]/, ".wtn-an-sbody's left padding must equal its right (5px), no more 23px indent");
+  assert.doesNotMatch(bodyRule, /padding:\s*3px 5px 10px 23px/, "the old indented 4-value padding must not survive");
 
   const expandedRule = cssRuleBody(cssText, ".wtn-an-shead.wtn-an-expanded");
   assert.ok(expandedRule, "expected a .wtn-an-shead.wtn-an-expanded rule");
@@ -4884,17 +5141,24 @@ test("font/height constants (task item 4) are internally consistent: every row/h
 
   // Width/height floors must all have grown from their pre-dispatch values
   // (this file's own "Resize" section comments record the "was" numbers).
-  assert.ok(DEFAULT_W > 360 && GENERATOR_MIN_W > 320 && PREVIEW_MIN_W > 380);
+  assert.ok(DEFAULT_W > 360 && GENERATOR_MIN_W > 320);
   assert.ok(PREVIEW_IMG_MIN_H > 160 && PANEL_MIN_H > 220);
 
-  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (task item 2's second
-  // bullet, render.mjs's own comment) sums to within rounding of the
-  // exported constant.
-  const saveRowH = SHEAD_H + SHEAD_GAP;
-  const compareRowH = 8 + 24; // pvbar margin-top + its own segmented-button content
-  const bodyGaps = 5 * 2; // 3 children (save row / wipe / compare row) -> 2 gaps
+  // PREVIEW_MIN_W SHRANK (2026-07-29, Compare-card dispatch): the old
+  // segmented-group compare row (444) is gone, replaced by two compact
+  // `buildComboButton`s -- a real reduction, not a regression, so this
+  // asserts the new direction instead of the old "grew from 380" one.
+  assert.ok(PREVIEW_MIN_W < 444 && PREVIEW_MIN_W > 200, "PREVIEW_MIN_W must have shrunk well below the old segmented-group floor, but stay a sane, non-degenerate width");
+
+  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (2026-07-29, Compare-card
+  // dispatch: a real third card replaces the old bottom pvbar row, and
+  // "Save now" moved beside the Save card instead of below it) sums to
+  // within rounding of the exported constant.
+  const saveRowH = Math.max(SHEAD_H, 36) + SHEAD_GAP; // .wtn-an-saverow: max(card, "Save now" button) + its own margin-bottom
+  const compareCardH = SHEAD_H + SHEAD_GAP; // .wtn-an-comparecard is a plain .wtn-an-shead, same shape as the Save card
+  const bodyGaps = 5 * 2; // 3 children (save row / compare card / wipe) -> 2 gaps
   const panelChrome = 7 * 2 + 1 * 2; // padding top+bottom, border top+bottom
-  const sum = saveRowH + compareRowH + PREVIEW_IMG_MIN_H + bodyGaps + panelChrome;
+  const sum = saveRowH + compareCardH + PREVIEW_IMG_MIN_H + bodyGaps + panelChrome;
   assert.ok(sum <= PREVIEW_PANEL_MIN_H, "PREVIEW_PANEL_MIN_H must cover the documented arithmetic");
   assert.ok(PREVIEW_PANEL_MIN_H - sum < 4, "rounded up to the nearest 4px grid only, not padded further");
 
@@ -5050,8 +5314,8 @@ test("applyPanelFontScale(14) (the default/baseline) reproduces every original l
     assert.equal(render.SHEAD_GLYPH_SIZE, 17);
     assert.equal(render.PANEL_MIN_H, 256);
     assert.equal(render.PREVIEW_IMG_MIN_H, 188);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 284);
-    assert.equal(render.PREVIEW_MIN_H, 364);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 292);
+    assert.equal(render.PREVIEW_MIN_H, 372);
   } finally {
     render.applyPanelFontScale(14);
   }
@@ -5064,11 +5328,11 @@ test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, 
     assert.equal(render.SHEAD_H, 64);
     assert.equal(render.PANEL_MIN_H, 512);
     assert.equal(render.PREVIEW_IMG_MIN_H, 376);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 568);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 584);
     // The +80 chrome addend must NOT double along with everything else --
     // this file's own PREVIEW_MIN_H doc comment ("litegraph's OWN native
     // pixel geometry... deliberately NOT scaled").
-    assert.equal(render.PREVIEW_MIN_H, 568 + 80);
+    assert.equal(render.PREVIEW_MIN_H, 584 + 80);
     assert.equal(render.PREVIEW_MIN_H - render.PREVIEW_PANEL_MIN_H, 80);
   } finally {
     render.applyPanelFontScale(14);

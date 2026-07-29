@@ -172,9 +172,9 @@ import {
 import {
   injectStyles,
   buildPanelShell,
-  buildSwitch,
   buildInfoIcon,
   buildGearIcon,
+  buildComboButton,
   buildSectionHeader,
   withInfoIcon,
   buildTextField,
@@ -1207,6 +1207,12 @@ function buildSection(doc, spec) {
   if (!hasSwitch) {
     // Switchless section (Sampler) -- see this section's own top doc comment
     // for why the header click keeps doing this job here and ONLY here.
+    // `wtn-an-clickable` (hover-tint dispatch, `render.mjs`'s `.wtn-an-shead`
+    // CSS comment) is added in THIS SAME branch, at the exact point the real
+    // click listener is attached, deliberately -- not inferred from
+    // `!hasSwitch` a second time somewhere else, so the marker class and the
+    // handler it describes can never drift out of sync with each other.
+    head.root.classList.add("wtn-an-clickable");
     head.root.addEventListener("click", () => onToggleExpand());
   }
   if (head.switchEl) {
@@ -2587,11 +2593,15 @@ export function buildPreviewBody(doc, node, ctx) {
   const stagesPresent = STAGE_ORDER.filter((s) => previewImages[s]);
   const body = el(doc, "div", "wtn-an-body");
 
-  body.appendChild(buildSaveRow(doc, node, ctx, state));
-  // "Save now" (task item 6) -- only while `save.enabled` is off (its new
-  // default): this is exactly the case the button exists for. Once saving
-  // is on, an enabled run already writes every stage on its own -- a second,
-  // redundant on-demand save button would just confuse which copy is which.
+  // ── the Save ROW (2026-07-29, Save-now-beside-the-card dispatch) -- ONE
+  // flex row: "Save now" on the LEFT (only while `save.enabled` is off --
+  // the case the button exists for; once saving is on, an enabled run
+  // already writes every stage on its own, so a second manual trigger would
+  // just duplicate it), the Save card taking the REST of the row's width
+  // (`.wtn-an-saverow > .wtn-an-shead`'s own `flex: 1 1 auto`, render.mjs's
+  // CSS comment) -- including the WHOLE row, with no leftover gap, whenever
+  // the button is absent (a single flex-grow child already claims 100%).
+  const saveRow = el(doc, "div", "wtn-an-saverow");
   if (!state.save.enabled) {
     // `node._anSeed` (fixes `%seed%` always resolving to 0 -- `docs/TODO.md`'s
     // last Now item) -- the real seed `handleExecuted` stashed from the last
@@ -2599,8 +2609,12 @@ export function buildPreviewBody(doc, node, ctx) {
     // if no run has reported one yet (see `handleExecuted`'s own doc
     // comment for exactly when that is). Threaded through so the click
     // handler can echo it back verbatim -- never read/derived here.
-    body.appendChild(buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed));
+    saveRow.appendChild(buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed));
   }
+  saveRow.appendChild(buildSaveRow(doc, node, ctx, state));
+  body.appendChild(saveRow);
+
+  body.appendChild(buildCompareCard(doc, node, ctx, state));
 
   const compare = state.compare;
   const wantsDual = !!compare.enabled;
@@ -2637,56 +2651,81 @@ export function buildPreviewBody(doc, node, ctx) {
   }
   body.appendChild(wipe);
 
-  const pvbar = el(doc, "div", "wtn-an-pvbar");
-  const sw = buildSwitch(doc, wantsDual);
-  sw.addEventListener("click", () => {
-    compare.enabled = !wantsDual;
+  return { body, wipeEl: wipe };
+}
+
+/**
+ * The Compare CARD (2026-07-29, Save-now-beside-the-card dispatch) --
+ * REPLACES the old bottom `.wtn-an-pvbar` row entirely. Same card chrome as
+ * the Save row above it (`buildSectionHeader({hasChevron: false, hasGear:
+ * false, ...})`, `render.mjs`'s `.wtn-an-shead` base rule), ONE row, no
+ * expandable body -- §12's "the switch owns expand/collapse" rule does NOT
+ * apply here, this card has no body for a switch to expand INTO. The
+ * switch keeps its pre-existing meaning verbatim (on => hover-wipe compare,
+ * off => plain single-image view, `buildPreviewBody`'s own wipe logic,
+ * unchanged by this move) -- only its housing changed. Both pickers stay
+ * visible regardless of the switch's own state (this card has no
+ * conditional sub-parts, unlike the Save row's "Save now" button) -- a user
+ * can line up which two stages to compare before ever flipping compare on.
+ */
+function buildCompareCard(doc, node, ctx, state) {
+  const compare = state.compare;
+  const wantsDual = !!compare.enabled;
+
+  const head = buildSectionHeader(doc, {
+    label: "Compare", expanded: false, hasChevron: false,
+    hasSwitch: true, switchOn: wantsDual,
+  });
+  head.root.classList.add("wtn-an-comparecard");
+  if (head.switchEl) {
+    head.switchEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      compare.enabled = !wantsDual;
+      persistPreviewState(node);
+      repaintPreview(node, ctx);
+    });
+  }
+
+  const pickers = el(doc, "div", "wtn-an-comparepix");
+  pickers.appendChild(buildComparePicker(doc, ctx, compare.a, (v) => {
+    compare.a = v;
     persistPreviewState(node);
     repaintPreview(node, ctx);
+  }).root);
+  const vs = el(doc, "span", "wtn-an-vs");
+  vs.textContent = "vs";
+  pickers.appendChild(vs);
+  pickers.appendChild(buildComparePicker(doc, ctx, compare.b, (v) => {
+    compare.b = v;
+    persistPreviewState(node);
+    repaintPreview(node, ctx);
+  }).root);
+  head.root.appendChild(pickers);
+
+  return head.root;
+}
+
+/**
+ * ONE compare-stage picker -- `buildComboButton` (`js/shared/fields.mjs`,
+ * the value+caret half of a stepper's own combo, no label, no cycle
+ * arrows) wired to the SAME `openStepperOptionList` overlay a stepper's
+ * combo already uses (task 1c: "reuse the existing option-list/combo
+ * mechanism", not a hand-rolled dropdown), over the fixed `COMPARE_SLOTS`
+ * (`base`/`mid`/`final`) list -- mirrors `buildAnStepper`'s own
+ * `onOpenList` wiring below, just without the row/label/arrows a stepper
+ * always carries (there is no row here, only the button). `onChange`
+ * persists straight to whichever of `compare.a`/`compare.b` the caller
+ * closed over, unchanged settings path either way.
+ */
+function buildComparePicker(doc, ctx, value, onChange) {
+  const key = `an-compare:${_stepperKeySeq++}`;
+  let ref;
+  ref = buildComboButton(doc, { value }, {
+    onOpenList: (comboEl, currentValue) => {
+      openStepperOptionList(doc, ctx, key, comboEl, COMPARE_SLOTS, currentValue, ref, onChange);
+    },
   });
-  const label = el(doc, "span", "wtn-an-pvlab");
-  label.textContent = "compare";
-  pvbar.appendChild(sw);
-  pvbar.appendChild(label);
-
-  if (wantsDual) {
-    const segs = el(doc, "div", "wtn-an-segs");
-    const segA = el(doc, "div", "wtn-an-seg");
-    COMPARE_SLOTS.forEach((slot) => {
-      const btn = el(doc, "button");
-      btn.type = "button";
-      btn.className = compare.a === slot ? "wtn-an-on" : "";
-      btn.textContent = slot;
-      btn.addEventListener("click", () => {
-        compare.a = slot;
-        persistPreviewState(node);
-        repaintPreview(node, ctx);
-      });
-      segA.appendChild(btn);
-    });
-    const vs = el(doc, "span");
-    vs.textContent = "vs";
-    const segB = el(doc, "div", "wtn-an-seg");
-    COMPARE_SLOTS.forEach((slot) => {
-      const btn = el(doc, "button");
-      btn.type = "button";
-      btn.className = compare.b === slot ? "wtn-an-on" : "";
-      btn.textContent = slot;
-      btn.addEventListener("click", () => {
-        compare.b = slot;
-        persistPreviewState(node);
-        repaintPreview(node, ctx);
-      });
-      segB.appendChild(btn);
-    });
-    segs.appendChild(segA);
-    segs.appendChild(vs);
-    segs.appendChild(segB);
-    pvbar.appendChild(segs);
-  }
-  body.appendChild(pvbar);
-
-  return { body, wipeEl: wipe };
+  return ref;
 }
 
 /** The Preview's one section -- Save (2026-07-28 inline-sections dispatch).
@@ -2709,6 +2748,15 @@ export function buildPreviewBody(doc, node, ctx) {
  * still toggles `save.enabled` directly, immediately, with a full repaint
  * (there is no `ui_expanded` left to keep in step with it any more --
  * `state.mjs`'s own top doc comment).
+ *
+ * **2026-07-29 (Save-now-beside-the-card dispatch)**: the returned
+ * `head.root` is no longer appended straight to the body -- `buildPreviewBody`
+ * now nests it inside `.wtn-an-saverow`, a flex row shared with "Save now"
+ * (`buildSaveNowRow` below), so the button sits beside this card instead of
+ * below it. Nothing in THIS function changed to make that true --
+ * `render.mjs`'s own `.wtn-an-saverow > .wtn-an-shead` rule (`flex: 1 1
+ * auto`) is what makes the card fill the row's remaining width, or the
+ * whole row when the button is absent.
  */
 function buildSaveRow(doc, node, ctx, state) {
   const save = state.save;
@@ -2735,7 +2783,18 @@ function buildSaveRow(doc, node, ctx, state) {
   // The row itself is ALSO a click target for the same menu (the gear is
   // the discoverable affordance; the row-click is the forgiving one) --
   // the switch's own listener above already stops propagation, so flipping
-  // it can never also open this.
+  // it can never also open this. `wtn-an-clickable` (hover-tint-scoping
+  // dispatch correction, 2026-07-29) is added in THIS SAME statement group,
+  // at the exact point the real click listener is attached -- mirroring
+  // `buildSection`'s own switchless-header branch above, so the marker class
+  // and the handler it describes can never drift out of sync with each
+  // other. The Save header genuinely IS a click target (this function's own
+  // doc comment: "the row-click is the forgiving one"), so it belongs in the
+  // clickable set alongside the switchless section, NOT with the Compare
+  // card (no `head.root` listener at all) or the switch-bearing sections
+  // (header itself is not a click target, per `docs/generator-design.md`
+  // §12).
+  head.root.classList.add("wtn-an-clickable");
   head.root.addEventListener("click", () => openSaveMenu());
 
   function openSaveMenu() {

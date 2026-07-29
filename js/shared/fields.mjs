@@ -155,6 +155,27 @@
  * `/extensions/.../theme.mjs` path would throw before a single assertion
  * runs. This module's own CSS carries `var(--wtn-x, <fallback hex>)`
  * everywhere.
+ *
+ * ## 2026-07-29 (console-background dispatch, owner live-use report)
+ *
+ * `.wtn-fld-num`/`.wtn-fld-stepper`/`.wtn-fld-seed` used to paint
+ * `--wtn-surface-2` — the SAME token as the section CARD they sit inside
+ * (`js/anima/render.mjs`'s `.wtn-an-sbody`), so an editable field read as a
+ * flat label rather than a well you can type/drag into; the Control Panel's
+ * own inputs already paint `--wtn-console` (`js/controls/render.mjs`, 7
+ * uses). All three rows now paint `--wtn-console` instead, and their
+ * `.wtn-fld-disabled` variants each pick up `background: var(--wtn-surface-2,
+ * …)` explicitly (previously opacity/cursor only) — so the look these rows
+ * used to have UNCONDITIONALLY is now reserved for the disabled state: a
+ * disabled field should recede into its card, an editable one should read as
+ * a well distinct from it, and swapping the token between the two states
+ * (rather than one merely dimming further from the other) is what keeps that
+ * distinction legible. `buildComboButton`/`.wtn-fld-combobtn` was checked and
+ * carries no background of its own to swap (see its own CSS comment).
+ * `js/controls/` does not import this module at all (confirmed by grep, not
+ * assumed — see the "bigger-type dispatch" note above), so this change has
+ * no effect on that track; it only makes the two tracks' underlying token
+ * *choice* consistent, not their rendered DOM.
  */
 
 import { rangeOf, clampNumeric, decimalsOf, numericPercent, formatNumericValue } from "./field_logic.mjs";
@@ -379,12 +400,25 @@ function buildCss() {
 
 /* ── numeric drag row (Control Panel's own drag-to-set-by-dragging-the-row
    maths, ported behaviour -- see rangeOf/clampNumeric/numericPercent
-   imported above) ── */
+   imported above) ──
+   **2026-07-29 (console-background dispatch, owner live-use report)**: this
+   row used to paint \`--wtn-surface-2\`, the SAME token as the section CARD
+   it sits inside (\`.wtn-an-sbody\`), so an editable field read as a flat
+   label rather than a well you can type/drag into. The Control Panel's own
+   inputs already paint \`--wtn-console\` (\`js/controls/render.mjs\`, 7 uses) --
+   this row now matches. \`--wtn-surface-2\` is NOT deleted, just reassigned:
+   the \`.wtn-fld-disabled\` variant immediately below keeps it, so a disabled
+   field still recedes into its card while an editable one reads distinctly
+   darker -- see that rule's own comment for the full rationale. */
 .wtn-fld-num { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
   padding: 0 9px; border-radius: 6px; overflow: hidden; cursor: ew-resize; margin-bottom: ${FLD_ROW_GAP}px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   font-size: ${FLD_FONT}px; }
-.wtn-fld-num.wtn-fld-disabled { cursor: default; opacity: .55; }
+/* A disabled field recedes back into its own card's surface (matches
+   \`.wtn-an-sbody\`'s \`--wtn-surface-2\`) rather than reading as a dark,
+   editable-looking well it isn't -- the swap that keeps "editable" and
+   "disabled" visually distinct instead of one merely dimming the other. */
+.wtn-fld-num.wtn-fld-disabled { cursor: default; opacity: .55; background: var(--wtn-surface-2, ${TOKENS.surface2}); }
 .wtn-fld-num-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px 0 0 6px;
   background: linear-gradient(90deg, rgba(45,212,191,.30), rgba(45,212,191,.16));
   border-right: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep}); pointer-events: none; }
@@ -405,12 +439,15 @@ function buildCss() {
   font-size: ${FLD_MONO}px; color: var(--wtn-ink, ${TOKENS.ink}); white-space: nowrap;
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
-/* ── ◀ [ value ▾ ] ▶ stepper row ── */
+/* ── ◀ [ value ▾ ] ▶ stepper row ──
+   Same console-background swap as \`.wtn-fld-num\` just above (2026-07-29,
+   console-background dispatch) -- see that rule's comment for the full
+   rationale; \`.wtn-fld-disabled\` right below keeps \`--wtn-surface-2\`. */
 .wtn-fld-stepper { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
   padding: 0 9px; border-radius: 6px; margin-bottom: ${FLD_ROW_GAP}px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   font-size: ${FLD_FONT}px; overflow: hidden; }
-.wtn-fld-stepper.wtn-fld-disabled { opacity: .55; }
+.wtn-fld-stepper.wtn-fld-disabled { opacity: .55; background: var(--wtn-surface-2, ${TOKENS.surface2}); }
 /* 2026-07-28 (stepper combo overflow fix, this file's top doc comment) --
    the label NEVER shrinks here (every stepper label in this pack is one
    short word) -- it's the value (a picker's value can be a long filename)
@@ -438,6 +475,26 @@ function buildCss() {
 .wtn-fld-combo:hover .wtn-fld-combo-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-fld-combo:hover .wtn-fld-caret { border-top-color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 
+/* ── combo BUTTON -- \`buildComboButton\`'s own root, the value+caret half of
+   the stepper combo above with no surrounding row of its own. \`flex: none\`
+   (sized to its own content, never stretched by a flex parent) -- unlike
+   \`.wtn-fld-combo\` above, which assumes a \`.wtn-fld-stepper-body\` parent
+   that already gives it room to grow into.
+   **2026-07-29 (console-background dispatch): checked, not changed.** Unlike
+   \`.wtn-fld-num\`/\`.wtn-fld-stepper\`/\`.wtn-fld-seed\` above, this rule has
+   never carried a \`background\`/\`border\` of its own -- it is deliberately
+   just the bare value+caret, meant to sit inline inside whatever header/card
+   already provides the surface underneath it (\`docs/generator-design.md\`
+   §7's Compare card picker, its only caller). There is therefore no
+   \`--wtn-surface-2\` to swap to \`--wtn-console\` here; "give it the same
+   treatment" for this control means confirming it has none, not adding one --
+   boxing it in its own console-coloured chrome would be a NEW look this
+   dispatch was not asked to invent. ── */
+.wtn-fld-combobtn { position: relative; display: inline-flex; align-items: center; gap: 6px;
+  min-width: 0; cursor: pointer; flex: none; }
+.wtn-fld-combobtn:hover .wtn-fld-combo-val { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
+.wtn-fld-combobtn:hover .wtn-fld-caret { border-top-color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+
 /* ── seed row: text entry + roll -- NOT a drag row (a seed runs to
    2**64-1; a slider over that range is unusable, and holding it as a JS
    number rounds past Number.MAX_SAFE_INTEGER -- see js/anima/state.mjs's
@@ -445,11 +502,14 @@ function buildCss() {
    with every other row in the same section, but the interaction is direct
    text entry (clamped on commit by the CALLER -- this module has no
    opinion on the -1 "random" sentinel) plus a roll button, never a drag. ── */
+/* Same console-background swap as \`.wtn-fld-num\`/\`.wtn-fld-stepper\` above
+   (2026-07-29, console-background dispatch) -- \`.wtn-fld-disabled\` keeps
+   \`--wtn-surface-2\`, same reasoning. */
 .wtn-fld-seed { position: relative; display: flex; align-items: center; gap: 9px; height: ${FLD_ROW_H}px;
   padding: 0 9px; border-radius: 6px; margin-bottom: ${FLD_ROW_GAP}px;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   font-size: ${FLD_FONT}px; }
-.wtn-fld-seed.wtn-fld-disabled { opacity: .55; }
+.wtn-fld-seed.wtn-fld-disabled { opacity: .55; background: var(--wtn-surface-2, ${TOKENS.surface2}); }
 .wtn-fld-seed-name { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: nowrap; flex: none; }
 /* min-width: 0 -- same reasoning as .wtn-fld-num-val: a 20-digit seed must
    be free to shrink/scroll inside the box rather than blowing out the row. */
@@ -947,6 +1007,56 @@ export function buildStepperField(doc, spec, { onChange, onOpenList } = {}) {
   }
 
   return { root, val, comboEl: combo, repaint, getValue: () => currentValue };
+}
+
+// ---------------------------------------------------------------------------
+// Combo BUTTON -- the value+caret half of `buildStepperField` above, on its
+// own, with no label and no cycle arrows (`docs/generator-design.md` §7's
+// compare-card pickers, 2026-07-29). A `buildStepperField` always ships
+// glued to a full row (label + arrows + combo); this is for a picker that
+// has no row of its OWN to sit in -- e.g. two "base ▾ vs final ▾" buttons
+// living inside a single card's header alongside a switch and a label,
+// where a fixed-width label + arrows on EACH picker would blow the row's
+// width for no benefit (there's nothing to cycle FROM/TO that a click on the
+// value itself doesn't already reach). Reuses `.wtn-fld-combo-val`/
+// `.wtn-fld-caret` verbatim (same look, same hover tint) so this reads as
+// the SAME affordance as every stepper's own combo, just unwrapped.
+// ---------------------------------------------------------------------------
+
+/** `spec`: `{ value, options }` -- `options` is handed straight through to
+ * the caller's `onOpenList`, this function never reads it itself (mirrors
+ * `buildStepperField`'s own split: the combo only ever triggers the list,
+ * the CALLER decides what's in it). `onOpenList(root, currentValue)` fires
+ * on click, `stopPropagation`'d so this button is safe to nest inside a
+ * clickable card header (`docs/generator-design.md` §7's Compare card) --
+ * see `buildStepperField`'s own doc comment for why this owns its current
+ * value (`repaint`) rather than handing a build-time snapshot to a caller
+ * that might read it later. Returns `{ root, repaint(value), getValue() }`. */
+export function buildComboButton(doc, spec, { onOpenList } = {}) {
+  const { value } = spec;
+  const root = el(doc, "div", "wtn-fld-combobtn");
+  const val = el(doc, "span", "wtn-fld-combo-val");
+  const caret = el(doc, "span", "wtn-fld-caret");
+  root.appendChild(val);
+  root.appendChild(caret);
+
+  let currentValue = value;
+  const repaint = (v) => {
+    currentValue = v;
+    const text = v == null ? "" : String(v);
+    val.textContent = text;
+    val.title = text;
+  };
+  repaint(value);
+
+  root.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (typeof onOpenList === "function") {
+      onOpenList(root, currentValue);
+    }
+  });
+
+  return { root, repaint, getValue: () => currentValue };
 }
 
 // ---------------------------------------------------------------------------

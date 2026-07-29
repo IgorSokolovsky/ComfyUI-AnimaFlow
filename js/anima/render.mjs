@@ -181,7 +181,7 @@
 
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
 import {
-  injectFieldStyles, buildSwitch, buildInfoIcon, buildGearIcon,
+  injectFieldStyles, buildSwitch, buildInfoIcon, buildGearIcon, buildComboButton,
   buildTextField, buildBoolField, buildSublabel, buildMissing,
   FLD_ROW_H, FLD_ROW_GAP, applyFieldFontScale,
 } from "../shared/fields.mjs";
@@ -339,10 +339,59 @@ function buildCss() {
    element (\`.wtn-an-sbody\`) that simply isn't rendered at all while
    collapsed, not a max-height: 0 hide. ── */
 .wtn-an-shead { position: relative; display: flex; align-items: center; gap: 9px; height: ${SHEAD_H}px;
-  margin-bottom: ${SHEAD_GAP}px; padding: 0 9px; border-radius: 8px; cursor: pointer;
+  margin-bottom: ${SHEAD_GAP}px; padding: 0 9px; border-radius: 8px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   overflow: hidden; }
-.wtn-an-shead:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+/* ── \`cursor: pointer\` scoped to CLICKABLE headers only (cursor-scoping
+   correction, 2026-07-29, same dispatch as the hover-tint fix directly
+   below -- the owner's approved principle, "the affordance applies exactly
+   to headers that are real click targets, and nowhere else", covers this
+   property too: a non-clickable header (Mod Guidance, Highres, Detailer,
+   Upscale, Postprocess, the Compare card) used to show a pointer cursor
+   despite doing nothing on click, the same misleading affordance the hover
+   tint used to be. Lives on the SAME \`.wtn-an-clickable\` marker class the
+   hover-tint rule below already uses -- one class, one condition, both
+   properties -- rather than a second selector that could drift out of sync
+   with it. Every interactive CHILD of a header (the switch, the ⓘ, the ⚙,
+   the Compare card's two pickers) sets its own cursor already
+   (\`js/shared/fields.mjs\`'s \`.wtn-fld-switch\` / \`.wtn-fld-info\` (\`cursor:
+   help\`, deliberately not \`pointer\` -- it's an info tooltip, not a click
+   target) / \`.wtn-fld-gear\` / \`.wtn-fld-combobtn\` (the Compare card's own
+   pickers, via \`buildComboButton\`), all already \`cursor: pointer\`/\`help\`
+   on THEMSELVES, verified by grep rather than assumed -- see this rule's own
+   build report), so removing the header's blanket declaration does not
+   leave any of them looking dead with an inherited \`cursor: default\`. ── */
+.wtn-an-clickable { cursor: pointer; }
+/* ── hover tint, CLICKABLE headers only (hover-tint-scoping dispatch,
+   2026-07-29 -- follows the owner's own accent-removed-from-card-borders
+   call, \`a6478f0\`, which this rule used to fight: hovering ANY header used
+   to bring teal right back). Scoped to \`.wtn-an-clickable\`, a marker class
+   added in the exact same statement group that attaches a header's real
+   click listener -- \`interaction.mjs\`'s \`buildSection\` does it for the
+   switchless-section/Sampler \`if (!hasSwitch) { ... }\` case, and
+   \`buildSaveRow\` does it right next to its own \`head.root.addEventListener
+   ("click", () => openSaveMenu())\` (correction, same day: an earlier pass
+   here wrongly excluded the Save row, see that function's own comment) --
+   never inferred from \`hasSwitch\`/\`dep\`/anything else a second time here,
+   so the class and the handler describe the exact same condition and can
+   never disagree. Every switch-bearing section (Mod Guidance, Highres,
+   Detailer, Upscale, Postprocess) is driven ONLY by its own switch per §12
+   -- clicking elsewhere on those headers does nothing, so they never carry
+   this class and never tint. The Compare card has no \`head.root\` listener
+   at all (only its switch and its two pickers do), so it was already
+   excluded without any special-casing.
+   Specificity is the whole reason this stays a ONE class + one pseudo-class
+   selector: \`.wtn-an-clickable:hover\` is 0-2-0, matching (not beating)
+   \`.wtn-an-shead.wtn-an-expanded\` below (also 0-2-0) -- see that rule's own
+   comment for why. A two-class form like \`.wtn-an-shead.wtn-an-clickable:hover\`
+   would be 0-3-0 and would newly BEAT \`.wtn-an-expanded\` regardless of
+   source order, tinting an EXPANDED header on hover -- a regression this
+   rule must not reintroduce. This rule also stays BEFORE \`.wtn-an-expanded\`
+   in source order, exactly where the old \`.wtn-an-shead:hover\` rule sat, so
+   the tie-break below still favours \`.wtn-an-expanded\` for the one header
+   that's both clickable and expanded (Sampler, expanded -- no tint, matching
+   today's behaviour verbatim). ── */
+.wtn-an-clickable:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 /* ── card attachment (task item 1): while expanded, the header SQUARES OFF
    its own bottom corners and drops its own bottom margin to zero, so
    \`.wtn-an-sbody\` right below it (this file's next CSS block) reads as ONE
@@ -359,13 +408,14 @@ function buildCss() {
    border colour.
    \`border-color\` STAYS explicitly declared here even though its value now
    equals \`.wtn-an-shead\`'s own base rule above -- this redundancy is
-   deliberate and load-bearing, not an oversight: \`.wtn-an-shead:hover\`
-   (just above) has the SAME specificity (0-2-0) as this rule and currently
-   loses only on source order (this rule sits later in the stylesheet).
+   deliberate and load-bearing, not an oversight: \`.wtn-an-clickable:hover\`
+   (above) has the SAME specificity (0-2-0) as this rule and currently
+   loses only on source order (this rule sits later in the stylesheet) --
+   true for the one header that is both clickable and expanded (Sampler).
    Delete this declaration and let it inherit, and \`:hover\` would have
-   nothing left to lose to on an expanded card -- newly tinting an expanded
-   card's border teal on hover, the exact opposite of what this rule exists
-   to prevent. Keep the explicit declaration even though the value looks
+   nothing left to lose to on an expanded, clickable card -- newly tinting
+   it teal on hover, the exact opposite of what this rule exists to
+   prevent. Keep the explicit declaration even though the value looks
    like a no-op. ── */
 .wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-line-soft, ${TOKENS.lineSoft});
   border-radius: 8px 8px 0 0; margin-bottom: 0; }
@@ -418,8 +468,9 @@ function buildCss() {
    matching \`SHEAD_GAP\`, the same spacing a COLLAPSED header's own
    margin-bottom already provides). \`.wtn-an-dep\` mirrors the header's own
    warn-tinted border so a missing-dependency section reads coherently
-   whether it's the header or the body catching your eye. Indented under
-   the chevron so the nesting still reads clearly while the panel scrolls.
+   whether it's the header or the body catching your eye (see this rule's
+   OWN left-padding note below for how the nesting itself now reads, since
+   this dispatch retired the indent that used to carry that job).
    Accent history (see \`.wtn-an-expanded\` above for the full account):
    full-strength accent (round 1) then \`rgba(45,212,191,.35)\` (round 2) both
    read wrong once seen live, so as of round 2 this border carries NO accent
@@ -428,8 +479,18 @@ function buildCss() {
    uncoloured one). The \`.wtn-an-dep\` warn override right below still wins
    by source order either way -- with the accent gone, that amber is now the
    ONLY coloured border in the panel, which is a feature: it reads as an
-   unambiguous "something needs attention" signal. ── */
-.wtn-an-sbody { display: flex; flex-direction: column; gap: 5px; padding: 3px 5px 10px 23px;
+   unambiguous "something needs attention" signal.
+   Left padding matches every other side (2026-07-29, live review) --
+   this used to be indented 23px "under the chevron so the nesting still
+   reads clearly while the panel scrolls" (this rule's own history), back
+   when the body was a plain indented block with no border of its own. Now
+   that the body is a real bordered CARD attached to its header (this same
+   comment, above), the card's own left border already communicates the
+   nesting -- the extra 18px of indent past the other sides' 5px was
+   therefore redundant and just ate horizontal width fields could have
+   used. Do not restore the indent: the border is what carries the
+   "nested under this header" signal now, not the padding. ── */
+.wtn-an-sbody { display: flex; flex-direction: column; gap: 5px; padding: 3px 5px 10px;
   margin-top: 0; margin-bottom: ${SHEAD_GAP}px;
   background: var(--wtn-surface-2, ${TOKENS.surface2});
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); border-top: none;
@@ -472,8 +533,31 @@ function buildCss() {
    -- correct, since there is no \`.wtn-an-sbody\` for it to attach to any
    more. \`.wtn-an-menurow\` only exists so a click handler can tell "this
    is a menu-only header" apart from an accordion one without inspecting
-   \`expanded\` -- purely a hook, no rules of its own. ── */
-.wtn-an-shead.wtn-an-menurow { cursor: pointer; }
+   \`expanded\` -- purely a hook, no rules of its own (its own cursor comes
+   from \`.wtn-an-clickable\`, below, which \`buildSaveRow\` also adds at the
+   same site as this row's click listener -- see that rule's own doc
+   comment for why a header being a real click target is what earns the
+   pointer cursor now, not "is this a menu row"). ── */
+
+/* ── the Preview's Save ROW WRAPPER (2026-07-29, Save-now-beside-the-card
+   dispatch) -- ONE flex row: \`buildSaveNowRow\`'s button+status on the
+   LEFT, the Save card (the \`.wtn-an-shead.wtn-an-menurow\` above) taking
+   the REMAINING width on the right. Replaces the old stacked layout (Save
+   card as its own full-width body child, "Save now" as a second, separate
+   full-width row below it). \`.wtn-an-savenow\` keeps its own flex:none/
+   min-width:0 so its "Save now" button's own intrinsic (non-shrinking)
+   width is the one thing this row can't compress past, and its status text
+   still ellipsizes into whatever's left of ITS OWN share before the card
+   even has to give up space. The Save card gets \`flex: 1 1 auto\` so it
+   fills 100% of the row on its own whenever the button is ABSENT
+   (\`save.enabled: true\` -- interaction.mjs's own conditional) -- a single
+   flex child with flex-grow already claims the whole row, no separate
+   "full width when alone" rule needed. \`margin-bottom: 0\` on the nested
+   card overrides \`.wtn-an-shead\`'s own default (this file's CSS above) --
+   the WRAPPER carries that spacing instead (\`margin-bottom: SHEAD_GAP\`
+   below), so nesting the card doesn't double it up inside the row. ── */
+.wtn-an-saverow { display: flex; align-items: center; gap: 8px; margin-bottom: ${SHEAD_GAP}px; }
+.wtn-an-saverow > .wtn-an-shead { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
 
 /* ── "Save now" (task item 6) -- rendered only while save.enabled is off
    (interaction.mjs's buildSaveNowRow); \`.wtn-btn\`/\`.wtn-btn--primary\` are
@@ -481,11 +565,46 @@ function buildCss() {
    own \`injectTheme\`), so this row needs no button styling of its own, just
    layout + the status readout beside it. \`.wtn-an-savenow-err\` swaps the
    status text to the theme's bad/error token for a readable failure instead
-   of a silently-blank one. ── */
-.wtn-an-savenow { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+   of a silently-blank one. Sits INSIDE \`.wtn-an-saverow\` now (beside the
+   Save card, not below it) -- \`flex: 0 1 auto\`/\`min-width: 0\` let it
+   shrink (the status text ellipsizes first, this rule's own overflow rule
+   below) rather than force the card out of the row entirely; the button's
+   own text never wraps/shrinks (a native \`<button>\`'s own intrinsic
+   content width), so that's the real floor this row can't compress past.
+   \`margin\` dropped its old \`2px 0 10px\` (that was this row's OWN vertical
+   spacing back when it was a standalone body child below the Save card) --
+   the wrapper above now owns that spacing for the row as a whole. ── */
+.wtn-an-savenow { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; }
 .wtn-an-savenow-status { font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .wtn-an-savenow-status.wtn-an-savenow-err { color: var(--wtn-bad, ${TOKENS.bad}); }
+
+/* ── the Compare CARD (2026-07-29, replaces the old bottom \`.wtn-an-pvbar\`
+   row entirely) -- SAME chrome as a section card: it's a plain
+   \`.wtn-an-shead\` (\`buildSectionHeader({hasChevron: false, hasGear: false,
+   ...})\`, this file's \`.wtn-an-shead\` base rule above already gives it
+   \`--wtn-surface-2\` background, \`--wtn-line-soft\` border, 8px radius, AND
+   its own \`margin-bottom: SHEAD_GAP\` -- no override needed here, unlike the
+   Save ROW above (that one nests a \`.wtn-an-shead\` inside a flex WRAPPER
+   alongside the button, which is what forces re-homing the margin there;
+   this card has no such wrapper, it's a direct \`.wtn-an-body\` child on its
+   own). \`.wtn-an-comparecard\` only exists as a hook (no rules of its own)
+   so a test/caller can tell this header apart from the Save one without
+   inspecting its label text. ONE row, no expandable body -- the "switch
+   owns expand/collapse" rule from §12 does not apply here: this card has no
+   body to expand INTO. The switch keeps its pre-existing meaning verbatim
+   (on => hover-wipe compare, off => plain single-image view); only its
+   HOUSING changed. \`.wtn-an-comparepix\` (appended after the header's own
+   label, since \`buildSectionHeader\` has no slot for "two pickers + vs" --
+   there's no \`hasGear\`/summary content shape that fits) is the right-pinned
+   group: \`margin-left: auto\` claims the header's free space exactly the way
+   the ⚙ does on a section header that HAS one (\`.wtn-an-shead .wtn-fld-gear\`'s
+   own CSS comment above covers why that only ever does work when nothing
+   else already consumed the space -- here nothing does, since this card has
+   no summary). ── */
+.wtn-an-comparepix { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.wtn-an-comparepix .wtn-an-vs { font-family: var(--wtn-font-mono, monospace); font-size: 11px;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); flex: none; }
 
 /* ── the overlay WRAPPER itself (\`js/shared/overlay.mjs\`'s \`openOverlay\`
    appends this, \`interaction.mjs\`'s \`openOverlayForCtx\` passes this class
@@ -524,28 +643,29 @@ function buildCss() {
    file's own panel-fills-the-node dispatch just made a few lines above
    ("the wipe keeps its OWN size... aspect-ratio: 1/1... a node too short
    scrolls, image included"). This IS an image-comparison node -- the
-   compare image is the entire point of placing it, everything else (Save,
-   the compare picker) is secondary chrome around it -- so the user asked
-   for the opposite: the image area fills whatever height the node is, and
-   the panel never scrolls it out of view. \`.wtn-an-panel-pv\` (this file's
-   panel-shell modifier -- \`buildPanelShell(doc, {preview: true})\`, applied
-   ONLY by \`mountPreviewUI\`; the Generator's panel is untouched by any of
-   this) carries the reversal: \`.wtn-an-panel-pv .wtn-an-wipe\` cancels the
-   \`aspect-ratio: 1/1\` above (\`aspect-ratio: auto\`) and flex-fills
-   (\`flex: 1 1 auto\`, floored at \`PREVIEW_IMG_MIN_H\`) whatever height
-   \`.wtn-an-panel-pv > .wtn-an-body\` has left once the Save section and the
-   compare row below take their own natural height (\`flex: none\`, the
-   rule after this one). A non-square wipe does NOT distort either image --
+   compare image is the entire point of placing it, everything else (the
+   Save row, the Compare card) is secondary chrome around it -- so the user
+   asked for the opposite: the image area fills whatever height the node
+   is, and the panel never scrolls it out of view. \`.wtn-an-panel-pv\` (this
+   file's panel-shell modifier -- \`buildPanelShell(doc, {preview: true})\`,
+   applied ONLY by \`mountPreviewUI\`; the Generator's panel is untouched by
+   any of this) carries the reversal: \`.wtn-an-panel-pv .wtn-an-wipe\`
+   cancels the \`aspect-ratio: 1/1\` above (\`aspect-ratio: auto\`) and
+   flex-fills (\`flex: 1 1 auto\`, floored at \`PREVIEW_IMG_MIN_H\`) whatever
+   height \`.wtn-an-panel-pv > .wtn-an-body\` has left once the Save row
+   (2026-07-29: \`.wtn-an-saverow\`, the button + Save card) and the Compare
+   card below it take their own natural height (\`flex: none\`, the rule
+   after this one). A non-square wipe does NOT distort either image --
    \`.wtn-an-layer img\`'s \`object-fit: contain\` (below, unchanged) already
    letterboxes each layer to whatever box it's given, square or not -- so
    this costs nothing visually, only gains the image actually using the
    space a resize gave it. \`.wtn-an-panel-pv\` also drops the panel's own
    scrollbar (\`overflow: hidden\`, not \`overflow-y: auto\`) with its OWN,
    much taller floor, \`PREVIEW_PANEL_MIN_H\` (this file's "Resize" section
-   has the arithmetic) -- sized so the Save section fully EXPANDED plus the
-   compare row plus \`PREVIEW_IMG_MIN_H\` always fit with room to spare, so
-   there is never anything left TO scroll; unlike the Generator, this node
-   has no "shrink below content, scroll internally" escape hatch at all. */
+   has the arithmetic) -- sized so the Save row, the Compare card, and
+   \`PREVIEW_IMG_MIN_H\` always fit with room to spare, so there is never
+   anything left TO scroll; unlike the Generator, this node has no "shrink
+   below content, scroll internally" escape hatch at all. */
 .wtn-an-wipe { position: relative; width: 100%; aspect-ratio: 1/1; overflow: hidden; border-radius: 8px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-console, ${TOKENS.console});
   cursor: col-resize; touch-action: none; }
@@ -570,30 +690,21 @@ function buildCss() {
    rule turns the body into its own flex column so the wipe below can
    flex-fill it (\`min-height: 0\` is what lets a flex child shrink below
    its content -- without it the wipe could never give height back to a
-   shrinking node); the universal \`> *\` rule floors the Save ROW and the
-   compare row at their natural height, and the more specific
-   \`.wtn-an-wipe\` rule after it (same specificity, later in the sheet --
-   the tie-break) is what lets the wipe alone override that back to
-   flex-fill. \`min-height\`/\`PREVIEW_IMG_MIN_H\` below are recomputed
-   (task item 2's second bullet) now that Save is a \`placement: "right"\`
-   MENU (this file's "the Preview's Save ROW" comment above), not an
-   inline accordion body -- see \`PREVIEW_PANEL_MIN_H\`'s own arithmetic
-   comment in this file's "Resize" section for the exact sum. ── */
+   shrinking node); the universal \`> *\` rule floors EVERY direct child at
+   its own natural height -- as of 2026-07-29 (Save-now-beside-the-card
+   dispatch) that's the \`.wtn-an-saverow\` wrapper (button + Save card) and
+   the Compare card, replacing the old bare Save-header + bottom
+   \`.wtn-an-pvbar\` pairing -- and the more specific \`.wtn-an-wipe\` rule
+   after it (same specificity, later in the sheet -- the tie-break) is what
+   lets the wipe alone override that back to flex-fill. \`min-height\`/
+   \`PREVIEW_IMG_MIN_H\` below and \`PREVIEW_PANEL_MIN_H\` above are recomputed
+   for this dispatch's new three-child shape (saverow / comparecard / wipe)
+   -- see \`PREVIEW_PANEL_MIN_H\`'s own arithmetic comment in this file's
+   "Resize" section for the exact sum. ── */
 .wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: ${PREVIEW_PANEL_MIN_H}px; }
 .wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-height: 0; }
 .wtn-an-panel-pv > .wtn-an-body > * { flex: none; }
 .wtn-an-panel-pv .wtn-an-wipe { flex: 1 1 auto; min-height: ${PREVIEW_IMG_MIN_H}px; aspect-ratio: auto; }
-
-.wtn-an-pvbar { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; }
-.wtn-an-pvlab { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wtn-an-pvbar .wtn-an-segs { margin-left: auto; display: flex; align-items: center; gap: 7px; flex: none; }
-.wtn-an-seg { display: flex; gap: 0; flex: none; }
-.wtn-an-seg button { font-family: var(--wtn-font-mono, monospace); font-size: 11px; padding: 4px 8px; cursor: pointer;
-  background: var(--wtn-surface-2, ${TOKENS.surface2}); color: var(--wtn-ink-dim, ${TOKENS.inkDim});
-  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-right-width: 0; }
-.wtn-an-seg button:first-child { border-radius: 5px 0 0 5px; }
-.wtn-an-seg button:last-child { border-radius: 0 5px 5px 0; border-right-width: 1px; }
-.wtn-an-seg button.wtn-an-on { background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border-color: var(--wtn-accent, ${TOKENS.accent}); }
 `;
 }
 
@@ -674,7 +785,7 @@ export function buildPanelShell(doc, { preview } = {}) {
 
 // Re-exported so `interaction.mjs` has one import line for both the shared
 // primitives and this module's own presentational builders.
-export { buildSwitch, buildInfoIcon, buildGearIcon };
+export { buildSwitch, buildInfoIcon, buildGearIcon, buildComboButton };
 
 // ---------------------------------------------------------------------------
 // Expandable section header -- 2026-07-28 inline-sections dispatch (this
@@ -895,10 +1006,32 @@ export let PANEL_MIN_H = 256; // was 220
 // floor than that.
 export const GENERATOR_MIN_W = 374; // was 320
 
-// Preview-only floor: the compare row carries the switch + "compare" label +
-// BOTH `base|mid|final` segmented groups on one line, and that cluster
-// measures ~410px at this file's bigger type, so a narrower node clips it.
-export const PREVIEW_MIN_W = 444; // was 380
+// Preview-only floor -- RE-DERIVED (2026-07-29, Compare-card dispatch),
+// and it dropped A LOT: 444 -> ~300, rounded up to 320 for headroom. The
+// old 444 was set by the compare row's TWO `base|mid|final` SEGMENTED
+// GROUPS (six buttons total) sharing a line with the switch + label; those
+// are gone (§7's own reversal, `docs/generator-design.md`) -- each picker
+// is now ONE compact combo button (`buildComboButton`, `js/shared/
+// fields.mjs`), showing just the current stage name + a caret, no
+// arrows, no per-option buttons. Read off the Compare card's own content
+// (`.wtn-an-shead`'s `padding: 0 9px` + `gap: 9px` between its top-level
+// children, this file's CSS above):
+//   switch (FLD_SWITCH_W, js/shared/fields.mjs)                           =  30
+//   "Compare" label (~7 chars, .wtn-an-shead-nm's 13.5px sans-serif)      = ~55
+//   picker group (.wtn-an-comparepix, gap: 8px):
+//     "base" combo (4-char FLD_MONO value ~31 + 6 gap + 10px caret)       = ~47
+//     "vs" (mono, ~2 chars)                                               = ~16
+//     "final" combo (5-char FLD_MONO value ~39 + 6 gap + 10px caret)      = ~55
+//     2 gaps between those three (8px each)                              =  16
+//   header's own gap (9px x 2, between switch/label/picker-group)         =  18
+//   header padding (9 left + 9 right)                                    =  18
+//   header border (1 left + 1 right)                                     =   2
+//                                                         content total   = 257
+// Rounded up to 320 -- comfortable headroom over the ~257 estimate (font
+// metrics above are read off the CSS, not measured in a live browser --
+// VERIFY-IN-COMFYUI if this ever clips) while staying well under the old
+// 444, matching "two compact combo buttons are much narrower."
+export const PREVIEW_MIN_W = 320; // was 444
 
 // The wipe's OWN floor -- see this file's "Preview node: hover wipe" CSS
 // comment for the reversal this backs (`.wtn-an-panel-pv .wtn-an-wipe`'s
@@ -908,37 +1041,53 @@ export const PREVIEW_MIN_W = 444; // was 380
 // the Preview's smallest possible height.
 export let PREVIEW_IMG_MIN_H = 188; // was 160
 
+// A native \`.wtn-btn\` (\`js/shared/theme.css\`: 13px font, 9px/15px
+// padding, 1px border) rendered at its own intrinsic height, NOT the
+// track's own \`SHEAD_H\` -- the Save-now button comes from the pack's
+// SHARED theme, untouched by this track's own "Node panel type size"
+// scale pass (same reasoning as \`_PREVIEW_CHROME_ADDEND\` below: this is
+// litegraph/theme-native geometry, not this file's own type scale).
+// ~36px (13px line box + 2*9px padding + 2*1px border, rounded) is what
+// the \`.wtn-an-saverow\`'s own height floor below is built from.
+// VERIFY-IN-COMFYUI: read off theme.css's own rule, not measured live.
+const SAVE_NOW_BTN_H = 36;
+
 // The Preview PANEL's own floor (`.wtn-an-panel.wtn-an-panel-pv`'s
 // `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
 // `.wtn-an-panel` rule).
 //
-// **Recomputed (task item 2's second bullet), and it dropped A LOT** --
-// 400 -> 284 -- now that the Preview's Save section is a `placement:
-// "right"` MENU (`interaction.mjs`'s `openAdvancedMenu`, anchored to the
-// Save ROW -- this file's "the Preview's Save ROW" CSS comment), not an
-// inline accordion body any more. The old arithmetic sized this floor for
-// the Save section fully EXPANDED (its header + all 5 fields) plus the
-// compare row plus `PREVIEW_IMG_MIN_H`; the Save ROW itself never expands
-// in place any more, so its own contribution shrinks from "header + 5
-// fields" down to just its own header-shaped row. Sizing for what's
-// actually left (header + compare row + `PREVIEW_IMG_MIN_H` + gaps + panel
-// chrome) is still what lets this panel never scroll, ever, with no
-// auto-grow-on-repaint mechanism needed (this dispatch deliberately does
-// NOT reintroduce `refitNode`/`scheduleRefit` -- see this section's own top
-// comment). Arithmetic, read off the CSS above and `js/shared/fields.mjs`'s
-// own field heights (`SHEAD_H`/`FLD_ROW_H` etc, this file's/that file's own
-// exported constants):
-//   Save ROW (.wtn-an-shead height SHEAD_H 32 + margin-bottom SHEAD_GAP 5) =  37
-//   compare row (.wtn-an-pvbar margin-top 8 + ~24 segmented-button content) =  32
-//   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                        = 188
+// **Recomputed again (2026-07-29, Compare-card dispatch)** -- 284 -> 292,
+// now that the body carries a real THIRD card (`.wtn-an-comparecard`,
+// replacing the old bottom `.wtn-an-pvbar` row) directly below a Save ROW
+// that itself grew a sibling ("Save now", moved beside the Save card
+// instead of living as its own separate body child below it -- task 1a).
+// Net effect on the sum below: the Save row's own height is now governed
+// by the (slightly taller) "Save now" BUTTON rather than the (slightly
+// shorter) Save card alone whenever the button is present (`save.enabled`
+// off, the default) -- `Math.max(SHEAD_H, SAVE_NOW_BTN_H)` above -- while
+// the Compare card's own contribution is now a real `.wtn-an-shead`-shaped
+// row (`SHEAD_H + SHEAD_GAP`) instead of the old bare `.wtn-an-pvbar`'s
+// smaller intrinsic height. Body child count stays THREE either way
+// (save row / compare card / wipe), so the gap term is unchanged. Sizing
+// for what's actually there is still what lets this panel never scroll,
+// ever, with no auto-grow-on-repaint mechanism needed (this dispatch
+// deliberately does NOT reintroduce `refitNode`/`scheduleRefit` -- see
+// this section's own top comment). Arithmetic, read off the CSS above and
+// `js/shared/fields.mjs`'s own field heights (`SHEAD_H`/`FLD_ROW_H` etc,
+// this file's/that file's own exported constants):
+//   Save ROW (.wtn-an-saverow: max(SHEAD_H 32, SAVE_NOW_BTN_H 36) = 36,
+//     + the wrapper's own margin-bottom SHEAD_GAP 5)                      =  41
+//   Compare CARD (.wtn-an-shead height SHEAD_H 32 + margin-bottom
+//     SHEAD_GAP 5, same shape as the Save card)                          =  37
+//   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                      = 188
 //   .wtn-an-body's own gap (5px x 2 gaps between its 3 children -- the
-//     Save row, the wipe, and the compare row)                             =  10
-//   .wtn-an-panel's padding (7 top + 7 bottom)                             =  14
-//   .wtn-an-panel's border (1 top + 1 bottom)                              =   2
-//                                                                 total    = 283
-// Rounded up to 284 for headroom (matches measureMinHeight's own
-// round-to-4px convention below).
-export let PREVIEW_PANEL_MIN_H = 284; // was 400
+//     Save row, the Compare card, and the wipe)                         =  10
+//   .wtn-an-panel's padding (7 top + 7 bottom)                          =  14
+//   .wtn-an-panel's border (1 top + 1 bottom)                          =   2
+//                                                               total   = 292
+// Already a multiple of 4 -- no further rounding needed (matches
+// measureMinHeight's own round-to-4px convention below).
+export let PREVIEW_PANEL_MIN_H = 292; // was 284
 
 // The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
 // the DOM widget itself doesn't cover: the title bar (LiteGraph's default
@@ -955,7 +1104,7 @@ export let PREVIEW_PANEL_MIN_H = 284; // was 400
 // VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
 // read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
 // widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
-export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(400) + 80
+export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(284) + 80
 
 // The litegraph-native chrome addend just above (80) -- frozen, NEVER
 // scaled by `applyPanelFontScale` (this constant's own doc comment).
@@ -969,7 +1118,7 @@ const _PREVIEW_CHROME_ADDEND = 80;
 // (idempotent, never compounding).
 const _PANEL_BASE_PX = 14;
 const _PANEL_DEFAULTS = {
-  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 284,
+  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 292,
 };
 
 /** Round `x` to the nearest 4px -- matches `measureMinHeight`'s own
