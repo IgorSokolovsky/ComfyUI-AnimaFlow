@@ -142,7 +142,7 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 | Item | Commit |
 |---|---|
-| Class A sizing: panel height content-fixed via a **per-frame** `onDrawForeground` correction (plus the `onResize` and load-path hooks) — a 3-row panel should settle at exactly 157 | `dd7261a` → `d9b9106` |
+| Class A sizing: panel height content-fixed. **Four layers**, primary being `getMaxHeight === getMinHeight` on every mounted DOM widget (the only real lock — litegraph's drag min-clamps both axes with NO maximum), plus a `setSize` wrap (pre-paint), the per-frame draw hook, and the load-path correction. Confirmed live: self-sizes on row change, height ends at content. **Still to confirm: that a height drag no longer moves it even transiently.** | `dd7261a` → `d9b9106` → *pending* |
 | Class B sizing: `GENERATOR_MIN_H` (356 at the 14px base) + `clampGeneratorSize` clamping both axes, and the fresh-node default guarded against the floor at large font scales | `be6ea69` |
 | `Save now` button height matches its card at every font scale (`SAVE_NOW_BTN_H = SHEAD_H`); floors moved to 288/368 | `f620f4b` |
 | Hover tint + `cursor: pointer` scoped to genuinely clickable headers (Sampler, Save row) — not switch-bearing sections, not the Compare card | `61716f9` |

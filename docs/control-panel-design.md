@@ -435,27 +435,55 @@ rather than one policy for the whole pack.
 → `bodyHeight`), with `bodyHeight` as the direct fallback. Two independent derivations that merely
 happen to agree is the defect this contract replaced — see §4a and the `fitNodeH` helper.
 
-#### Enforcing Class A takes TWO hooks, not one (measured 2026-07-29 — do not ship only one)
+#### Enforcing Class A takes FOUR layers, and `getMaxHeight` is the one that matters
 
-**`onResize` is never called on the legacy resize-drag path.** Measured on a live 3-row panel after
-actually dragging the height: `onResizeCalls: 0`, with `onResizeInstalled: true` and
-`vueNodesMode: false` — correctly wired, not self-disabled, simply never invoked. A first attempt
-(`dd7261a`) hung the whole height lock off `onResize` and was therefore dead code on a drag. The
-reference implementation had already said so in a comment — *"onResize does not fire on every legacy
-resize path"* — and carries a second clamp for it.
+> **Read `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md` before touching any of this.** It
+> carries the measured litegraph behaviour with bundle citations. This section is the Controls-track
+> application of it. That skill is machine-local (`.claude/` is git-excluded), which is why the
+> load-bearing facts are repeated here.
 
-So Class A needs **both**:
+This took **four** wrong diagnoses on 2026-07-29, two of which passed an independent review, because
+every mechanism involved fails silently — the code reads as correct, tests stay green, and it is simply
+never called or never sufficient. The three facts that settle it, from
+`comfyui_frontend_package` **1.47.10**:
 
-| hook | why |
+1. **`onResize` is never called on the resize-drag path.** Measured live: `onResizeCalls: 0` with
+   `onResizeInstalled: true` and `vueNodesMode: false`. `dd7261a` hung the entire height lock off it and
+   was dead code on a drag.
+2. **The drag handler min-clamps both axes to `computeSize()` and has NO maximum**, then calls
+   `node.setSize(...)` and only then `_dirty()`. So `computeSize()` is a *floor*, never a cap — and
+   `setSize` is the **pre-paint** interception point.
+3. **`getMaxHeight` (via `addDOMWidget`, equal to `getMinHeight`) is the only real height lock.** It is
+   what the reference implementation uses (`../ComfyUI-Pixaroma/js/lora_loader/index.js:93-101`) and
+   why its node genuinely cannot be stretched. ⚠️ Assigning `widget.computeLayoutSize` yourself
+   **replaces** the built-in that reads that option — so the explicit override must carry `maxHeight`
+   too, or passing the option is a silent no-op.
+
+The four layers, in order of what does the real work:
+
+| layer | role |
 |---|---|
-| `onResizeControls` (`onResize`) | correct wherever it *does* fire — other paths, other frontends |
-| `onDrawForegroundControls` (`onDrawForeground`) | runs **every frame**, so it survives both `onResize` never firing *and* litegraph re-applying a dragged size afterwards |
-| `applyContentHeight` (load path) | corrects a stale/hand-edited saved height on restore, leaving width alone |
+| **`getMaxHeight === getMinHeight`** on every mounted DOM widget | **primary.** litegraph refuses to grow the widget at all, so the node never proposes a taller size |
+| **`wrapSetSizeControls`** (wraps `node.setSize`) | pre-paint correction — catches any assignment, including litegraph's own per-drag-frame call, before the repaint |
+| **`onDrawForegroundControls`** (`onDrawForeground`) | per-frame backstop for anything writing `node.size` directly |
+| **`applyContentHeight`** (load path, after `syncRows`) | corrects a stale/hand-edited saved height on restore, leaving width alone |
+| `onResizeControls` (`onResize`) | kept because it is correct wherever it *does* fire — **never sufficient alone** |
 
-**The per-frame hook must be silent and cheap** — it runs for every panel on the canvas, every frame.
-Compare before assigning; never call `setSize`; **never** `setDirtyCanvas` (that is an infinite repaint
-loop). Both size hooks bail under `isVueNodes()` so Nodes 2.0 keeps owning its own sizing, and under
-`isGraphLoading()`/`_ctrlConfiguring` so a clean workflow never opens "modified".
+The redundancy is deliberate: four attempts each assumed one mechanism was enough, and each was wrong
+in a different way.
+
+**Constraints on all of them.** Height always comes from `fitNodeH` — the single authority — never a
+second formula. The per-frame hook must be silent and cheap (it runs for every panel every frame):
+compare before assigning, never call `setSize`, and **never** `setDirtyCanvas`, which is an infinite
+repaint loop. Every layer bails under `isVueNodes()` so Nodes 2.0 keeps owning its own sizing, and under
+`isGraphLoading()`/`_ctrlConfiguring` so a clean workflow never opens "modified". The cap must not block
+*shrinking* — a row removal reduces height by mounting fewer widgets, not by changing a widget's cap;
+there is a test for exactly that.
+
+> **Test-harness gap this exposed, now fixed:** the suite's fake `addDOMWidget` silently dropped its 4th
+> (`options`) argument, so `getMinHeight`/`getMaxHeight` were **untestable** — no test could ever have
+> caught the missing cap. The stub now captures options, and the cap assertion is driven off the live
+> widget list rather than a named widget, so a future widget mounted without a cap fails automatically.
 
 #### Hiding the state widget is already correct — `.hidden` removes it from layout
 
