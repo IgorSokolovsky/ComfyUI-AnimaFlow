@@ -43,7 +43,7 @@ off, open the modal and click a result card.
 | 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
 | 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
-| 21 | **The node's picker ESCALATES to the 90% modal** on card click (query + filters + originating row carry over); no in-panel detail | §7c-ii |
+| 21 | Node picker card click → **a new VERTICAL info panel** (sibling of the ⓘ panel), single-column gallery; **not** the modal, **not** an in-panel swap | §7c-ii |
 | 22 | **EVERY per-model info surface carries `View on Civitai ↗`** — the ⓘ panel, the modal detail, and the Loader Panel's model info | §7d |
 
 ### 0b. The ONE thing still open
@@ -64,7 +64,7 @@ Tests per §10 — **including `Float64Array` size tests**.
 filter set (pills in the node picker, `type` locked), server-side streamed download with progress and a
 destination derived from `kind`, the key ladder and public-only mode (§8).
 
-**M2b — the toolbar modal.** ⚠️ Now a *dependency* of M2's picker detail (§7c-ii) — either merge it into M2 or ship the picker results-only first. Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
+**M2b — the toolbar modal.** Purely additive — M2 does not depend on it (§7c-ii). Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
 modal; filter rail; result grid; detail view with version selector and community gallery.
 
 **M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only**.
@@ -549,35 +549,47 @@ They are a browsing preference, not node behaviour, and per §7b that is the bou
 picker and the modal open with the same remembered filters, which is the behaviour you want: it is one
 browser with three mounts, not three browsers.
 
-### 7c-ii. The node's picker ESCALATES to the modal for detail (owner, 2026-07-29)
+### 7c-ii. The node's picker opens a VERTICAL info panel (owner, 2026-07-29)
 
-The node's 🔍 panel owns **search, filters and results**. **Clicking a result opens the 90% modal at that
-model's detail** — it does *not* render a detail inside the node panel.
+Clicking a result in the node's 🔍 picker opens **a new panel showing that model's information, laid out
+vertically** — a sibling of the ⓘ panel, in the same narrow floating-panel idiom the node already uses.
 
-Why escalate rather than swap in place (an in-panel swap was drafted and rejected): the detail's centre
-of gravity is the **community gallery**, and at ~340px that is 1–2 thumbnails a row with the prompt
-overlay covering most of the image. The modal already exists and is 90% of the viewport. Squeezing a
-second, worse copy of the same view into the panel would mean maintaining two layouts of one component
-so that the cramped one could avoid opening the good one.
+**Not** an in-panel swap (drafted, rejected) and **not** the 90% modal (drafted, also rejected). The rule
+that falls out of it, and the reason this is worth stating as a principle:
 
-**What carries across the escalation** — get this right or it feels like losing your place:
+> **The node's surfaces are narrow vertical panels. The toolbar modal is the only wide surface.**
 
-| carries | why |
-|---|---|
-| the **search query** | you land in the big browser already showing what you were looking at |
-| the **filters** (incl. the locked `type`) | they are remembered user-wide anyway (§7c-i), so this is free |
-| the **originating row** | the modal's download button reads **"use in this row"** and returns the value there, exactly as the in-panel picker would have |
+That is why a wide layout does not belong here: everything a user opens *from the node* — the picker, the
+ⓘ panel, the ⚙ dialog, and now this — is a panel beside the node, so a fourth one should read the same
+way. Sending a click from a node panel into a 90% modal is a much larger context jump than the action
+warrants.
 
-`← results` inside the modal returns to the **modal's own results grid** for that same query — not to the
-node panel. The escalation is one-way and deliberate: you have moved into the browser, and it now has
-everything the panel had plus room.
+Layout, top to bottom, in the ⓘ panel's own idiom (§1a-i):
 
-**Consequence for the milestones (§0c):** the modal stops being purely additive — it is now a
-*dependency* of the picker's detail. So either **M2b merges into M2**, or the picker ships in M2 with
-results only and gains card-click in M2b. Either is fine; decide before starting M2, and do not let the
-picker grow its own detail as a stopgap, because that is the duplicate layout this decision exists to
-avoid.
+```
+thumbnail + title + creator          identity
+View on Civitai ↗                    §7d
+──────────────────────────────────   <hr>
+Version  [ v3.0 — 144 MB      ▾ ]
+[ ↓ Download & use in this row ]     primary action -- returns to the row (§7c)
+author's description
+──────────────────────────────────   <hr>
+COMMUNITY IMAGES                     ONE column, stacked; prompt on hover + copy
+  [ image ]
+  [ image ]
+  ← back to results
+```
 
+**The gallery is a single stacked column here**, which is the point of "vertical": in a narrow panel one
+image at readable width beats two cramped ones, and the prompt overlay has room to be legible. The
+**modal's** detail keeps its multi-column grid (decision 11) — same data, same component, two layouts
+chosen by which surface is hosting it.
+
+`← back to results` returns to the picker's result list, with the query and filters intact.
+
+**Milestone note (supersedes the earlier dependency warning):** because this panel is *not* the modal,
+**M2 no longer depends on M2b.** The node's search, results and detail are all self-contained in M2; the
+toolbar modal remains purely additive.
 ### The modal
 
 **90% of the viewport**, centred, over a scrim. Full features: search, **filters** (type, base model,

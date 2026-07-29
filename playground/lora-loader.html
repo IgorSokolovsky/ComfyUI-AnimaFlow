@@ -368,7 +368,7 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
         </div>
         <div class="hint" style="color:var(--warn)">No API key set — public results only.</div>
 
-        <div class="sr" style="cursor:pointer" onclick="escalate('Skin Detail XL')">
+        <div class="sr" style="cursor:pointer" onclick="openCivInfo('Skin Detail XL')">
           <div class="tn">img</div>
           <div class="meta"><div class="t">Skin Detail XL</div><div class="s">SDXL · 12.4k ↓</div></div>
           <div class="dl have">✓ have</div>
@@ -395,6 +395,45 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
           Downloads run server-side into <code>models/loras/</code> — the browser cannot write there.
           A run is never blocked by a fetch.
         </div>
+      </div>
+    </div>
+
+    <!-- ────────── NEW: vertical Civitai info panel (from the node's picker) ────────── -->
+    <div class="panel" id="civinfo" style="width:330px;display:none">
+      <div class="pb" style="padding:11px 12px 12px">
+        <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px">
+          <div style="width:58px;height:58px;border-radius:7px;background:var(--console);
+            border:1px solid var(--line-soft);flex:none;display:grid;place-items:center;
+            color:var(--ink-faint);font-size:9px">img</div>
+          <div style="flex:1 1 auto;min-width:0">
+            <div class="civ-title" style="font-size:14px;font-weight:600;line-height:1.25">Skin Detail XL</div>
+            <div style="font-size:11.5px;color:var(--ink-dim);margin-top:2px">SDXL · by someartist</div>
+            <div style="font:10.5px var(--mono);color:var(--ink-faint);margin-top:1px">12.4k ↓ · 890 ♥</div>
+          </div>
+          <span class="x" onclick="hide('civinfo')" style="flex:none">✕</span>
+        </div>
+        <div><a href="#" onclick="return false" style="color:var(--info);font-size:12px;text-decoration:none"
+          title="links the exact VERSION shown">View on Civitai ↗</a></div>
+
+        <hr class="sep">
+
+        <div class="fld"><label style="font-size:11px">Version</label>
+          <select class="fsel" style="width:auto;flex:1 1 auto">
+            <option>v3.0 — 144 MB (latest)</option><option>v2.1 — 142 MB</option></select></div>
+        <button class="btn" style="width:100%;margin:3px 0 9px">↓ Download &amp; use in this row</button>
+        <div class="desc">Adds fine skin texture without plastic highlights. Best at 0.6–0.8 on SDXL.
+          Stack <i>under</i> a character LoRA.</div>
+
+        <hr class="sep">
+
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px">
+          <span style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent)">COMMUNITY IMAGES</span>
+          <span class="hint" style="margin:0">hover for the prompt</span>
+        </div>
+        <!-- ONE column: vertical layout is the whole point -->
+        <div class="gal" style="grid-template-columns:1fr"></div>
+
+        <div style="margin-top:10px"><span class="back" onclick="hide('civinfo')">← back to results</span></div>
       </div>
     </div>
 
@@ -511,8 +550,6 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
           <a href="#" onclick="return false" class="civlink"
              style="color:var(--info);font-size:11.5px;text-decoration:none;margin-left:6px"
              title="opens the exact VERSION being viewed, not the model landing page">View on Civitai ↗</a>
-          <span class="badge" id="rowbadge" style="display:none;color:var(--accent-deep);
-            border-color:var(--accent-deep)">for the row that opened this</span>
         </div>
 
         <div style="flex:1 1 auto;overflow:auto;padding:12px">
@@ -702,19 +739,27 @@ const SHOTS = [
   { p:"close-up, dewy skin, subsurface scattering, studio softbox, <lora:skin_detail_xl:0.6> <lora:celica_v2:0.9>", m:"er_sde · 32 steps · cfg 5 · 1024×1024", nsfw:false },
   { p:"(hidden — NSFW filter is off in the rail)", m:"—", nsfw:true },
 ];
-// The node picker ESCALATES into the modal's detail: query + filters + the
-// originating row carry across, so the download reads "use in this row".
-function escalate(title){
-  document.getElementById("modal").style.display = "block";
-  openDetail(title, true);
+// Node picker -> a NEW VERTICAL info panel (sibling of the ⓘ panel), NOT the
+// modal. The node's surfaces are all narrow vertical panels; the modal is the
+// only wide one. Gallery is a single stacked column: one image at readable width
+// beats two cramped ones, and the prompt overlay gets room to be legible.
+function openCivInfo(title){
+  const p = document.getElementById("civinfo");
+  p.style.display = "";
+  p.querySelector(".civ-title").textContent = title;
+  p.querySelector(".gal").innerHTML = SHOTS.slice(0,2).map((sh,i)=>`
+    <div class="gcell" style="aspect-ratio:16/10">image ${i+1}
+      <div class="gover">
+        <div class="gprompt">${sh.p.replace(/</g,"&lt;")}</div>
+        <div class="gmeta">${sh.m}</div>
+        <div class="gcopy" onclick="event.stopPropagation();this.textContent='copied ✓'">copy prompt</div>
+      </div>
+    </div>`).join("");
+  show("civinfo");
 }
-function openDetail(title, fromRow){
+function openDetail(title){
   document.getElementById("dtitle").textContent = title;
-  const rb = document.getElementById("rowbadge");
-  if (rb) rb.style.display = fromRow ? "" : "none";
-  document.querySelectorAll("#detail .btn").forEach(b => {
-    if (b.textContent.includes("Download")) b.textContent = fromRow ? "↓ Download & use in this row" : "↓ Download this version";
-  });
+
   document.getElementById("results").style.display = "none";
   const d = document.getElementById("detail"); d.style.display = "flex";
   const gal = document.getElementById("gal");
