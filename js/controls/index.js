@@ -489,9 +489,19 @@ function restoreNode(node, panelConfig, mods) {
   mods.interaction.restoreStateFromWidget(node, ctx);
   node.widgets_start_y = 2;
   mods.interaction.syncRows(node, ctx);
-  // Deliberately NO scheduleFit/fitNode here -- trust the size litegraph
+  // Deliberately NO scheduleFit/fitNode here -- trust the WIDTH litegraph
   // already restored from the saved workflow (skill's "never resize on
   // load" rule; a clean workflow must not open "modified").
+  //
+  // HEIGHT is the one exception: Class A's "height is never user-owned"
+  // policy (see `interaction.mjs`'s own "Class A sizing lock" section) has
+  // to hold across a restore too, not only a live resize-drag -- `onResize`
+  // (wired below) never fires on the load path at all, so nothing else here
+  // would ever correct a workflow saved by an older, pre-fix build (or a
+  // hand-edited one) whose saved height disagrees with its own row count.
+  // `applyContentHeight` touches ONLY `node.size[1]`; width stays exactly
+  // what litegraph just restored, per the paragraph above.
+  mods.interaction.applyContentHeight(node, ctx);
 }
 
 app.registerExtension({
@@ -616,6 +626,25 @@ app.registerExtension({
         }
       }
       return result;
+    };
+
+    // Class A sizing lock (owner policy, 2026-07-29 -- see interaction.mjs's
+    // own "Class A sizing lock" section doc comment for the full mechanism
+    // and the bug it fixes): height is CONTENT-FIXED, only width is
+    // user-resizable. Litegraph calls `onResize(size)` on every resize-drag
+    // frame; `onResizeControls` overwrites `size[1]` back to content height
+    // before the frame paints, so a height drag has no lasting effect, while
+    // a width drag goes through untouched (floored at `MIN_W`). No-op
+    // (falls through to any pre-existing handler) until `mods` has loaded,
+    // same convention as every other hook here; `onResizeControls` itself
+    // also no-ops under Nodes 2.0 (`isVueNodes()`), so a v2 resize is
+    // entirely unaffected by this hook either way.
+    const _resize = nodeType.prototype.onResize;
+    nodeType.prototype.onResize = function (size) {
+      if (this._ctrlMods) {
+        this._ctrlMods.interaction.onResizeControls(this, this._ctrlCtx, size);
+      }
+      return _resize ? _resize.apply(this, arguments) : undefined;
     };
 
     // Strip render-time slot geometry before it lands in the saved

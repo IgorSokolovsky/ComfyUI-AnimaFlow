@@ -113,6 +113,8 @@ import {
   alignOutputsLegacy,
   fitNode,
   scheduleFit,
+  onResizeControls,
+  applyContentHeight,
   addRowAndSync,
   duplicateRowAndSync,
   removeRowAndSync,
@@ -2954,6 +2956,178 @@ test("fitNode never moves a row's output dot position, regardless of which heigh
     before,
     "the computeSize-primary fit must not move any row's socket Y either -- only node.size[1] changes, never widget.y",
   );
+});
+
+// ---------------------------------------------------------------------------
+// F5. Class A sizing lock -- `onResizeControls` (the live resize-drag hook,
+// wired as `nodeType.prototype.onResize` in `index.js`) and
+// `applyContentHeight` (the load-path counterpart). `makeFakeNode` never
+// installs `computeSize` (this file's own F1 doc comment), so every test
+// below that does NOT attach one by hand exercises the `bodyHeight`
+// FALLBACK path through `fitNodeH`; the two that attach `node.computeSize`
+// by hand exercise the PRIMARY path explicitly, same split as F1.
+// ---------------------------------------------------------------------------
+
+test("onResizeControls: a height drag is a no-op -- node.size[1] snaps back to content height regardless of what the drag set it to", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  const dragged = [MIN_W, 900]; // simulates litegraph writing the drag's own size before calling onResize
+  node.size = dragged;
+  onResizeControls(node, ctx, dragged);
+  assert.equal(dragged[1], bodyHeight(3), "the dragged array itself must be corrected back to content height");
+  assert.equal(node.size[1], bodyHeight(3), "node.size must agree (same array in this call)");
+});
+
+test("onResizeControls: a width drag works normally, and is floored at MIN_W", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+
+  // A width drag well above MIN_W must be left exactly as dragged.
+  const widened = [500, 900];
+  node.size = widened;
+  onResizeControls(node, ctx, widened);
+  assert.equal(widened[0], 500, "a width above MIN_W must pass through untouched");
+  assert.equal(widened[1], bodyHeight(3));
+
+  // A width drag below MIN_W must be floored, not left narrower.
+  const narrowed = [10, 900];
+  node.size = narrowed;
+  onResizeControls(node, ctx, narrowed);
+  assert.equal(narrowed[0], MIN_W, "a width below MIN_W must be floored");
+  assert.equal(narrowed[1], bodyHeight(3));
+});
+
+test("onResizeControls: node.computeSize() is the authority for the locked height, same as fitNode -- never a second bodyHeight formula", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  const distinctHeight = bodyHeight(3) + 77; // deliberately NOT what bodyHeight(3) alone would give
+  node.computeSize = () => [MIN_W, distinctHeight];
+  const dragged = [MIN_W, 5];
+  node.size = dragged;
+  onResizeControls(node, ctx, dragged);
+  assert.equal(dragged[1], distinctHeight, "onResizeControls must take its height from computeSize(), not bodyHeight(rows.length)");
+});
+
+test("onResizeControls: falls back to bodyHeight(rows.length) when node.computeSize is not a function (this file's own stub shape)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  assert.equal(typeof node.computeSize, "undefined", "sanity check: this stub really has no computeSize");
+  const dragged = [MIN_W, 5];
+  node.size = dragged;
+  onResizeControls(node, ctx, dragged);
+  assert.equal(dragged[1], bodyHeight(3));
+});
+
+test("onResizeControls: no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched, so it can never fight computeLayoutSize's own layout store", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  const dragged = [10, 900]; // both axes deliberately "wrong" by legacy's own rules
+  node.size = dragged;
+  globalThis.window = { LiteGraph: { vueNodesMode: true } };
+  try {
+    onResizeControls(node, ctx, dragged);
+  } finally {
+    delete globalThis.window;
+  }
+  assert.deepEqual(dragged, [10, 900], "under Nodes 2.0, onResizeControls must leave size completely untouched -- v2 owns sizing via computeLayoutSize");
+});
+
+test("onResizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  fakeArrange(node);
+  alignOutputsLegacy(node);
+  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+  // Keep width exactly as it already was (`node.size[0]`) so this isolates
+  // the HEIGHT-only rewrite -- a width change legitimately moves a dot's X
+  // (the socket gutter sits relative to the right edge), which is not what
+  // this test is checking; F4's "fitNode never moves a row's output dot"
+  // test above isolates the same way, for the same reason.
+  const dragged = [node.size[0], 900];
+  node.size = dragged;
+  onResizeControls(node, ctx, dragged);
+  alignOutputsLegacy(node);
+  assert.deepEqual(
+    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+    before,
+    "onResizeControls must not move any row's socket Y",
+  );
+});
+
+test("applyContentHeight: after a simulated load, node.size[1] is content height regardless of the saved value, and node.size[0] (width) is left completely untouched", () => {
+  const savedStateJSON = JSON.stringify({
+    version: 1,
+    rows: [
+      { slot: 1, kind: "int", name: "a", value: 1, opts: { min: 0, max: 10, step: 1 } },
+      { slot: 2, kind: "int", name: "b", value: 2, opts: { min: 0, max: 10, step: 1 } },
+      { slot: 3, kind: "int", name: "c", value: 3, opts: { min: 0, max: 10, step: 1 } },
+    ],
+  });
+  const node = makeFakeNode(savedStateJSON);
+  // A bogus/stale saved height (e.g. from a workflow saved before this fix,
+  // or hand-edited) alongside a genuinely user-chosen saved width.
+  node.size = [555, 999];
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  restoreStateFromWidget(node, ctx); // mirrors restoreNode's own force-reparse
+  syncRows(node, ctx); // 3 rows
+  applyContentHeight(node, ctx);
+  assert.equal(node.size[1], bodyHeight(3), "height must be content height regardless of what was saved");
+  assert.equal(node.size[0], 555, "width must be left exactly as the workflow saved it");
+});
+
+test("applyContentHeight is a genuine no-op on an already-consistent node -- assigns node.size[1] its own current value, same as fitNodeH would report live", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.size = [DEFAULT_W, bodyHeight(3)];
+  const before = node.size.slice();
+  applyContentHeight(node, ctx);
+  assert.deepEqual(node.size, before);
+});
+
+test("index.js: nodeType.prototype.onResize is wired to call mods.interaction.onResizeControls, chaining any pre-existing handler", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /const _resize = nodeType\.prototype\.onResize;/,
+    "must capture any pre-existing onResize before overwriting it",
+  );
+  const hookIdx = indexSource.indexOf("nodeType.prototype.onResize = function (size) {");
+  assert.ok(hookIdx >= 0, "onResize must be installed on the prototype");
+  const hookBody = indexSource.slice(hookIdx, indexSource.indexOf("};", hookIdx));
+  assert.match(
+    hookBody,
+    /this\._ctrlMods\.interaction\.onResizeControls\(this, this\._ctrlCtx, size\)/,
+    "onResize must delegate to mods.interaction.onResizeControls, gated on this._ctrlMods like every other hook",
+  );
+  assert.match(hookBody, /return _resize \? _resize\.apply\(this, arguments\) : undefined;/, "must chain the pre-existing handler, never silently replace it");
+});
+
+test("index.js: restoreNode calls mods.interaction.applyContentHeight AFTER syncRows, so height reflects the just-restored row count", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  const nextFnIdx = indexSource.indexOf("app.registerExtension({");
+  assert.ok(restoreIdx >= 0 && nextFnIdx > restoreIdx, "restoreNode must be defined before app.registerExtension");
+  const restoreBody = indexSource.slice(restoreIdx, nextFnIdx);
+  const syncIdx = restoreBody.indexOf("mods.interaction.syncRows(node, ctx);");
+  const heightIdx = restoreBody.indexOf("mods.interaction.applyContentHeight(node, ctx);");
+  assert.ok(syncIdx >= 0, "restoreNode must call syncRows");
+  assert.ok(heightIdx > syncIdx, "applyContentHeight must run AFTER syncRows, so row count is current when it measures content height");
 });
 
 test("scheduleFit skips fitting while _ctrlConfiguring is set (never resize during a workflow load)", () => {

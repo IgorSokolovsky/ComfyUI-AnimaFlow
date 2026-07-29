@@ -113,8 +113,10 @@ import {
 // `render.mjs`'s THEME_URL (an absolute `/extensions/...` server route),
 // this sibling module has zero `app`/`window`/`LiteGraph` reference at
 // module scope, so it's just as importable under plain `node` as
-// `rows.mjs`/`render.mjs` already are -- no 404 risk.
-import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
+// `rows.mjs`/`render.mjs` already are -- no 404 risk. `isVueNodes` (same
+// module) is reused below by `onResizeControls`, for the identical "this
+// mechanism is legacy-litegraph-only" reason.
+import { installCanvasZoomPassthrough, isVueNodes } from "../shared/canvas_zoom.mjs";
 // The "Wheel quiet period (ms)" setting (`js/shared/settings.mjs`) -- read
 // LIVE, on every wheel event, via `installCanvasZoomPassthrough`'s own
 // `options.getLockMs` (see that function's doc comment). Same "plain
@@ -2104,6 +2106,130 @@ export function fitNode(node, ctx) {
     node.size[0] = w;
     node.size[1] = h;
   }
+  if (typeof node.setDirtyCanvas === "function") {
+    node.setDirtyCanvas(true, true);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Class A sizing lock (owner policy, 2026-07-29): height is CONTENT-FIXED,
+// width is user-resizable with a floor -- `AnimaControlPanel`/
+// `AnimaLoaderPanel` are the two existing Class A nodes (a future AnimaFlow
+// LoRA loader is a third). Ported from ComfyUI-Pixaroma's `js/lora_loader/
+// index.js` `onResize` (MIT, THIRD_PARTY_NOTICES.md), the reference model
+// `pixaroma-review-rounds-plan.md` item 11 records in full.
+//
+// Before this: `fitNode`/`fitNodeH` above already make content height the
+// FLOOR litegraph enforces on a resize-drag (via `node.computeSize()`), but a
+// floor only ever stops a drag going SHORTER than content -- litegraph
+// happily lets the user drag the node TALLER, since each row's own DOM
+// widget reports a FIXED `computeSize`/`getMinHeight` for ITS OWN ROW_H
+// slice (`rebuildRowWidgets`, above), never anything about the node's total.
+// The node then sits taller than its content until the next structural
+// change re-fits it -- the reported "resizes to a bigger height when not
+// needed."
+//
+// The fix is `onResizeControls`, wired as `nodeType.prototype.onResize` in
+// `index.js`: litegraph calls this on every resize-drag frame with the drag's
+// own `size`, and this hook overwrites the height entry right back to
+// `fitNodeH`'s answer before the frame ever paints -- so a height drag is a
+// no-op, while a width drag (the ONE user-owned dimension here) goes through
+// untouched, floored at `MIN_W`.
+// ---------------------------------------------------------------------------
+
+/**
+ * `onResize(size)` -- litegraph's per-resize-drag hook, called from the
+ * canvas's own resize-handle interaction (NOT called during
+ * `onConfigure`/restore -- a load never drags the resize handle, so this
+ * function never needs its own `_ctrlConfiguring`/`isGraphLoading` guard the
+ * way `fitNode` does; `applyContentHeight`, below, is the separate load-path
+ * counterpart for the "regardless of what height was saved" case).
+ *
+ * - HEIGHT is never user-owned: unconditionally rewritten to `fitNodeH`'s
+ *   answer -- the SAME authority `fitNode` itself asks, never a second
+ *   formula racing it (this file's own top "Resize" section doc comment is
+ *   the whole reason that rule exists). A height drag has litegraph write
+ *   `size[1]` to wherever the user dragged to and then call this hook, which
+ *   immediately rewrites it back before the next paint -- the drag has no
+ *   lasting effect, which IS the "non-draggable height" this exists for.
+ * - WIDTH stays the user's, floored at `MIN_W` here too as belt-and-braces:
+ *   litegraph's own resize-drag floor already reads `node.computeSize()[0]
+ *   === MIN_W` (`computeControlsSize`, `index.js`), but mirroring the
+ *   reference's redundant floor here costs nothing and covers the same
+ *   "onResize does not fire on every legacy resize path" caveat the
+ *   reference's own `onDrawForeground` clamp exists for
+ *   (`pixaroma-review-rounds-plan.md` item 11) -- not ported here because
+ *   this pack has no such second, non-onResize clamp path today; flagged
+ *   there as the next thing to port if a sub-`MIN_W` width is ever observed
+ *   live.
+ *
+ * LEGACY ONLY (`!isVueNodes()`): under Nodes 2.0 the per-row/add-strip DOM
+ * widgets' own `computeLayoutSize` (`rebuildRowWidgets`, above) already owns
+ * sizing through the Vue layout store -- writing `node.size` here as well
+ * would fight that layout, per the reference's own comment ("clamping
+ * `node.size` here would desync and pop on a workflow-tab switch"). This
+ * pack's target renderer is legacy litegraph (`.claude/CLAUDE.md`);
+ * `computeLayoutSize` stays forward-compat only, entirely unchanged by this
+ * function -- so this dispatch does not newly assert anything about how
+ * Nodes 2.0 handles a height drag, only that legacy is now correct and v2 is
+ * left exactly as it already was.
+ *
+ * Mutates `size` IN PLACE, the documented `onResize(size)` contract
+ * (`js/anima/render.mjs`'s identical doc comment on `clampGeneratorSize`/
+ * `clampPreviewSize`) -- and mirrors the same values onto `node.size` too,
+ * in case a caller ever passes a `size` that isn't the very same array
+ * `node.size` already is (litegraph itself always passes `node.size`, but a
+ * headless test stub is free to pass a fresh array to exercise this
+ * function directly without a full fake node).
+ */
+export function onResizeControls(node, ctx, size) {
+  if (isVueNodes()) {
+    return; // Nodes 2.0 owns sizing via computeLayoutSize -- don't fight it
+  }
+  const arr = Array.isArray(size) && size.length >= 2 ? size : node.size;
+  if (!Array.isArray(arr) || arr.length < 2) {
+    return;
+  }
+  if (arr[0] < MIN_W) {
+    arr[0] = MIN_W;
+  }
+  arr[1] = fitNodeH(node, ctx);
+  if (arr !== node.size && Array.isArray(node.size) && node.size.length >= 2) {
+    node.size[0] = arr[0];
+    node.size[1] = arr[1];
+  }
+}
+
+/**
+ * The load-path counterpart to `onResizeControls`: `onResize` only ever
+ * fires from a LIVE resize-drag, so it can never correct a workflow saved by
+ * an OLDER build of this file (before this fix landed) or a hand-edited one
+ * whose saved height simply disagrees with its own row count -- Class A's
+ * "height is never user-owned" invariant has to hold across a restore too,
+ * not just a live drag.
+ *
+ * Rewrites `node.size[1]` ONLY -- WIDTH is left completely untouched,
+ * deliberately NOT routed through `onResizeControls` (which also floors
+ * width as belt-and-braces): the pre-existing "never rewrite width on load"
+ * rule (`restoreNode`'s own doc comment, `index.js`) must keep holding even
+ * while this corrects height; a saved width below `MIN_W` is a separate,
+ * pre-existing gap this dispatch does not touch.
+ *
+ * On an ALREADY-CONSISTENT workflow (saved by this same, already-fixed
+ * build) this is a genuine no-op: `fitNodeH` recomputes the exact number the
+ * workflow was saved with, so `node.size[1]` is assigned its own current
+ * value and nothing about the restore visibly changes. It only actually
+ * changes anything for a workflow whose saved height predates this fix (or
+ * was hand-edited) -- exactly the case this exists to correct, and exactly
+ * the same "a clean, already-current workflow is safe without any extra
+ * guard, an inconsistent one gets healed" reasoning `syncOutputs`'s own doc
+ * comment already gives for `node.outputs.length` vs. `maxSlot`.
+ */
+export function applyContentHeight(node, ctx) {
+  if (!Array.isArray(node.size) || node.size.length < 2) {
+    return;
+  }
+  node.size[1] = fitNodeH(node, ctx);
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
   }
