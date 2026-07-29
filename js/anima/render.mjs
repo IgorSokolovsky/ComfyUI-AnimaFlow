@@ -191,6 +191,13 @@ import {
 // constraints (single implementation shared with `js/controls/render.mjs`,
 // never-stomp-an-explicit-colour, fresh-node-path-only).
 import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrome.mjs";
+// Duck-typed size-pair check -- `node.size` (and any `size` array litegraph
+// hands `onResize`) on a live node is a Float64Array VIEW over a Rectangle,
+// NOT a plain Array (`Array.isArray(node.size) === false`, measured live);
+// `clampMinWidth`/`clampMinHeight` below use this instead of `Array.isArray`
+// so the clamp actually fires on the real object. See `../shared/size.mjs`'s
+// own top doc comment for the full story.
+import { isSizeLike } from "../shared/size.mjs";
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 
 const STYLE_ID = "wtn-anima-style";
@@ -1245,11 +1252,12 @@ export function applyPanelFontScale(px) {
 }
 
 function clampMinWidth(size, minW) {
-  if (!Array.isArray(size) || size.length < 1) {
-    return size;
+  if (!isSizeLike(size, 1)) {
+    return size; // not shaped like a real [w, ...] -- nothing sane to floor
   }
-  const w = size[0];
-  if (typeof w !== "number" || !Number.isFinite(w) || w < minW) {
+  // isSizeLike already guarantees size[0] is a finite number, so the only
+  // thing left to decide is whether it's below the floor.
+  if (size[0] < minW) {
     size[0] = minW;
   }
   return size;
@@ -1263,11 +1271,12 @@ function clampMinWidth(size, minW) {
  * (`GENERATOR_MIN_H`/`PREVIEW_MIN_H`) -- this function itself doesn't care
  * which node it's clamping, same as `clampMinWidth` above. */
 function clampMinHeight(size, minH) {
-  if (!Array.isArray(size) || size.length < 2) {
-    return size;
+  if (!isSizeLike(size)) {
+    return size; // not shaped like a real [w, h] -- nothing sane to floor
   }
-  const h = size[1];
-  if (typeof h !== "number" || !Number.isFinite(h) || h < minH) {
+  // isSizeLike already guarantees size[1] is a finite number, so the only
+  // thing left to decide is whether it's below the floor.
+  if (size[1] < minH) {
     size[1] = minH;
   }
   return size;

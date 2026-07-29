@@ -125,6 +125,13 @@
 import { installCanvasZoomPassthrough } from "../shared/canvas_zoom.mjs";
 import { buildNumericField, buildStepperField, buildSeedField, hideActiveInfoTip } from "../shared/fields.mjs";
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
+// Duck-typed size-pair check -- `node.size` on a live litegraph node is a
+// Float64Array VIEW over a Rectangle, NOT a plain Array
+// (`Array.isArray(node.size) === false`, measured live); `captureNodeSize`/
+// `restoreNodeSize` below use this instead of `Array.isArray` so the healing
+// pass actually fires on the real object. See `../shared/size.mjs`'s own top
+// doc comment for the full story.
+import { isSizeLike } from "../shared/size.mjs";
 // The overlay mechanism -- back in this track for ANCHORED MENUS only (this
 // module's top doc comment, "hybrid essentials/⚙ dispatch"). `js/controls/
 // interaction.mjs` uses the exact same three imports for its own option
@@ -521,7 +528,7 @@ function reconcileSocketArray(node, key, defNames) {
  * below already tolerates a `null` snapshot on its own (nothing to put
  * back), this just keeps that check in ONE place. */
 function captureNodeSize(node) {
-  if (Array.isArray(node.size) && node.size.length >= 2 && typeof node.size[0] === "number" && typeof node.size[1] === "number") {
+  if (isSizeLike(node.size)) {
     return [node.size[0], node.size[1]];
   }
   return null;
@@ -548,7 +555,7 @@ function captureNodeSize(node) {
  * correct in `node.size` but never actually repaint until some UNRELATED
  * later dirty flag happened to fire. */
 function restoreNodeSize(node, saved) {
-  if (!saved || !Array.isArray(node.size) || node.size.length < 2) {
+  if (!saved || !isSizeLike(node.size)) {
     return;
   }
   node.size[0] = saved[0];

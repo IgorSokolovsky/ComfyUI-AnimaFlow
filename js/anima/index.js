@@ -118,6 +118,14 @@ import { isSubmitting } from "../shared/submit_guard.mjs";
 // module scope, like `isGraphLoading`/`isSubmitting` above -- cheap enough
 // to import eagerly rather than riding this file's own lazy `loadMods()`.
 import { registerAnimaFlowSettings } from "../shared/settings.mjs";
+// Duck-typed size-pair check -- `node.size` on a live litegraph node is a
+// Float64Array VIEW over a Rectangle, NOT a plain Array
+// (`Array.isArray(node.size) === false`, measured live); `setupNode`'s own
+// fresh-node sizing floor (below) uses this instead of `Array.isArray` so it
+// actually reads/writes the real object. Same cheap, zero-`app`-reference
+// eager import as the three above it. See `../shared/size.mjs`'s own top doc
+// comment for the full story.
+import { isSizeLike } from "../shared/size.mjs";
 
 // `AnimaContextBridge` is included ONLY for socket self-healing (see this
 // file's top doc comment) -- `mountsUi` below is what actually gates every
@@ -509,8 +517,8 @@ function setupNode(node, mods, isGenerator) {
   // whatever height that leaves it (render.mjs's CSS); if the defaults
   // don't fit inside `defaultH` without scrolling, the user drags the node
   // taller, same as any later resize.
-  const curW = Array.isArray(node.size) && typeof node.size[0] === "number" ? node.size[0] : 0;
-  const curH = Array.isArray(node.size) && typeof node.size[1] === "number" ? node.size[1] : 0;
+  const curW = isSizeLike(node.size, 1) ? node.size[0] : 0;
+  const curH = isSizeLike(node.size) ? node.size[1] : 0;
   // Each node type has its own width floor (render.mjs's `GENERATOR_MIN_W`/
   // `PREVIEW_MIN_W` doc comments) -- Preview's is taller (the compare row's
   // segmented groups need more room than any Generator row does).
@@ -520,7 +528,7 @@ function setupNode(node, mods, isGenerator) {
   if (w !== curW || h !== curH) {
     if (typeof node.setSize === "function") {
       node.setSize([w, h]);
-    } else if (Array.isArray(node.size)) {
+    } else if (isSizeLike(node.size)) {
       node.size[0] = w;
       node.size[1] = h;
     }

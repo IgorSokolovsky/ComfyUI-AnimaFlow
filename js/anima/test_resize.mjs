@@ -276,6 +276,20 @@ function test(name, fn) {
   }
 }
 
+/** Build a `[w, h]`-shaped size using `Ctor` (`Array` or `Float64Array`) --
+ * the one helper every Float64Array-parametrised test in this file uses
+ * instead of a bare `[w, h]` literal, so a test can assert against either
+ * shape without duplicating the values. Mirrors `js/controls/test_resize.mjs`'s
+ * identically-named helper (kept as an independent copy, not a cross-track
+ * import -- this pack's tracks stay independent test modules, same as their
+ * own `captureNodeSize`/`restoreNodeSize` duplication). See
+ * `../shared/size.mjs`'s own top doc comment for why this shape distinction
+ * matters at all: `node.size` on a live litegraph node is a Float64Array
+ * VIEW over a Rectangle, NOT a plain Array. */
+function mkSize(Ctor, w, h) {
+  return Ctor === Float64Array ? Float64Array.from([w, h]) : [w, h];
+}
+
 // ---------------------------------------------------------------------------
 // Stubbed globals (requestAnimationFrame / getComputedStyle) -- same pattern
 // as js/prompt_rules/node/test_resize.mjs.
@@ -1313,29 +1327,31 @@ test("the grow-biased auto-fit mechanism is gone from render.mjs entirely -- ref
   assert.equal(render.CHROME, undefined);
 });
 
-test("clampGeneratorSize raises size[0] up to GENERATOR_MIN_W AND size[1] up to GENERATOR_MIN_H -- owner policy change, 2026-07-29: the Generator is now Class B (both axes clamped, each with a minimum), same as the Preview, even though its panel still scrolls internally past its own floor rather than clipping", () => {
-  // Below the floor on BOTH axes -- both get raised.
-  const size = [10, 10];
-  clampGeneratorSize(size);
-  assert.equal(size[0], GENERATOR_MIN_W);
-  assert.equal(size[1], GENERATOR_MIN_H);
+test("clampGeneratorSize raises size[0] up to GENERATOR_MIN_W AND size[1] up to GENERATOR_MIN_H -- owner policy change, 2026-07-29: the Generator is now Class B (both axes clamped, each with a minimum), same as the Preview, even though its panel still scrolls internally past its own floor rather than clipping -- parametrised over BOTH a plain Array and a Float64Array (node.size's real live shape, `../shared/size.mjs`'s own top doc comment)", () => {
+  for (const SizeCtor of [Array, Float64Array]) {
+    // Below the floor on BOTH axes -- both get raised.
+    const size = mkSize(SizeCtor, 10, 10);
+    clampGeneratorSize(size);
+    assert.equal(size[0], GENERATOR_MIN_W);
+    assert.equal(size[1], GENERATOR_MIN_H);
 
-  // Width below, height already above -- only width moves.
-  const size2 = [10, GENERATOR_MIN_H + 500];
-  clampGeneratorSize(size2);
-  assert.equal(size2[0], GENERATOR_MIN_W);
-  assert.equal(size2[1], GENERATOR_MIN_H + 500);
+    // Width below, height already above -- only width moves.
+    const size2 = mkSize(SizeCtor, 10, GENERATOR_MIN_H + 500);
+    clampGeneratorSize(size2);
+    assert.equal(size2[0], GENERATOR_MIN_W);
+    assert.equal(size2[1], GENERATOR_MIN_H + 500);
 
-  // Height below, width already above -- only height moves.
-  const size3 = [GENERATOR_MIN_W + 40, 10];
-  clampGeneratorSize(size3);
-  assert.equal(size3[0], GENERATOR_MIN_W + 40);
-  assert.equal(size3[1], GENERATOR_MIN_H);
+    // Height below, width already above -- only height moves.
+    const size3 = mkSize(SizeCtor, GENERATOR_MIN_W + 40, 10);
+    clampGeneratorSize(size3);
+    assert.equal(size3[0], GENERATOR_MIN_W + 40);
+    assert.equal(size3[1], GENERATOR_MIN_H);
 
-  // Both already at/above the floor -- neither moves.
-  const size4 = [GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40];
-  clampGeneratorSize(size4);
-  assert.deepEqual(size4, [GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40]);
+    // Both already at/above the floor -- neither moves.
+    const size4 = mkSize(SizeCtor, GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40);
+    clampGeneratorSize(size4);
+    assert.deepEqual(size4, mkSize(SizeCtor, GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40));
+  }
 
   // Tolerant of a missing/non-numeric size, on either axis (hostile-input
   // cases carried forward from the pre-2026-07-29 width-only test).
@@ -1354,23 +1370,25 @@ test("index.js wires the Generator's widget floor to PANEL_MIN_H (via measureMin
   assert.match(indexSource, /measureMinHeight/, "index.js must reference measureMinHeight for the Generator's own floor");
 });
 
-test("clampPreviewSize raises size[0] up to PREVIEW_MIN_W AND size[1] up to PREVIEW_MIN_H -- unlike the Generator, the Preview's panel never scrolls (overflow: hidden), so its node height needs a real floor too", () => {
-  // Below the floor on BOTH axes -- both get raised.
-  const size = [10, 10];
-  clampPreviewSize(size);
-  assert.equal(size[0], PREVIEW_MIN_W);
-  assert.equal(size[1], PREVIEW_MIN_H);
+test("clampPreviewSize raises size[0] up to PREVIEW_MIN_W AND size[1] up to PREVIEW_MIN_H -- unlike the Generator, the Preview's panel never scrolls (overflow: hidden), so its node height needs a real floor too -- parametrised over BOTH a plain Array and a Float64Array (node.size's real live shape)", () => {
+  for (const SizeCtor of [Array, Float64Array]) {
+    // Below the floor on BOTH axes -- both get raised.
+    const size = mkSize(SizeCtor, 10, 10);
+    clampPreviewSize(size);
+    assert.equal(size[0], PREVIEW_MIN_W);
+    assert.equal(size[1], PREVIEW_MIN_H);
 
-  // Width below, height already above -- only width moves.
-  const size2 = [10, PREVIEW_MIN_H + 500];
-  clampPreviewSize(size2);
-  assert.equal(size2[0], PREVIEW_MIN_W);
-  assert.equal(size2[1], PREVIEW_MIN_H + 500);
+    // Width below, height already above -- only width moves.
+    const size2 = mkSize(SizeCtor, 10, PREVIEW_MIN_H + 500);
+    clampPreviewSize(size2);
+    assert.equal(size2[0], PREVIEW_MIN_W);
+    assert.equal(size2[1], PREVIEW_MIN_H + 500);
 
-  // Both already at/above the floor -- neither moves.
-  const size3 = [PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40];
-  clampPreviewSize(size3);
-  assert.deepEqual(size3, [PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40]);
+    // Both already at/above the floor -- neither moves.
+    const size3 = mkSize(SizeCtor, PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40);
+    clampPreviewSize(size3);
+    assert.deepEqual(size3, mkSize(SizeCtor, PREVIEW_MIN_W + 40, PREVIEW_MIN_H + 40));
+  }
 
   // Tolerant of a missing/non-numeric size, on either axis.
   assert.doesNotThrow(() => clampPreviewSize(null));
@@ -4384,13 +4402,22 @@ function addLink(graph, id, originId, originSlot, targetId, targetSlot) {
  * `node.size` with `_MOCK_COMPUTED_SIZE` on every call, exactly like the real
  * API methods are documented to do. This is what lets the size-preserving
  * tests below actually exercise the fix rather than trivially pass because
- * nothing in the stub ever touched `node.size` in the first place. */
+ * nothing in the stub ever touched `node.size` in the first place.
+ *
+ * `sizeCtor` (default `Array`) -- the 2026-07-29 Float64Array fix's own
+ * regression coverage: pass `Float64Array` to make `node.size` (both the
+ * initial value AND the `_MOCK_COMPUTED_SIZE` clobber `removeInput`/
+ * `removeOutput` apply) that shape instead of a plain array, reproducing the
+ * actual live shape (`node.size` is a Float64Array VIEW over a Rectangle on
+ * a real litegraph node, NOT a plain Array; see `../shared/size.mjs`'s own
+ * top doc comment). Every EXISTING caller that doesn't pass this stays a
+ * plain array, byte-identical to before this option existed. */
 const _MOCK_COMPUTED_SIZE = [80, 32];
-function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null, size = [640, 480] } = {}) {
+function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null, size = [640, 480], sizeCtor = Array } = {}) {
   const node = {
     id,
     graph,
-    size: Array.isArray(size) ? size.slice() : size,
+    size: mkSize(sizeCtor, size[0], size[1]),
     inputs: inputs.map((i) => ({ ...i })),
     outputs: outputs.map((o) => ({ ...o, links: (o.links || []).slice() })),
     setDirtyCanvas() {
@@ -4410,7 +4437,7 @@ function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null, siz
           node.graph.links[inp.link].target_slot = i;
         }
       });
-      node.size = _MOCK_COMPUTED_SIZE.slice();
+      node.size = mkSize(sizeCtor, _MOCK_COMPUTED_SIZE[0], _MOCK_COMPUTED_SIZE[1]);
     },
     removeOutput(idx) {
       const removed = node.outputs[idx];
@@ -4428,7 +4455,7 @@ function makeHealableNode({ id = 1, inputs = [], outputs = [], graph = null, siz
           }
         });
       });
-      node.size = _MOCK_COMPUTED_SIZE.slice();
+      node.size = mkSize(sizeCtor, _MOCK_COMPUTED_SIZE[0], _MOCK_COMPUTED_SIZE[1]);
     },
   };
   return node;
@@ -4689,72 +4716,84 @@ test("healNodeSockets: the fallback removal path (a node with no removeInput/rem
 // clobbers `node.size` on every remove call, exactly like the real API.
 // ---------------------------------------------------------------------------
 
-test("healNodeSockets: preserves the ORIGINAL node.size across a stale-socket heal, even though removeInput/removeOutput clobber it along the way", () => {
-  const graph = makeLinkGraph();
-  addLink(graph, 1, 100, 0, 1, 0); // context's own link
-  const node = makeHealableNode({
-    id: 1,
-    graph,
-    size: [512, 900],
-    inputs: [
-      { name: "context", type: "ANIMA_CONTEXT", link: 1 },
-      { name: "positive", type: "CONDITIONING", link: null }, // stale -- removed
-    ],
-    outputs: [
-      { name: "images", type: "IMAGE", links: [] },
-      { name: "latent", type: "LATENT", links: [] },
-      { name: "metadata_json", type: "STRING", links: [] },
-      { name: "latent", type: "LATENT", links: [] }, // duplicate -- removed
-    ],
+// Parametrised over BOTH a plain-Array and a Float64Array `node.size` -- the
+// private `captureNodeSize`/`restoreNodeSize` pair this exercises is exactly
+// what the 2026-07-29 Float64Array fix touched (see `../shared/size.mjs`'s
+// own top doc comment): before that fix, `Array.isArray(node.size)` was
+// `false` for a Float64Array, so `captureNodeSize` silently returned `null`
+// and `restoreNodeSize` never ran -- the clobbered (mocked-computed) size
+// would have SURVIVED, permanently, exactly the live bug.
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`healNodeSockets: preserves the ORIGINAL node.size across a stale-socket heal, even though removeInput/removeOutput clobber it along the way (size ctor: ${SizeCtor.name})`, () => {
+    const graph = makeLinkGraph();
+    addLink(graph, 1, 100, 0, 1, 0); // context's own link
+    const node = makeHealableNode({
+      id: 1,
+      graph,
+      size: [512, 900],
+      sizeCtor: SizeCtor,
+      inputs: [
+        { name: "context", type: "ANIMA_CONTEXT", link: 1 },
+        { name: "positive", type: "CONDITIONING", link: null }, // stale -- removed
+      ],
+      outputs: [
+        { name: "images", type: "IMAGE", links: [] },
+        { name: "latent", type: "LATENT", links: [] },
+        { name: "metadata_json", type: "STRING", links: [] },
+        { name: "latent", type: "LATENT", links: [] }, // duplicate -- removed
+      ],
+    });
+
+    const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+
+    assert.equal(summary.changed, true, "sanity: this case must actually heal something, or the test proves nothing");
+    assert.deepEqual(
+      node.size,
+      mkSize(SizeCtor, 512, 900),
+      "healing must restore the node's ORIGINAL saved size, not whatever the socket-mutation side effect clobbered it to",
+    );
   });
 
-  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+  test(`healNodeSockets: a too-SMALL pre-existing size survives a heal unchanged -- the fix restores, it does not clamp up to any floor (size ctor: ${SizeCtor.name})`, () => {
+    const graph = makeLinkGraph();
+    const node = makeHealableNode({
+      id: 1,
+      graph,
+      size: [10, 10],
+      sizeCtor: SizeCtor,
+      inputs: [
+        { name: "context", type: "ANIMA_CONTEXT", link: null },
+        { name: "stale", type: "STRING", link: null },
+      ],
+      outputs: [],
+    });
 
-  assert.equal(summary.changed, true, "sanity: this case must actually heal something, or the test proves nothing");
-  assert.deepEqual(
-    node.size,
-    [512, 900],
-    "healing must restore the node's ORIGINAL saved size, not whatever the socket-mutation side effect clobbered it to",
-  );
-});
+    const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
 
-test("healNodeSockets: a too-SMALL pre-existing size survives a heal unchanged -- the fix restores, it does not clamp up to any floor", () => {
-  const graph = makeLinkGraph();
-  const node = makeHealableNode({
-    id: 1,
-    graph,
-    size: [10, 10],
-    inputs: [
-      { name: "context", type: "ANIMA_CONTEXT", link: null },
-      { name: "stale", type: "STRING", link: null },
-    ],
-    outputs: [],
+    assert.equal(summary.changed, true);
+    assert.deepEqual(node.size, mkSize(SizeCtor, 10, 10), "a tiny saved size must come back exactly as tiny -- healing never clamps it up");
   });
 
-  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
+  test(`healNodeSockets: a too-LARGE pre-existing size survives a heal unchanged -- the fix restores, it does not clamp down to any computed size (size ctor: ${SizeCtor.name})`, () => {
+    const graph = makeLinkGraph();
+    const node = makeHealableNode({
+      id: 1,
+      graph,
+      size: [9000, 9000],
+      sizeCtor: SizeCtor,
+      inputs: [
+        { name: "context", type: "ANIMA_CONTEXT", link: null },
+        { name: "stale", type: "STRING", link: null },
+      ],
+      outputs: [],
+    });
 
-  assert.equal(summary.changed, true);
-  assert.deepEqual(node.size, [10, 10], "a tiny saved size must come back exactly as tiny -- healing never clamps it up");
-});
+    const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
 
-test("healNodeSockets: a too-LARGE pre-existing size survives a heal unchanged -- the fix restores, it does not clamp down to any computed size", () => {
-  const graph = makeLinkGraph();
-  const node = makeHealableNode({
-    id: 1,
-    graph,
-    size: [9000, 9000],
-    inputs: [
-      { name: "context", type: "ANIMA_CONTEXT", link: null },
-      { name: "stale", type: "STRING", link: null },
-    ],
-    outputs: [],
+    assert.equal(summary.changed, true);
+    assert.deepEqual(node.size, mkSize(SizeCtor, 9000, 9000), "a huge saved size must come back exactly as huge -- healing never clamps it down");
   });
-
-  const summary = healNodeSockets(node, GENERATOR_NODE_DATA);
-
-  assert.equal(summary.changed, true);
-  assert.deepEqual(node.size, [9000, 9000], "a huge saved size must come back exactly as huge -- healing never clamps it down");
-});
+}
 
 test("healNodeSockets: a node with nothing to heal never writes node.size at all -- same array reference AND same values, no restore call happens", () => {
   const graph = makeLinkGraph();
@@ -4839,6 +4878,24 @@ test("index.js: setupNode's sizing block is gated on isGraphLoading() || node._a
   // restoreNode) honour that same rule instead of quietly violating it.
   const restoreBody = indexSource.slice(restoreIdx, restoreIdx + 400);
   assert.doesNotMatch(restoreBody, /setSize\(/);
+});
+
+test("index.js: setupNode's fresh-node sizing floor reads curW/curH via isSizeLike, never Array.isArray -- node.size on a live node is a Float64Array VIEW over a Rectangle (Array.isArray(node.size) is false for that), so an Array.isArray guard here would silently never apply the floor at all (../shared/size.mjs's own top doc comment has the full live measurement)", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\s*\{\s*isSizeLike\s*\}\s*from\s*"\.\.\/shared\/size\.mjs"/,
+    "must import isSizeLike eagerly (not through loadMods())",
+  );
+
+  const setupIdx = indexSource.indexOf("function setupNode(");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+
+  assert.match(setupBody, /const curW = isSizeLike\(node\.size,\s*1\)/, "curW must be guarded with isSizeLike, not Array.isArray");
+  assert.match(setupBody, /const curH = isSizeLike\(node\.size\)/, "curH must be guarded with isSizeLike, not Array.isArray");
+  assert.match(setupBody, /else if \(isSizeLike\(node\.size\)\)/, "the setSize-less write-in-place fallback must also be guarded with isSizeLike");
+  assert.doesNotMatch(setupBody, /Array\.isArray\(node\.size\)/, "no Array.isArray(node.size) guard may remain in setupNode -- it silently never matches the real Float64Array-backed node.size");
 });
 
 // ===========================================================================

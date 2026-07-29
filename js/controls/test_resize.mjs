@@ -342,15 +342,37 @@ function fireWin(win, type, evtOverrides = {}) {
 // `_MOCK_COMPUTED_SIZE` in spirit, kept as an independent constant here).
 const _MOCK_COMPUTED_SIZE = [80, 32];
 
+/** Build a `[w, h]`-shaped size using `Ctor` (`Array` or `Float64Array`) --
+ * the one helper every Float64Array-parametrised test below uses instead of
+ * a bare `[w, h]` literal, so a test can assert against either shape without
+ * duplicating the values. Mirrors `js/anima/test_resize.mjs`'s identically-
+ * named helper (kept as an independent copy, not a cross-track import --
+ * this pack's tracks stay independent test modules, same as their own
+ * `captureNodeSize`/`restoreNodeSize` duplication). */
+function mkSize(Ctor, w, h) {
+  return Ctor === Float64Array ? Float64Array.from([w, h]) : [w, h];
+}
+
 /** `opts.clobberSizeOnOutputChange` (default `false`, so every EXISTING
  * caller of `makeFakeNode()` is unaffected) makes `addOutput`/`removeOutput`
  * additionally overwrite `node.size` with `_MOCK_COMPUTED_SIZE`, mimicking
  * litegraph's own real API methods -- opt-in rather than the default so this
  * doesn't change behaviour for the ~150 other tests in this file that build
- * a node with rows/outputs but never touch `node.size` at all. */
+ * a node with rows/outputs but never touch `node.size` at all.
+ *
+ * `opts.sizeCtor` (default `Array`) -- the 2026-07-29 Float64Array fix's own
+ * regression coverage: pass `Float64Array` to make EVERY internal
+ * reassignment of `node.size` this stub performs (the initial value,
+ * `setSize`, and the `clobberSizeOnOutputChange` mock) use that shape
+ * instead of a plain array -- reproducing the actual live shape
+ * (`node.size` is a Float64Array VIEW over a Rectangle on a real litegraph
+ * node, NOT a plain Array; see `../shared/size.mjs`'s own top doc comment).
+ * Every EXISTING caller that doesn't pass this stays a plain array,
+ * byte-identical to before this option existed. */
 function makeFakeNode(initialStateJSON, opts = {}) {
+  const sizeCtor = opts.sizeCtor === Float64Array ? Float64Array : Array;
   const node = {
-    size: [DEFAULT_W, 100],
+    size: mkSize(sizeCtor, DEFAULT_W, 100),
     properties: {},
     widgets: [{ name: "panel_state", value: initialStateJSON ?? "{}" }],
     outputs: [],
@@ -395,18 +417,18 @@ function makeFakeNode(initialStateJSON, opts = {}) {
       const out = { name, type, links: [] };
       node.outputs.push(out);
       if (opts.clobberSizeOnOutputChange) {
-        node.size = _MOCK_COMPUTED_SIZE.slice();
+        node.size = mkSize(sizeCtor, _MOCK_COMPUTED_SIZE[0], _MOCK_COMPUTED_SIZE[1]);
       }
       return out;
     },
     removeOutput(idx) {
       node.outputs.splice(idx, 1);
       if (opts.clobberSizeOnOutputChange) {
-        node.size = _MOCK_COMPUTED_SIZE.slice();
+        node.size = mkSize(sizeCtor, _MOCK_COMPUTED_SIZE[0], _MOCK_COMPUTED_SIZE[1]);
       }
     },
     setSize(size) {
-      node.size = size.slice();
+      node.size = mkSize(sizeCtor, size[0], size[1]);
     },
     setDirtyCanvas() {
       node._dirty += 1;
@@ -1781,73 +1803,82 @@ test("alignOutputsLegacy parks each row's dot at its OWN widget's Y, offset by m
 // would fail WITHOUT the fix.
 // ---------------------------------------------------------------------------
 
-test("syncOutputs preserves the ORIGINAL node.size across a load-time output-count mismatch, even though removeOutput clobbers it along the way", () => {
-  const node = makeFakeNode(
-    JSON.stringify({
-      version: 1,
-      rows: [
-        { slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } },
-        { slot: 2, kind: "float", value: 1, opts: { min: 0, max: 10, step: 0.1 } },
-      ],
-    }),
-    { clobberSizeOnOutputChange: true },
-  );
-  // The saved rows only ever own slots 1/2 -- but `node.outputs` (as
-  // litegraph would have restored it from an older/hand-edited save) still
-  // carries four. This is the mismatch this fix guards against.
-  node.outputs = [
-    { name: "value_1", type: "*", links: [] },
-    { name: "value_2", type: "*", links: [] },
-    { name: "value_3", type: "*", links: [] },
-    { name: "value_4", type: "*", links: [] },
-  ];
-  node.size = [512, 900];
-  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
-  node._ctrlConfiguring = true; // the load path -- compactHoles is skipped, trim/grow are not
+// Parametrised over BOTH a plain-Array and a Float64Array `node.size` -- the
+// private `captureNodeSize`/`restoreNodeSize` pair this exercises is exactly
+// what the 2026-07-29 Float64Array fix touched (see `../shared/size.mjs`'s
+// own top doc comment): before that fix, `Array.isArray(node.size)` was
+// `false` for a Float64Array, so `captureNodeSize` silently returned `null`
+// and `restoreNodeSize` never ran -- the clobbered (mocked-computed) size
+// would have SURVIVED, permanently, exactly the live bug.
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`syncOutputs preserves the ORIGINAL node.size across a load-time output-count mismatch, even though removeOutput clobbers it along the way (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(
+      JSON.stringify({
+        version: 1,
+        rows: [
+          { slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } },
+          { slot: 2, kind: "float", value: 1, opts: { min: 0, max: 10, step: 0.1 } },
+        ],
+      }),
+      { clobberSizeOnOutputChange: true, sizeCtor: SizeCtor },
+    );
+    // The saved rows only ever own slots 1/2 -- but `node.outputs` (as
+    // litegraph would have restored it from an older/hand-edited save) still
+    // carries four. This is the mismatch this fix guards against.
+    node.outputs = [
+      { name: "value_1", type: "*", links: [] },
+      { name: "value_2", type: "*", links: [] },
+      { name: "value_3", type: "*", links: [] },
+      { name: "value_4", type: "*", links: [] },
+    ];
+    node.size = mkSize(SizeCtor, 512, 900);
+    const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+    node._ctrlConfiguring = true; // the load path -- compactHoles is skipped, trim/grow are not
 
-  syncOutputs(node, ctx);
+    syncOutputs(node, ctx);
 
-  assert.equal(node.outputs.length, 2, "sanity: the mismatch must actually get trimmed, or this test proves nothing");
-  assert.deepEqual(node.size, [512, 900], "syncOutputs must restore the node's ORIGINAL saved size, not whatever removeOutput clobbered it to");
-});
+    assert.equal(node.outputs.length, 2, "sanity: the mismatch must actually get trimmed, or this test proves nothing");
+    assert.deepEqual(node.size, mkSize(SizeCtor, 512, 900), "syncOutputs must restore the node's ORIGINAL saved size, not whatever removeOutput clobbered it to");
+  });
 
-test("syncOutputs: a too-SMALL pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp up to any floor", () => {
-  const node = makeFakeNode(
-    JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
-    { clobberSizeOnOutputChange: true },
-  );
-  node.outputs = [
-    { name: "value_1", type: "*", links: [] },
-    { name: "value_2", type: "*", links: [] },
-  ];
-  node.size = [10, 10];
-  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
-  node._ctrlConfiguring = true;
+  test(`syncOutputs: a too-SMALL pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp up to any floor (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(
+      JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
+      { clobberSizeOnOutputChange: true, sizeCtor: SizeCtor },
+    );
+    node.outputs = [
+      { name: "value_1", type: "*", links: [] },
+      { name: "value_2", type: "*", links: [] },
+    ];
+    node.size = mkSize(SizeCtor, 10, 10);
+    const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+    node._ctrlConfiguring = true;
 
-  syncOutputs(node, ctx);
+    syncOutputs(node, ctx);
 
-  assert.equal(node.outputs.length, 1);
-  assert.deepEqual(node.size, [10, 10], "a tiny saved size must come back exactly as tiny -- the fix never clamps it up");
-});
+    assert.equal(node.outputs.length, 1);
+    assert.deepEqual(node.size, mkSize(SizeCtor, 10, 10), "a tiny saved size must come back exactly as tiny -- the fix never clamps it up");
+  });
 
-test("syncOutputs: a too-LARGE pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp down to the mocked computed size", () => {
-  const node = makeFakeNode(
-    JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
-    { clobberSizeOnOutputChange: true },
-  );
-  node.outputs = [
-    { name: "value_1", type: "*", links: [] },
-    { name: "value_2", type: "*", links: [] },
-  ];
-  node.size = [9000, 9000];
-  const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
-  node._ctrlConfiguring = true;
+  test(`syncOutputs: a too-LARGE pre-existing size survives a load-time mismatch fix unchanged -- the fix restores, it does not clamp down to the mocked computed size (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(
+      JSON.stringify({ version: 1, rows: [{ slot: 1, kind: "int", value: 5, opts: { min: 0, max: 10, step: 1 } }] }),
+      { clobberSizeOnOutputChange: true, sizeCtor: SizeCtor },
+    );
+    node.outputs = [
+      { name: "value_1", type: "*", links: [] },
+      { name: "value_2", type: "*", links: [] },
+    ];
+    node.size = mkSize(SizeCtor, 9000, 9000);
+    const ctx = makeCtx(makeDocStub(), CONTROL_PANEL_CONFIG);
+    node._ctrlConfiguring = true;
 
-  syncOutputs(node, ctx);
+    syncOutputs(node, ctx);
 
-  assert.equal(node.outputs.length, 1);
-  assert.deepEqual(node.size, [9000, 9000], "a huge saved size must come back exactly as huge -- the fix never clamps it down");
-});
+    assert.equal(node.outputs.length, 1);
+    assert.deepEqual(node.size, mkSize(SizeCtor, 9000, 9000), "a huge saved size must come back exactly as huge -- the fix never clamps it down");
+  });
+}
 
 test("syncOutputs never touches node.size at all when node.outputs already matches the saved rows -- same array reference AND same values, and addOutput/removeOutput are never even called", () => {
   const node = makeFakeNode(
@@ -2977,104 +3008,115 @@ test("fitNode never moves a row's output dot position, regardless of which heigh
 // by hand exercise the PRIMARY path explicitly, same split as F1.
 // ---------------------------------------------------------------------------
 
-test("onResizeControls: a height drag is a no-op -- node.size[1] snaps back to content height regardless of what the drag set it to", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  const dragged = [MIN_W, 900]; // simulates litegraph writing the drag's own size before calling onResize
-  node.size = dragged;
-  onResizeControls(node, ctx, dragged);
-  assert.equal(dragged[1], bodyHeight(3), "the dragged array itself must be corrected back to content height");
-  assert.equal(node.size[1], bodyHeight(3), "node.size must agree (same array in this call)");
-});
-
-test("onResizeControls: a width drag works normally, and is floored at MIN_W", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-
-  // A width drag well above MIN_W must be left exactly as dragged.
-  const widened = [500, 900];
-  node.size = widened;
-  onResizeControls(node, ctx, widened);
-  assert.equal(widened[0], 500, "a width above MIN_W must pass through untouched");
-  assert.equal(widened[1], bodyHeight(3));
-
-  // A width drag below MIN_W must be floored, not left narrower.
-  const narrowed = [10, 900];
-  node.size = narrowed;
-  onResizeControls(node, ctx, narrowed);
-  assert.equal(narrowed[0], MIN_W, "a width below MIN_W must be floored");
-  assert.equal(narrowed[1], bodyHeight(3));
-});
-
-test("onResizeControls: node.computeSize() is the authority for the locked height, same as fitNode -- never a second bodyHeight formula", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  const distinctHeight = bodyHeight(3) + 77; // deliberately NOT what bodyHeight(3) alone would give
-  node.computeSize = () => [MIN_W, distinctHeight];
-  const dragged = [MIN_W, 5];
-  node.size = dragged;
-  onResizeControls(node, ctx, dragged);
-  assert.equal(dragged[1], distinctHeight, "onResizeControls must take its height from computeSize(), not bodyHeight(rows.length)");
-});
-
-test("onResizeControls: falls back to bodyHeight(rows.length) when node.computeSize is not a function (this file's own stub shape)", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  assert.equal(typeof node.computeSize, "undefined", "sanity check: this stub really has no computeSize");
-  const dragged = [MIN_W, 5];
-  node.size = dragged;
-  onResizeControls(node, ctx, dragged);
-  assert.equal(dragged[1], bodyHeight(3));
-});
-
-test("onResizeControls: no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched, so it can never fight computeLayoutSize's own layout store", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  const dragged = [10, 900]; // both axes deliberately "wrong" by legacy's own rules
-  node.size = dragged;
-  globalThis.window = { LiteGraph: { vueNodesMode: true } };
-  try {
+// Every test below runs against BOTH a plain-Array `node.size` AND a
+// Float64Array one -- the 2026-07-29 fix's own regression coverage.
+// `node.size` on a real litegraph node is a Float64Array VIEW over a
+// Rectangle, NOT a plain Array (measured live -- `../shared/size.mjs`'s own
+// top doc comment), so every `Array.isArray(node.size)` guard silently did
+// nothing on the actual object even while every one of these tests passed
+// against a plain-array stub. Looping both shapes here is what makes a
+// future regression (someone reintroducing `Array.isArray`) fail immediately
+// instead of passing quietly again.
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`onResizeControls: a height drag is a no-op -- node.size[1] snaps back to content height regardless of what the drag set it to (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    const dragged = mkSize(SizeCtor, MIN_W, 900); // simulates litegraph writing the drag's own size before calling onResize
+    node.size = dragged;
     onResizeControls(node, ctx, dragged);
-  } finally {
-    delete globalThis.window;
-  }
-  assert.deepEqual(dragged, [10, 900], "under Nodes 2.0, onResizeControls must leave size completely untouched -- v2 owns sizing via computeLayoutSize");
-});
+    assert.equal(dragged[1], bodyHeight(3), "the dragged array itself must be corrected back to content height");
+    assert.equal(node.size[1], bodyHeight(3), "node.size must agree (same array in this call)");
+  });
 
-test("onResizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  fakeArrange(node);
-  alignOutputsLegacy(node);
-  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+  test(`onResizeControls: a width drag works normally, and is floored at MIN_W (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
 
-  // Keep width exactly as it already was (`node.size[0]`) so this isolates
-  // the HEIGHT-only rewrite -- a width change legitimately moves a dot's X
-  // (the socket gutter sits relative to the right edge), which is not what
-  // this test is checking; F4's "fitNode never moves a row's output dot"
-  // test above isolates the same way, for the same reason.
-  const dragged = [node.size[0], 900];
-  node.size = dragged;
-  onResizeControls(node, ctx, dragged);
-  alignOutputsLegacy(node);
-  assert.deepEqual(
-    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
-    before,
-    "onResizeControls must not move any row's socket Y",
-  );
-});
+    // A width drag well above MIN_W must be left exactly as dragged.
+    const widened = mkSize(SizeCtor, 500, 900);
+    node.size = widened;
+    onResizeControls(node, ctx, widened);
+    assert.equal(widened[0], 500, "a width above MIN_W must pass through untouched");
+    assert.equal(widened[1], bodyHeight(3));
+
+    // A width drag below MIN_W must be floored, not left narrower.
+    const narrowed = mkSize(SizeCtor, 10, 900);
+    node.size = narrowed;
+    onResizeControls(node, ctx, narrowed);
+    assert.equal(narrowed[0], MIN_W, "a width below MIN_W must be floored");
+    assert.equal(narrowed[1], bodyHeight(3));
+  });
+
+  test(`onResizeControls: node.computeSize() is the authority for the locked height, same as fitNode -- never a second bodyHeight formula (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    const distinctHeight = bodyHeight(3) + 77; // deliberately NOT what bodyHeight(3) alone would give
+    node.computeSize = () => [MIN_W, distinctHeight];
+    const dragged = mkSize(SizeCtor, MIN_W, 5);
+    node.size = dragged;
+    onResizeControls(node, ctx, dragged);
+    assert.equal(dragged[1], distinctHeight, "onResizeControls must take its height from computeSize(), not bodyHeight(rows.length)");
+  });
+
+  test(`onResizeControls: falls back to bodyHeight(rows.length) when node.computeSize is not a function (this file's own stub shape) (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    assert.equal(typeof node.computeSize, "undefined", "sanity check: this stub really has no computeSize");
+    const dragged = mkSize(SizeCtor, MIN_W, 5);
+    node.size = dragged;
+    onResizeControls(node, ctx, dragged);
+    assert.equal(dragged[1], bodyHeight(3));
+  });
+
+  test(`onResizeControls: no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched, so it can never fight computeLayoutSize's own layout store (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    const dragged = mkSize(SizeCtor, 10, 900); // both axes deliberately "wrong" by legacy's own rules
+    node.size = dragged;
+    globalThis.window = { LiteGraph: { vueNodesMode: true } };
+    try {
+      onResizeControls(node, ctx, dragged);
+    } finally {
+      delete globalThis.window;
+    }
+    assert.deepEqual(dragged, mkSize(SizeCtor, 10, 900), "under Nodes 2.0, onResizeControls must leave size completely untouched -- v2 owns sizing via computeLayoutSize");
+  });
+
+  test(`onResizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    fakeArrange(node);
+    alignOutputsLegacy(node);
+    const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+    // Keep width exactly as it already was (`node.size[0]`) so this isolates
+    // the HEIGHT-only rewrite -- a width change legitimately moves a dot's X
+    // (the socket gutter sits relative to the right edge), which is not what
+    // this test is checking; F4's "fitNode never moves a row's output dot"
+    // test above isolates the same way, for the same reason.
+    const dragged = mkSize(SizeCtor, node.size[0], 900);
+    node.size = dragged;
+    onResizeControls(node, ctx, dragged);
+    alignOutputsLegacy(node);
+    assert.deepEqual(
+      node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+      before,
+      "onResizeControls must not move any row's socket Y",
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // F5a. Draw-time correction -- `onDrawForegroundControls`, wired as
@@ -3086,31 +3128,115 @@ test("onResizeControls never moves a row's output dot position -- it only ever w
 // run -- is the hook that actually enforces Class A in practice.
 // ---------------------------------------------------------------------------
 
-test("onDrawForegroundControls: forces node.size[1] to content height and floors node.size[0] at MIN_W, exactly like a drag-corrected size would be", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  // Simulate a drag that stuck (onResize never fired to correct it -- the
-  // exact live symptom this hook exists to catch every frame regardless).
-  node.size = [10, 198];
-  onDrawForegroundControls(node, ctx);
-  assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
-  assert.equal(node.size[1], bodyHeight(3), "height must be forced back to content height");
-});
+// Same Float64Array-vs-plain-Array parametrization as F5's own loop above --
+// see that loop's own comment for why.
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`onDrawForegroundControls: forces node.size[1] to content height and floors node.size[0] at MIN_W, exactly like a drag-corrected size would be (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    // Simulate a drag that stuck (onResize never fired to correct it -- the
+    // exact live symptom this hook exists to catch every frame regardless).
+    node.size = mkSize(SizeCtor, 10, 198);
+    onDrawForegroundControls(node, ctx);
+    assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
+    assert.equal(node.size[1], bodyHeight(3), "height must be forced back to content height");
+  });
 
-test("onDrawForegroundControls: node.computeSize() is the authority for the locked height, same as fitNode/onResizeControls -- never a second bodyHeight formula", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  const distinctHeight = bodyHeight(3) + 41; // deliberately NOT what bodyHeight(3) alone would give
-  node.computeSize = () => [MIN_W, distinctHeight];
-  node.size = [MIN_W, 5];
-  onDrawForegroundControls(node, ctx);
-  assert.equal(node.size[1], distinctHeight, "onDrawForegroundControls must take its height from computeSize(), not bodyHeight(rows.length)");
-});
+  test(`onDrawForegroundControls: node.computeSize() is the authority for the locked height, same as fitNode/onResizeControls -- never a second bodyHeight formula (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    const distinctHeight = bodyHeight(3) + 41; // deliberately NOT what bodyHeight(3) alone would give
+    node.computeSize = () => [MIN_W, distinctHeight];
+    node.size = mkSize(SizeCtor, MIN_W, 5);
+    onDrawForegroundControls(node, ctx);
+    assert.equal(node.size[1], distinctHeight, "onDrawForegroundControls must take its height from computeSize(), not bodyHeight(rows.length)");
+  });
 
+  test(`onDrawForegroundControls no-ops while node._ctrlConfiguring is true (a load may still be settling) (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    node.size = mkSize(SizeCtor, 900, 900); // deliberately far from bodyHeight(3)/MIN_W
+    const before = node.size.slice();
+    const dirtyBefore = node._dirty;
+    node._ctrlConfiguring = true;
+    onDrawForegroundControls(node, ctx);
+    assert.deepEqual(node.size, before, "must not touch node.size while node._ctrlConfiguring is true");
+    assert.equal(node._dirty, dirtyBefore);
+  });
+
+  test(`onDrawForegroundControls no-ops while ctx.isGraphLoading() reports true (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+    syncRows(node, ctx); // 3 rows
+    node.size = mkSize(SizeCtor, 900, 900);
+    const before = node.size.slice();
+    const dirtyBefore = node._dirty;
+    onDrawForegroundControls(node, ctx);
+    assert.deepEqual(node.size, before, "must not touch node.size while ctx.isGraphLoading() is true");
+    assert.equal(node._dirty, dirtyBefore);
+  });
+
+  test(`onDrawForegroundControls no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    node.size = mkSize(SizeCtor, 10, 900); // both axes deliberately "wrong" by legacy's own rules
+    const before = node.size.slice();
+    globalThis.window = { LiteGraph: { vueNodesMode: true } };
+    try {
+      onDrawForegroundControls(node, ctx);
+    } finally {
+      delete globalThis.window;
+    }
+    assert.deepEqual(node.size, before, "under Nodes 2.0, onDrawForegroundControls must leave size completely untouched");
+  });
+
+  test(`onDrawForegroundControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    fakeArrange(node);
+    alignOutputsLegacy(node);
+    const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+    node.size = mkSize(SizeCtor, node.size[0], 900); // height-only drift, width untouched (same isolation F5's dot test uses)
+    onDrawForegroundControls(node, ctx);
+    alignOutputsLegacy(node);
+    assert.deepEqual(
+      node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+      before,
+      "onDrawForegroundControls must not move any row's socket Y",
+    );
+  });
+}
+
+// These two are deliberately OUTSIDE the loop above: detecting "was node.size
+// actually WRITTEN to" (as opposed to merely "does it end up holding the same
+// values") needs a `Proxy`, and wrapping a real `Float64Array` in a `Proxy`
+// hits an unrelated JS-engine brand check --
+// `TypedArray.prototype.length`'s getter throws `TypeError: incompatible
+// receiver` when `this` is a `Proxy` around a typed array rather than the
+// typed array itself, because a `Proxy`'s default `get` trap forwards with
+// the PROXY as the receiver, and that getter's internal slot check rejects
+// anything that isn't a genuine `Float64Array` instance. This is a real
+// litegraph node's `node.size` is NEVER further wrapped in a `Proxy` (it's a
+// raw `Float64Array` view straight onto its `Rectangle`, per this file's own
+// `../shared/size.mjs` top doc comment) -- so this is purely a test-harness
+// limitation of the write-COUNTING mechanism, not a live shape. The
+// Float64Array variant below proves the same "genuine no-op" property a
+// different way: capture the exact reference identity and a value snapshot,
+// call the hook, and assert BOTH the reference and the values are
+// unchanged -- which is everything "no write happened" can mean for a
+// Float64Array without hitting that brand check.
 test("onDrawForegroundControls is a genuine no-op when the node is already the right size -- no write to node.size at all, and setDirtyCanvas is never called", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
@@ -3135,65 +3261,22 @@ test("onDrawForegroundControls is a genuine no-op when the node is already the r
   );
 });
 
-test("onDrawForegroundControls no-ops while node._ctrlConfiguring is true (a load may still be settling)", () => {
-  const node = makeFakeNode();
+test("onDrawForegroundControls is a genuine no-op when the node is already the right size, with node.size a Float64Array (the live shape) -- the SAME reference survives untouched, not merely equal values", () => {
+  const node = makeFakeNode(undefined, { sizeCtor: Float64Array });
   const doc = makeDocStub();
   const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
   syncRows(node, ctx); // 3 rows
-  node.size = [900, 900]; // deliberately far from bodyHeight(3)/MIN_W
-  const before = node.size.slice();
-  const dirtyBefore = node._dirty;
-  node._ctrlConfiguring = true;
-  onDrawForegroundControls(node, ctx);
-  assert.deepEqual(node.size, before, "must not touch node.size while node._ctrlConfiguring is true");
-  assert.equal(node._dirty, dirtyBefore);
-});
-
-test("onDrawForegroundControls no-ops while ctx.isGraphLoading() reports true", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
-  syncRows(node, ctx); // 3 rows
-  node.size = [900, 900];
+  node.size = Float64Array.from([DEFAULT_W, bodyHeight(3)]);
+  const sameReference = node.size;
   const before = node.size.slice();
   const dirtyBefore = node._dirty;
   onDrawForegroundControls(node, ctx);
-  assert.deepEqual(node.size, before, "must not touch node.size while ctx.isGraphLoading() is true");
-  assert.equal(node._dirty, dirtyBefore);
-});
-
-test("onDrawForegroundControls no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  node.size = [10, 900]; // both axes deliberately "wrong" by legacy's own rules
-  const before = node.size.slice();
-  globalThis.window = { LiteGraph: { vueNodesMode: true } };
-  try {
-    onDrawForegroundControls(node, ctx);
-  } finally {
-    delete globalThis.window;
-  }
-  assert.deepEqual(node.size, before, "under Nodes 2.0, onDrawForegroundControls must leave size completely untouched");
-});
-
-test("onDrawForegroundControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  fakeArrange(node);
-  alignOutputsLegacy(node);
-  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
-
-  node.size = [node.size[0], 900]; // height-only drift, width untouched (same isolation F5's dot test uses)
-  onDrawForegroundControls(node, ctx);
-  alignOutputsLegacy(node);
-  assert.deepEqual(
-    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
-    before,
-    "onDrawForegroundControls must not move any row's socket Y",
+  assert.equal(node.size, sameReference, "must be the SAME Float64Array reference -- never replaced with a new array/view");
+  assert.deepEqual(node.size, before, "an already-correct Float64Array node.size must end with the exact same values");
+  assert.equal(
+    node._dirty,
+    dirtyBefore,
+    "must never call setDirtyCanvas -- doing so from a draw hook is an infinite repaint loop",
   );
 });
 
@@ -3275,129 +3358,137 @@ test("the per-widget height cap does not fight SHRINKING -- removing rows still 
 // `comfyui_frontend_package` 1.47.10 drag handler).
 // ---------------------------------------------------------------------------
 
-test("wrapSetSizeControls: a too-tall height is clamped to content height, and the ORIGINAL (spied) setSize is still invoked with the corrected size", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
+// Same Float64Array-vs-plain-Array parametrization as F5/F5a's own loops
+// above -- see F5's own comment for why. `spiedArg`/comparisons use `mkSize`
+// throughout so a Float64Array-shaped drag argument compares against a
+// Float64Array-shaped expectation (a plain-array literal never deep-equals a
+// Float64Array of the same values -- Node's `assert.deepEqual` treats the
+// two constructors as distinct).
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`wrapSetSizeControls: a too-tall height is clamped to content height, and the ORIGINAL (spied) setSize is still invoked with the corrected size (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
 
-  let spyCalls = 0;
-  let spiedArg = null;
-  const realSetSize = node.setSize.bind(node);
-  node.setSize = function (size) {
-    spyCalls += 1;
-    spiedArg = size.slice();
-    return realSetSize(size);
-  };
-  wrapSetSizeControls(node, ctx);
+    let spyCalls = 0;
+    let spiedArg = null;
+    const realSetSize = node.setSize.bind(node);
+    node.setSize = function (size) {
+      spyCalls += 1;
+      spiedArg = size.slice();
+      return realSetSize(size);
+    };
+    wrapSetSizeControls(node, ctx);
 
-  node.setSize([MIN_W, 900]); // a drag that stretched the node way past content
-  assert.equal(spyCalls, 1, "the original (spied) setSize must still run exactly once");
-  assert.deepEqual(spiedArg, [MIN_W, bodyHeight(3)], "the original must receive the CORRECTED size, not the raw dragged one");
-  assert.equal(node.size[1], bodyHeight(3), "node.size must end at content height, never the dragged height");
-});
+    node.setSize(mkSize(SizeCtor, MIN_W, 900)); // a drag that stretched the node way past content
+    assert.equal(spyCalls, 1, "the original (spied) setSize must still run exactly once");
+    assert.deepEqual(spiedArg, mkSize(SizeCtor, MIN_W, bodyHeight(3)), "the original must receive the CORRECTED size, not the raw dragged one");
+    assert.equal(node.size[1], bodyHeight(3), "node.size must end at content height, never the dragged height");
+  });
 
-test("wrapSetSizeControls: a too-narrow width is floored at MIN_W", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: a too-narrow width is floored at MIN_W (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    wrapSetSizeControls(node, ctx);
 
-  node.setSize([10, 900]);
-  assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
-  assert.equal(node.size[1], bodyHeight(3));
-});
+    node.setSize(mkSize(SizeCtor, 10, 900));
+    assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
+    assert.equal(node.size[1], bodyHeight(3));
+  });
 
-test("wrapSetSizeControls: a legitimate width ABOVE MIN_W is preserved exactly", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: a legitimate width ABOVE MIN_W is preserved exactly (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    wrapSetSizeControls(node, ctx);
 
-  node.setSize([500, 900]);
-  assert.equal(node.size[0], 500, "a width above MIN_W must pass through untouched");
-  assert.equal(node.size[1], bodyHeight(3));
-});
+    node.setSize(mkSize(SizeCtor, 500, 900));
+    assert.equal(node.size[0], 500, "a width above MIN_W must pass through untouched");
+    assert.equal(node.size[1], bodyHeight(3));
+  });
 
-test("wrapSetSizeControls: passes straight through, UNCLAMPED, under isVueNodes()", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: passes straight through, UNCLAMPED, under isVueNodes() (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    wrapSetSizeControls(node, ctx);
 
-  globalThis.window = { LiteGraph: { vueNodesMode: true } };
-  try {
-    node.setSize([10, 900]);
-  } finally {
-    delete globalThis.window;
-  }
-  assert.deepEqual(node.size, [10, 900], "under Nodes 2.0, setSize must be left completely unclamped -- v2 owns sizing via computeLayoutSize");
-});
+    globalThis.window = { LiteGraph: { vueNodesMode: true } };
+    try {
+      node.setSize(mkSize(SizeCtor, 10, 900));
+    } finally {
+      delete globalThis.window;
+    }
+    assert.deepEqual(node.size, mkSize(SizeCtor, 10, 900), "under Nodes 2.0, setSize must be left completely unclamped -- v2 owns sizing via computeLayoutSize");
+  });
 
-test("wrapSetSizeControls: passes straight through, UNCLAMPED, while node._ctrlConfiguring is true", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: passes straight through, UNCLAMPED, while node._ctrlConfiguring is true (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    wrapSetSizeControls(node, ctx);
 
-  node._ctrlConfiguring = true;
-  node.setSize([10, 900]);
-  assert.deepEqual(node.size, [10, 900], "a workflow load in flight must never be fought");
-});
+    node._ctrlConfiguring = true;
+    node.setSize(mkSize(SizeCtor, 10, 900));
+    assert.deepEqual(node.size, mkSize(SizeCtor, 10, 900), "a workflow load in flight must never be fought");
+  });
 
-test("wrapSetSizeControls: passes straight through, UNCLAMPED, while ctx.isGraphLoading() reports true", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
-  syncRows(node, ctx); // 3 rows
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: passes straight through, UNCLAMPED, while ctx.isGraphLoading() reports true (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+    syncRows(node, ctx); // 3 rows
+    wrapSetSizeControls(node, ctx);
 
-  node.setSize([10, 900]);
-  assert.deepEqual(node.size, [10, 900], "a workflow load in flight (via ctx.isGraphLoading()) must never be fought");
-});
+    node.setSize(mkSize(SizeCtor, 10, 900));
+    assert.deepEqual(node.size, mkSize(SizeCtor, 10, 900), "a workflow load in flight (via ctx.isGraphLoading()) must never be fought");
+  });
 
-test("wrapSetSizeControls: fitNode's own node.setSize([w, h]) call is a genuine no-op through the wrapped path -- no double correction, no recursion", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  let spyCalls = 0;
-  const realSetSize = node.setSize.bind(node);
-  node.setSize = function (size) {
-    spyCalls += 1;
-    return realSetSize(size);
-  };
-  wrapSetSizeControls(node, ctx);
+  test(`wrapSetSizeControls: fitNode's own node.setSize([w, h]) call is a genuine no-op through the wrapped path -- no double correction, no recursion (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    let spyCalls = 0;
+    const realSetSize = node.setSize.bind(node);
+    node.setSize = function (size) {
+      spyCalls += 1;
+      return realSetSize(size);
+    };
+    wrapSetSizeControls(node, ctx);
 
-  node.size = [10, 5]; // deliberately wrong on both axes
-  fitNode(node, ctx);
-  assert.equal(spyCalls, 1, "fitNode must still call setSize exactly once through the wrap -- no recursive re-entry");
-  assert.equal(node.size[0], MIN_W, "fitNode's own width floor and the wrap's clamp must agree exactly (10 -> MIN_W either way)");
-  assert.equal(node.size[1], bodyHeight(3), "fitNode's own answer and the wrap's clamp must agree exactly -- no double correction");
-});
+    node.size = mkSize(SizeCtor, 10, 5); // deliberately wrong on both axes
+    fitNode(node, ctx);
+    assert.equal(spyCalls, 1, "fitNode must still call setSize exactly once through the wrap -- no recursive re-entry");
+    assert.equal(node.size[0], MIN_W, "fitNode's own width floor and the wrap's clamp must agree exactly (10 -> MIN_W either way)");
+    assert.equal(node.size[1], bodyHeight(3), "fitNode's own answer and the wrap's clamp must agree exactly -- no double correction");
+  });
 
-test("wrapSetSizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
-  const node = makeFakeNode();
-  const doc = makeDocStub();
-  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
-  syncRows(node, ctx); // 3 rows
-  fakeArrange(node);
-  alignOutputsLegacy(node);
-  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+  test(`wrapSetSizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(undefined, { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // 3 rows
+    fakeArrange(node);
+    alignOutputsLegacy(node);
+    const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
 
-  wrapSetSizeControls(node, ctx);
-  node.setSize([node.size[0], 900]); // height-only drift, width untouched (F5's own isolation)
-  alignOutputsLegacy(node);
-  assert.deepEqual(
-    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
-    before,
-    "wrapSetSizeControls must not move any row's socket Y",
-  );
-});
+    wrapSetSizeControls(node, ctx);
+    node.setSize(mkSize(SizeCtor, node.size[0], 900)); // height-only drift, width untouched (F5's own isolation)
+    alignOutputsLegacy(node);
+    assert.deepEqual(
+      node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+      before,
+      "wrapSetSizeControls must not move any row's socket Y",
+    );
+  });
+}
 
 test("wrapSetSizeControls is a no-op install when node.setSize is not a function at all -- must not fabricate one", () => {
   const node = makeFakeNode();

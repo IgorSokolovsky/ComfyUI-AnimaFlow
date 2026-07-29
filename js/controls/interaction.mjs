@@ -117,6 +117,13 @@ import {
 // module) is reused below by `onResizeControls`, for the identical "this
 // mechanism is legacy-litegraph-only" reason.
 import { installCanvasZoomPassthrough, isVueNodes } from "../shared/canvas_zoom.mjs";
+// Duck-typed size-pair check -- `node.size` on a live litegraph node is a
+// Float64Array VIEW over a Rectangle, NOT a plain Array
+// (`Array.isArray(node.size) === false`, measured live); every size guard in
+// this file uses this instead of `Array.isArray` so it actually fires on the
+// real object, not just on a test stub's plain-array `size`. See
+// `../shared/size.mjs`'s own top doc comment for the full story.
+import { isSizeLike } from "../shared/size.mjs";
 // The "Wheel quiet period (ms)" setting (`js/shared/settings.mjs`) -- read
 // LIVE, on every wheel event, via `installCanvasZoomPassthrough`'s own
 // `options.getLockMs` (see that function's doc comment). Same "plain
@@ -1668,7 +1675,7 @@ function compactHoles(node, state) {
  * mechanism this guards against; kept as a private duplicate here rather
  * than a cross-track import (this pack's tracks stay independent modules). */
 function captureNodeSize(node) {
-  if (Array.isArray(node.size) && node.size.length >= 2 && typeof node.size[0] === "number" && typeof node.size[1] === "number") {
+  if (isSizeLike(node.size)) {
     return [node.size[0], node.size[1]];
   }
   return null;
@@ -1684,7 +1691,7 @@ function captureNodeSize(node) {
  * write it into. Marks the canvas dirty so the restored size actually
  * repaints. */
 function restoreNodeSize(node, saved) {
-  if (!saved || !Array.isArray(node.size) || node.size.length < 2) {
+  if (!saved || !isSizeLike(node.size)) {
     return;
   }
   node.size[0] = saved[0];
@@ -2200,15 +2207,15 @@ export function onResizeControls(node, ctx, size) {
   if (isVueNodes()) {
     return; // Nodes 2.0 owns sizing via computeLayoutSize -- don't fight it
   }
-  const arr = Array.isArray(size) && size.length >= 2 ? size : node.size;
-  if (!Array.isArray(arr) || arr.length < 2) {
+  const arr = isSizeLike(size) ? size : node.size;
+  if (!isSizeLike(arr)) {
     return;
   }
   if (arr[0] < MIN_W) {
     arr[0] = MIN_W;
   }
   arr[1] = fitNodeH(node, ctx);
-  if (arr !== node.size && Array.isArray(node.size) && node.size.length >= 2) {
+  if (arr !== node.size && isSizeLike(node.size)) {
     node.size[0] = arr[0];
     node.size[1] = arr[1];
   }
@@ -2274,7 +2281,7 @@ export function onDrawForegroundControls(node, ctx) {
   if (node._ctrlConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
     return; // a workflow load may still be settling -- trust node.size
   }
-  if (!Array.isArray(node.size) || node.size.length < 2) {
+  if (!isSizeLike(node.size)) {
     return;
   }
   if (node.size[0] < MIN_W) {
@@ -2368,7 +2375,7 @@ export function wrapSetSizeControls(node, ctx) {
     if (isVueNodes() || node._ctrlConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
       return original(size); // Nodes 2.0, or a load in flight -- never fight either
     }
-    const arr = Array.isArray(size) && size.length >= 2 ? size : null;
+    const arr = isSizeLike(size) ? size : null;
     if (!arr) {
       return original(size); // not a [w, h]-shaped call -- pass through untouched
     }
@@ -2406,7 +2413,7 @@ export function wrapSetSizeControls(node, ctx) {
  * comment already gives for `node.outputs.length` vs. `maxSlot`.
  */
 export function applyContentHeight(node, ctx) {
-  if (!Array.isArray(node.size) || node.size.length < 2) {
+  if (!isSizeLike(node.size)) {
     return;
   }
   node.size[1] = fitNodeH(node, ctx);
