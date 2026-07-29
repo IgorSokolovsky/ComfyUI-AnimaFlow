@@ -179,17 +179,12 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
     <div class="sock out">triggers<span class="d" style="background:var(--accent);border-color:var(--accent)"></span></div>
 
     <div class="body">
-      <!-- prominent full-width Add, per the reference shot -->
-      <button class="btn" style="width:100%;height:32px;margin-bottom:6px" onclick="addRow()">＋ Add LoRA</button>
-
-      <!-- master all/none switch + N / M on counter, then the gear -->
+      <!-- ONE header row: Add (flexes) · master switch · N/M · ⚙ -->
       <div class="hdr" style="margin-bottom:7px">
-        <div style="flex:1 1 auto;display:flex;align-items:center;gap:8px;background:var(--surface2);
-          border:1px solid var(--line-soft);border-radius:7px;padding:4px 8px">
-          <div class="sw" id="master" onclick="toggleAll()" title="turn all on / all off"></div>
-          <span id="count" style="font:11.5px var(--mono);color:var(--ink-dim)"></span>
-        </div>
-        <div class="gear" onclick="show('gear')" style="margin-left:0">⚙</div>
+        <button class="btn" style="flex:1 1 auto;height:30px" onclick="addRow()">＋ Add LoRA</button>
+        <div class="sw" id="master" onclick="toggleAll()" title="turn all on / all off" style="flex:none"></div>
+        <span id="count" style="font:11.5px var(--mono);color:var(--ink-dim);flex:none;min-width:26px;text-align:center"></span>
+        <div class="gear" onclick="show('gear')" style="margin-left:0;flex:none">⚙</div>
       </div>
       <button class="btn ghost" style="width:100%;margin-bottom:7px" onclick="show('browse')">Browse Civitai (loras)</button>
       <div id="rows"></div>
@@ -483,7 +478,7 @@ function render(){
   // master switch is ON only when EVERY row is on; the counter carries the mixed state
   const n = LORAS.length, on = LORAS.filter(e=>e.on).length;
   document.getElementById("master").classList.toggle("on", n>0 && on===n);
-  document.getElementById("count").textContent = n ? `${on} / ${n} on` : "no LoRAs";
+  document.getElementById("count").textContent = n ? `${on}/${n}` : "—";   // no "on" word: the switch already says it
 }
 // Mixed or all-off => turn everything ON (the action you almost always want).
 // Only when everything is already on does it turn everything OFF.

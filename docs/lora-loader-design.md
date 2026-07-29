@@ -46,12 +46,17 @@ node plus 445 lines of pure helpers.
 
 Another case where reading the source under-described the UI. The corrected target is in the mockup:
 
-- **A master all/none switch with an `N / M on` counter**, on a strip under a prominent full-width
-  `＋ Add LoRA`, with the ⚙ at its right. The switch reads **on only when EVERY row is on**; a mixed
-  state shows it **off** with the count carrying the truth (`2 / 3 on`). Clicking it when mixed *or*
-  all-off turns **everything on** — the action you almost always want — and only turns everything off
-  when everything already is. Without the counter, mixed would be indistinguishable from all-off, which
-  is exactly why the count sits beside the switch rather than in a tooltip.
+- **ONE header row** (owner, 2026-07-29): `＋ Add LoRA` · master switch · `N/M` · ⚙. Add **flexes** to
+  fill; the switch, counter and gear are fixed-width at the right. An earlier draft split this across
+  two rows (full-width Add above, a switch strip below) — collapsed to one, because two rows of chrome
+  above the first LoRA is a lot of vertical cost in a node whose height is content-driven (§6).
+- **The counter is `2/3`, with no "on" word.** The switch beside it already says what the number is
+  about; the label was redundant. It is also the only text in that row, so it stays compact.
+- The switch reads **on only when EVERY row is on**; a mixed state shows it **off** with the counter
+  carrying the truth. Clicking it when mixed *or* all-off turns **everything on** — the action you
+  almost always want — and only turns everything off when everything already is. Without the counter,
+  mixed would be indistinguishable from all-off, which is exactly why the count sits beside the switch
+  rather than in a tooltip.
 - **The row's on/off switch is on the RIGHT**, after the ⓘ — not leading the row. Order:
   **name ▾ · strength ▲▼ · ⓘ · switch**.
 - **An off row is visibly dimmed** (name, strength, ⓘ recede) so a glance says what is actually
