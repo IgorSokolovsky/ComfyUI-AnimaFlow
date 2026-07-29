@@ -45,13 +45,38 @@ porting is fine *with attribution*, per `.claude/CLAUDE.md` and `THIRD_PARTY_NOT
 | info | a **Civitai** panel — metadata, preview thumbnails |
 | memory | three cache modes — `last` (ComfyUI parity), `all` (fast re-runs, GBs), `none` (re-read every run), with entries released between applications so peak stays ~2 files, not the whole stack |
 
-**❓ Open — the whole point of the task: what's missing?** The owner has it in mind; without it this
-entry is just "clone Pixaroma's". Until that's captured, this can't start.
+**What's missing (owner, 2026-07-29) — Civitai as a first-class source, not just a metadata peek:**
+
+1. **The author's own description** from Civitai, not only the numeric metadata — the notes that say
+   how a LoRA is meant to be used.
+2. **Search Civitai from inside the node** — find a LoRA without leaving ComfyUI.
+3. **Download to local**, the way the **Civicomfy** custom node does it (installed on the owner's
+   Colab box) — pick a result, fetch it into the right `models/` folder, use it immediately.
+4. **The same for models**, not just LoRAs — so the UNET/checkpoint side of the Loader Panel gets it
+   too. That makes this a **shared Civitai browser** consumed by two nodes, not a LoRA feature.
+
+**⚠️ Three things to settle before any code:**
+
+- **Where the API key lives — and where it must NEVER live.** A Civitai key is a credential. Our node
+  settings blob is a *serialized STRING widget*, so it goes into the saved workflow — and the Preview
+  **embeds the workflow into saved PNGs**. A key in the settings blob would leak into every image the
+  user shares. It belongs in the ComfyUI settings section (`AnimaFlow.*`, server-side
+  `comfy.settings.json`) or an env var, and never in `panel_state`/`generation_settings`. (Today's
+  Colab notebook shipped a live tunnel token for a near-identical reason — saved UI state is a
+  credential sink.)
+- **Civicomfy's licence.** Not clonable here (not a sibling of this repo), so it hasn't been checked.
+  This pack's MIT boundary is strict: MIT ⇒ port with attribution in `THIRD_PARTY_NOTICES.md`;
+  GPL ⇒ **concept only, clean-room, never copy**. Establish which before reading its source.
+- **This is the pack's first outbound network call.** Everything today is local. It needs: no blocking
+  a graph run, degrade silently offline (a node must still load and execute with no network), rate
+  limiting, and downloads done **server-side in Python** — the browser can't write to `models/`. The
+  Colab launcher already has a model downloader with present/missing detection; check it for reusable
+  shape before starting fresh.
 
 **Spillover to our Loader Panel** — candidates worth lifting even before the LoRA node exists:
-searchable picker, missing-file marks, the Civitai/metadata info panel, and the memory-mode idea
-(our loader helpers already cache per `(kind, name, dtype)` — `control-panel-design.md` §2 —
-but expose no policy).
+searchable picker, missing-file marks, the Civitai description/metadata panel, the downloader, and
+the memory-mode idea (our loader helpers already cache per `(kind, name, dtype)` —
+`control-panel-design.md` §2 — but expose no policy).
 
 **Fits our layering:** a row-with-sockets node ⇒ it's a **layer 3** consumer, which would make it
 the *third* one and trigger the deferred `js/shared/socket_rows.mjs` move (see Deferred below).
