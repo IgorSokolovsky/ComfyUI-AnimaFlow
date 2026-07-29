@@ -180,6 +180,47 @@ the Generator/Preview nodes ship** — they are exactly the "new DOM-widget node
 
 ---
 
+### 11. Their whole node-SIZING model — the gap this plan missed (added 2026-07-29)
+
+**This plan mined seven review rounds and never looked at how their node sizes itself**, which turned
+out to be the answer to a bug the owner reported live: our Control/Loader panels "resize to a bigger
+height when not needed" and lose their size across a refresh. Recorded here because the omission is
+the lesson — the rounds were mined for *bugs they fixed*, not for *architecture they settled*.
+
+Reference: `../ComfyUI-Pixaroma/js/lora_loader/index.js` (the node the owner actually likes). Four
+decisions, all deliberate:
+
+| | their decision |
+|---|---|
+| **height is never user-owned** | always exactly content height; only **width** is user-controlled (min 300, default 336). "Shrink when a row is removed" isn't a feature, it's the only behaviour there is |
+| **one authority for the total** | `fitNodeH` calls `node.computeSize()` and uses its height verbatim; a constant chrome estimate (`CHROME=66` legacy / `VUE_CHROME=96`) is a **fallback only** |
+| **never fit on the load path** | `fitToContent` opens with `if (isGraphLoading()) return;` — their comment: *"USER ACTIONS ONLY (never on the load path, or a saved size gets rewritten and a clean workflow opens 'modified')."* They still call it from `onConfigure`; it self-bails |
+| **`onResize` clamps width ONLY** | their comment: *"getMinHeight/computeLayoutSize already lock the height — clamping node.size here would desync and pop on a workflow-tab switch."* Plus a second width clamp elsewhere, because *"onResize does not fire on every legacy resize path"* |
+
+They also mutate `node.size` **in place** rather than replacing the array, since a reactive proxy may
+hold it.
+
+**Our bug was the second row.** `fitNode` assigned `bodyHeight(rowCount)` — arithmetic with the chrome
+hardcoded — while we independently mount **one DOM widget per row**, each reporting
+`computeSize = () => [w, ROW_H]`, so litegraph formed its *own* total. Two sources of truth, larger
+wins, node taller than intended. Fixed by making `computeSize()` the authority and `bodyHeight()` the
+fallback, and by moving the load-path bail inside `fitNode` so no call site can bypass it.
+
+**Why we deliberately did NOT copy the whole model:** their node can also just scroll; ours cannot.
+Each Control Panel row parks its own output socket at that row's Y (`vacantSlotY`,
+`alignOutputsLegacy`), and sockets live on the node canvas rather than inside the DOM widget — so a
+scrolling body would slide rows away from their own sockets. That is *why* Controls grows with content
+while the Generator scrolls, and it is a real constraint, not an accident.
+
+**Also not ported: their `onResize` width clamp.** We have no `onResize` at all, and our own
+`computeSize` override returns `MIN_W` where theirs returns `minWidth: 1` — so legacy litegraph already
+floors width through that channel and their belt-and-braces clamp isn't structurally required. **This is
+a judgement call, flagged not buried:** if a width-below-`MIN_W` drag is ever observed live, their
+`onResize`/`onDrawForeground` pair is the thing to port next.
+
+**Process lesson for this file:** mine their *settled architecture*, not only their fixed bugs. A
+review round shows what broke; the surrounding design shows what they decided not to let break.
+
 ## Tier 3 — features, not fixes
 
 Judge on merit; we may not want them.

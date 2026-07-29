@@ -24,7 +24,7 @@ Defined on `.wtn`; components read them via `var(--wtn-*)`.
 |---|---|---|
 | `--wtn-bg` | `#0e1116` | deepest ground (overlay backdrop) |
 | `--wtn-surface` | `#151a21` | panels, cards |
-| `--wtn-surface-2` | `#1b212a` | raised (card headers, inputs' chrome) |
+| `--wtn-surface-2` | `#1b212a` | raised (card headers + bodies) — and, since 2026-07-29, the **disabled** field background |
 | `--wtn-line` | `#28303b` | borders, dividers |
 | `--wtn-line-soft` | `#1f2731` | inner hairlines |
 | `--wtn-ink` | `#e7ecf3` | primary text |

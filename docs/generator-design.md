@@ -622,11 +622,39 @@ mockup put the image box first, then the compare switch, then the `save` row, th
 `base|mid|final` **vs** `base|mid|final` pickers on a *fourth* row. Built and used, that read wrong
 twice over: `save` is the node's one *setting* and belongs above the thing it acts on rather than
 buried under it, and a whole row spent on two segmented groups pushed the switch that enables them
-away from them. Shipped order is now **Save section → image box → one compare row**, where the
-compare row carries `[switch] compare` on the left and both pickers right-aligned on the same line
-(`.wtn-an-segs`, `margin-left: auto`). That fold is what sets the node's **min width, 380px**
-(`render.mjs`'s `PREVIEW_MIN_W`, enforced Preview-only via an `onResize` clamp) — the switch + label
-+ both groups measure ~340px, and a narrower node clipped the right-hand group. (The `save` *row*
+away from them. That 2026-07-28 order was **Save section → image box → one compare row**, with the
+compare row carrying `[switch] compare` and both pickers right-aligned via `.wtn-an-segs`.
+
+**Revised again 2026-07-29 (owner, from live use) — three stacked blocks, and the compare row became
+a card.** Shipped order is now:
+
+```
+[ Save now ] [ Save card ]      <- ONE row: button left, card takes the remaining width
+[ Compare card ]                <- one row: switch + label + both pickers, right-aligned
+[ image box ]                   <- flex-fills whatever height is left
+```
+
+Three changes, each with its own reason:
+
+- **`Save now` sits beside the Save card, not below it.** It is absent (never merely disabled) while
+  `save.enabled` is true — an enabled run already saves itself (§7a) — and the card then takes the
+  **full** width with no leftover gap.
+- **Compare is a card**, a sibling of the Save card rather than a bare strip at the bottom, so the two
+  settings surfaces read as the same kind of thing. It is deliberately **one row with no expandable
+  body**, which is why §12's "the switch owns expand/collapse" rule does *not* apply to it — there is
+  nothing to expand into. The switch keeps its exact prior meaning: on ⇒ hover-wipe, off ⇒ single image.
+- **The two `base|mid|final` segmented groups became single menu buttons** (`buildComboButton`, opening
+  the same option-list overlay a stepper's combo uses — reused, not reimplemented). `.wtn-an-seg*` and
+  `.wtn-an-pvbar` are deleted. **The pickers stay visible regardless of the switch** (they used to
+  render only while `compare.enabled`) — owner-approved 2026-07-29, so you can line up which two stages
+  to compare *before* turning compare on. Do not "fix" this back.
+
+**Sizing numbers live in `render.mjs`, not here.** This section previously asserted a min width of
+`380px` while the code had said `444` and now says `320`; restating a bare number just resets a clock
+that drifts. The floors are **derived from the panel font-size setting** (`_PANEL_DEFAULTS` × the scale
+ratio, `roundTo4`), so `_PANEL_DEFAULTS` is the single source of truth and the values below are only
+its 14px-base defaults. As of 2026-07-29: `PREVIEW_MIN_W` **320** (it fell from 444 precisely because
+two combo buttons are far narrower than two 3-button groups), `PREVIEW_IMG_MIN_H` **188**. (The `save` *row*
 became the `Save` *section* in §12's inline-sections dispatch; its position in this order didn't
 change. Any older note here about popover geometry is void — **settings** are never a popover on this
 track any more. The overlay mechanism itself did return on 2026-07-29, for anchored ⚙ menus and option
@@ -644,9 +672,13 @@ already letterboxes each image into whatever box it's given, so a non-square nod
 **The Generator's panel is untouched — it still scrolls.**
 
 Removing the scroll means the floor has to be honest, which is where the **min height** comes from:
-`PREVIEW_PANEL_MIN_H` (400px) is sized so the Save section fully *expanded* + the compare row +
-`PREVIEW_IMG_MIN_H` all fit with no scrollbar, and `PREVIEW_MIN_H` (480px) adds the title bar and
-the two socket rows on top. `clampPreviewSize` clamps **both** axes, and the Preview's
+`PREVIEW_PANEL_MIN_H` is sized so the Save row + the Compare card + `PREVIEW_IMG_MIN_H` all fit with no
+scrollbar, and `PREVIEW_MIN_H` adds the title bar and the two socket rows on top
+(`PREVIEW_PANEL_MIN_H + _PREVIEW_CHROME_ADDEND`). **14px-base defaults as of 2026-07-29: 292 and 372** —
+re-derived when the Compare card was added, since the body gained a third block. This section used to
+claim 400 and 480; both were stale, and the numbers are font-scale-derived anyway, so treat
+`_PANEL_DEFAULTS` in `render.mjs` as authoritative and these as illustrative. `clampPreviewSize` clamps
+**both** axes, and the Preview's
 `getMinHeight` reports `PREVIEW_PANEL_MIN_H` so litegraph's drag floor agrees with the clamp instead
 of contradicting it. Sizing for Save-expanded is what makes this work with **no auto-grow-on-repaint
 mechanism** — §12 deliberately deleted `refitNode`/`scheduleRefit`, and this does not bring them
@@ -1016,6 +1048,42 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
       became a key map would corrupt saved blobs. Single-word keys were deliberately left out of the
       map rather than churning dozens of already-fine labels; the fallback means a newly added field
       is never *worse* than it is today.
+
+  **Amended a third time, later on 2026-07-29 (owner, live review) — the card border now carries the
+  whole nesting signal, and affordances must not lie.**
+    - **The section body's left indent is gone.** `.wtn-an-sbody` was `padding: 3px 5px 10px 23px`, and
+      that `23px` was deliberate — its comment read "indented under the chevron so the nesting still
+      reads clearly while the panel scrolls." **Reversed:** once the body became a real bordered card
+      attached to its header, the border communicates the nesting on its own, so the indent was
+      redundant and merely ate horizontal width. Left padding now matches the other sides (`5px`), and
+      field rows align with the card's own edge.
+    - **Card borders carry NO accent at rest** — see the border's own three-round history in
+      `render.mjs` (full accent → `rgba(45,212,191,.35)` → plain `--wtn-line-soft`, identical
+      collapsed and expanded). Enabled/expanded is cued by the chevron, the switch, and the body simply
+      being visible.
+    - **Field rows are dark; the OLD look now means disabled.** The `.wtn-fld-num`/`-stepper`/`-seed`
+      rows painted `--wtn-surface-2` — *the same colour as the card containing them* — so a field read
+      as a flat label rather than something you type into. They now paint `--wtn-console` (`#0a0d12`),
+      matching what the Control Panel has always used for its own inputs, and the three
+      `.wtn-fld-disabled` variants took over `--wtn-surface-2`. The swap is the point: an editable field
+      should read as an inset well, a disabled one should recede into its card. `docs/THEME.md`'s token
+      table was corrected to match (`--wtn-surface-2` had been described as "inputs' chrome").
+      **This lives in `js/shared/fields.mjs` but affects the Anima track ONLY** — `js/controls/` does
+      not import that module (verified 2026-07-29; it takes only `field_logic.mjs`'s pure maths from
+      `shared/`), so the two tracks still carry duplicate field implementations.
+    - **The hover tint and `cursor: pointer` apply ONLY to headers that are genuinely click targets**,
+      via a `wtn-an-clickable` marker class added *at the same site the click listener is attached* —
+      that co-location is the invariant, so the two can't drift. Clickable: a **switchless** section
+      (Sampler, whose header-click is its only way to expand) and the **Save row** (its row-click opens
+      the ⚙ menu by design — "the gear is the discoverable affordance; the row-click is the forgiving
+      one"). Not clickable, therefore no tint and no pointer: every **switch-bearing** section, whose
+      header stopped being a click target in the first 2026-07-29 amendment above, and the **Compare
+      card**, which has no header listener at all.
+      > ⚠️ **Keep the hover selector at `0-2-0` and BEFORE the `.wtn-an-expanded` rule.** Both are
+      > `0-2-0` and the expanded rule wins purely on **source order** — that is what stops an expanded
+      > header tinting on hover. Writing `.wtn-an-shead.wtn-an-clickable:hover` (`0-3-0`) would beat it
+      > and silently reintroduce the tint. There is a test asserting the single-class form and the
+      > ordering; do not weaken it.
 - Nothing left on the detailer: `MAX_DETAILER_PASSES = 4` and internal-detection-with-`SEGS`-override
   are both settled (§6a).
 
