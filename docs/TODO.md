@@ -20,13 +20,10 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 | # | Item | Notes |
 |---|---|---|
-| 1 | **Bool switch never updates its own visual** | `buildBoolFieldInto` flips `field.word` but never the switch's `wtn-fld-on` class, so the switch looks stuck while the word changes. Affects every menu in Generator + Preview. Fix by making the component own its state — same defect family as the stepper's stale value. |
-| 2 | **Bool row layout: switch right, no on/off word** | The switch *is* the label; the word is redundant and is the thing that desyncs. Where the word carried real information (the `inherit_sampler_settings` description), move it into the ⓘ. |
-| 3 | **A stepper inside a ⚙ menu closes the menu and lands top-left** | Opening the option list calls `closeActiveOverlay()` (single-active-overlay), which detaches the anchor, so `getBoundingClientRect()` returns zeros and the list renders at 0,0. Needs nested overlays (a stack), not one slot. |
-| 4 | **Field labels are raw Python keys** | `mode_type` → *Mode*, `auto_tile_target` → *Auto tile*, and so on, inline and in menus. A display-name map beside the settings tree; the settings paths never change. |
-| 5 | **ⓘ position on the inherit row** | Should sit immediately right of the label, not far right — and only when the flag is on. |
-| 6 | **Preview: Save defaults to ON** | Should default **off**. Reverses `generator-design.md` §7a's "on by default, since it's the only node that saves" — record the reversal there. |
-| 7 | **Preview: a Save button for when Save is off** | Saves the best available image, preferring `final → mid → base`, through the existing filename template and output path. Needs a route: the stage images are temp files, and saving on demand happens outside a graph run. |
+| 1 | **Record this pass's reversals in `generator-design.md`** | §7a said Save is "on by default, since it's the only node in the pair that saves" — now off by default, with a Save-now button. §2/§7/§12 also want the bool-row and nested-overlay changes. The doc currently contradicts the code. |
+| 2 | **`%seed%` resolves to `0` in a Save-now filename** | No seed is wired from the frontend to the route, so the template's `%seed%` falls back — same fallback `extract_seed_from_prompt` already uses. Fine for now, wrong-looking on disk. |
+
+Everything else from the 2026-07-29 batch shipped in `cec90cd` — see Done below.
 
 ## Next
 
@@ -88,6 +85,10 @@ Shipped and green, not yet exercised against a running ComfyUI.
 | Seed as a string, text+roll row, `seed_after_generate` implemented | `717feaa` |
 | One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
+| Bool switch owns its state; word dropped, switch right-aligned; inherit ⓘ next to its label | `cec90cd` |
+| Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
+| Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
+| Preview Save defaults off, plus a **Save now** button (`POST /wtn/anima/preview/save_now`) | `cec90cd` |
 
 ## Done (confirmed by use)
 
