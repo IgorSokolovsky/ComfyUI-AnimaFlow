@@ -43,7 +43,7 @@ off, open the modal and click a result card.
 | 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
 | 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
-| 21 | The ⓘ panel's **identity header is itself a picker** — switch LoRA without leaving the panel (and the same in the Loader Panel's model info) | §1a-iv |
+| 21 | **The node's 🔍 browse picker gets the detail view too** — clicking a result opens version/description/community gallery, same component as the modal | §7c-ii |
 
 ### 0b. The ONE thing still open
 
@@ -243,33 +243,6 @@ trigger words the notes have exactly one source and the panel should not imply o
 **The `↻ Civitai` footer button is the thing §7b's "Civitai lookup button" setting hides.** With that
 setting off, this button does not render and the panel is fully offline — which is what makes offline a
 posture rather than a failure.
-
-### 1a-iv. The ⓘ panel can SWITCH which LoRA it is showing (owner, 2026-07-29)
-
-**The identity header is a picker.** Click the title/filename and the same searchable, subfolder-grouped
-dropdown opens — so you can read one LoRA's trigger words and notes, then look at another, without
-closing the panel, changing the row, and reopening ⓘ. That is the actual workflow when *choosing* between
-candidates, and today it costs three interactions per comparison.
-
-**Applies equally to the Loader Panel's model info** (M3), for checkpoints/UNET.
-
-**Switching sets the row** — it is not a preview-only browser. Two different meanings for "select" in one
-node would be a trap: you would never know whether what you were looking at was what the graph would run.
-One selection, one meaning.
-
-⚠️ **The subtle part: what happens to the trigger words you had picked.** They live on the row
-(`triggers[]`), and the new LoRA's candidate list is different. The rule:
-
-- **Words you authored yourself SURVIVE the switch.** They are yours, not the file's — the same principle
-  that gives them an `✕` and denies one to derived words (§1a-i).
-- **Derived picks (file / Civitai) are dropped** unless the new LoRA offers the same word, in which case it
-  stays selected. Carrying a word the new file has never heard of into `triggers` would be exactly the
-  false claim §1b's provenance rule exists to prevent.
-- The source pill re-resolves (a sidecar may exist for one LoRA and not the other), and the notes section
-  reloads or empties.
-
-State that in the UI when it happens rather than silently editing the user's picks — dropping selections
-without a word is the kind of quiet data loss that erodes trust in a panel.
 
 ### 1b. Two pieces of its Python worth copying for the reasoning, not just the code
 
@@ -574,6 +547,25 @@ has no other kind of chip.
 They are a browsing preference, not node behaviour, and per §7b that is the boundary. It also means the
 picker and the modal open with the same remembered filters, which is the behaviour you want: it is one
 browser with three mounts, not three browsers.
+
+### 7c-ii. The node's 🔍 picker ALSO gets the detail view (owner, 2026-07-29)
+
+Clicking a result in the **node's** browse picker opens the **same detail** the modal shows: version
+selector, author's description, and the **community gallery with the prompt on hover**. It is the same
+component, not a reduced sibling — a search result is nearly useless without being able to see what the
+thing actually produces before committing a download.
+
+Two differences, both following from the picker/browser split (§7c):
+
+- **Layout is a swap, not a side-by-side.** The panel is ~340px, so the detail replaces the picker's
+  contents with a `←` back to results, and the gallery drops to 1–2 columns. The modal has room to keep
+  its filter rail visible; the picker does not, and forcing a rail in would leave nothing for the images.
+- **The primary action is "download AND use in this row"**, not just download. The picker was opened *by*
+  a row, so its whole purpose is returning a value — a detail that only downloaded would dump the user
+  back to the results to select the thing they had just fetched.
+
+Everything else — version selection, NSFW blur-with-reveal, `textContent` for prompts, lazy thumbnails —
+is identical, and so is the code path. **One detail component, parameterised by its primary action.**
 
 ### The modal
 
