@@ -38,9 +38,27 @@ node plus 445 lines of pure helpers.
 - **Per row:** searchable name picker (grouped by subfolder; typing searches *flat* across every
   LoRA), on/off, model + clip strength with ▲▼ steppers, an ⓘ button, and a right-click menu —
   **↑ / ↓ / Duplicate / Remove**.
-- **Missing files** get a red `⚠` and a red name, re-checked on `R` (Refresh Node Definitions) **and
-  on WebSocket reconnect** — the same moments native combos refresh — repainting every LoRA node,
-  including ones inside subgraphs.
+- **Missing files** turn the **whole name field red**, border included — re-checked on `R` (Refresh
+  Node Definitions) **and on WebSocket reconnect** — the same moments native combos refresh —
+  repainting every LoRA node, including ones inside subgraphs.
+
+### 1a-ii. The header strip and row layout — corrected from a reference shot (2026-07-29)
+
+Another case where reading the source under-described the UI. The corrected target is in the mockup:
+
+- **A master all/none switch with an `N / M on` counter**, on a strip under a prominent full-width
+  `＋ Add LoRA`, with the ⚙ at its right. The switch reads **on only when EVERY row is on**; a mixed
+  state shows it **off** with the count carrying the truth (`2 / 3 on`). Clicking it when mixed *or*
+  all-off turns **everything on** — the action you almost always want — and only turns everything off
+  when everything already is. Without the counter, mixed would be indistinguishable from all-off, which
+  is exactly why the count sits beside the switch rather than in a tooltip.
+- **The row's on/off switch is on the RIGHT**, after the ⓘ — not leading the row. Order:
+  **name ▾ · strength ▲▼ · ⓘ · switch**.
+- **An off row is visibly dimmed** (name, strength, ⓘ recede) so a glance says what is actually
+  contributing, with no need to read switch positions.
+
+House-theme note: upstream's accent is red/orange, ours is teal (`THEME.md`). The mockup is teal
+deliberately — only the *layout* is being copied, not the palette.
 - **⚙ settings:** default strength, *"Show two strengths per row"* (collapse model/clip to one),
   trigger-words separator, **"LoRA memory use"** (`last` / `all` / `none`), and *"Set as default"*.
 - **ⓘ panel:** trigger words read **straight from the safetensors metadata** (works offline); tick
