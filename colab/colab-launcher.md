@@ -1,16 +1,37 @@
-# =============================================================================
-# ComfyUI · Colab launcher — reference cells
-# -----------------------------------------------------------------------------
-# Mirror of playground/colab-launcher.html, as real Colab cells.
-# Paste each block into its own Colab cell (markers below).
-# All state lives in {GDRIVE_BASE}/launcher_config.json and persists across runtimes.
-# Every cell carries `#@title ... { display-mode: "form" }`, so Colab renders each
-# one as a titled form with its code hidden — no manual ⋮ → Form → Hide code step.
-# `#@title` must be the cell's FIRST line for that to work.
-# =============================================================================
+# ComfyUI · Colab launcher
 
+> **Generated** from [`colab_launcher_cells.py`](colab_launcher_cells.py) by [`build_colab_md.py`](build_colab_md.py) — edit the `.py`, then re-run `python colab/build_colab_md.py`. Don't hand-edit this file.
 
-# ============================== CELL 1 — Drive mount =========================
+Mirror of colab/colab-launcher.html, as real Colab cells.
+Paste each block into its own Colab cell (markers below).
+All state lives in {GDRIVE_BASE}/launcher_config.json and persists across runtimes.
+Every cell carries `#@title ... { display-mode: "form" }`, so Colab renders each
+one as a titled form with its code hidden — no manual ⋮ → Form → Hide code step.
+`#@title` must be the cell's FIRST line for that to work.
+
+## 👉 Just want to run it? Open [`ComfyUI Launcher.ipynb`](ComfyUI%20Launcher.ipynb)
+
+[`ComfyUI Launcher.ipynb`](ComfyUI%20Launcher.ipynb) is the **ready-to-use notebook** — the same three cells, already assembled. Download it and use *File → Upload notebook* in Colab (or open it from Drive), then run the cells top to bottom. It ships with **no saved outputs and no credentials**: the token field is blank and you fill it in yourself.
+
+> **Re-exporting it?** Colab saves the ipywidgets state, your Google account name and id, and every cell's output into the `.ipynb`. A token typed into a form field lands in that saved state. **Clear all outputs and strip `metadata.widgets` before committing** — the first export of this notebook carried a live tunnel token.
+
+The blocks below are the same cells, for reading or copying piecemeal.
+
+## Cells at a glance
+
+| # | Cell | Contains |
+|---|---|---|
+| 1 | [Drive mount](#cell-1) | — |
+| 2 | [Backend](#cell-2) | defaults (seed for launcher_config.json on first run), config load / merge / save, shell helper: stream a command's output to a log callback, 01 Environment, 02 Node packs, 03 Extra pip, 04 Models, 05 Launch & tunnel, 06 Server log |
+| 3 | [Control panel](#cell-3) | 01 Environment, 02 Node packs, 03 Extra pip, 04 Models, 05 Launch & tunnel, 06 Server log, 07 Config, assemble |
+
+**Paste each cell below into its own Colab cell, in order.** They are not interchangeable: later cells use names earlier ones define, and cells shown as one block must stay one block.
+
+<a id="cell-1"></a>
+
+## Cell 1 — Drive mount
+
+```python
 #@title 🔧 Drive Mount (run once) { display-mode: "form" }
 # (Run-once cell. Needs Google auth, so it stays outside the panel.)
 # `#@title` must be the cell's FIRST line for Colab to render it as a form —
@@ -35,9 +56,25 @@ for f in REQUIRED_FOLDERS:
     os.makedirs(os.path.join(GDRIVE_BASE, f), exist_ok=True)
 
 print("Drive folders ready.")
+```
 
+<a id="cell-2"></a>
 
-# ============================== CELL 2 — Backend =============================
+## Cell 2 — Backend
+
+Sections inside this cell:
+
+- `defaults (seed for launcher_config.json on first run)`
+- `config load / merge / save`
+- `shell helper: stream a command's output to a log callback`
+- `01 Environment`
+- `02 Node packs`
+- `03 Extra pip`
+- `04 Models`
+- `05 Launch & tunnel`
+- `06 Server log`
+
+```python
 #@title 🔧 Launcher backend (run once) { display-mode: "form" }
 import os, sys, json, copy, shutil, subprocess, time, signal, socket
 
@@ -669,9 +706,24 @@ def tail_log(n=40):
         return "".join(f.readlines()[-n:]) or "(empty)"
 
 print("Backend ready. Run the control panel cell below. ⬇️")
+```
 
+<a id="cell-3"></a>
 
-# ============================== CELL 3 — Control panel =======================
+## Cell 3 — Control panel
+
+Sections inside this cell:
+
+- `01 Environment`
+- `02 Node packs`
+- `03 Extra pip`
+- `04 Models`
+- `05 Launch & tunnel`
+- `06 Server log`
+- `07 Config`
+- `assemble`
+
+```python
 #@title 🎛️ ComfyUI Control Panel { display-mode: "form" }
 import ipywidgets as widgets
 from IPython.display import display
@@ -1234,3 +1286,4 @@ display(widgets.HTML(CSS),
         widgets.HTML("<h2 style='margin:6px 0;font-family:ui-monospace,Menlo,monospace;"
                      "font-weight:650;color:#e7ecf3'>🎛️ ComfyUI · Colab Control</h2>"),
         status_html, panel)
+```

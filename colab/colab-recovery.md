@@ -1,6 +1,6 @@
 # ComfyUI · Colab recovery
 
-> **Generated** from [`colab_recovery_cells.py`](colab_recovery_cells.py) by [`build_colab_md.py`](build_colab_md.py) — edit the `.py`, then re-run `python playground/build_colab_md.py`. Don't hand-edit this file.
+> **Generated** from [`colab_recovery_cells.py`](colab_recovery_cells.py) by [`build_colab_md.py`](build_colab_md.py) — edit the `.py`, then re-run `python colab/build_colab_md.py`. Don't hand-edit this file.
 
 ComfyUI · Colab launcher — recovery cells
 Standalone companions to colab_launcher_cells.py, for when the panel is gone or

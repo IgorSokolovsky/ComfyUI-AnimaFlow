@@ -7,7 +7,7 @@ that already exists twice (`colab_launcher_cells.py` and the
 someone edits a cell — so this reads the `.py` and emits the `.md`, and the
 `.py` stays the single source of truth. Re-run it after touching a cell:
 
-    python playground/build_colab_md.py
+    python colab/build_colab_md.py
 
 It splits on the source's own markers and needs no metadata beyond them:
 
@@ -36,8 +36,14 @@ CELL_RE = re.compile(r"^#\s*=+\s*CELL\s+([A-Za-z0-9]+)\s*[-—–]\s*(.+?)\s*=+\
 SECTION_RE = re.compile(r"^#\s*-{4,}\s*(.+?)\s*-{4,}\s*$")
 
 SOURCES = [
-    ("colab_launcher_cells.py", "colab-launcher.md", "ComfyUI · Colab launcher"),
-    ("colab_recovery_cells.py", "colab-recovery.md", "ComfyUI · Colab recovery"),
+    # (source cells, generated markdown, title, ready-to-run notebook or None)
+    (
+        "colab_launcher_cells.py",
+        "colab-launcher.md",
+        "ComfyUI · Colab launcher",
+        "ComfyUI Launcher.ipynb",
+    ),
+    ("colab_recovery_cells.py", "colab-recovery.md", "ComfyUI · Colab recovery", None),
 ]
 
 
@@ -74,7 +80,13 @@ def trim(body: list[str]) -> list[str]:
     return body[start:end]
 
 
-def render(title: str, source_name: str, preamble: list[str], cells: list[dict]) -> str:
+def render(
+    title: str,
+    source_name: str,
+    preamble: list[str],
+    cells: list[dict],
+    notebook: str | None = None,
+) -> str:
     intro = [ln.lstrip("#").strip() for ln in preamble if ln.startswith("#")]
     intro = [ln for ln in intro if ln and not set(ln) <= {"=", "-"}]
     # The source's banner repeats the title as its first comment line; the H1
@@ -86,11 +98,32 @@ def render(title: str, source_name: str, preamble: list[str], cells: list[dict])
     out.append(
         f"> **Generated** from [`{source_name}`]({source_name}) by "
         "[`build_colab_md.py`](build_colab_md.py) — edit the `.py`, then re-run "
-        "`python playground/build_colab_md.py`. Don't hand-edit this file."
+        "`python colab/build_colab_md.py`. Don't hand-edit this file."
     )
     out.append("")
     if intro:
         out.extend(intro[1:] if intro and intro[0] == title.split(" · ")[-1] else intro)
+        out.append("")
+
+    if notebook:
+        quoted = notebook.replace(" ", "%20")
+        out.append(f"## 👉 Just want to run it? Open [`{notebook}`]({quoted})")
+        out.append("")
+        out.append(
+            f"[`{notebook}`]({quoted}) is the **ready-to-use notebook** — the same three cells, "
+            "already assembled. Download it and use *File → Upload notebook* in Colab (or open it "
+            "from Drive), then run the cells top to bottom. It ships with **no saved outputs and no "
+            "credentials**: the token field is blank and you fill it in yourself."
+        )
+        out.append("")
+        out.append(
+            "> **Re-exporting it?** Colab saves the ipywidgets state, your Google account name and "
+            "id, and every cell's output into the `.ipynb`. A token typed into a form field lands "
+            "in that saved state. **Clear all outputs and strip `metadata.widgets` before "
+            "committing** — the first export of this notebook carried a live tunnel token."
+        )
+        out.append("")
+        out.append("The blocks below are the same cells, for reading or copying piecemeal.")
         out.append("")
 
     out.append("## Cells at a glance")
@@ -129,7 +162,7 @@ def render(title: str, source_name: str, preamble: list[str], cells: list[dict])
 
 def main() -> int:
     written = 0
-    for source_name, target_name, title in SOURCES:
+    for source_name, target_name, title, notebook in SOURCES:
         source = HERE / source_name
         if not source.exists():
             print(f"skip {source_name} (not present)")
@@ -138,8 +171,10 @@ def main() -> int:
         if not cells:
             print(f"WARNING: no `# ==== CELL n - title ====` markers found in {source_name}")
             continue
+        # Only advertise the ready-to-run notebook if it's actually next to us.
+        ready = notebook if notebook and (HERE / notebook).exists() else None
         (HERE / target_name).write_text(
-            render(title, source_name, preamble, cells), encoding="utf-8"
+            render(title, source_name, preamble, cells, ready), encoding="utf-8"
         )
         inner = sum(len(c["sections"]) for c in cells)
         print(f"wrote {target_name}: {len(cells)} cells, {inner} sections")

@@ -55,12 +55,15 @@ If you run ComfyUI on Colab rather than locally, the repo ships a **launcher con
 ipywidgets UI that replaces the usual stack of setup cells with one form: pick node packs, install
 deps, download models, start the server, and watch the live log.
 
-**→ [`playground/colab-launcher.md`](playground/colab-launcher.md)** — the cells to copy, one code
-block each, with a map of what's inside them. Start here.
+**→ [`colab/ComfyUI Launcher.ipynb`](colab/ComfyUI%20Launcher.ipynb)** — the **ready-to-use
+notebook**. Download it, *File → Upload notebook* in Colab, run top to bottom. It ships with no
+saved outputs and no credentials.
 
-Also: [`playground/colab-recovery.md`](playground/colab-recovery.md) for when a tunnel or port is
-stuck after a runtime dies, and [`playground/colab-launcher.html`](playground/colab-launcher.html),
-a static preview of the panel you can open in a browser before running anything.
+Prefer to copy the cells yourself? [`colab/colab-launcher.md`](colab/colab-launcher.md) has them one
+block at a time with a map of what's inside each. Also
+[`colab/colab-recovery.md`](colab/colab-recovery.md) for when a tunnel or port is stuck after a
+runtime dies, and [`colab/colab-launcher.html`](colab/colab-launcher.html), a static preview of the
+panel you can open in a browser before running anything.
 
 **Setup** — copy each of the three blocks into its own Colab cell, in order:
 
@@ -74,8 +77,8 @@ Each cell carries a `#@title … { display-mode: "form" }` line, so Colab shows 
 with the code hidden — no manual *Form view* step. Keep the cells in order and whole: cell 3 uses
 names cell 2 defines.
 
-<sub>The markdown is generated from [`playground/colab_launcher_cells.py`](playground/colab_launcher_cells.py)
-by [`build_colab_md.py`](playground/build_colab_md.py) — edit the `.py` if you're changing the launcher.</sub>
+<sub>The markdown is generated from [`colab/colab_launcher_cells.py`](colab/colab_launcher_cells.py)
+by [`build_colab_md.py`](colab/build_colab_md.py) — edit the `.py` if you're changing the launcher.</sub>
 
 **What the panel gives you:** environment setup (clone/symlink ComfyUI against Drive) · node-pack
 checklist with add-your-own-repo · extra pip packages · model downloader with present/missing
@@ -89,7 +92,7 @@ detection · launch + [pinggy](https://pinggy.io) tunnel for a public URL · liv
 
 > [!NOTE]
 > The launcher is **general-purpose ComfyUI-on-Colab tooling**, not AnimaFlow-specific — it manages
-> whatever packs you list (AnimaFlow is enabled in the default list). It lives under `playground/`
+> whatever packs you list (AnimaFlow is enabled in the default list). It lives under `colab/`
 > and is offered as-is; the node pack itself does not depend on it.
 
 ---

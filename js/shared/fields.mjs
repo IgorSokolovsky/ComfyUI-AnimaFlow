@@ -20,10 +20,9 @@
  * output socket, a slot, and drag-to-reorder (that file's own top doc
  * comment). Nothing with socket/slot/output-dot bookkeeping ever moves into
  * this module; only the field-level content a row or a section body wraps
- * around. `js/controls/rows.mjs`'s PURE maths (`clampNumeric`/`rangeOf`/
- * `clampSeedString`/etc) is a separate, one-directional import INTO this
- * file (see below) — that stays as-is, it's the reused arithmetic, not a
- * DOM shape.
+ * around. This module's PURE maths import (`clampNumeric`/`rangeOf`/
+ * `decimalsOf`/`numericPercent`/`formatNumericValue`) comes from THIS
+ * file's own sibling, `./field_logic.mjs` (see below) — not from a track.
  *
  * fields.mjs — small themed field primitives shared across tracks: a pill
  * switch, an info glyph, a drag-to-set numeric row with an inline fill, and a
@@ -44,26 +43,33 @@
  * affordance both a context-supplied field (yellow, `--wtn-warn`) and a
  * section's own explanatory note (default, `--wtn-info`) now share.
  *
- * ## What's genuinely reused from `js/controls/`, and what isn't
+ * ## What's genuinely reused, and where it lives now (2026-07-29 layering fix)
  *
- * `js/controls/rows.mjs` already owns the PURE maths behind a numeric drag
- * row (`rangeOf`/`clampNumeric`/`decimalsOf`/`numericPercent`/
- * `formatNumericValue`) — this module imports those functions directly
- * rather than re-deriving them, so the drag/clamp/format behaviour is
- * byte-identical to the Control Panel's own numeric rows. That import is
- * ONE-DIRECTIONAL (`shared` -> `controls/rows.mjs`) rather than the reverse:
- * `js/controls/render.mjs`'s DOM builders (`buildRowElement`/`paintRow`) are
- * inseparable from that track's per-row `addDOMWidget`-per-row architecture
- * and its output-socket-per-row bookkeeping (see that file's own top doc
- * comment) — refactoring THAT to sit on top of this module would be a
- * behavioural change to a track this task was told not to touch ("if reuse
- * would require changing Control Panel behaviour, don't; report it
- * instead"). So the DOM/CSS below is new, built to the same visual/
- * interaction language (drag-to-set with a fill, a stepper, a pill switch)
- * but decoupled from `row`/`opts`-shaped state and litegraph output
- * dots — callers bind it to whatever value they own via plain `getValue`/
- * `setValue` callbacks. `js/controls/` is completely unmodified by this file
- * (import-only, one direction) and keeps passing its own test suites
+ * The PURE maths behind a numeric drag row (`rangeOf`/`clampNumeric`/
+ * `decimalsOf`/`numericPercent`/`formatNumericValue`) lives in
+ * `js/shared/field_logic.mjs` — this module imports those functions from
+ * there directly rather than re-deriving them, so the drag/clamp/format
+ * behaviour is byte-identical to the Control Panel's own numeric rows.
+ * `js/controls/rows.mjs` imports the SAME functions back from
+ * `field_logic.mjs` and re-exports them verbatim (so nothing in that track
+ * had to change) — this file must NEVER import from `../controls/` or
+ * `../anima/` again (`js/shared/test_field_logic.mjs`'s layering-guard test
+ * enforces this at the file-scan level, not just by convention): a shared
+ * module reaching into a track is exactly the inversion that used to sit
+ * here (`fields.mjs` importing from `../controls/rows.mjs`), and is what
+ * `field_logic.mjs` exists to fix. `js/controls/render.mjs`'s DOM builders
+ * (`buildRowElement`/`paintRow`) are inseparable from that track's per-row
+ * `addDOMWidget`-per-row architecture and its output-socket-per-row
+ * bookkeeping (see that file's own top doc comment) — refactoring THAT to
+ * sit on top of this module would be a behavioural change to a track this
+ * task was told not to touch ("if reuse would require changing Control Panel
+ * behaviour, don't; report it instead"). So the DOM/CSS below is new, built
+ * to the same visual/interaction language (drag-to-set with a fill, a
+ * stepper, a pill switch) but decoupled from `row`/`opts`-shaped Controls
+ * state and litegraph output dots — callers bind it to whatever value they
+ * own via plain `getValue`/`setValue` callbacks. `js/controls/` is
+ * completely unmodified in BEHAVIOUR by this file (its own re-export of the
+ * relocated maths is the only change) and keeps passing its own test suites
  * unchanged.
  *
  * No `node`/`app`/`LiteGraph` reference anywhere in this file — importable
@@ -151,7 +157,7 @@
  * everywhere.
  */
 
-import { rangeOf, clampNumeric, decimalsOf, numericPercent, formatNumericValue } from "../controls/rows.mjs";
+import { rangeOf, clampNumeric, decimalsOf, numericPercent, formatNumericValue } from "./field_logic.mjs";
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "./settings.mjs";
 
 const STYLE_ID = "wtn-fields-style";
