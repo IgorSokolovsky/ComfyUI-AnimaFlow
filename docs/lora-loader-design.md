@@ -47,7 +47,8 @@ off, open the modal and click a result card.
 | 22 | **EVERY per-model info surface carries `View on Civitai ↗`** — the ⓘ panel, the modal detail, and the Loader Panel's model info | §7d |
 | 23 | Row menu keeps **four of six**: `More info` · `Duplicate` · `Disable/Enable` · `Remove` (only the arrows go) | §1a-iii |
 | 24 | The four lookup states each get **icon + cause + the one useful action**; `notfound` offers **search by name** and explains the hash | §7e |
-| 25 | Picker: root group labelled **`All`**, subfolders their own; **current LoRA accent-coloured**; names **ellipsis-truncated**, never wrapped | §1a-v |
+| 25 | Picker: root group **`All`**, subfolders their own; **current LoRA accented**; **ellipsis-truncated**; small **local-preview thumbnail** + size/base-model line | §1a-v |
+| 26 | Category: **subfolder grouping by default**, optional **group-by-Civitai-`tags`** (our parser must KEEP tags — upstream drops them); **never guess a category** | §1a-vi |
 
 ### 0b. The ONE thing still open
 
@@ -133,6 +134,50 @@ Four details a source read did not give me:
 - The search field lives **inside** the panel at the top, with a magnifier glyph, and takes focus on
   open. Typing searches **flat across every LoRA**, so the group headers collapse away while filtering
   (they only mean anything in the unfiltered tree).
+
+### 1a-vi. Can we know a LoRA's CATEGORY? Yes — from exactly one place (investigated 2026-07-29)
+
+Asked by the owner, and worth answering precisely because the obvious assumption (it's in the file) is
+wrong.
+
+**The file's own safetensors metadata has NO category field.** What it does carry, all readable offline:
+
+| available in the file | key |
+|---|---|
+| base-model family | `modelspec.architecture`, `ss_base_model_version`, `ss_sd_model_name` |
+| network type (LoRA / LyCORIS …) | `ss_network_module` |
+| rank / alpha | `ss_network_dim`, `ss_network_alpha` |
+| training-image count, date | `ss_num_train_images`, `modelspec.date` |
+| trigger phrase | `modelspec.trigger_phrase`, `ss_trigger_words` |
+| **training tag frequencies** | `ss_tag_frequency` |
+
+No `category`. Nothing standard says "this is a character LoRA".
+
+**A real category exists on Civitai, as the model's `tags`** — `character`, `style`, `concept`,
+`clothing`, `poses`, and so on. Two things to know:
+
+- ⚠️ **Upstream's parser discards them.** `parse_civitai_modelversion` keeps
+  `{name, type, base_model, triggers, thumbnail, model_id, version_id}` — and its `type` is the *model
+  type* (LoRA / LyCORIS / Checkpoint), **not** a category. **Our parser must keep `tags`.**
+- The **raw** Civitai response is already cached in the `<base>.civitai.info` sidecar, so tags can be
+  extracted for anything already looked up — **no re-fetch, and no network** once the sidecar exists.
+
+So, honestly:
+
+| source | coverage | needs network? |
+|---|---|---|
+| **subfolder** (`loras/character/…`) | only if the user organises that way — but many do | no |
+| **Civitai `tags`** | only after a successful hash lookup; absent for local, merged, re-saved or unpublished LoRAs | once, then cached |
+| ~~`ss_tag_frequency` heuristics~~ | **rejected** — see below | no |
+
+**Decision: group by subfolder by DEFAULT, offer "group by category" when tags are known, and show a
+category chip on an entry that has one.** Subfolder is the only grouping that always works and needs
+nothing; category is strictly better when present, so it is an option rather than the default.
+
+**Explicitly rejected: guessing a category from `ss_tag_frequency`.** A LoRA whose top training tags are a
+character name is *probably* a character LoRA — and "probably" is the problem. A wrong category is worse
+than none, because a user filtering by it would silently not see LoRAs that are actually there. **Never
+invent a category; show nothing when we don't know.** (`no preview` sets the same precedent, §1a-v.)
 
 ### 1a-iii. Reordering is DRAG; the menu keeps four of its six items (owner, 2026-07-29)
 

@@ -273,11 +273,16 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
             color:var(--ink);padding:6px 8px 6px 24px;border-radius:6px;font-size:12px">
         </div>
 
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0 4px">
+          <span style="font:10px var(--mono);color:var(--ink-faint)">GROUP BY</span>
+          <span class="seg seg-act"><button class="on">folder</button><button title="only for LoRAs with a Civitai sidecar">category</button></span>
+        </div>
         <div class="pgrp">All</div>
         <div class="sr pk" onclick="pickName('Character_DesignV2.safetensors')">
           <div class="pkthumb">img</div>
           <div class="meta"><div class="t">Character_DesignV2.safetensors</div>
-            <div class="s">144 MB · SDXL</div></div>
+            <div class="s">144 MB · SDXL <span class="badge" style="color:var(--accent-deep);
+              border-color:var(--accent-deep);font-size:8.5px">character</span></div></div>
         </div>
         <div class="sr pk" onclick="pickName('Hyperrealistic_Anima.safetensors')">
           <div class="pkthumb">img</div>
@@ -293,7 +298,7 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
         <div class="sr pk" onclick="pickName('anima-turbo-lora-v0.2.safetensors')">
           <div class="pkthumb" style="color:var(--ink-faint);font-size:14px">◌</div>
           <div class="meta"><div class="t">anima-turbo-lora-v0.2.safetensors</div>
-            <div class="s">no preview · unknown</div></div>
+            <div class="s">no preview · unknown · <i>no category</i></div></div>
         </div>
 
         <div class="pgrp">detail/</div>
@@ -304,7 +309,7 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
         </div>
 
         <div class="hint" style="margin:8px 0 0">
-          Thumbnails come from the preview file next to each LoRA — no network needed.
+          Thumbnails come from the preview file next to each LoRA — no network needed. Category comes from Civitai <code>tags</code> when a sidecar exists; never guessed.
           Typing searches <i>every</i> LoRA, flat.
         </div>
       </div>
