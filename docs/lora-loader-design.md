@@ -148,7 +148,13 @@ The four features a source read did not surface, all worth keeping:
 
    Implementation note: a custom word is arbitrary user text, so write it with `textContent`, never
    `innerHTML`.
-2. **`all` / `none` quick-select** beside the section label.
+2. **`all` / `none` quick-select** beside the section label, as a **segmented button group** (owner,
+   2026-07-29) rather than the text links upstream uses — it matches the pack's own segment vocabulary
+   (`js/shared/fields.mjs`), and two adjacent bare links read as navigation.
+   ⚠️ **It is an ACTION segment, not a mode segment**: neither button ever latches "on". Every other
+   segment in this pack (memory mode, base model, sort, period) represents a *current selection* and
+   keeps one button lit; this one fires and returns. Style it momentary — accent on `:active` only —
+   or it will look like a state that has stopped responding.
 3. **A source pill** (`from file` / `from Civitai`) rather than a segmented toggle — it states where the
    candidate words came from and switches the view, while *selections* survive the switch.
 4. **The provenance rule is stated in the UI**: *"Tap the ones you want. Only these, and only if the

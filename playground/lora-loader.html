@@ -108,6 +108,11 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
 .seg button:first-child{border-radius:5px 0 0 5px}
 .seg button:last-child{border-radius:0 5px 5px 0;border-right:1px solid var(--line-soft)}
 .seg button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+/* ACTION segment (all/none): momentary, never retains a selected state, so it
+   flashes the accent on press instead of latching. Smaller than a mode segment. */
+.seg-act button{padding:2px 7px;font-size:10.5px}
+.seg-act button:hover{color:var(--ink);border-color:var(--accent-deep)}
+.seg-act button:active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .hint{color:var(--ink-faint);font-size:11px;margin:-2px 0 9px}
 
 /* chips (trigger words) */
@@ -254,8 +259,10 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
         <!-- trigger words -->
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
           <span style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent)">TRIGGER WORDS</span>
-          <a href="#" onclick="allNone(1);return false" style="font-size:11px;color:var(--ink-dim);text-decoration:none">all</a>
-          <a href="#" onclick="allNone(0);return false" style="font-size:11px;color:var(--ink-dim);text-decoration:none">none</a>
+          <!-- ACTION pair styled as a segment: neither button ever stays "on" -->
+          <span class="seg seg-act">
+            <button onclick="allNone(1)">all</button><button onclick="allNone(0)">none</button>
+          </span>
           <span class="badge" style="margin-left:auto;cursor:pointer" onclick="this.textContent = this.textContent.trim()==='from file' ? 'from Civitai' : 'from file'">from file</span>
         </div>
         <div class="hint" style="margin-bottom:7px">
