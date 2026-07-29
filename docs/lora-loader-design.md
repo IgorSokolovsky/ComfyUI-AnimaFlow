@@ -235,8 +235,34 @@ via `addDOMWidget` is the only real height lock.
 
 ## 7. The shared Civitai browser
 
-A `.mjs` library plus its aiohttp routes, consumed by **both** this node and `AnimaLoaderPanel`. Not
-a LoRA feature — that is the whole point of item 4 in §2.
+**Ships under THIS node (owner, 2026-07-29 — see §9).** The Loader Panel reuses it afterwards, scoped
+to **checkpoints/models and UNET only** for that first reuse pass.
+
+A `.mjs` library plus its aiohttp routes. Not a LoRA feature — that is the whole point of item 4 in §2.
+
+### 7a. Parameterise by KIND on day one, wire only `loras`
+
+Shipping under one node while planning reuse has exactly one trap: building the library
+LoRA-shaped and refactoring later. **Don't.** Take a `kind` from the start — `loras`,
+`checkpoints`, `unet` — and wire only `loras` in this milestone. Cheap now, expensive to retrofit,
+because *every* layer varies by kind:
+
+| varies by kind | why |
+|---|---|
+| the ComfyUI folder key | `folder_paths.get_full_path("loras" \| "checkpoints" \| "diffusion_models", …)` — not the same string, and `unet`/`diffusion_models` has changed name across versions |
+| the download destination | `models/loras/` vs `models/checkpoints/` vs `models/unet/` |
+| sidecar location | `<base>.civitai.info` sits next to the file, so it follows the folder |
+| the Civitai `type` filter | the search request must ask for LoRA vs Checkpoint |
+| plausible file size | a LoRA is tens of MB, a checkpoint is single-digit GB — progress UI, timeouts and disk-space checks all differ in scale |
+
+> 🔒 **The `kind` must be validated against a whitelist server-side, never used raw.** These routes
+> resolve paths and (for download) **write files**, so a client-supplied folder key is a directory
+> traversal waiting to happen. Map `kind → folder key` from a fixed dict and reject anything else,
+> and keep upstream's path-guard-to-the-known-model-dirs check on every resolve.
+
+`hasLora()`-style presence checks become `hasFile(kind, name)`. Upstream's client-side caching shape
+(`invalidateInfo` / `invalidateList` / the "unknown, not missing, before first load" rule that stops
+false ⚠ marks) generalises unchanged — just keyed by `(kind, name)`.
 
 Surface, mirroring upstream's client-side caching (`api.mjs`'s `invalidateInfo` / `invalidateList` /
 `hasLora` shape, which exists to avoid false "missing" marks before the first load):
@@ -286,10 +312,21 @@ needs settling before code, because it shapes the route design rather than decor
   detection — read it for reusable shape before starting fresh.
 - **Where files land**, and what happens on a name collision or a partial download.
 
-Also still to decide, and cheap to answer: **which lands first**, the shared browser or the LoRA node?
-Building the browser first means the Loader Panel gets the win immediately and the LoRA node consumes
-a proven library; building the node first means a usable LoRA stack sooner with the browser stubbed to
-its offline-only path (which §2b makes genuinely useful on its own, since metadata needs no key).
+### 9a. SETTLED — order of work (owner, 2026-07-29)
+
+**The node ships first, and the Civitai feature ships under it.** The Loader Panel reuses the same
+library afterwards, and that first reuse pass is scoped to **checkpoints/models and UNET only**.
+
+Consequences, all deliberate:
+
+- The library is **kind-parameterised from the first commit** but only `loras` is wired — §7a, which is
+  the one thing that must not be deferred, since retrofitting `kind` touches folder resolution, the
+  download destination, sidecar paths, the search filter and the path guard all at once.
+- **Milestone 1 can be genuinely useful with no network policy resolved at all**: rows + picker +
+  missing marks + file-derived trigger words + the hash lookup, which per §2b needs no key and caches
+  offline. Search and download can land in milestone 2 once §9's policy is settled — so the open
+  decision below **does not block starting**.
+- The Loader Panel gets nothing until milestone 3. Accepted; it already works today.
 
 ---
 

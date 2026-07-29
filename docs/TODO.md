@@ -56,8 +56,14 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 > needs **no API key** (hash-based, public endpoint — §2b), this is **not** a layer-3 socket-rows
 > consumer so that deferral stands untouched (§5), and it lands in `AnimaFlow/Controls` / `js/controls/`
 > at **zero cost** to the 5-auto-loaded-`.js` ceiling (§4a). **One decision is genuinely open: the
-> outbound-network policy** (§9) — plus the cheap question of whether the shared browser or the node
-> ships first.
+> outbound-network policy** (§9) — and it does **not block starting**, because milestone 1 needs no
+> network at all.
+>
+> **Order settled (owner, 2026-07-29): the node ships FIRST**, with the Civitai feature under it; the
+> Loader Panel reuses the same library afterwards, scoped to checkpoints/models + UNET. The library is
+> **kind-parameterised from the first commit** (§7a) — that is the one thing not to defer, since
+> retrofitting `kind` touches folder resolution, download destination, sidecar paths, the search filter
+> and the path guard together.
 
 Wanted: an AnimaFlow LoRA loader, taking Pixaroma's as the starting point because it's the one the
 owner actually likes, and **carrying whatever it's missing** — plus spilling some of its capabilities
