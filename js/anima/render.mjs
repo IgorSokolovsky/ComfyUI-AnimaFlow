@@ -448,6 +448,18 @@ function buildCss() {
    \`expanded\` -- purely a hook, no rules of its own. ── */
 .wtn-an-shead.wtn-an-menurow { cursor: pointer; }
 
+/* ── "Save now" (task item 6) -- rendered only while save.enabled is off
+   (interaction.mjs's buildSaveNowRow); \`.wtn-btn\`/\`.wtn-btn--primary\` are
+   the house button classes theme.css already defines (js/shared/theme.mjs's
+   own \`injectTheme\`), so this row needs no button styling of its own, just
+   layout + the status readout beside it. \`.wtn-an-savenow-err\` swaps the
+   status text to the theme's bad/error token for a readable failure instead
+   of a silently-blank one. ── */
+.wtn-an-savenow { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+.wtn-an-savenow-status { font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.wtn-an-savenow-status.wtn-an-savenow-err { color: var(--wtn-bad, ${TOKENS.bad}); }
+
 /* ── the overlay WRAPPER itself (\`js/shared/overlay.mjs\`'s \`openOverlay\`
    appends this, \`interaction.mjs\`'s \`openOverlayForCtx\` passes this class
    name) -- mirrors \`js/controls/render.mjs\`'s own \`.wtn-ctl-overlay\` rule.

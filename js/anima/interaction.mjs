@@ -133,7 +133,7 @@ import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mj
 // overlay is ever open across the whole page regardless of which track owns
 // the click that opened it.
 import {
-  openOverlayWithZoom, closeActiveOverlay, closeOverlayIfOwnedBy, activeOverlayRef,
+  openOverlayWithZoom, closeActiveOverlay, closeOverlayIfOwnedBy, closeOverlaysNotAncestorOf, activeOverlayRef,
 } from "../shared/overlay.mjs";
 // `getComboOptions` -- reused, not reimplemented, from the Controls track
 // (`js/shared/fields.mjs` already imports OTHER pure helpers from this same
@@ -166,6 +166,7 @@ import {
   randomSeedString,
   applyAfterGenerate,
   AFTER_MODES,
+  fieldLabel,
 } from "./state.mjs";
 
 import {
@@ -1309,17 +1310,26 @@ function openAdvancedMenu(doc, ctx, key, anchorEl, sumEl, buildBody) {
  * `openListMenuFor` -- same toggle/singleton bookkeeping, generalized to a
  * plain `options` array instead of `ctx.getKnownLists()`.
  *
- * **Nesting note**: opening this from a stepper that lives INSIDE an
- * already-open ⚙ menu closes that menu first (only one overlay is ever
- * open pack-wide, `activeOverlayRef`'s own contract) -- accepted, not
- * fixed here; the option list still opens and commits correctly, the ⚙
- * menu just needs a second click to reopen afterward.
+ * **Nesting fix (task item 3, was a bug)**: a stepper living INSIDE an
+ * already-open ⚙ menu used to have its OWN option list close that parent
+ * menu first (`closeActiveOverlay()` closed whatever was active, including
+ * the parent whose own content this field lives in) -- the actual bug
+ * report ("closes the menu and opens at the screen's top-left": the
+ * anchor's `getBoundingClientRect()` came back zeros because the parent
+ * menu, and the anchor along with it, had just been detached from the
+ * document). Fixed by `closeOverlaysNotAncestorOf(comboEl)`
+ * (`js/shared/overlay.mjs`): it only closes overlays that DON'T already
+ * contain `comboEl` -- so the parent ⚙ menu (which does contain it) is
+ * left open, while a DIFFERENT stepper's own option list, open as a
+ * sibling under the same parent, still correctly closes first. Selecting
+ * an option closes ONLY this list (`closeOverlayIfOwnedBy(key)` -- this
+ * list's own key, never the parent's), for the same reason.
  */
 function openStepperOptionList(doc, ctx, key, comboEl, options, currentValue, stepperRef, onSelect) {
   if (closeOverlayIfOwnedBy(key)) {
     return;
   }
-  closeActiveOverlay();
+  closeOverlaysNotAncestorOf(comboEl);
   const menu = el(doc, "div", "wtn-an-menu wtn-an-optlist wtn");
   const list = Array.isArray(options) ? options : [];
   list.forEach((opt) => {
@@ -1327,7 +1337,7 @@ function openStepperOptionList(doc, ctx, key, comboEl, options, currentValue, st
     optEl.textContent = opt;
     optEl.addEventListener("click", (e) => {
       e.stopPropagation();
-      closeActiveOverlay();
+      closeOverlayIfOwnedBy(key);
       stepperRef.repaint(opt);
       onSelect(opt);
     });
@@ -1665,15 +1675,15 @@ function buildModGuidanceSection(doc, node, ctx, state, have) {
         onChange: (v) => { mg.profile = v; persistGenState(node); },
       }).root);
       body.appendChild(buildNumericField(doc, {
-        label: "mod_w", kind: "float", opts: { min: 0, max: 10, step: 0.1 },
+        label: fieldLabel("mod_w"), kind: "float", opts: { min: 0, max: 10, step: 0.1 },
         getValue: () => mg.mod_w, setValue: (v) => { mg.mod_w = v; },
       }, () => persistGenState(node)).root);
       body.appendChild(buildNumericField(doc, {
-        label: "mod_start_layer", kind: "int", opts: { min: 0, max: 48, step: 1 },
+        label: fieldLabel("mod_start_layer"), kind: "int", opts: { min: 0, max: 48, step: 1 },
         getValue: () => mg.mod_start_layer, setValue: (v) => { mg.mod_start_layer = v; },
       }, () => persistGenState(node)).root);
       body.appendChild(buildNumericField(doc, {
-        label: "mod_end_layer", kind: "int", opts: { min: 0, max: 48, step: 1 },
+        label: fieldLabel("mod_end_layer"), kind: "int", opts: { min: 0, max: 48, step: 1 },
         getValue: () => mg.mod_end_layer, setValue: (v) => { mg.mod_end_layer = v; },
       }, () => persistGenState(node)).root);
 
@@ -1717,20 +1727,27 @@ function appendStageSamplerAdvancedFields(doc, ctx, container, stageSettings, fi
   const inherit = stageSettings.inherit_sampler_settings !== false;
   container.appendChild(buildSublabel(doc, "sampler · this stage"));
 
-  const inheritField = buildBoolField(doc, "inherit", inherit);
-  inheritField.word.textContent = inherit ? "on · cfg/sampler/scheduler from the first pass" : "off · this stage picks its own";
+  // The ⓘ used to be a `withInfoIcon` WRAP appended after this field's own
+  // root -- which, once the switch moved to the row's right edge (task item
+  // 2), pushed the icon past it, off at the row's far end (task item 5's
+  // bug). `buildBoolField`'s own `opts.infoTooltip` renders it immediately
+  // after the label instead, in BOTH directions -- the "on"/"off" wording
+  // this row used to carry via the now-deleted on/off WORD (task item 2)
+  // moves here too, so neither direction loses information the word used
+  // to carry, it just reads from the ⓘ instead of a bare inline word.
+  const inheritTooltip = inherit
+    ? (() => {
+        const resolved = resolveStageSampler(stageSettings, firstPassSampler);
+        return `on · using cfg ${Number(resolved.cfg).toFixed(1)}, ${resolved.sampler_name} / ${resolved.scheduler} from the first pass. Steps and denoise are this stage's own, set inline.`;
+      })()
+    : "off · this stage picks its own cfg/sampler/scheduler, set below.";
+  const inheritField = buildBoolField(doc, "inherit", inherit, { infoTooltip: inheritTooltip });
   inheritField.switchEl.addEventListener("click", () => {
     stageSettings.inherit_sampler_settings = !inherit;
     onCommit();
     rebuildMenu();
   });
-  if (inherit) {
-    const resolved = resolveStageSampler(stageSettings, firstPassSampler);
-    container.appendChild(withInfoIcon(doc, inheritField.root,
-      `Using cfg ${Number(resolved.cfg).toFixed(1)}, ${resolved.sampler_name} / ${resolved.scheduler} from the first pass. Steps and denoise are this stage's own, set inline.`));
-  } else {
-    container.appendChild(inheritField.root);
-  }
+  container.appendChild(inheritField.root);
 
   if (!inherit) {
     container.appendChild(buildNumericField(doc, {
@@ -1873,7 +1890,7 @@ function buildHighresSection(doc, node, ctx, state, have) {
     onGearClick: (headerRefs) => {
       openAdvancedMenu(doc, ctx, "gen:highres:adv", headerRefs.root, headerRefs.sumEl, (box, helpers) => {
         box.appendChild(buildSublabel(doc, "highres · advanced"));
-        box.appendChild(buildAnStepper(doc, ctx, { label: "upscale_method", value: h.upscale_method, options: ["bicubic", "bilinear", "nearest-exact", "area"] }, {
+        box.appendChild(buildAnStepper(doc, ctx, { label: fieldLabel("upscale_method"), value: h.upscale_method, options: ["bicubic", "bilinear", "nearest-exact", "area"] }, {
           onChange: (v) => { h.upscale_method = v; persistGenState(node); },
         }).root);
         const multipleF = buildTextField(doc, "multiple", h.multiple);
@@ -1883,7 +1900,7 @@ function buildHighresSection(doc, node, ctx, state, have) {
         });
         box.appendChild(multipleF.root);
         box.appendChild(buildNumericField(doc, {
-          label: "max_long_edge", kind: "int", opts: { min: 512, max: 8192, step: 32 },
+          label: fieldLabel("max_long_edge"), kind: "int", opts: { min: 512, max: 8192, step: 32 },
           getValue: () => h.max_long_edge, setValue: (v) => { h.max_long_edge = v; },
         }, () => persistGenState(node)).root);
         appendStageSamplerAdvancedFields(doc, ctx, box, h, state.sampler, () => {
@@ -1896,7 +1913,7 @@ function buildHighresSection(doc, node, ctx, state, have) {
     onToggleSwitch: () => { setSwitchAndExpand(state, "highres", h); persistGenState(node); repaintGenerator(node, ctx); },
     buildBody: (body) => {
       body.appendChild(buildNumericField(doc, {
-        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
+        label: fieldLabel("scale_by"), kind: "float", opts: { min: 1, max: 4, step: 0.05 },
         getValue: () => h.scale_by, setValue: (v) => { h.scale_by = v; },
       }, () => persistGenState(node)).root);
       body.appendChild(buildNumericField(doc, {
@@ -1935,63 +1952,63 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
         const usdu = u.usdu;
         const commit = () => persistGenState(node);
         box.appendChild(buildSublabel(doc, "usdu · tiling"));
-        box.appendChild(buildBoolFieldInto(doc, "auto_tile_size", usdu, "auto_tile_size", commit));
-        box.appendChild(buildAnStepper(doc, ctx, { label: "mode_type", value: usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
+        box.appendChild(buildBoolFieldInto(doc, fieldLabel("auto_tile_size"), usdu, "auto_tile_size", commit));
+        box.appendChild(buildAnStepper(doc, ctx, { label: fieldLabel("mode_type"), value: usdu.mode_type, options: ["Linear", "Chess", "None"] }, {
           onChange: (v) => { usdu.mode_type = v; commit(); },
         }).root);
         box.appendChild(buildNumericField(doc, {
-          label: "auto_tile_target", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          label: fieldLabel("auto_tile_target"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
           getValue: () => usdu.auto_tile_target, setValue: (v) => { usdu.auto_tile_target = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "auto_tile_min", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          label: fieldLabel("auto_tile_min"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
           getValue: () => usdu.auto_tile_min, setValue: (v) => { usdu.auto_tile_min = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "auto_tile_max", kind: "int", opts: { min: 64, max: 8192, step: 32 },
+          label: fieldLabel("auto_tile_max"), kind: "int", opts: { min: 64, max: 8192, step: 32 },
           getValue: () => usdu.auto_tile_max, setValue: (v) => { usdu.auto_tile_max = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "tile_width", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          label: fieldLabel("tile_width"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
           getValue: () => usdu.tile_width, setValue: (v) => { usdu.tile_width = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "tile_height", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+          label: fieldLabel("tile_height"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
           getValue: () => usdu.tile_height, setValue: (v) => { usdu.tile_height = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "mask_blur", kind: "int", opts: { min: 0, max: 64, step: 1 },
+          label: fieldLabel("mask_blur"), kind: "int", opts: { min: 0, max: 64, step: 1 },
           getValue: () => usdu.mask_blur, setValue: (v) => { usdu.mask_blur = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "tile_padding", kind: "int", opts: { min: 0, max: 256, step: 8 },
+          label: fieldLabel("tile_padding"), kind: "int", opts: { min: 0, max: 256, step: 8 },
           getValue: () => usdu.tile_padding, setValue: (v) => { usdu.tile_padding = v; },
         }, commit).root);
-        box.appendChild(buildBoolFieldInto(doc, "force_uniform_tiles", usdu, "force_uniform_tiles", commit));
+        box.appendChild(buildBoolFieldInto(doc, fieldLabel("force_uniform_tiles"), usdu, "force_uniform_tiles", commit));
         box.appendChild(buildNumericField(doc, {
-          label: "batch_size", kind: "int", opts: { min: 1, max: 16, step: 1 },
+          label: fieldLabel("batch_size"), kind: "int", opts: { min: 1, max: 16, step: 1 },
           getValue: () => usdu.batch_size, setValue: (v) => { usdu.batch_size = v; },
         }, commit).root);
-        box.appendChild(buildBoolFieldInto(doc, "tiled_decode", usdu, "tiled_decode", commit));
+        box.appendChild(buildBoolFieldInto(doc, fieldLabel("tiled_decode"), usdu, "tiled_decode", commit));
 
         box.appendChild(buildSublabel(doc, "usdu · seam fix"));
-        box.appendChild(buildAnStepper(doc, ctx, { label: "seam_fix_mode", value: usdu.seam_fix_mode, options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }, {
+        box.appendChild(buildAnStepper(doc, ctx, { label: fieldLabel("seam_fix_mode"), value: usdu.seam_fix_mode, options: ["None", "Band Pass", "Half Tile", "Half Tile + Intersections"] }, {
           onChange: (v) => { usdu.seam_fix_mode = v; commit(); },
         }).root);
         box.appendChild(buildNumericField(doc, {
-          label: "seam_fix_denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },
+          label: fieldLabel("seam_fix_denoise"), kind: "float", opts: { min: 0, max: 1, step: 0.01 },
           getValue: () => usdu.seam_fix_denoise, setValue: (v) => { usdu.seam_fix_denoise = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "seam_fix_width", kind: "int", opts: { min: 0, max: 512, step: 8 },
+          label: fieldLabel("seam_fix_width"), kind: "int", opts: { min: 0, max: 512, step: 8 },
           getValue: () => usdu.seam_fix_width, setValue: (v) => { usdu.seam_fix_width = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "seam_fix_mask_blur", kind: "int", opts: { min: 0, max: 64, step: 1 },
+          label: fieldLabel("seam_fix_mask_blur"), kind: "int", opts: { min: 0, max: 64, step: 1 },
           getValue: () => usdu.seam_fix_mask_blur, setValue: (v) => { usdu.seam_fix_mask_blur = v; },
         }, commit).root);
         box.appendChild(buildNumericField(doc, {
-          label: "seam_fix_padding", kind: "int", opts: { min: 0, max: 256, step: 8 },
+          label: fieldLabel("seam_fix_padding"), kind: "int", opts: { min: 0, max: 256, step: 8 },
           getValue: () => usdu.seam_fix_padding, setValue: (v) => { usdu.seam_fix_padding = v; },
         }, commit).root);
 
@@ -2018,7 +2035,7 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
         () => u.usdu.upscale_model_name, (v) => { u.usdu.upscale_model_name = v; }, () => persistGenState(node),
       ));
       body.appendChild(buildNumericField(doc, {
-        label: "scale_by", kind: "float", opts: { min: 1, max: 4, step: 0.05 },
+        label: fieldLabel("scale_by"), kind: "float", opts: { min: 1, max: 4, step: 0.05 },
         getValue: () => u.scale_by, setValue: (v) => { u.scale_by = v; },
       }, () => persistGenState(node)).root);
       body.appendChild(buildNumericField(doc, {
@@ -2037,13 +2054,20 @@ function buildUpscaleSection(doc, node, ctx, state, have) {
  * a tiny shared helper for the several plain-boolean USDU/detailer/Save
  * advanced fields that don't need anything fancier than "flip and commit."
  * Returns the field's root directly (unlike `buildBoolField` itself, which
- * returns `{root, switchEl, word}`) since every call site here just wants
- * to `appendChild` it. */
+ * returns `{root, switchEl, setValue}`) since every call site here just
+ * wants to `appendChild` it.
+ *
+ * `field.setValue(obj[key])` after the flip (task item 1's actual bug fix)
+ * is what keeps the switch's own visual honest -- this call site never
+ * rebuilds the field from scratch afterward (unlike the inherit row, which
+ * rebuilds the whole ⚙ menu on every toggle), so without this the switch's
+ * `wtn-fld-on` class would freeze at whatever it was on the initial build
+ * while the underlying value kept flipping underneath it. */
 function buildBoolFieldInto(doc, label, obj, key, onCommit) {
   const field = buildBoolField(doc, label, obj[key]);
   field.switchEl.addEventListener("click", () => {
     obj[key] = !obj[key];
-    field.word.textContent = obj[key] ? "on" : "off";
+    field.setValue(obj[key]);
     onCommit();
   });
   return field.root;
@@ -2073,11 +2097,11 @@ function buildPostprocessSection(doc, node, ctx, state) {
         onChange: (v) => { fit.method = v; persistGenState(node); },
       }).root);
       body.appendChild(buildNumericField(doc, {
-        label: "max_long_edge", kind: "int", opts: { min: 256, max: 8192, step: 32 },
+        label: fieldLabel("max_long_edge"), kind: "int", opts: { min: 256, max: 8192, step: 32 },
         getValue: () => fit.max_long_edge, setValue: (v) => { fit.max_long_edge = v; },
       }, () => persistGenState(node)).root);
       body.appendChild(buildNumericField(doc, {
-        label: "max_megapixels", kind: "float", opts: { min: 0.5, max: 32, step: 0.5 },
+        label: fieldLabel("max_megapixels"), kind: "float", opts: { min: 0.5, max: 32, step: 0.5 },
         getValue: () => fit.max_megapixels, setValue: (v) => { fit.max_megapixels = v; },
       }, () => persistGenState(node)).root);
     },
@@ -2094,14 +2118,14 @@ function buildPostprocessSection(doc, node, ctx, state) {
 function buildDetailerAdvancedFields(doc, ctx, node, state, block, box, helpers) {
   const commit = () => persistGenState(node);
 
-  const detectPromptF = buildTextField(doc, "detect_prompt", block.detect_prompt);
+  const detectPromptF = buildTextField(doc, fieldLabel("detect_prompt"), block.detect_prompt);
   detectPromptF.control.addEventListener("change", () => { block.detect_prompt = detectPromptF.control.value; commit(); });
   box.appendChild(detectPromptF.root);
   const wildcardF = buildTextField(doc, "wildcard", block.wildcard);
   wildcardF.control.addEventListener("change", () => { block.wildcard = wildcardF.control.value; commit(); });
   box.appendChild(wildcardF.root);
   box.appendChild(buildNumericField(doc, {
-    label: "detect_count", kind: "int", opts: { min: 1, max: 20, step: 1 },
+    label: fieldLabel("detect_count"), kind: "int", opts: { min: 1, max: 20, step: 1 },
     getValue: () => block.detect_count, setValue: (v) => { block.detect_count = v; },
   }, commit).root);
 
@@ -2111,15 +2135,15 @@ function buildDetailerAdvancedFields(doc, ctx, node, state, block, box, helpers)
     getValue: () => block.feather, setValue: (v) => { block.feather = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
-    label: "guide_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+    label: fieldLabel("guide_size"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
     getValue: () => block.guide_size, setValue: (v) => { block.guide_size = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
-    label: "max_size", kind: "int", opts: { min: 64, max: 4096, step: 32 },
+    label: fieldLabel("max_size"), kind: "int", opts: { min: 64, max: 4096, step: 32 },
     getValue: () => block.max_size, setValue: (v) => { block.max_size = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
-    label: "crop_factor", kind: "float", opts: { min: 1, max: 10, step: 0.1 },
+    label: fieldLabel("crop_factor"), kind: "float", opts: { min: 1, max: 10, step: 0.1 },
     getValue: () => block.crop_factor, setValue: (v) => { block.crop_factor = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
@@ -2127,35 +2151,40 @@ function buildDetailerAdvancedFields(doc, ctx, node, state, block, box, helpers)
     getValue: () => block.cycle, setValue: (v) => { block.cycle = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
-    label: "refine_iterations", kind: "int", opts: { min: 1, max: 10, step: 1 },
+    label: fieldLabel("refine_iterations"), kind: "int", opts: { min: 1, max: 10, step: 1 },
     getValue: () => block.refine_iterations, setValue: (v) => { block.refine_iterations = v; },
   }, commit).root);
   box.appendChild(buildNumericField(doc, {
-    label: "drop_size", kind: "int", opts: { min: 1, max: 2000, step: 1 },
+    label: fieldLabel("drop_size"), kind: "int", opts: { min: 1, max: 2000, step: 1 },
     getValue: () => block.drop_size, setValue: (v) => { block.drop_size = v; },
   }, commit).root);
-  const guideSizeForField = buildBoolField(doc, "guide_size_for", block.guide_size_for);
+  // The ⓘ explains a CROSS-row relationship (guide_size_for + noise_mask_
+  // feather together), not just this one row's own label -- task item 5's
+  // "sits immediately right of the label" placement fix is for a row whose
+  // ⓘ explains THAT row's own label (the inherit row, above); this one
+  // keeps its existing end-of-row `withInfoIcon` wrap unchanged.
+  const guideSizeForField = buildBoolField(doc, fieldLabel("guide_size_for"), block.guide_size_for);
   guideSizeForField.switchEl.addEventListener("click", () => {
     block.guide_size_for = !block.guide_size_for;
-    guideSizeForField.word.textContent = block.guide_size_for ? "on" : "off";
+    guideSizeForField.setValue(block.guide_size_for);
     commit();
   });
   // The one warn ⓘ covers BOTH fields it names -- see this module's top doc
   // comment on the ⓘ affordance replacing a `buildNote` text block.
   box.appendChild(withInfoIcon(doc, guideSizeForField.root, "Do not \"fix\" these -- guide_size_for must be false and noise_mask_feather must not be 0.", true));
   box.appendChild(buildNumericField(doc, {
-    label: "noise_mask_feather", kind: "int", opts: { min: 1, max: 64, step: 1 },
+    label: fieldLabel("noise_mask_feather"), kind: "int", opts: { min: 1, max: 64, step: 1 },
     getValue: () => block.noise_mask_feather, setValue: (v) => { block.noise_mask_feather = v; },
   }, commit).root);
-  box.appendChild(buildBoolFieldInto(doc, "noise_mask", block, "noise_mask", commit));
-  box.appendChild(buildBoolFieldInto(doc, "force_inpaint", block, "force_inpaint", commit));
-  box.appendChild(buildBoolFieldInto(doc, "inpaint_model", block, "inpaint_model", commit));
-  box.appendChild(buildBoolFieldInto(doc, "bbox_fill", block, "bbox_fill", commit));
-  box.appendChild(buildBoolFieldInto(doc, "contour_fill", block, "contour_fill", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("noise_mask"), block, "noise_mask", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("force_inpaint"), block, "force_inpaint", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("inpaint_model"), block, "inpaint_model", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("bbox_fill"), block, "bbox_fill", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("contour_fill"), block, "contour_fill", commit));
   box.appendChild(buildBoolFieldInto(doc, "combined", block, "combined", commit));
-  box.appendChild(buildBoolFieldInto(doc, "individual_masks", block, "individual_masks", commit));
-  box.appendChild(buildBoolFieldInto(doc, "tiled_decode", block, "tiled_decode", commit));
-  box.appendChild(buildBoolFieldInto(doc, "tiled_encode", block, "tiled_encode", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("individual_masks"), block, "individual_masks", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("tiled_decode"), block, "tiled_decode", commit));
+  box.appendChild(buildBoolFieldInto(doc, fieldLabel("tiled_encode"), block, "tiled_encode", commit));
   const alignmentF = buildTextField(doc, "alignment", block.alignment);
   alignmentF.control.addEventListener("change", () => { block.alignment = alignmentF.control.value; commit(); });
   box.appendChild(alignmentF.root);
@@ -2559,6 +2588,13 @@ export function buildPreviewBody(doc, node, ctx) {
   const body = el(doc, "div", "wtn-an-body");
 
   body.appendChild(buildSaveRow(doc, node, ctx, state));
+  // "Save now" (task item 6) -- only while `save.enabled` is off (its new
+  // default): this is exactly the case the button exists for. Once saving
+  // is on, an enabled run already writes every stage on its own -- a second,
+  // redundant on-demand save button would just confuse which copy is which.
+  if (!state.save.enabled) {
+    body.appendChild(buildSaveNowRow(doc, ctx, state, previewImages));
+  }
 
   const compare = state.compare;
   const wantsDual = !!compare.enabled;
@@ -2722,6 +2758,94 @@ function buildSaveRow(doc, node, ctx, state) {
   }
 
   return head.root;
+}
+
+/**
+ * "Save now" (task item 6) -- an on-demand save for exactly the moment
+ * `preview.save.enabled` is off (its new default): the user still wants to
+ * keep THIS result without turning saving on permanently. Posts
+ * `previewImages` (`node._anPreviewImages`, `{stage: {filename, subfolder,
+ * type, ...}}` -- every stage the last run's `anima_stages` payload
+ * reported, whether or not it happened to be saved that run) plus the
+ * serialized `preview_state` to `src/anima/api.py`'s
+ * `POST /wtn/anima/preview/save_now` -- the SAME filename template + save
+ * path an enabled save would use. Every DECISION (which stage wins:
+ * `final` -> `mid` -> `base`; what the filename resolves to) is server-
+ * side, in `src/anima/preview_settings.py`'s `resolve_save_now_stage`/
+ * `format_filename` (pure, unit-tested with no ComfyUI) -- this function is
+ * JUST the fetch call + a one-line status readout, never a second copy of
+ * that logic.
+ *
+ * `ctx.fetchImpl` (optional) lets a test inject a fake instead of the real
+ * global `fetch` -- same injection convention this module's top doc comment
+ * already uses for `getCanvasEl`/`havePackages`/`getKnownLists` (the only
+ * places this whole feature reaches outside its own pure/DOM code). Falls
+ * back to the real global `fetch` when absent (every live page has one);
+ * `null` (no override, no global) renders the button but fails loudly and
+ * readably on click rather than throwing.
+ */
+function buildSaveNowRow(doc, ctx, state, previewImages) {
+  const row = el(doc, "div", "wtn-an-savenow");
+  const btn = el(doc, "button");
+  btn.type = "button";
+  btn.className = "wtn-btn wtn-btn--primary wtn-an-savenow-btn";
+  btn.textContent = "Save now";
+  const status = el(doc, "span", "wtn-an-savenow-status");
+  row.appendChild(btn);
+  row.appendChild(status);
+
+  const setStatus = (text, isError) => {
+    status.textContent = text || "";
+    if (status.classList && typeof status.classList.toggle === "function") {
+      status.classList.toggle("wtn-an-savenow-err", !!isError);
+    }
+  };
+
+  btn.addEventListener("click", () => {
+    if (btn.disabled) {
+      return;
+    }
+    const doFetch = (ctx && typeof ctx.fetchImpl === "function")
+      ? ctx.fetchImpl
+      : (typeof fetch === "function" ? fetch : null);
+    if (!doFetch) {
+      setStatus("Save now needs a live ComfyUI page (no fetch available here).", true);
+      return;
+    }
+    // Built fresh on every click (not once at row-build time) -- the stage
+    // that's best-available NOW may differ from when the row was last
+    // painted (a later run can add/replace stages without this row itself
+    // rebuilding).
+    const stages = {};
+    for (const stage of STAGE_ORDER) {
+      const entry = previewImages[stage];
+      if (entry && entry.filename) {
+        stages[stage] = { filename: entry.filename, subfolder: entry.subfolder, type: entry.type };
+      }
+    }
+    btn.disabled = true;
+    setStatus("Saving…", false);
+    Promise.resolve(doFetch("/wtn/anima/preview/save_now", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stages, preview_state: JSON.stringify(state) }),
+    }))
+      .then((res) => Promise.resolve(res.json()).then((data) => ({ ok: !!(res && res.ok), data })))
+      .then(({ data }) => {
+        btn.disabled = false;
+        if (data && data.ok) {
+          setStatus(`Saved ${data.stage} as ${data.filename}`, false);
+        } else {
+          setStatus((data && data.error) || "Save failed.", true);
+        }
+      })
+      .catch((err) => {
+        btn.disabled = false;
+        setStatus((err && err.message) || "Save failed.", true);
+      });
+  });
+
+  return row;
 }
 
 export function mountPreviewUI(node, ctx) {

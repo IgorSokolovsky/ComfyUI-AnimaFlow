@@ -33,6 +33,13 @@ from .src.prompt_rules.api import rules_api as _rules_api  # noqa: F401
 # NODE_CLASS_MAPPINGS for it.
 from .src.autocomplete import api as _autocomplete_api  # noqa: F401
 
+# Registers the `/wtn/anima/preview/save_now` aiohttp route as an import
+# side effect (see `src/anima/api.py`) -- the Preview's "Save now" button
+# (task item 6), guarded there the same way as `rules_api`/`autocomplete`
+# above. No node class here either — it's a route the existing `AnimaPreview`
+# node's own frontend calls, not a node in its own right.
+from .src.anima import api as _anima_api  # noqa: F401
+
 NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,

@@ -35,9 +35,18 @@ DEFAULT_PREVIEW_SETTINGS: Dict[str, Any] = {
     "version": PREVIEW_SETTINGS_VERSION,
     "compare": {"enabled": True, "a": "base", "b": "final"},
     "save": {
-        # On by default -- this is the only node in the pair that saves
-        # (design doc §7a).
-        "enabled": True,
+        # Off by default (task item 6, flipped 2026-07-29) -- a brand-new
+        # Preview node no longer writes into the user's output folder just
+        # by existing. This is a DEFAULT change only: `_deep_merge_defaults`
+        # only fills in a key ABSENT from the raw blob, so a workflow that
+        # already saved an explicit `true` keeps it verbatim on every future
+        # `normalize_preview_settings` call -- never rewritten back toward
+        # this new default. `js/anima/state.mjs`'s own
+        # `DEFAULT_PREVIEW_SETTINGS` mirrors this flip exactly, and the
+        # Preview's new "Save now" button (`js/anima/interaction.mjs`'s
+        # `buildSaveRow`, `nodes/anima/_preview_helpers.py`'s `save_now`) is
+        # what buys back on-demand saving without leaving it permanently on.
+        "enabled": False,
         "which": "shown",
         "extension": "png",
         "path": "AnimaFlow",
@@ -139,6 +148,34 @@ def resolve_shown_stage(compare_settings: Dict[str, Any], wired: Dict[str, Any])
             return b
     for stage in _SHOWN_PRIORITY:
         if wired.get(stage) is not None:
+            return stage
+    return None
+
+
+class SaveNowError(ValueError):
+    """Raised by the "Save now" button's flow (task item 6) when there is
+    nothing to save yet -- caught by `src/anima/api.py`'s aiohttp handler and
+    turned into a readable 400, never a bare traceback. A `ValueError`
+    subclass so a caller that only catches that (or `Exception`) still works,
+    while `src/anima/api.py`/tests can catch this specific class to tell
+    "nothing to save" apart from a genuine bug.
+    """
+
+
+def resolve_save_now_stage(available_stages: List[str]) -> Optional[str]:
+    """The stage `Save now` writes when clicked (task item 6): `final` ->
+    `mid` -> `base`, whichever is present first in `available_stages` (the
+    stage names the frontend's `node._anPreviewImages` currently holds --
+    every stage the last run's `anima_stages` payload reported, saved or
+    not). Reuses `_SHOWN_PRIORITY` (the same "prefer the most-finished
+    result" order `resolve_shown_stage` already uses for the compare wipe's
+    own single-image fallback) rather than inventing a second ranking.
+    `None` if `available_stages` is empty -- the caller's own "nothing to
+    save yet" case (`SaveNowError`, above), never guessed at here.
+    """
+    present = set(available_stages) if available_stages else set()
+    for stage in _SHOWN_PRIORITY:
+        if stage in present:
             return stage
     return None
 

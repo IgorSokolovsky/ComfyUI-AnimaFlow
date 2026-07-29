@@ -304,7 +304,16 @@ export const DEFAULT_PREVIEW_SETTINGS = {
   version: PREVIEW_SETTINGS_VERSION,
   compare: { enabled: true, a: "base", b: "final" },
   save: {
-    enabled: true,
+    // Default flipped false (task item 6, mirrors `src/anima/
+    // preview_settings.py`'s own `DEFAULT_PREVIEW_SETTINGS`) -- a brand-new
+    // Preview node no longer writes to the user's output folder just by
+    // existing. This is a DEFAULT change only: `deepMergeDefaults` only
+    // fills in a key that's ABSENT from the raw blob, so a workflow that
+    // already saved an explicit `true` keeps it verbatim on every future
+    // load -- never rewritten back toward this new default. The Save Now
+    // button below (`buildSaveRow`) is what this reversal buys back: saving
+    // on demand without leaving saving permanently on.
+    enabled: false,
     which: "shown",
     extension: "png",
     path: "AnimaFlow",
@@ -312,6 +321,59 @@ export const DEFAULT_PREVIEW_SETTINGS = {
     embed_workflow: true,
   },
 };
+
+// ---------------------------------------------------------------------------
+// Field display-name map (task item 4) -- kept next to the settings tree
+// above, deliberately NOT threaded into the tree itself: a settings PATH
+// (`highres.scale_by`, `upscale.usdu.mode_type`, ...) is what
+// `normalizeGenerationSettings`/every `getValue`/`setValue` in
+// `interaction.mjs` reads and writes, and none of that changes here -- this
+// map only decides what a human reads next to the field, via `fieldLabel`
+// below, which every DISPLAY-label call site in `interaction.mjs` for a
+// multi-word settings key routes through instead of the bare key string.
+//
+// Most keys need no entry at all: `fieldLabel`'s fallback (documented on the
+// function itself) already turns `auto_tile_target` into "Auto tile target"
+// -- a brand-new field is never worse than the raw key it replaces even if
+// nobody remembers to add it here. `FIELD_LABEL_OVERRIDES` exists only for
+// the handful where that generic prettification still reads wrong: an
+// abbreviation (`mod_w` -> "Mod w" would be meaningless) or a name that's
+// shorter/clearer than its literal expansion (`mode_type` -> "Mode type" is
+// over-qualified once the picker already lives inside the Upscale section's
+// own USDU tiling group; `force_uniform_tiles` -> "Force uniform tiles"
+// reads as a command, not a label).
+//
+// Single-word keys (`steps`, `denoise`, `cfg`, `seed`, `path`, `filename`,
+// `which`, `extension`, `alignment`, `wildcard`, `threshold`, `cycle`,
+// `feather`, `label`) are already human-readable English words and are
+// deliberately left as their own label at every call site -- routing them
+// through `fieldLabel` too would just capitalize them for no legibility gain
+// while touching dozens of unrelated existing labels/tests.
+// ---------------------------------------------------------------------------
+
+const FIELD_LABEL_OVERRIDES = {
+  mode_type: "Mode",
+  force_uniform_tiles: "Uniform tiles",
+  mod_w: "Mod weight",
+};
+
+/** `key` (a settings-tree field name, e.g. `"auto_tile_target"`) -> its
+ * human display label. Checks `FIELD_LABEL_OVERRIDES` first; falls back to
+ * a generic prettification (underscores -> spaces, then sentence case --
+ * first letter capitalized, the rest untouched) for anything not listed
+ * there, so an override is an optimization, never a requirement, for a
+ * field to render as something better than its literal Python identifier.
+ * Never throws on `null`/`undefined`/non-string input -- returns `""`. */
+export function fieldLabel(key) {
+  if (Object.prototype.hasOwnProperty.call(FIELD_LABEL_OVERRIDES, key)) {
+    return FIELD_LABEL_OVERRIDES[key];
+  }
+  const spaced = String(key == null ? "" : key).replace(/_/g, " ").trim();
+  if (!spaced) {
+    return "";
+  }
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
 
 // ---------------------------------------------------------------------------
 // Section expand/collapse (this module's top doc comment, "inline-sections

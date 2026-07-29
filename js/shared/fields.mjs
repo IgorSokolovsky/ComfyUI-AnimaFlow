@@ -482,8 +482,10 @@ function buildCss() {
 
 .wtn-an-boolfield { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 5px; }
 .wtn-an-boolfield > span:first-child { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 12px;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+/* The switch IS the state (no on/off word any more, task items 1/2) --
+   right-aligned regardless of whether an ⓘ sits between the label and it
+   (\`buildBoolField\`'s own \`opts.infoTooltip\`, task item 5). */
+.wtn-an-boolfield .wtn-fld-switch { margin-left: auto; }
 
 .wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em; text-transform: uppercase;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
@@ -1058,20 +1060,52 @@ export function buildTextField(doc, label, value) {
   return { root: field, control };
 }
 
-/** A label + this module's own pill switch (`buildSwitch`, above), with an
- * inline on/off word (mirrors this pack's inline-note habit rather than a
- * bare pill with no text). Returns `{ root, switchEl, word }`. */
-export function buildBoolField(doc, label, value) {
+/**
+ * A label + this module's own pill switch (`buildSwitch`, above), the
+ * switch right-aligned (`margin-left: auto` on `.wtn-fld-switch` inside
+ * `.wtn-an-boolfield`, this file's own CSS just above `buildCss`'s closing
+ * backtick) -- the switch IS the state, so there is no separate on/off WORD
+ * any more (2026-07-29, bool-row bug fixes, task items 1/2). The word used
+ * to be the only part of this component that ever updated after the
+ * initial build (`field.word.textContent = ...` at every call site), which
+ * is exactly how the switch's own visual went stale in the first place: the
+ * word flipped, the switch's `wtn-fld-on` class never did. Removing the
+ * word removes the whole class of bug at the source rather than adding a
+ * third thing to keep in sync.
+ *
+ * `opts.infoTooltip` (optional) renders a `buildInfoIcon` immediately after
+ * the label -- BEFORE the switch, never appended after it via a
+ * `withInfoIcon`-style wrap (task item 5: a caller that used to wrap this
+ * component's `root` to add an explanatory ⓘ pushed it all the way to the
+ * row's far right, past the now-right-aligned switch; passing the tooltip
+ * in here instead keeps it pinned next to the text it actually explains,
+ * regardless of where the switch ends up). `opts.infoWarn` is the same
+ * `--wtn-warn` flag `buildInfoIcon`/`withInfoIcon` already take.
+ *
+ * Returns `{ root, switchEl, setValue(value) }` -- `setValue` is the fix for
+ * task item 1's actual bug: it updates the switch's own `wtn-fld-on` class
+ * (and nothing else, since there's no word left to keep in step), so a
+ * caller that flips the underlying value in place (rather than rebuilding
+ * this field from scratch) has one call that keeps the visual honest,
+ * instead of reaching into `switchEl.classList` itself at every call site.
+ */
+export function buildBoolField(doc, label, value, opts) {
+  const { infoTooltip, infoWarn } = opts || {};
   const field = el(doc, "div", "wtn-an-boolfield");
   const span = el(doc, "span");
   span.textContent = label;
-  const switchEl = buildSwitch(doc, !!value);
-  const word = el(doc, "span");
-  word.textContent = value ? "on" : "off";
   field.appendChild(span);
+  if (infoTooltip) {
+    field.appendChild(buildInfoIcon(doc, infoTooltip, infoWarn));
+  }
+  const switchEl = buildSwitch(doc, !!value);
   field.appendChild(switchEl);
-  field.appendChild(word);
-  return { root: field, switchEl, word };
+  const setValue = (v) => {
+    if (switchEl.classList && typeof switchEl.classList.toggle === "function") {
+      switchEl.classList.toggle("wtn-fld-on", !!v);
+    }
+  };
+  return { root: field, switchEl, setValue };
 }
 
 /** An uppercase mono group sub-label, optionally carrying its own ⓘ (this

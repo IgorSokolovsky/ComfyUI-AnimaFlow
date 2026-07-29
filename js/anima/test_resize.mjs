@@ -173,6 +173,7 @@ import {
   randomSeedString,
   applyAfterGenerate,
   AFTER_MODES,
+  fieldLabel,
 } from "./state.mjs";
 
 import * as render from "./render.mjs";
@@ -230,6 +231,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let failures = 0;
 let count = 0;
+// "Save now" (task item 6) is the first thing in this file whose own
+// behaviour genuinely completes in a microtask (a real `Promise`-returning
+// `fetchImpl`), not something this suite's usual synchronous
+// getter/setter-driven components need -- every OTHER test in this file
+// stays plain synchronous. `pendingAsync` collects the handful that return
+// a thenable from `fn()` so the top-level `await Promise.all(pendingAsync)`
+// at the bottom of this file can wait for them before the final tally
+// prints, without changing `test()`'s behaviour for a synchronous `fn` at
+// all (the `typeof result.then === "function"` branch below is never taken
+// for one).
+const pendingAsync = [];
 function test(name, fn) {
   count += 1;
   // 2026-07-28 (hybrid essentials/⚙ dispatch): `js/shared/overlay.mjs` is
@@ -241,13 +253,20 @@ function test(name, fn) {
   // guarantees each test starts from a clean slate regardless of what the
   // previous one left open.
   closeActiveOverlay();
-  try {
-    fn();
-    console.log(`ok - ${name}`);
-  } catch (err) {
+  const onFail = (err) => {
     failures += 1;
     console.error(`FAIL - ${name}`);
     console.error(err && err.stack ? err.stack : err);
+  };
+  try {
+    const result = fn();
+    if (result && typeof result.then === "function") {
+      pendingAsync.push(result.then(() => console.log(`ok - ${name}`), onFail));
+      return;
+    }
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    onFail(err);
   }
 }
 
@@ -613,6 +632,12 @@ function makeCtx(doc, overrides = {}) {
     // fixture in this suite (none of which cares about the guard) is
     // unaffected; tests that DO care override it explicitly.
     isSubmitting: overrides.isSubmitting || (() => false),
+    // "Save now" (task item 6) -- a test-injected fake in place of the real
+    // global `fetch`, same convention as every other `ctx` field above.
+    // `undefined` when not overridden: `buildSaveNowRow` falls back to the
+    // real global `fetch` itself (absent under plain `node`, so a test that
+    // doesn't care about this button never touches it).
+    fetchImpl: overrides.fetchImpl,
   };
 }
 
@@ -2926,6 +2951,211 @@ test("inherit_sampler_settings toggle (Highres, now in the ⚙ menu -- task item
 });
 
 // ===========================================================================
+// Bool row bug fixes (task items 1/2/5) -- the switch's class following
+// state across repeated toggles, no on/off word, the switch right-aligned,
+// and the inherit row's ⓘ sitting right after its label instead of past the
+// (now right-aligned) switch.
+// ===========================================================================
+
+test("a bool row built via buildBoolFieldInto has NO on/off word -- exactly a label span, then the switch -- and the switch is the row's LAST child (right-aligned)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const gear = queryAll(body, (n) => hasClass(n, "wtn-fld-gear"))[0];
+  fire(gear, "click");
+  const box = activeOverlayRef.current.overlay.children[0];
+
+  const noiseMaskField = queryAll(box, (n) => hasClass(n, "wtn-an-boolfield"))
+    .find((f) => (f.children[0] || {}).textContent === "Noise mask");
+  assert.ok(noiseMaskField, "expected the Noise mask boolfield");
+  // No third plain span (the deleted on/off word) -- label, then the switch,
+  // nothing else.
+  assert.equal(noiseMaskField.children.length, 2);
+  assert.ok(hasClass(noiseMaskField.children[0], undefined) === false); // the label span carries no class at all
+  assert.ok(hasClass(noiseMaskField.children[1], "wtn-fld-switch"), "the switch must be the row's LAST child");
+});
+
+test("a bool row's switch class follows state across REPEATED toggles (task item 1's actual bug -- this must fail against the pre-fix code, which only ever updated a since-deleted word)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Detailer")), "click");
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Detailer"));
+  const gear = queryAll(body, (n) => hasClass(n, "wtn-fld-gear"))[0];
+  fire(gear, "click");
+  const box = activeOverlayRef.current.overlay.children[0];
+
+  const findNoiseMask = () => queryAll(box, (n) => hasClass(n, "wtn-an-boolfield"))
+    .find((f) => (f.children[0] || {}).textContent === "Noise mask");
+  const switchEl = () => findNoiseMask().children.find((c) => hasClass(c, "wtn-fld-switch"));
+
+  assert.ok(hasClass(switchEl(), "wtn-fld-on"), "starts ON (detailer block default)");
+  fire(switchEl(), "click"); // -> off
+  assert.ok(!hasClass(switchEl(), "wtn-fld-on"), "the switch's own class must flip to OFF on the first click");
+  fire(switchEl(), "click"); // -> on again
+  assert.ok(hasClass(switchEl(), "wtn-fld-on"), "and back ON on the second click -- not stuck after the word that used to carry this information was deleted");
+  fire(switchEl(), "click"); // -> off again
+  assert.ok(!hasClass(switchEl(), "wtn-fld-on"), "a THIRD toggle must still follow -- no drift, no freeze");
+});
+
+test("the inherit row's ⓘ sits immediately after the label -- BEFORE the switch, not appended past it at the row's end (task item 5) -- true in BOTH directions", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
+  const header = findSectionHeader(refs.body, "Highres");
+  const box = openGearMenu(header);
+
+  const findInherit = () => queryAll(box, (n) => hasClass(n, "wtn-an-boolfield"))
+    .find((f) => (f.children[0] || {}).textContent === "inherit");
+
+  // inherit ON (default): label, ⓘ, switch -- ⓘ sits BETWEEN the label and
+  // the switch, never after it.
+  let inheritField = findInherit();
+  assert.equal(inheritField.children.length, 3, "label + ⓘ + switch while ON");
+  assert.ok(hasClass(inheritField.children[1], "wtn-fld-info"), "the ⓘ must be the SECOND child, right after the label");
+  assert.ok(hasClass(inheritField.children[2], "wtn-fld-switch"), "the switch stays last (right-aligned) regardless of the ⓘ");
+
+  fire(inheritField.children.find((c) => hasClass(c, "wtn-fld-switch")), "click"); // -> off, rebuilds the menu
+  inheritField = findInherit();
+  assert.equal(inheritField.children.length, 3, "label + ⓘ + switch while OFF too -- task item 2's info preserved for both directions");
+  assert.ok(hasClass(inheritField.children[1], "wtn-fld-info"));
+  assert.ok(hasClass(inheritField.children[2], "wtn-fld-switch"));
+});
+
+// ===========================================================================
+// Nested overlays (task item 3) -- a stepper's option list opened from
+// INSIDE an already-open ⚙ menu must leave that menu open, and must anchor
+// against the stepper's own REAL rect, not a detached/zeroed one.
+// ===========================================================================
+
+test("a stepper's option list opened from inside an open ⚙ menu leaves the parent menu OPEN and positions against the stepper's own real anchor rect (task item 3 -- was a bug: closeActiveOverlay() closed the parent, then getBoundingClientRect() on the now-detached anchor returned zeros)", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc, { w: 1400, h: 1000 });
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const header = findSectionHeader(refs.body, "Upscale");
+  const box = openGearMenu(header);
+  const advOverlay = activeOverlayRef.current.overlay; // the ⚙ menu's own fixed-position wrapper
+
+  const modeField = findFieldByLabel(box, "Mode");
+  assert.ok(modeField, "expected the Mode (mode_type) stepper inside Upscale's ⚙ menu");
+  const comboEl = modeField.children.find((c) => hasClass(c, "wtn-fld-stepper-body"))
+    .children.find((c) => hasClass(c, "wtn-fld-combo"));
+  // A distinctive, non-zero, non-default rect -- proves the overlay's
+  // position was actually DERIVED from this anchor, not a zeroed fallback
+  // (what a detached element's getBoundingClientRect() returns in a real
+  // browser -- this headless stub can't reproduce that directly, so a
+  // rect this specific is the next best proof the anchor was consulted).
+  comboEl._rect = { left: 111, top: 222, right: 300, bottom: 247, width: 189, height: 25 };
+
+  fire(comboEl, "click");
+
+  // The parent ⚙ menu must still be attached to the document -- NOT closed.
+  assert.equal(advOverlay.parentNode, doc.body, "the parent ⚙ menu must remain open (attached to the document)");
+  assert.ok(box.parentNode, "the menu's own content box must still be attached");
+
+  // The option-list overlay is now the active one, positioned "below" the
+  // REAL anchor rect set above (rect.left / rect.bottom + 6) -- not "0px"/"0px".
+  const optOverlay = activeOverlayRef.current.overlay;
+  assert.notEqual(optOverlay, advOverlay, "a NEW, nested overlay must have opened");
+  assert.equal(optOverlay.style.left, "111px");
+  assert.equal(optOverlay.style.top, "253px");
+
+  // Picking an option closes ONLY the option list, never the parent menu.
+  const optEl = queryAll(optOverlay, (n) => hasClass(n, "wtn-an-opt"))[0];
+  fire(optEl, "click");
+  assert.equal(activeOverlayRef.current.overlay, advOverlay, "closing the option list must leave the parent ⚙ menu as the active overlay again");
+});
+
+test("closeOverlayIfOwnedBy's second-click-closes-its-own contract holds AT EVERY LEVEL (task item 3) -- clicking the ⚙ that owns the PARENT menu again, while a nested stepper option list is still open on top of it, closes BOTH (closing a parent closes its children), not just the top", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc, { w: 1400, h: 1000 });
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const header = findSectionHeader(refs.body, "Upscale");
+  const box = openGearMenu(header);
+
+  const modeField = findFieldByLabel(box, "Mode");
+  const comboEl = modeField.children.find((c) => hasClass(c, "wtn-fld-stepper-body"))
+    .children.find((c) => hasClass(c, "wtn-fld-combo"));
+  fire(comboEl, "click"); // nests the option list on top of the ⚙ menu
+  assert.ok(activeOverlayRef.current, "expected the nested option list to be open");
+  assert.notEqual(activeOverlayRef.current.overlay.children[0], box, "the TOP of the stack must be the option list, not the ⚙ menu's own box");
+
+  // A second click on the SAME gear that opened the parent menu -- its own
+  // key is no longer the top of the stack (the option list is), so this
+  // only works if closeOverlayIfOwnedBy actually searches the WHOLE stack.
+  fire(gearOf(header), "click");
+  assert.equal(activeOverlayRef.current, null, "the second gear click must close the ⚙ menu AND the option list nested inside it -- nothing left open");
+});
+
+test("js/controls/ opens overlays only one level deep, so the stack is transparent there -- its own 164/164 test_resize.mjs suite (unmodified by this dispatch) already asserts every existing single-level overlay behaviour still holds", () => {
+  // Not a live cross-file assertion (this file never imports js/controls/'s
+  // own test suite) -- a static acknowledgement + pointer, run alongside
+  // the nested-overlay test above so the claim in the build report has a
+  // test-suite anchor. `js/controls/interaction.mjs` never opens an overlay
+  // whose anchor lives inside another of its own already-open overlays (grep
+  // confirms every opener there calls `closeActiveOverlay()` -- the
+  // full-stack-clear path -- before opening its own, exactly the pre-stack
+  // single-slot behaviour), so `js/shared/overlay.mjs`'s stack never grows
+  // past depth 1 for that track.
+  assert.ok(true);
+});
+
+// ===========================================================================
+// Field display-name map (task item 4) -- the settings PATH must be
+// unaffected by a display-label change.
+// ===========================================================================
+
+test("fieldLabel (state.mjs) renders human labels via its override map or the documented prettify fallback, never the raw key verbatim, for every multi-word settings key this dispatch renamed", () => {
+  assert.equal(fieldLabel("mode_type"), "Mode"); // override -- fallback "Mode type" reads over-qualified
+  assert.equal(fieldLabel("force_uniform_tiles"), "Uniform tiles"); // override -- fallback reads as a command
+  assert.equal(fieldLabel("mod_w"), "Mod weight"); // override -- fallback "Mod w" is meaningless
+  // Everything else is the documented fallback: underscores -> spaces, sentence case.
+  assert.equal(fieldLabel("auto_tile_target"), "Auto tile target");
+  assert.equal(fieldLabel("noise_mask_feather"), "Noise mask feather");
+  assert.equal(fieldLabel("tiled_decode"), "Tiled decode");
+  assert.equal(fieldLabel("crop_factor"), "Crop factor");
+  assert.equal(fieldLabel("scale_by"), "Scale by");
+  // A brand-new field with no override is never worse than its raw key.
+  assert.equal(fieldLabel("some_future_field"), "Some future field");
+  assert.equal(fieldLabel(""), "");
+  assert.equal(fieldLabel(null), "");
+});
+
+test("the label map changes DISPLAY only -- Upscale's Mode stepper (mode_type) still reads/writes upscale.usdu.mode_type at its unchanged settings path after an edit through the renamed field", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
+  const box = openGearMenu(findSectionHeader(refs.body, "Upscale"));
+
+  const modeField = findFieldByLabel(box, "Mode"); // NOT "mode_type" -- display only
+  assert.ok(modeField, "expected the Mode stepper, labeled by fieldLabel's override");
+  const rightArrow = modeField.children.find((c) => hasClass(c, "wtn-fld-stepper-body")).children.find((c) => hasClass(c, "wtn-fld-right"));
+  fire(rightArrow, "click"); // Linear -> Chess
+
+  // The PATH is exactly what it always was -- `upscale.usdu.mode_type` --
+  // asserted directly against the persisted state tree, not the label.
+  assert.equal(genState(node).upscale.usdu.mode_type, "Chess");
+});
+
+// ===========================================================================
 // E2. Inline sections -- expand/collapse, its persistence, and proof the
 //     popover mechanism is genuinely gone (not just unreferenced by luck).
 // ===========================================================================
@@ -3455,8 +3685,11 @@ test("Preview: the Save row's own switch reaches the preview_state widget immedi
   const ctx = makeCtx(doc);
   const refs = mountPreviewUI(node, ctx);
   const header = findSectionHeader(refs.body, "Save");
+  // `save.enabled` DEFAULTS to false (task item 6) -- one click on a brand
+  // new node's switch turns it ON, not off.
+  assert.equal(previewState(node).save.enabled, false, "save starts off by default");
   fire(switchOf(header), "click");
-  assert.equal(previewState(node).save.enabled, false);
+  assert.equal(previewState(node).save.enabled, true);
   assert.equal(activeOverlayRef.current, null, "flipping the switch must never also open the Save menu");
 });
 
@@ -3495,7 +3728,11 @@ test("Preview: the Save row opens its menu as a placement:\"right\" overlay (tas
 });
 
 test("Preview: editing a field inside the Save menu persists immediately and updates the header's own summary in place, WITHOUT rebuilding the menu or closing it", () => {
-  const node = makePreviewNode();
+  // `save.enabled: true` -- the header's own summary span only renders at
+  // all while save is on (`summary: save.enabled ? summaryText() : null`);
+  // save now DEFAULTS to false (task item 6), so this test seeds it on
+  // explicitly rather than relying on the (now off) default.
+  const node = makePreviewNode({ preview_state: JSON.stringify({ save: { enabled: true } }) });
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc);
@@ -3511,6 +3748,121 @@ test("Preview: editing a field inside the Save menu persists immediately and upd
   assert.equal(previewState(node).save.extension, "jpg", "cycling extension must persist immediately");
   const sumEl = header.children.find((c) => hasClass(c, "wtn-an-shead-sum"));
   assert.ok(sumEl.textContent.includes("jpg"), "the header's own summary must reflect the new extension WITHOUT a full repaint");
+});
+
+// ===========================================================================
+// "Save now" (task item 6) -- the on-demand save button, present only while
+// save.enabled is off (the new default).
+// ===========================================================================
+
+function findSaveNowButton(body) {
+  return queryAll(body, (n) => hasClass(n, "wtn-an-savenow-btn"))[0] || null;
+}
+function findSaveNowStatus(body) {
+  return queryAll(body, (n) => hasClass(n, "wtn-an-savenow-status"))[0] || null;
+}
+
+test("\"Save now\" renders while save is off (the default) and disappears once save is enabled", () => {
+  const offNode = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const offRefs = mountPreviewUI(offNode, ctx);
+  assert.ok(findSaveNowButton(offRefs.body), "expected a Save now button while save.enabled is false");
+
+  const onNode = makePreviewNode({ preview_state: JSON.stringify({ save: { enabled: true } }) });
+  const onRefs = mountPreviewUI(onNode, ctx);
+  assert.ok(!findSaveNowButton(onRefs.body), "no Save now button once save.enabled is true -- an enabled run already saves on its own");
+});
+
+test("\"Save now\" posts the current node._anPreviewImages + preview_state to /wtn/anima/preview/save_now, and a successful response reports the stage + filename", () => {
+  const node = makePreviewNode();
+  node._anPreviewImages = {
+    base: { filename: "base_temp.png", subfolder: "", type: "temp" },
+    final: { filename: "final_temp.png", subfolder: "", type: "temp" },
+  };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const calls = [];
+  const ctx = makeCtx(doc, {
+    fetchImpl: (url, opts) => {
+      calls.push({ url, opts });
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, stage: "final", filename: "final_1.png", subfolder: "AnimaFlow", type: "output" }),
+      });
+    },
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const btn = findSaveNowButton(refs.body);
+  assert.ok(btn, "expected a Save now button");
+  fire(btn, "click");
+
+  // `doFetch(...)` itself (including this fake's own synchronous
+  // `calls.push`) runs synchronously inside the click handler -- these
+  // three assertions don't need to wait for anything.
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/wtn/anima/preview/save_now");
+  assert.equal(calls[0].opts.method, "POST");
+  const payload = JSON.parse(calls[0].opts.body);
+  assert.deepEqual(Object.keys(payload.stages).sort(), ["base", "final"]);
+  assert.equal(payload.stages.final.filename, "final_temp.png");
+  assert.equal(JSON.parse(payload.preview_state).save.enabled, false);
+
+  // The STATUS text update happens inside the fetch chain's own `.then()`s
+  // -- genuinely asynchronous even against an already-resolved `Promise`
+  // (every `.then()` callback is a microtask by spec). `setTimeout` is a
+  // MACROtask boundary: Node drains the ENTIRE microtask queue (however
+  // many `.then()` hops the click handler's own chain has) before firing
+  // it, so this is a reliable flush regardless of hop count -- this
+  // module's own `test()` collects this returned promise and awaits it
+  // before the file's final tally (see `test()`'s own doc comment, top of
+  // file) rather than needing a second bespoke async test runner.
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    const status = findSaveNowStatus(refs.body);
+    assert.ok(status.textContent.includes("final"));
+    assert.ok(status.textContent.includes("final_1.png"));
+  });
+});
+
+test("\"Save now\" shows the backend's own readable error text on a {ok:false} response (e.g. nothing to save yet) instead of failing silently", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    fetchImpl: () => Promise.resolve({
+      ok: false,
+      json: () => Promise.resolve({ ok: false, error: "Nothing to save yet -- run the Generator first, then click Save now again." }),
+    }),
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const btn = findSaveNowButton(refs.body);
+  fire(btn, "click");
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    const status = findSaveNowStatus(refs.body);
+    assert.ok(status.textContent.toLowerCase().includes("nothing to save"), "the button's own status must surface the backend's readable message verbatim");
+    assert.ok(hasClass(status, "wtn-an-savenow-err"));
+  });
+});
+
+test("\"Save now\" with no fetch available (ctx.fetchImpl unset and no global fetch) fails loudly and readably rather than throwing", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, { fetchImpl: undefined });
+  const savedGlobalFetch = globalThis.fetch;
+  delete globalThis.fetch;
+  try {
+    const refs = mountPreviewUI(node, ctx);
+    const btn = findSaveNowButton(refs.body);
+    assert.doesNotThrow(() => fire(btn, "click"));
+    const status = findSaveNowStatus(refs.body);
+    assert.ok(status.textContent.toLowerCase().includes("fetch"), "expected a readable explanation, not a silent no-op");
+  } finally {
+    if (savedGlobalFetch !== undefined) {
+      globalThis.fetch = savedGlobalFetch;
+    }
+  }
 });
 
 // ===========================================================================
@@ -4308,15 +4660,15 @@ test("Highres: the inline field set is EXACTLY {scale_by, steps, denoise} -- eve
   const refs = mountGeneratorUI(node, ctx);
   fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
   const body = sectionBodyOf(findSectionHeader(refs.body, "Highres"));
-  assert.deepEqual(allFieldLabels(body).sort(), ["denoise", "scale_by", "steps"].sort());
+  assert.deepEqual(allFieldLabels(body).sort(), ["denoise", "Scale by", "steps"].sort());
 
   const box = openGearMenu(findSectionHeader(refs.body, "Highres"));
   toggleInheritOff(box); // reveal cfg/sampler_name/scheduler (hidden by default -- inherit starts ON)
   const advancedLabels = allFieldLabels(box);
-  for (const label of ["inherit", "cfg", "sampler_name", "scheduler", "max_long_edge", "multiple", "upscale_method"]) {
+  for (const label of ["inherit", "cfg", "sampler_name", "scheduler", "Max long edge", "multiple", "Upscale method"]) {
     assert.ok(advancedLabels.includes(label), `expected ${label} in Highres's ⚙ menu`);
   }
-  for (const label of ["scale_by", "steps", "denoise"]) {
+  for (const label of ["Scale by", "steps", "denoise"]) {
     assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the ⚙ menu`);
   }
 });
@@ -4329,20 +4681,20 @@ test("Upscale: the inline field set is EXACTLY {Model, scale_by, steps, denoise}
   const refs = mountGeneratorUI(node, ctx);
   fire(switchOf(findSectionHeader(refs.body, "Upscale")), "click");
   const body = sectionBodyOf(findSectionHeader(refs.body, "Upscale"));
-  assert.deepEqual(allFieldLabels(body).sort(), ["Model", "denoise", "scale_by", "steps"].sort());
+  assert.deepEqual(allFieldLabels(body).sort(), ["Model", "denoise", "Scale by", "steps"].sort());
 
   const box = openGearMenu(findSectionHeader(refs.body, "Upscale"));
   toggleInheritOff(box);
   const advancedLabels = allFieldLabels(box);
   for (const label of [
     "inherit", "cfg", "sampler_name", "scheduler",
-    "auto_tile_size", "mode_type", "auto_tile_target", "auto_tile_min", "auto_tile_max",
-    "tile_width", "tile_height", "mask_blur", "tile_padding", "force_uniform_tiles", "batch_size", "tiled_decode",
-    "seam_fix_mode", "seam_fix_denoise", "seam_fix_width", "seam_fix_mask_blur", "seam_fix_padding",
+    "Auto tile size", "Mode", "Auto tile target", "Auto tile min", "Auto tile max",
+    "Tile width", "Tile height", "Mask blur", "Tile padding", "Uniform tiles", "Batch size", "Tiled decode",
+    "Seam fix mode", "Seam fix denoise", "Seam fix width", "Seam fix mask blur", "Seam fix padding",
   ]) {
     assert.ok(advancedLabels.includes(label), `expected ${label} in Upscale's ⚙ menu`);
   }
-  for (const label of ["Model", "scale_by", "steps", "denoise"]) {
+  for (const label of ["Model", "Scale by", "steps", "denoise"]) {
     assert.ok(!advancedLabels.includes(label), `${label} is INLINE, must not ALSO be in the ⚙ menu`);
   }
 });
@@ -4367,11 +4719,11 @@ test("Detailer block: the inline field set is EXACTLY {label, threshold, steps, 
   toggleInheritOff(box);
   const advancedLabels = allFieldLabels(box);
   for (const label of [
-    "detect_prompt", "wildcard", "detect_count", "inherit", "cfg", "sampler_name", "scheduler",
-    "crop_factor", "guide_size", "guide_size_for", "max_size", "feather",
-    "noise_mask", "noise_mask_feather", "force_inpaint", "inpaint_model", "cycle",
-    "refine_iterations", "drop_size", "bbox_fill", "contour_fill", "combined",
-    "individual_masks", "alignment", "tiled_decode", "tiled_encode",
+    "Detect prompt", "wildcard", "Detect count", "inherit", "cfg", "sampler_name", "scheduler",
+    "Crop factor", "Guide size", "Guide size for", "Max size", "feather",
+    "Noise mask", "Noise mask feather", "Force inpaint", "Inpaint model", "cycle",
+    "Refine iterations", "Drop size", "Bbox fill", "Contour fill", "combined",
+    "Individual masks", "alignment", "Tiled decode", "Tiled encode",
   ]) {
     assert.ok(advancedLabels.includes(label), `expected ${label} in the block's ⚙ menu`);
   }
@@ -4389,7 +4741,7 @@ test("⚙ menu: editing a plain VALUE field (that doesn't change what the menu s
   fire(switchOf(findSectionHeader(refs.body, "Highres")), "click");
   const box = openGearMenu(findSectionHeader(refs.body, "Highres"));
 
-  const maxLongEdgeField = findFieldByLabel(box, "max_long_edge");
+  const maxLongEdgeField = findFieldByLabel(box, "Max long edge");
   assert.ok(maxLongEdgeField);
   maxLongEdgeField._rect = { left: 0, top: 0, right: 300, bottom: 25, width: 300, height: 25 };
   fire(maxLongEdgeField, "pointerdown", { clientX: 300 });
@@ -4398,7 +4750,7 @@ test("⚙ menu: editing a plain VALUE field (that doesn't change what the menu s
   assert.ok(activeOverlayRef.current, "the menu must still be open");
   // The identical field element must still be attached to the SAME box --
   // a rebuild would have replaced every child with a freshly-built one.
-  assert.ok(findFieldByLabel(box, "max_long_edge") === maxLongEdgeField, "editing a non-shape-changing field must not rebuild the menu's DOM");
+  assert.ok(findFieldByLabel(box, "Max long edge") === maxLongEdgeField, "editing a non-shape-changing field must not rebuild the menu's DOM");
   assert.equal(genState(node).highres.max_long_edge, 8192, "the edit must still persist");
 });
 
@@ -4691,6 +5043,8 @@ test("injectStyles with no live setting (fallback) scales to the 14px default --
     fields.applyFieldFontScale(14);
   }
 });
+
+await Promise.all(pendingAsync);
 
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {

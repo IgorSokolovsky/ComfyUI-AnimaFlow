@@ -27,7 +27,11 @@ def test_defaults_shape():
     assert normalized["compare"]["enabled"] is True
     assert normalized["compare"]["a"] == "base"
     assert normalized["compare"]["b"] == "final"
-    assert normalized["save"]["enabled"] is True  # on by default (§7a).
+    # Off by default (task item 6, flipped 2026-07-29) -- a brand-new
+    # Preview node no longer writes into the user's output folder just by
+    # existing; "Save now" (nodes/anima/_preview_helpers.py's save_now) is
+    # the on-demand alternative.
+    assert normalized["save"]["enabled"] is False
 
 
 def test_unknown_keys_survive():
@@ -41,7 +45,23 @@ def test_missing_keys_default():
     normalized = ps.normalize_preview_settings(raw)
     assert normalized["compare"]["a"] == "mid"
     assert normalized["compare"]["b"] == "final"  # default fills the rest.
+    assert normalized["save"]["enabled"] is False
+
+
+def test_an_explicit_saved_true_survives_the_default_flip():
+    """The default flipping to `False` must never rewrite a workflow that
+    already saved an explicit `true` -- `_deep_merge_defaults` only fills in
+    a key ABSENT from the raw blob, so this is a genuine regression test for
+    that contract, not just a restatement of `test_unknown_keys_survive`."""
+    raw = json.dumps({"save": {"enabled": True}})
+    normalized = ps.normalize_preview_settings(raw)
     assert normalized["save"]["enabled"] is True
+
+
+def test_an_explicit_saved_false_also_survives():
+    raw = json.dumps({"save": {"enabled": False}})
+    normalized = ps.normalize_preview_settings(raw)
+    assert normalized["save"]["enabled"] is False
 
 
 def test_garbage_compare_slot_falls_back_to_default():
@@ -178,6 +198,25 @@ def test_resolve_save_stages_which_semantics():
 
 
 # ---------------------------------------------------------------------------
+# resolve_save_now_stage -- task item 6's "Save now" button: final -> mid ->
+# base, whichever is actually present, and the fallback chain each rung down.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_save_now_stage_prefers_final_then_mid_then_base():
+    assert ps.resolve_save_now_stage(["base", "mid", "final"]) == "final"
+    assert ps.resolve_save_now_stage(["base", "final"]) == "final"
+    assert ps.resolve_save_now_stage(["base", "mid"]) == "mid"
+    assert ps.resolve_save_now_stage(["mid"]) == "mid"
+    assert ps.resolve_save_now_stage(["base"]) == "base"
+
+
+def test_resolve_save_now_stage_empty_or_garbage_returns_none():
+    assert ps.resolve_save_now_stage([]) is None
+    assert ps.resolve_save_now_stage(None) is None
+
+
+# ---------------------------------------------------------------------------
 # resolve_run_stage_labels -- the single pure place a run's images-list
 # position -> stage-label mapping comes from (task brief).
 # ---------------------------------------------------------------------------
@@ -233,6 +272,8 @@ ALL_TESTS = [
     test_defaults_shape,
     test_unknown_keys_survive,
     test_missing_keys_default,
+    test_an_explicit_saved_true_survives_the_default_flip,
+    test_an_explicit_saved_false_also_survives,
     test_garbage_compare_slot_falls_back_to_default,
     test_garbage_save_which_falls_back_to_shown,
     test_version_migrates_forward,
@@ -249,6 +290,8 @@ ALL_TESTS = [
     test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,
     test_resolve_shown_stage_one_entry_degrades_to_single_image,
     test_resolve_save_stages_which_semantics,
+    test_resolve_save_now_stage_prefers_final_then_mid_then_base,
+    test_resolve_save_now_stage_empty_or_garbage_returns_none,
     test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp,
     test_resolve_run_stage_labels_prefers_metadata_json_when_it_matches,
     test_resolve_run_stage_labels_falls_back_when_length_mismatches,

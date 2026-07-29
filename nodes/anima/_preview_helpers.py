@@ -36,8 +36,10 @@ try:
     # convention as `nodes/prompt_rules/_rules_helpers.py`'s import of
     # `src.prompt_rules.core`.
     from ...src.anima.preview_settings import (  # type: ignore
+        SaveNowError,
         format_filename,
         resolve_run_stage_labels,
+        resolve_save_now_stage,
         resolve_save_stages,
         resolve_wired_stages,
         split_preview_stages,
@@ -45,8 +47,10 @@ try:
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
     from src.anima.preview_settings import (
+        SaveNowError,
         format_filename,
         resolve_run_stage_labels,
+        resolve_save_now_stage,
         resolve_save_stages,
         resolve_wired_stages,
         split_preview_stages,
@@ -60,12 +64,15 @@ except ImportError:
 # `extract_seed_from_prompt`/`build_preview_ui_images` here rather than
 # reaching into `src/anima/` directly itself.
 __all__ = [
+    "SaveNowError",
     "build_preview_ui_images",
     "extract_seed_from_prompt",
     "resolve_run_stage_labels",
+    "resolve_save_now_stage",
     "resolve_save_stages",
     "resolve_wired_stages",
     "save_images",
+    "save_now",
     "write_temp_stage_images",
 ]
 
@@ -340,3 +347,131 @@ def build_preview_ui_images(
     for stage in preview_stages:
         ordered.extend(by_stage.get(stage, []))
     return ordered
+
+
+# ---------------------------------------------------------------------------
+# "Save now" (task item 6) -- the Preview's on-demand save button, for when
+# `preview.save.enabled` is off (its new default). The stage-preference
+# decision (`final` -> `mid` -> `base`) is `resolve_save_now_stage`
+# (`src/anima/preview_settings.py`, pure, no comfy/torch/PIL import) --
+# EVERYTHING below is the impure half: locating the already-written stage
+# image (a temp file if it was only previewed, an output file if that
+# particular stage happened to be saved already), and copying/re-encoding it
+# into the configured save path under the SAME filename template
+# `save_images` uses for a normal enabled save. This runs OUTSIDE a graph
+# run (no fresh PROMPT/EXTRA_PNGINFO available), so unlike `save_images` it
+# cannot embed workflow metadata -- see `save_now`'s own docstring for that
+# accepted gap.
+# ---------------------------------------------------------------------------
+
+def _real_output_dir() -> str:
+    import folder_paths  # ComfyUI-only; lazy.
+
+    return folder_paths.get_output_directory()
+
+
+def _real_temp_dir() -> str:
+    import folder_paths  # ComfyUI-only; lazy.
+
+    return folder_paths.get_temp_directory()
+
+
+def _default_probe_image_size(source_path: str):
+    from PIL import Image
+
+    with Image.open(source_path) as im:
+        return im.width, im.height
+
+
+def _default_write_image_copy(source_path: str, dest_path: str) -> None:
+    from PIL import Image
+
+    with Image.open(source_path) as im:
+        im.load()
+        if dest_path.lower().endswith((".jpg", ".jpeg")) and im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        im.save(dest_path)
+
+
+def save_now(
+    *,
+    stage_entries: Dict[str, Dict[str, Any]],
+    preview_settings: Dict[str, Any],
+    seed: Any = 0,
+    output_dir_fn: Optional[Callable[[], str]] = None,
+    temp_dir_fn: Optional[Callable[[], str]] = None,
+    exists_fn: Optional[Callable[[str], bool]] = None,
+    probe_fn: Optional[Callable[[str], Any]] = None,
+    write_fn: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    """`src/anima/api.py`'s `/wtn/anima/preview/save_now` handler calls this
+    directly. `stage_entries` is `js/anima/interaction.mjs`'s own
+    `node._anPreviewImages` shape, sent verbatim by the frontend: `{stage:
+    {filename, subfolder, type, ...}}` for every stage the last run's
+    `anima_stages` payload reported (whichever the wipe currently has,
+    whether or not any of them were actually saved that run).
+
+    Picks the winning stage via `resolve_save_now_stage` (pure, `final` ->
+    `mid` -> `base`); raises `SaveNowError` -- a readable message, no bare
+    traceback -- if `stage_entries` is empty/has nothing usable, if that
+    stage's own entry carries no filename, or if the source file named
+    there is no longer on disk (a temp file cleaned up since the last run,
+    say). The winning stage's own already-written file (temp or output,
+    per its own `type`) is then copied through the SAME `format_filename`
+    template + `save.extension`/`save.path` a normal enabled save uses, so
+    the result is indistinguishable from "this stage had been saved all
+    along."
+
+    `output_dir_fn`/`temp_dir_fn`/`exists_fn`/`probe_fn`/`write_fn` are all
+    dependency-injected (this module's own "fake the writer, don't perform
+    it" test convention, matching `build_preview_ui_images`'s `save_fn`/
+    `temp_fn`) so a test can drive this with real temp directories but fake
+    image probing/writing, never needing PIL or a live `folder_paths`.
+
+    **Cannot embed workflow metadata** (unlike `save_images`): this runs
+    from a button click, outside a graph run, so there is no fresh
+    `PROMPT`/`EXTRA_PNGINFO` to write into the PNG the way an enabled save
+    does -- `save.embed_workflow` is silently not honoured here. A
+    documented gap, not a silent one; see the build report.
+    """
+    available = stage_entries if isinstance(stage_entries, dict) else {}
+    stage = resolve_save_now_stage(list(available.keys()))
+    if stage is None:
+        raise SaveNowError("Nothing to save yet -- run the Generator first, then click Save now again.")
+
+    entry = available.get(stage) or {}
+    filename = entry.get("filename") if isinstance(entry, dict) else None
+    if not filename:
+        raise SaveNowError(f"The '{stage}' stage has no file recorded to save.")
+    subfolder = str(entry.get("subfolder") or "")
+    kind = entry.get("type") or "temp"
+
+    import os
+
+    get_output_dir = output_dir_fn if output_dir_fn is not None else _real_output_dir
+    get_temp_dir = temp_dir_fn if temp_dir_fn is not None else _real_temp_dir
+    exists = exists_fn if exists_fn is not None else os.path.isfile
+    probe = probe_fn if probe_fn is not None else _default_probe_image_size
+    write = write_fn if write_fn is not None else _default_write_image_copy
+
+    source_root = get_output_dir() if kind == "output" else get_temp_dir()
+    source_path = os.path.join(source_root, subfolder, filename)
+    if not exists(source_path):
+        raise SaveNowError(f"The '{stage}' stage's file is no longer on disk -- generate again, then click Save now.")
+
+    width, height = probe(source_path)
+
+    save_settings = preview_settings.get("save", {}) if isinstance(preview_settings, dict) else {}
+    extension = str(save_settings.get("extension") or "png").lstrip(".")
+    out_subfolder = str(save_settings.get("path") or "AnimaFlow")
+    template = str(save_settings.get("filename") or "%date:yyyy-MM-dd%_%seed%_%stage%")
+
+    output_dir = os.path.join(get_output_dir(), out_subfolder)
+    os.makedirs(output_dir, exist_ok=True)
+    static_prefix = template.split("%", 1)[0]
+    counter = _next_counter(output_dir, static_prefix)
+    filename_stem = format_filename(template, stage=stage, seed=seed, width=width, height=height, counter=counter)
+    out_filename = f"{filename_stem}.{extension}"
+    write(source_path, os.path.join(output_dir, out_filename))
+
+    return {"filename": out_filename, "subfolder": out_subfolder, "type": "output", "stage": stage}

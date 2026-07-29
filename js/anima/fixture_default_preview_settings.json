@@ -6,7 +6,7 @@
   },
   "save": {
     "embed_workflow": true,
-    "enabled": true,
+    "enabled": false,
     "extension": "png",
     "filename": "%date:yyyy-MM-dd%_%seed%_%stage%",
     "path": "AnimaFlow",

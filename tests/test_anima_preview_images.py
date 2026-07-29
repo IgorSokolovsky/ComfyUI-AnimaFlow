@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -200,6 +202,138 @@ def test_one_entry_list_with_no_metadata_falls_back_to_base_label():
     assert images[0]["stage"] == "base"
 
 
+# ---------------------------------------------------------------------------
+# "Save now" (task item 6) -- `nodes/anima/_preview_helpers.py`'s `save_now`.
+# Every touchpoint that would otherwise need PIL/folder_paths is injected
+# (`output_dir_fn`/`temp_dir_fn`/`exists_fn`/`probe_fn`/`write_fn`), matching
+# this file's own "fake the writer, don't perform it" convention -- only
+# `output_dir_fn`/`temp_dir_fn` point at a REAL temp directory (so
+# `os.makedirs`/`_next_counter`'s own `os.listdir` scan have something real
+# to touch); nothing here imports PIL or `folder_paths`.
+# ---------------------------------------------------------------------------
+
+
+def _save_now_fakes(tmp_root):
+    output_dir = os.path.join(tmp_root, "output")
+    temp_dir = os.path.join(tmp_root, "temp")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    calls = {"probe": [], "write": []}
+
+    def probe_fn(source_path):
+        calls["probe"].append(source_path)
+        return (64, 48)
+
+    def write_fn(source_path, dest_path):
+        calls["write"].append((source_path, dest_path))
+
+    return {
+        "output_dir_fn": lambda: output_dir,
+        "temp_dir_fn": lambda: temp_dir,
+        "exists_fn": lambda path: True,
+        "probe_fn": probe_fn,
+        "write_fn": write_fn,
+    }, calls
+
+
+def test_save_now_prefers_final_then_mid_then_base():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, calls = _save_now_fakes(tmp_root)
+        stage_entries = {
+            "base": {"filename": "base_temp.png", "subfolder": "", "type": "temp"},
+            "mid": {"filename": "mid_temp.png", "subfolder": "", "type": "temp"},
+            "final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"},
+        }
+        result = ph.save_now(
+            stage_entries=stage_entries,
+            preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
+            seed=42,
+            **fakes,
+        )
+        assert result["stage"] == "final"
+        assert result["type"] == "output"
+        assert result["filename"] == "final_42.png"
+        assert len(calls["write"]) == 1
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_falls_back_when_the_better_stages_are_absent():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        only_mid_and_base = {
+            "base": {"filename": "base_temp.png", "subfolder": "", "type": "temp"},
+            "mid": {"filename": "mid_temp.png", "subfolder": "", "type": "temp"},
+        }
+        result = ph.save_now(stage_entries=only_mid_and_base, preview_settings={}, **fakes)
+        assert result["stage"] == "mid"
+
+        only_base = {"base": {"filename": "base_temp.png", "subfolder": "", "type": "temp"}}
+        result2 = ph.save_now(stage_entries=only_base, preview_settings={}, **fakes)
+        assert result2["stage"] == "base"
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_raises_a_readable_error_when_nothing_is_available():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        try:
+            ph.save_now(stage_entries={}, preview_settings={}, **fakes)
+            raise AssertionError("expected SaveNowError")
+        except ph.SaveNowError as exc:
+            assert "nothing to save" in str(exc).lower()
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_raises_when_the_source_file_is_no_longer_on_disk():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        fakes["exists_fn"] = lambda path: False
+        try:
+            ph.save_now(
+                stage_entries={"base": {"filename": "gone.png", "subfolder": "", "type": "temp"}},
+                preview_settings={}, **fakes,
+            )
+            raise AssertionError("expected SaveNowError")
+        except ph.SaveNowError as exc:
+            assert "no longer on disk" in str(exc).lower()
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_reads_from_the_output_dir_for_an_already_saved_stage_temp_dir_otherwise():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        seen_sources = []
+        original_probe = fakes["probe_fn"]
+
+        def probe_fn(source_path):
+            seen_sources.append(source_path)
+            return original_probe(source_path)
+
+        fakes["probe_fn"] = probe_fn
+        ph.save_now(
+            stage_entries={"final": {"filename": "final.png", "subfolder": "sub", "type": "output"}},
+            preview_settings={}, **fakes,
+        )
+        assert seen_sources[0] == os.path.join(fakes["output_dir_fn"](), "sub", "final.png")
+
+        ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={}, **fakes,
+        )
+        assert seen_sources[1] == os.path.join(fakes["temp_dir_fn"](), "final_temp.png")
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 ALL_TESTS = [
     test_saving_off_yields_a_temp_entry_per_present_stage,
     test_saving_on_every_wired_input_yields_output_entries_no_temp_duplicates,
@@ -207,6 +341,11 @@ ALL_TESTS = [
     test_only_mid_present_yields_exactly_one_mid_entry,
     test_nothing_wired_yields_an_empty_list_no_exception,
     test_one_entry_list_with_no_metadata_falls_back_to_base_label,
+    test_save_now_prefers_final_then_mid_then_base,
+    test_save_now_falls_back_when_the_better_stages_are_absent,
+    test_save_now_raises_a_readable_error_when_nothing_is_available,
+    test_save_now_raises_when_the_source_file_is_no_longer_on_disk,
+    test_save_now_reads_from_the_output_dir_for_an_already_saved_stage_temp_dir_otherwise,
 ]
 
 
