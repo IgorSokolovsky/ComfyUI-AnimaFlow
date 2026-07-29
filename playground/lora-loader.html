@@ -155,6 +155,15 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
   <b>no API key</b>; only search and gated downloads may.
 </div>
 
+<div class="note">
+  <b>Three surfaces, one library.</b> The <b>LoRA Loader</b>'s browser is scoped to <code>loras</code>
+  and the <b>Loader Panel</b>'s to models — both are <i>pickers</i> that return a value to the row or
+  slot that opened them. The <b>toolbar modal</b> is <i>unscoped</i>: it answers to nobody, and each
+  result's destination folder comes from its own type.
+  <button class="btn" style="height:26px;margin-left:8px"
+    onclick="document.getElementById('modal').style.display='block'">Open the toolbar modal ↗</button>
+</div>
+
 <div class="wrap">
 
   <!-- ────────── the node ────────── -->
@@ -357,6 +366,75 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
   <i>could</i> scroll — Class A is the owner's preference for a row-list node, not a structural
   necessity. See <code>control-panel-design.md §7a</code> and the
   <code>comfyui-litegraph-node-sizing</code> skill before writing any sizing code.
+</div>
+
+<!-- ────────── NEW: the unscoped toolbar modal (90% of viewport) ────────── -->
+<div id="modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.62)">
+  <div style="position:absolute;left:5%;top:5%;width:90%;height:90%;background:var(--surface);
+    border:1px solid var(--line);border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.7);
+    display:flex;flex-direction:column;overflow:hidden">
+
+    <div class="ph" style="padding:10px 13px">
+      <span style="font-size:13.5px">Civitai</span>
+      <span class="badge" style="margin-left:8px">unscoped — all types</span>
+      <span class="badge key" style="margin-left:6px">public mode</span>
+      <span class="x" onclick="document.getElementById('modal').style.display='none'" style="margin-left:auto">✕</span>
+    </div>
+
+    <div style="display:flex;flex:1 1 auto;min-height:0">
+      <!-- filters -->
+      <div style="width:196px;flex:none;border-right:1px solid var(--line);padding:11px;overflow:auto">
+        <div style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent);margin-bottom:7px">FILTERS</div>
+        <div style="font-size:11px;color:var(--ink-dim);margin:9px 0 4px">Type</div>
+        <div class="seg" style="flex-wrap:wrap"><button class="on">LoRA</button><button>Checkpoint</button><button>All</button></div>
+        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Base model</div>
+        <div class="seg" style="flex-wrap:wrap"><button class="on">SDXL</button><button>Pony</button><button>Flux</button></div>
+        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Sort</div>
+        <div class="seg"><button class="on">Downloads</button><button>Newest</button></div>
+        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Period</div>
+        <div class="seg"><button>Week</button><button class="on">All time</button></div>
+        <div class="fld" style="margin-top:13px"><label style="font-size:11.5px">Show NSFW</label>
+          <div class="sw" onclick="this.classList.toggle('on')"></div></div>
+      </div>
+
+      <!-- results grid -->
+      <div style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column">
+        <div style="padding:10px 12px;border-bottom:1px solid var(--line-soft)">
+          <input type="text" style="width:100%;background:var(--console);border:1px solid var(--line-soft);
+            color:var(--ink);padding:7px 9px;border-radius:6px;font-size:12.5px" placeholder="Search Civitai…" value="skin detail">
+        </div>
+        <div style="flex:1 1 auto;overflow:auto;padding:12px;display:grid;
+          grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:11px;align-content:start">
+          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px">
+            <div class="tn" style="width:100%;height:104px">preview</div>
+            <div class="t">Skin Detail XL</div><div class="s">SDXL · 12.4k ↓</div>
+            <div class="dl have" style="text-align:center">✓ have</div>
+          </div>
+          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px">
+            <div class="tn" style="width:100%;height:104px">preview</div>
+            <div class="t">Realistic Pores v3</div><div class="s">SDXL · 8.1k ↓</div>
+            <div class="bar"><i></i></div>
+            <div class="s" style="text-align:center">downloading 38%</div>
+          </div>
+          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px">
+            <div class="tn" style="width:100%;height:104px">preview</div>
+            <div class="t">Fine Skin Texture</div><div class="s">Pony · 3.3k ↓</div>
+            <div class="dl" style="text-align:center">↓ get</div>
+          </div>
+          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px">
+            <div class="tn" style="width:100%;height:104px">🔒</div>
+            <div class="t">Early Access Skin Pack</div><div class="s">needs an API key</div>
+            <div class="dl" style="text-align:center;background:transparent;color:var(--warn);
+              border-color:rgba(251,191,36,.35)">key required</div>
+          </div>
+        </div>
+        <div class="hint" style="padding:8px 12px;border-top:1px solid var(--line-soft);margin:0">
+          Destination folder comes from each result's own <b>type</b>, not from whoever opened this —
+          that is what makes the modal <i>unscoped</i>. Downloads are server-side; a graph run is never blocked.
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>

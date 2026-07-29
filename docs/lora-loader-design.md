@@ -325,6 +325,62 @@ expose no policy).
 
 ---
 
+## 7c. THREE surfaces, one library (owner, 2026-07-29)
+
+The browser is mounted three times with different **scope** and different **intent**. Scope is a
+parameter, never a fork — §7a's `kind` plumbing is what makes this cheap.
+
+| surface | scope | intent | primary action |
+|---|---|---|---|
+| **LoRA Loader** node | `loras` **only** | "fill this row" | download **and select into the row that opened it** |
+| **Loader Panel** | **models only** (checkpoint / UNET) | "fill this loader" | download **and select into that slot** |
+| **Toolbar modal** — NEW | **unscoped** | "browse Civitai" | download to the correct folder, derived from the result's own type |
+
+The distinction that matters: the two **node-embedded** surfaces are *pickers* — narrow, kind-locked,
+and they return a value to the caller. The **modal** is a *browser* — it answers to nobody and its
+result lands on disk, with the destination folder taken from the result's type rather than from whoever
+opened it. Build the picker path first (it is what milestone 2 needs); the modal is milestone 2b.
+
+### The modal
+
+**90% of the viewport**, centred, over a scrim. Full features: search, **filters** (type, base model,
+sort, period, NSFW), a result grid with **preview images**, per-result detail with the author's
+description, and download with progress.
+
+⚠️ **It is deliberately NOT the Rule Builder's overlay geometry.** That one is
+`position: fixed; inset: 0; z-index: 10000` — genuinely full-bleed, because the Rule Builder is a work
+surface you *live in* while authoring. A browser is a "look something up, take it, come back" surface,
+so 90% with the graph visible at the edges keeps you oriented. Follow its *mechanism* (own overlay
+root, scrim, Escape, focus handling), not its dimensions.
+
+### Where the button goes, and the budget constraint that shapes it
+
+Beside the **Rule Builder's** toolbar button, following the same pattern its `index.js` already
+documents as lifted from `../ComfyUI-Pixaroma/js/align/index.js`: an **icon-only toolbar button**, plus
+an `app.registerExtension({ commands: [...] })` entry so it is also reachable from the command palette
+and bindable to a key.
+
+> 🚧 **A new `js/civitai/index.js` would be a SIXTH auto-loaded `.js` and is therefore forbidden** —
+> `.claude/CLAUDE.md` caps the pack at 5, and that ceiling is about what ComfyUI ships to every user on
+> every page load. **Mount the toolbar button from `js/controls/index.js`** — the entry point that
+> already registers this track's node classes and will register the LoRA loader too — and have it
+> **lazily `import()` the modal `.mjs`** only when the button is actually clicked. Same trick
+> `docs/settings.md` records for the settings section, which faced this exact choice and resolved it the
+> same way.
+
+### Two things to verify while in there
+
+- The Rule Builder's own `index.js` carries a **`VERIFY-IN-COMFYUI`** doubting whether its `commands`
+  entry surfaces anywhere a user can reach. Now that a live box is available, settle it — and if
+  `commands` is unreachable, the toolbar button is the *only* affordance and this new one must not rely
+  on `commands` either.
+- **Stale naming, user-visible:** that command's label reads **`"Webtoon: Rule Builder"`** and its CSS
+  classes are `webtoon-rb-*`, left from the deleted webtoon line. The pack is AnimaFlow. Worth fixing
+  in the same pass rather than adding a second, correctly-named button beside a wrong one — but it is a
+  rename of user-visible strings, so it is the owner's call, not a silent tidy-up.
+
+---
+
 ## 7b. The ⚙ dialog — what we take, and the two things we drop
 
 Upstream's dialog, read off a live screenshot (owner, 2026-07-29) — richer than its source grep
