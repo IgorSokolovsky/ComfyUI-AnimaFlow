@@ -1,0 +1,329 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AnimaFlow — LoRA Loader + Civitai browser (mockup)</title>
+<style>
+:root{
+  --bg:#0e1116; --surface:#151a21; --surface2:#1b212a; --line:#28303b; --line-soft:#1f2731;
+  --ink:#e7ecf3; --ink-dim:#93a0b1; --ink-faint:#5f6c7d; --console:#0a0d12;
+  --accent:#2dd4bf; --accent-strong:#34e5d2; --accent-deep:#14b8a6; --on-accent:#062420;
+  --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --info:#7dd3fc;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--font);padding:28px}
+h1{font-size:17px;margin:0 0 4px}
+.sub{color:var(--ink-dim);font-size:12.5px;margin-bottom:18px;max-width:900px}
+.sub b{color:var(--accent)}
+.note{border-left:2px solid var(--accent);background:rgba(45,212,191,.05);padding:9px 12px;
+  border-radius:0 8px 8px 0;margin:14px 0;font-size:12.5px;color:var(--ink-dim);max-width:900px}
+.note b{color:var(--ink)}
+code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
+.wrap{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+
+/* ── node chrome ───────────────────────────────────────────── */
+.node{width:392px;background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 8px 26px rgba(0,0,0,.45);flex:none}
+.ntitle{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--line);
+  font-weight:600;font-size:13px}
+.ndot{width:9px;height:9px;border-radius:50%;background:var(--accent);flex:none}
+.beta{margin-left:auto;font:10px var(--mono);color:var(--accent-deep);border:1px solid var(--line);
+  padding:1px 5px;border-radius:4px}
+.sock{display:flex;align-items:center;gap:7px;padding:3px 11px;font-size:12px;color:var(--ink-dim)}
+.sock .d{width:8px;height:8px;border-radius:50%;border:1px solid var(--ink-faint)}
+.sock.wired .d{background:var(--accent);border-color:var(--accent)}
+.sock.out{justify-content:flex-end}
+.body{padding:9px 10px 11px}
+
+/* ── header strip: add + gear ──────────────────────────────── */
+.hdr{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.btn{font:12px var(--font);background:var(--accent);color:var(--on-accent);border:1px solid var(--accent);
+  border-radius:6px;padding:0 11px;height:30px;cursor:pointer;font-weight:600}
+.btn:hover{background:var(--accent-strong)}
+.btn.ghost{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);font-weight:400}
+.btn.ghost:hover{color:var(--ink);border-color:var(--accent-deep)}
+.gear{margin-left:auto;width:26px;height:26px;display:grid;place-items:center;border-radius:6px;
+  color:var(--ink-dim);cursor:pointer;font-size:15px}
+.gear:hover{color:var(--accent);background:var(--surface2)}
+
+/* ── a LoRA row ────────────────────────────────────────────── */
+.row{display:flex;align-items:center;gap:7px;background:var(--surface2);
+  border:1px solid var(--line-soft);border-radius:8px;padding:5px 7px;margin-bottom:5px}
+.sw{width:30px;height:16px;border-radius:9px;background:var(--console);border:1px solid var(--line);
+  position:relative;cursor:pointer;flex:none}
+.sw::after{content:"";position:absolute;top:1px;left:1px;width:12px;height:12px;border-radius:50%;
+  background:var(--ink-faint);transition:transform .12s}
+.sw.on{background:rgba(45,212,191,.22);border-color:var(--accent-deep)}
+.sw.on::after{transform:translateX(14px);background:var(--accent)}
+.name{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:5px;background:var(--console);
+  border:1px solid var(--line-soft);border-radius:6px;padding:4px 7px;cursor:pointer;font-size:12px}
+.name:hover{border-color:var(--accent-deep)}
+.name .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.name .car{color:var(--ink-faint);font-size:9px;margin-left:auto}
+.name.missing .nm{color:var(--bad)}
+.name.missing::before{content:"⚠";color:var(--bad);font-size:11px;flex:none}
+.str{display:flex;align-items:center;gap:0;flex:none}
+.str input{width:46px;background:var(--console);border:1px solid var(--line-soft);color:var(--ink);
+  font:11.5px var(--mono);text-align:right;padding:3px 5px;border-radius:5px 0 0 5px;border-right:0}
+.spin{display:flex;flex-direction:column}
+.spin button{width:15px;height:11px;background:var(--console);border:1px solid var(--line-soft);
+  color:var(--ink-faint);font-size:7px;cursor:pointer;padding:0;line-height:1}
+.spin button:first-child{border-radius:0 5px 0 0;border-bottom:0}
+.spin button:last-child{border-radius:0 0 5px 0}
+.spin button:hover{color:var(--accent)}
+.iinfo{width:20px;height:20px;flex:none;display:grid;place-items:center;border-radius:5px;
+  border:1px solid var(--line);color:var(--ink-dim);font:italic 600 11px var(--font);cursor:pointer}
+.iinfo:hover{color:var(--accent);border-color:var(--accent-deep)}
+.empty{color:var(--ink-faint);font-size:12px;text-align:center;padding:16px 8px;font-style:italic}
+.outline{margin-top:8px;padding-top:8px;border-top:1px solid var(--line-soft);font:11px var(--mono);
+  color:var(--ink-dim)}
+.outline b{color:var(--accent)}
+
+/* ── floating panels ───────────────────────────────────────── */
+.panel{width:330px;background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  box-shadow:0 12px 34px rgba(0,0,0,.55);flex:none}
+.ph{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--line);
+  font-size:12.5px;font-weight:600}
+.ph .x{margin-left:auto;color:var(--ink-faint);cursor:pointer}
+.pb{padding:10px 11px}
+.fld{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:12px}
+.fld label{color:var(--ink-dim);flex:1 1 auto}
+.fld input[type=text],.fld input[type=number]{width:78px;background:var(--console);
+  border:1px solid var(--line-soft);color:var(--ink);font:11.5px var(--mono);padding:4px 6px;border-radius:5px}
+.seg{display:flex}
+.seg button{font:11px var(--mono);padding:4px 8px;background:var(--console);color:var(--ink-dim);
+  border:1px solid var(--line-soft);border-right:0;cursor:pointer}
+.seg button:first-child{border-radius:5px 0 0 5px}
+.seg button:last-child{border-radius:0 5px 5px 0;border-right:1px solid var(--line-soft)}
+.seg button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.hint{color:var(--ink-faint);font-size:11px;margin:-2px 0 9px}
+
+/* chips (trigger words) */
+.chips{display:flex;flex-wrap:wrap;gap:5px;max-height:96px;overflow:auto;padding:2px 0 6px}
+.chip{font:11px var(--mono);padding:3px 8px;border-radius:11px;background:var(--console);
+  border:1px solid var(--line-soft);color:var(--ink-dim);cursor:pointer}
+.chip.on{background:rgba(45,212,191,.16);border-color:var(--accent-deep);color:var(--accent-strong)}
+.thumb{width:100%;height:112px;border-radius:7px;background:var(--console);border:1px solid var(--line-soft);
+  display:grid;place-items:center;color:var(--ink-faint);font-size:11px;margin-bottom:9px}
+.status{display:flex;align-items:center;gap:6px;font:11px var(--mono);padding:5px 8px;border-radius:6px;
+  margin-bottom:9px;border:1px solid var(--line-soft);background:var(--console)}
+.status.found{color:var(--ok)}  .status.searching{color:var(--info)}
+.status.notfound{color:var(--warn)} .status.offline{color:var(--bad)}
+.desc{font-size:11.5px;color:var(--ink-dim);background:var(--console);border:1px solid var(--line-soft);
+  border-radius:6px;padding:7px 8px;max-height:88px;overflow:auto;margin-bottom:9px}
+
+/* search results */
+.sr{display:flex;gap:8px;padding:6px;border:1px solid var(--line-soft);border-radius:7px;
+  background:var(--surface2);margin-bottom:6px;align-items:center}
+.sr .tn{width:44px;height:44px;border-radius:5px;background:var(--console);flex:none;display:grid;
+  place-items:center;color:var(--ink-faint);font-size:9px}
+.sr .meta{flex:1 1 auto;min-width:0}
+.sr .t{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr .s{font:10px var(--mono);color:var(--ink-faint)}
+.dl{font:10.5px var(--mono);padding:3px 7px;border-radius:5px;cursor:pointer;flex:none;
+  background:var(--accent);color:var(--on-accent);border:1px solid var(--accent)}
+.dl.have{background:transparent;color:var(--ok);border-color:var(--line-soft);cursor:default}
+.bar{height:4px;border-radius:2px;background:var(--console);overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;background:var(--accent);width:38%}
+.badge{font:9.5px var(--mono);padding:1px 5px;border-radius:4px;border:1px solid var(--line-soft);
+  color:var(--ink-faint)}
+.badge.key{color:var(--warn);border-color:rgba(251,191,36,.35)}
+.stack{display:flex;flex-direction:column;gap:14px}
+</style>
+
+<h1>AnimaFlow — LoRA Loader + shared Civitai browser</h1>
+<div class="sub">
+  Mockup for <b>docs/lora-loader-design.md</b>. Everything is clickable: a row's <b>name</b> opens the
+  picker, <b>i</b> opens the info panel, <b>⚙</b> opens settings, <b>Browse Civitai</b> opens the
+  search/download browser. Panels below are shown expanded side-by-side rather than floating, so every
+  state is visible at once.
+</div>
+
+<div class="note">
+  <b>What is a port and what is new.</b> Rows, the searchable picker, missing-file marks, per-row
+  trigger-word picking and the hash-based Civitai lookup all exist upstream (MIT © pixaroma) and are
+  ported with attribution. <b>Search and download are new</b> — they are the two things upstream does
+  not have, so they are where this mockup earns its keep. The Civitai <b>metadata</b> lookup needs
+  <b>no API key</b>; only search and gated downloads may.
+</div>
+
+<div class="wrap">
+
+  <!-- ────────── the node ────────── -->
+  <div class="node">
+    <div class="ntitle"><span class="ndot"></span>Anima LoRA Loader<span class="beta">[BETA]</span></div>
+    <div class="sock wired"><span class="d"></span>model</div>
+    <div class="sock wired"><span class="d"></span>clip <span style="color:var(--ink-faint);font-size:11px">(optional)</span></div>
+    <div class="sock out">MODEL<span class="d" style="background:var(--accent);border-color:var(--accent)"></span></div>
+    <div class="sock out">CLIP<span class="d" style="background:var(--accent);border-color:var(--accent)"></span></div>
+    <div class="sock out">triggers<span class="d" style="background:var(--accent);border-color:var(--accent)"></span></div>
+
+    <div class="body">
+      <div class="hdr">
+        <button class="btn" onclick="addRow()">＋ Add LoRA</button>
+        <button class="btn ghost" onclick="show('browse')">Browse Civitai</button>
+        <div class="gear" onclick="show('gear')">⚙</div>
+      </div>
+      <div id="rows"></div>
+      <div class="outline">triggers → <b id="trig">detailed skin, freckles</b></div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <!-- ────────── searchable picker ────────── -->
+    <div class="panel" id="pick">
+      <div class="ph">Pick a LoRA <span class="x" onclick="hide('pick')">✕</span></div>
+      <div class="pb">
+        <div class="fld"><input type="text" style="width:100%" placeholder="Search LoRAs…" value="skin"></div>
+        <div class="hint">Grouped by subfolder. Typing searches <i>every</i> LoRA, flat.</div>
+        <div style="font:10px var(--mono);color:var(--ink-faint);margin:6px 0 3px">CHARACTER/</div>
+        <div class="sr" onclick="pickName('character/celica_v2.safetensors')">
+          <div class="meta"><div class="t">celica_v2.safetensors</div><div class="s">144 MB · SDXL</div></div>
+        </div>
+        <div style="font:10px var(--mono);color:var(--ink-faint);margin:6px 0 3px">DETAIL/</div>
+        <div class="sr" onclick="pickName('detail/skin_detail_xl.safetensors')">
+          <div class="meta"><div class="t">skin_detail_xl.safetensors</div><div class="s">72 MB · SDXL</div></div>
+        </div>
+        <div class="sr" onclick="pickName('detail/skin_pores.safetensors')">
+          <div class="meta"><div class="t">skin_pores.safetensors</div><div class="s">36 MB · unknown</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ────────── info panel (ⓘ) ────────── -->
+    <div class="panel" id="info">
+      <div class="ph">skin_detail_xl <span class="x" onclick="hide('info')">✕</span></div>
+      <div class="pb">
+        <div class="thumb">preview (from sidecar cache)</div>
+        <div class="status found">✓ found on Civitai · cached offline</div>
+        <div style="font:10px var(--mono);color:var(--ink-faint);margin-bottom:4px">
+          WORDS FROM
+          <span class="seg" style="display:inline-flex;margin-left:6px;vertical-align:middle">
+            <button>file</button><button class="on">civitai</button>
+          </span>
+        </div>
+        <div class="chips">
+          <div class="chip on" onclick="tog(this)">detailed skin</div>
+          <div class="chip on" onclick="tog(this)">freckles</div>
+          <div class="chip" onclick="tog(this)">pores</div>
+          <div class="chip" onclick="tog(this)">realistic skin texture</div>
+          <div class="chip" onclick="tog(this)">subsurface scattering</div>
+        </div>
+        <div style="font:10px var(--mono);color:var(--ink-faint);margin:6px 0 4px">AUTHOR'S NOTES <span class="badge">new</span></div>
+        <div class="desc">
+          Works best at 0.6–0.8 on SDXL. Stack under a character LoRA, not over it. Avoid combining
+          with other skin LoRAs — they fight and produce plastic highlights.
+        </div>
+        <div class="fld" style="margin-top:2px">
+          <button class="btn ghost" style="height:26px">Re-fetch</button>
+          <button class="btn ghost" style="height:26px;margin-left:auto">Forget cached</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <!-- ────────── NEW: Civitai browser ────────── -->
+    <div class="panel" id="browse" style="width:352px">
+      <div class="ph">Browse Civitai <span class="badge">new</span> <span class="x" onclick="hide('browse')">✕</span></div>
+      <div class="pb">
+        <div class="fld"><input type="text" style="width:100%" placeholder="Search Civitai…" value="skin detail"></div>
+        <div class="fld">
+          <span class="seg"><button class="on">LoRA</button><button>Checkpoint</button></span>
+          <span class="badge key" style="margin-left:auto" title="search may need a key">public mode</span>
+        </div>
+        <div class="hint">No API key set — public results only. Add one in Settings → AnimaFlow for gated files.</div>
+
+        <div class="sr">
+          <div class="tn">img</div>
+          <div class="meta"><div class="t">Skin Detail XL</div><div class="s">SDXL · 12.4k ↓</div></div>
+          <div class="dl have">✓ have</div>
+        </div>
+        <div class="sr">
+          <div class="tn">img</div>
+          <div class="meta">
+            <div class="t">Realistic Pores v3</div><div class="s">SDXL · 8.1k ↓ · downloading 38%</div>
+            <div class="bar"><i></i></div>
+          </div>
+          <div class="dl" style="opacity:.5">…</div>
+        </div>
+        <div class="sr">
+          <div class="tn">img</div>
+          <div class="meta"><div class="t">Fine Skin Texture</div><div class="s">Pony · 3.3k ↓</div></div>
+          <div class="dl">↓ get</div>
+        </div>
+        <div class="sr">
+          <div class="tn">🔒</div>
+          <div class="meta"><div class="t">Early Access Skin Pack</div><div class="s">SDXL · needs an API key</div></div>
+          <div class="dl" style="background:transparent;color:var(--warn);border-color:rgba(251,191,36,.35)">key</div>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          Downloads run server-side into <code>models/loras/</code> — the browser cannot write there.
+          A run is never blocked by a fetch.
+        </div>
+      </div>
+    </div>
+
+    <!-- ────────── gear settings ────────── -->
+    <div class="panel" id="gear">
+      <div class="ph">LoRA Loader settings <span class="x" onclick="hide('gear')">✕</span></div>
+      <div class="pb">
+        <div class="fld"><label>Default strength</label><input type="number" value="0.80" step="0.05"></div>
+        <div class="fld"><label>Show two strengths per row</label><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+        <div class="fld"><label>Trigger words separator</label><input type="text" value=", "></div>
+        <div class="fld"><label>LoRA memory use</label>
+          <span class="seg"><button class="on">last</button><button>all</button><button>none</button></span>
+        </div>
+        <div class="hint"><code>last</code> = ComfyUI parity · <code>all</code> = fast re-runs, GBs · <code>none</code> = re-read every run</div>
+        <div class="fld"><button class="btn ghost" style="height:26px">Set as default</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="margin-top:20px">
+  <b>Sizing — Class A.</b> Height is content, never draggable; width resizable with a minimum. Note the
+  reason differs from the Control Panel: this node has <b>no per-row output sockets</b>, so it
+  <i>could</i> scroll — Class A is the owner's preference for a row-list node, not a structural
+  necessity. See <code>control-panel-design.md §7a</code> and the
+  <code>comfyui-litegraph-node-sizing</code> skill before writing any sizing code.
+</div>
+
+<script>
+const LORAS = [
+  { name:"character/celica_v2.safetensors", on:true,  sm:0.85, sc:0.85, missing:false },
+  { name:"detail/skin_detail_xl.safetensors", on:true,  sm:0.70, sc:0.70, missing:false },
+  { name:"style/old_pack_v1.safetensors",     on:false, sm:1.00, sc:1.00, missing:true  },
+];
+function render(){
+  const host = document.getElementById("rows");
+  if(!LORAS.length){ host.innerHTML = '<div class="empty">No LoRAs yet — click ＋ Add LoRA.</div>'; return; }
+  host.innerHTML = LORAS.map((e,i)=>`
+    <div class="row" oncontextmenu="menu(event,${i})">
+      <div class="sw ${e.on?'on':''}" onclick="LORAS[${i}].on=!LORAS[${i}].on;render()"></div>
+      <div class="name ${e.missing?'missing':''}" onclick="show('pick')" title="${e.missing?'file not found in models/loras':e.name}">
+        <span class="nm">${e.name.split("/").pop().replace(".safetensors","")}</span><span class="car">▾</span>
+      </div>
+      <div class="str">
+        <input value="${e.sm.toFixed(2)}">
+        <div class="spin"><button onclick="bump(${i},.05)">▲</button><button onclick="bump(${i},-.05)">▼</button></div>
+      </div>
+      <div class="iinfo" onclick="show('info')">i</div>
+    </div>`).join("");
+}
+function bump(i,d){ LORAS[i].sm = Math.max(0, Math.min(2, LORAS[i].sm + d)); render(); }
+function addRow(){ LORAS.push({name:"(pick a LoRA)",on:true,sm:0.8,sc:0.8,missing:false}); render(); }
+function pickName(n){ const r=LORAS.find(x=>x.name==="(pick a LoRA)")||LORAS[1]; r.name=n; r.missing=false; render(); hide('pick'); }
+function menu(ev,i){ ev.preventDefault(); alert("Row menu: ↑  ↓  ⧉ Duplicate  ⌫ Remove"); }
+function tog(el){
+  el.classList.toggle("on");
+  const on=[...document.querySelectorAll("#info .chip.on")].map(c=>c.textContent.trim());
+  document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
+}
+function show(id){ document.getElementById(id).style.outline="1px solid var(--accent-deep)";
+  document.getElementById(id).scrollIntoView({block:"nearest",behavior:"smooth"});
+  setTimeout(()=>document.getElementById(id).style.outline="",900); }
+function hide(id){ document.getElementById(id).style.opacity=.45;
+  setTimeout(()=>document.getElementById(id).style.opacity=1,500); }
+render();
+</script>

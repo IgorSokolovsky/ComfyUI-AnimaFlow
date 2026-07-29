@@ -49,7 +49,15 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Next
 
-### 🎨 Our own LoRA loader — **needs a spec** (added 2026-07-29)
+### 🎨 Our own LoRA loader — **SPEC WRITTEN 2026-07-29**: [`lora-loader-design.md`](lora-loader-design.md) + [`playground/lora-loader.html`](../playground/lora-loader.html)
+
+> The design doc is now the contract; the notes below are the raw input that fed it. **Three things this
+> section listed as open are settled there by reading the upstream code:** the Civitai metadata lookup
+> needs **no API key** (hash-based, public endpoint — §2b), this is **not** a layer-3 socket-rows
+> consumer so that deferral stands untouched (§5), and it lands in `AnimaFlow/Controls` / `js/controls/`
+> at **zero cost** to the 5-auto-loaded-`.js` ceiling (§4a). **One decision is genuinely open: the
+> outbound-network policy** (§9) — plus the cheap question of whether the shared browser or the node
+> ships first.
 
 Wanted: an AnimaFlow LoRA loader, taking Pixaroma's as the starting point because it's the one the
 owner actually likes, and **carrying whatever it's missing** — plus spilling some of its capabilities
