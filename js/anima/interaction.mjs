@@ -172,6 +172,7 @@ import {
   injectStyles,
   buildPanelShell,
   buildSwitch,
+  buildInfoIcon,
   buildGearIcon,
   buildSectionHeader,
   withInfoIcon,
@@ -1417,6 +1418,13 @@ const NO_RUN_VALUE_NOTE = " The last run reported it supplied but carried no val
  * `eff` is `computeEffectiveContextSupplied(node)`'s own return shape --
  * see that function's doc comment for `source`/`runSupplied`/`values`.
  *
+ * **Never called for `"seed"`** (2026-07-29, seed-row/field-library
+ * dispatch) -- `buildSamplerSection`'s own per-field loop special-cases
+ * that one field to `buildSeedRow` instead, which composes `buildSeedField`
+ * with its own ⚙ (`seed_after_generate`'s mode) into ONE row, matching the
+ * Control Panel's own seed row shape rather than this function's plain
+ * "field, optionally wrapped with an ⓘ" shape.
+ *
  * The disabled value shown is the RUN's own (`eff.values[field]`) when the
  * last run actually reported one for this field, REGARDLESS of whether
  * `source` picked "live" or "run" for the TOOLTIP text (a field can be
@@ -1448,26 +1456,6 @@ function buildSamplerField(doc, node, ctx, field, sampler, eff) {
     fieldRoot = buildAnStepper(doc, ctx, { label: field, value: displayValue, options, disabledReason }, {
       onChange: (v) => { sampler[field] = v; persistGenState(node); },
     }).root;
-  } else if (field === "seed") {
-    // Text entry + roll, NOT a drag row -- a seed runs to 2**64-1, past a
-    // drag row's usable precision (`js/shared/fields.mjs`'s `buildSeedField`
-    // doc comment). `normalizeSeed`/`randomSeedString` are `js/anima/
-    // state.mjs`'s re-exports of `js/controls/rows.mjs`'s own tested pure
-    // maths (this module's own top-of-file "cross-track import" note).
-    let seedRef;
-    seedRef = buildSeedField(doc, { label: field, value: displayValue, disabledReason }, {
-      onCommit: (raw) => {
-        sampler.seed = normalizeSeed(raw);
-        persistGenState(node);
-        seedRef.repaint(sampler.seed);
-      },
-      onRoll: () => {
-        sampler.seed = randomSeedString();
-        persistGenState(node);
-        seedRef.repaint(sampler.seed);
-      },
-    });
-    fieldRoot = seedRef.root;
   } else {
     const opts = field === "cfg" ? { min: 0, max: 30, step: 0.1 }
       : { min: 1, max: 150, step: 1 }; // steps
@@ -1507,28 +1495,101 @@ function summaryFieldText(field, eff, sampler, format) {
   return fmt(sampler[field]);
 }
 
-/** The seed row's sibling: `sampler.seed_after_generate`'s own mode picker
- * (task item 3 -- "expose the mode... whatever set `applyAfterGenerate`
- * supports, read it, don't invent modes"). `AFTER_MODES` is `js/controls/
- * rows.mjs`'s own real list (`fixed`/`increment`/`decrement`/`randomize`),
- * re-exported through `state.mjs` -- the exact modes `applyAfterGenerate`
- * (this module's queue-hook advance, below) actually implements, nothing
- * invented here. Disabled under the SAME reason as the seed field itself:
- * if the context supplies `seed`, there is nothing here for a mode to
- * advance. Not itself part of `SAMPLER_FIELDS` (it has no context-bridge
- * socket of its own -- it's a UI-only sibling setting), so it's built
- * separately rather than through `buildSamplerField`'s own per-field loop. */
-function buildSeedAfterGenerateField(doc, node, sampler, eff) {
+/** The content of the seed row's own ⚙ menu -- `sampler.seed_after_generate`'s
+ * mode picker (task item 3 -- "expose the mode... whatever set
+ * `applyAfterGenerate` supports, read it, don't invent modes"). `AFTER_MODES`
+ * is `js/controls/rows.mjs`'s own real list (`fixed`/`increment`/`decrement`/
+ * `randomize`), re-exported through `state.mjs` -- the exact modes
+ * `applyAfterGenerate` (this module's queue-hook advance, below) actually
+ * implements, nothing invented here. Built through `buildAnStepper` (not the
+ * bare `buildStepperField`) so its own option list opens correctly like every
+ * other stepper in this track. Returns a `buildBody(box)` closure for
+ * `openAdvancedMenu`. */
+function buildSeedModeMenuBody(doc, ctx, node, sampler) {
+  return (box) => {
+    box.appendChild(buildSublabel(doc, "seed · advanced"));
+    box.appendChild(buildAnStepper(doc, ctx, {
+      label: "seed_after_generate", value: sampler.seed_after_generate, options: AFTER_MODES,
+    }, {
+      onChange: (v) => { sampler.seed_after_generate = v; persistGenState(node); },
+    }).root);
+  };
+}
+
+/**
+ * ONE seed row -- `buildSeedField` (value + roll) plus its OWN ⚙ for
+ * `seed_after_generate`, matching the Control Panel's own seed row shape
+ * (`js/controls/interaction.mjs`'s `buildSeedPopover`, opened from that
+ * row's ⚙): a single row, the mode lives behind the gear, never a second
+ * stepper row stacked beneath it (2026-07-29, seed-row/field-library
+ * dispatch -- replaces the old two-row shape, `buildSamplerField`'s former
+ * "seed" branch plus a separate `buildSeedAfterGenerateField` row appended
+ * right after it). Pure COMPOSITION change: `applyAfterGenerate`/
+ * `AFTER_MODES`/`clampSeedString`/`randomSeedString` (`state.mjs`'s
+ * re-exports) are untouched, and the field's own context-supplied disabled
+ * rule is unchanged -- the gear now disables IN LOCKSTEP with it (same
+ * reasoning the old `buildSeedAfterGenerateField`'s own `disabledReason`
+ * used to state: nothing to advance once the Bridge owns `seed` itself)
+ * rather than merely looking clickable with nowhere useful to go. Not
+ * itself part of `SAMPLER_FIELDS`' own per-field loop (`buildSamplerField`
+ * above is never called for `"seed"` any more) -- `buildSamplerSection`'s
+ * `buildBody` special-cases `"seed"` to call this instead.
+ */
+function buildSeedRow(doc, node, ctx, sampler, eff) {
   const isSupplied = !!eff.supplied.seed;
-  const disabledReason = isSupplied
+  const hasRunValue = !!eff.runSupplied.seed && Object.prototype.hasOwnProperty.call(eff.values, "seed");
+  const displayValue = hasRunValue ? eff.values.seed : sampler.seed;
+
+  let disabledReason;
+  if (isSupplied) {
+    disabledReason = eff.source.seed === "live"
+      ? "Supplied by the Context Bridge upstream — disconnect that socket to edit here."
+      : "Supplied at run time — from the Context Bridge or Use Everywhere; this frontend cannot see UE wires at edit time.";
+    if (eff.runSupplied.seed && !hasRunValue) {
+      disabledReason += NO_RUN_VALUE_NOTE;
+    }
+  }
+
+  // Text entry + roll, NOT a drag row -- a seed runs to 2**64-1, past a drag
+  // row's usable precision (`js/shared/fields.mjs`'s `buildSeedField` doc
+  // comment). `normalizeSeed`/`randomSeedString` are `js/anima/state.mjs`'s
+  // re-exports of `js/controls/rows.mjs`'s own tested pure maths (this
+  // module's own top-of-file "cross-track import" note).
+  let seedRef;
+  seedRef = buildSeedField(doc, { label: "seed", value: displayValue, disabledReason }, {
+    onCommit: (raw) => {
+      sampler.seed = normalizeSeed(raw);
+      persistGenState(node);
+      seedRef.repaint(sampler.seed);
+    },
+    onRoll: () => {
+      sampler.seed = randomSeedString();
+      persistGenState(node);
+      seedRef.repaint(sampler.seed);
+    },
+  });
+
+  // The gear disables coherently with the field itself -- if the context
+  // supplies `seed`, there is nothing here for a mode to advance, so the
+  // gear neither opens anything nor reads as a live control.
+  const gearTooltip = isSupplied
     ? "The seed itself is supplied by the Context Bridge upstream — there is nothing here for this mode to advance."
-    : undefined;
-  const fieldRoot = buildStepperField(doc, {
-    label: "seed_after_generate", value: sampler.seed_after_generate, options: AFTER_MODES, disabledReason,
-  }, {
-    onChange: (v) => { sampler.seed_after_generate = v; persistGenState(node); },
-  }).root;
-  return withInfoIcon(doc, fieldRoot, disabledReason, true);
+    : "Advanced: seed_after_generate (fixed/increment/decrement/randomize).";
+  let gearBtn;
+  gearBtn = buildGearIcon(doc, gearTooltip, isSupplied ? undefined : () => {
+    openAdvancedMenu(doc, ctx, "gen:sampler:seed:adv", gearBtn, null, buildSeedModeMenuBody(doc, ctx, node, sampler));
+  });
+  if (isSupplied) {
+    gearBtn.classList.add("wtn-fld-disabled");
+  }
+
+  const row = el(doc, "div", "wtn-an-fieldrow");
+  row.appendChild(seedRef.root);
+  if (disabledReason) {
+    row.appendChild(buildInfoIcon(doc, disabledReason, true));
+  }
+  row.appendChild(gearBtn);
+  return row;
 }
 
 function buildSamplerSection(doc, node, ctx, state) {
@@ -1562,10 +1623,13 @@ function buildSamplerSection(doc, node, ctx, state) {
     },
     buildBody: (body) => {
       SAMPLER_FIELDS.forEach((field) => {
-        body.appendChild(buildSamplerField(doc, node, ctx, field, sampler, eff));
-        if (field === "seed") {
-          body.appendChild(buildSeedAfterGenerateField(doc, node, sampler, eff));
-        }
+        // "seed" is ONE row (value + roll + its own ⚙ for the mode) -- see
+        // `buildSeedRow`'s own doc comment for why it's special-cased here
+        // rather than going through `buildSamplerField` like every other
+        // entry.
+        body.appendChild(field === "seed"
+          ? buildSeedRow(doc, node, ctx, sampler, eff)
+          : buildSamplerField(doc, node, ctx, field, sampler, eff));
       });
       body.appendChild(buildNumericField(doc, {
         label: "denoise", kind: "float", opts: { min: 0, max: 1, step: 0.01 },

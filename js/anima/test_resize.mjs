@@ -1489,6 +1489,12 @@ test("a context-supplied sampler field renders as the SAME field shape, genuinel
   assert.equal(seedIcon.title, "", "buildInfoIcon must set no `title` -- the native tooltip would double up with the themed one");
   assert.match(seedIcon.attributes["aria-label"], /Context Bridge/, "the ⓘ's tooltip must say WHERE the value comes from");
   assert.match(seedIcon.attributes["aria-label"], /disconnect that socket/i, "the tooltip must say how to get it back, not just that it's disabled");
+  // The seed row's own ⚙ (seed_after_generate's mode) must disable COHERENTLY
+  // with the field -- nothing to advance once the Bridge owns the seed.
+  const seedGear = seedWrap.children.find((c) => hasClass(c, "wtn-fld-gear"));
+  assert.ok(seedGear && hasClass(seedGear, "wtn-fld-disabled"), "the seed row's ⚙ must ALSO render disabled when seed is context-supplied");
+  fire(seedGear, "click");
+  assert.ok(!activeOverlayRef.current, "a disabled ⚙ must not open its menu");
 
   const stepsField = findFieldByLabel(body, "steps");
   assert.ok(stepsField && hasClass(stepsField, "wtn-fld-num") && !hasClass(stepsField, "wtn-fld-disabled"),
@@ -1536,11 +1542,30 @@ test("the seed row renders as TEXT + ROLL (js/shared/fields.mjs's buildSeedField
 
   const roll = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-roll"));
   assert.ok(roll, "must carry a roll control");
+});
 
-  // The seed_after_generate mode picker is its OWN row, immediately after
-  // the seed row, rendered as the shared stepper (not invented DOM).
-  const modeField = findFieldByLabel(body, "seed_after_generate");
-  assert.ok(modeField && hasClass(modeField, "wtn-fld-stepper"), "the mode picker must exist as a stepper row");
+test("the Generator's seed renders as ONE row -- exactly one seed-related row in the Sampler section, no standalone seed_after_generate stepper row, the mode reachable ONLY through the row's own ⚙ (2026-07-29, seed-row/field-library dispatch: matches the Control Panel's own seed-row-plus-gear shape instead of two stacked rows)", () => {
+  const node = makeGeneratorNode({ contextLink: null });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountGeneratorUI(node, ctx);
+  const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
+
+  // Exactly one seed-related row -- no separate seed_after_generate stepper
+  // sitting directly in the section body any more.
+  const seedRows = queryAll(body, (n) => hasClass(n, "wtn-fld-seed"));
+  assert.equal(seedRows.length, 1, "exactly one seed row must exist");
+  assert.ok(!findFieldByLabel(body, "seed_after_generate"), "seed_after_generate must NOT be its own row in the body");
+
+  const seedField = seedRows[0];
+  const seedRow = seedField.parentNode;
+  assert.ok(hasClass(seedRow, "wtn-an-fieldrow"), "the seed field is wrapped in a row alongside its own ⚙");
+
+  // The mode is reachable ONLY through the row's own ⚙.
+  const box = openGearMenu(seedRow);
+  const modeField = findFieldByLabel(box, "seed_after_generate");
+  assert.ok(modeField && hasClass(modeField, "wtn-fld-stepper"), "the mode picker must be reachable inside the seed row's own ⚙ menu");
 });
 
 test("typing a 20-digit seed into the field persists it VERBATIM into the serialized generation_settings widget -- no precision loss", () => {
@@ -1585,7 +1610,7 @@ test("clicking the roll button writes an in-range seed and persists it to the wi
   assert.equal(input.value, persisted.sampler.seed, "the input must repaint to the freshly-rolled value");
 });
 
-test("cycling the seed_after_generate stepper writes and persists the new mode", () => {
+test("cycling the seed_after_generate stepper -- reached via the seed row's own ⚙ (2026-07-29, seed-row/field-library dispatch) -- writes and persists the new mode", () => {
   const node = makeGeneratorNode({ contextLink: null });
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -1593,14 +1618,15 @@ test("cycling the seed_after_generate stepper writes and persists the new mode",
   const refs = mountGeneratorUI(node, ctx);
   const body = sectionBodyOf(findSectionHeader(refs.body, "Sampler"));
 
-  const modeField = findFieldByLabel(body, "seed_after_generate");
+  const seedField = findFieldByLabel(body, "seed");
+  const seedRow = seedField.parentNode;
+  const box = openGearMenu(seedRow);
+
+  const modeField = findFieldByLabel(box, "seed_after_generate");
+  assert.ok(modeField, "the mode picker must exist inside the ⚙ menu");
   const before = genState(node).sampler.seed_after_generate;
   assert.equal(before, "fixed");
-  const rightArrow = modeField.children.find((c) => c.children && c.children.length
-    && c.children.some((cc) => hasClass(cc, "wtn-fld-arrow") && hasClass(cc, "wtn-fld-right")));
-  const arrow = (rightArrow || modeField).children.find
-    ? queryAll(modeField, (n) => hasClass(n, "wtn-fld-arrow") && hasClass(n, "wtn-fld-right"))[0]
-    : null;
+  const arrow = queryAll(modeField, (n) => hasClass(n, "wtn-fld-arrow") && hasClass(n, "wtn-fld-right"))[0];
   assert.ok(arrow, "the stepper's right arrow must exist");
   fire(arrow, "click");
 
@@ -1608,6 +1634,21 @@ test("cycling the seed_after_generate stepper writes and persists the new mode",
   const persisted = JSON.parse(widget.value);
   assert.notEqual(persisted.sampler.seed_after_generate, before, "cycling the arrow must move the mode and persist it");
   assert.ok(AFTER_MODES.includes(persisted.sampler.seed_after_generate));
+
+  // The mode field ITSELF reflects the new value immediately (buildStepperField's
+  // own repaint, no menu rebuild needed for a plain value change) -- "the
+  // summary/row reflects it" from the task's own acceptance criteria.
+  const comboVal = queryAll(modeField, (n) => hasClass(n, "wtn-fld-combo-val"))[0];
+  assert.equal(comboVal.textContent, persisted.sampler.seed_after_generate);
+
+  // The seed VALUE still round-trips a 20-digit seed verbatim, unaffected by
+  // composing the mode behind the gear -- the same field, same commit path.
+  const huge = "16963467365598029952";
+  const input = seedField.children.find((c) => hasClass(c, "wtn-fld-seed-input"));
+  input.value = huge;
+  fire(input, "change");
+  const persistedAfter = JSON.parse(getGenSettingsWidget(node).value);
+  assert.equal(persistedAfter.sampler.seed, huge, "the seed value must still round-trip verbatim after the mode change");
 });
 
 test("fail-closed cases (context unwired, wired to a non-bridge, wired through a Reroute-shaped dead end, a cycle) all render every sampler field editable; even when a Reroute DOES resolve to a real bridge, a field the bridge itself doesn't wire stays editable", () => {
@@ -3259,6 +3300,14 @@ test("the popover mechanism is gone from js/anima/ entirely -- render.mjs's buil
   // The new inline-section shape IS exported, so this isn't "everything's gone".
   assert.equal(typeof render.buildSectionHeader, "function");
   assert.equal(typeof fields.buildInfoIcon, "function");
+});
+
+test("buildTextField/buildBoolField/buildSublabel/buildMissing (2026-07-29, seed-row/field-library dispatch) live in js/shared/fields.mjs and are re-exported, BYTE-IDENTICAL (same function reference), from js/anima/render.mjs -- so every existing call site (and this file's own earlier tests) keeps working unchanged", () => {
+  for (const name of ["buildTextField", "buildBoolField", "buildSublabel", "buildMissing"]) {
+    assert.equal(typeof fields[name], "function", `${name} must be importable from js/shared/fields.mjs`);
+    assert.equal(typeof render[name], "function", `${name} must still be re-exported from js/anima/render.mjs`);
+    assert.equal(render[name], fields[name], `${name}: render.mjs's export must be the SAME function reference as fields.mjs's, not a second implementation`);
+  }
 });
 
 test("interaction.mjs re-imports js/shared/overlay.mjs (2026-07-28, hybrid essentials/⚙ dispatch) -- for ANCHORED MENUS only (⚙ menus, stepper option lists), not the deleted per-section popover shape (already asserted gone, above)", () => {

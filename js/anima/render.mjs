@@ -138,11 +138,15 @@
  *
  * Same split as before: `interaction.mjs`'s `buildXSection` functions build
  * a section's inline content using the small field builders THIS module
- * exports (`buildTextField`/`buildBoolField` locally, `js/shared/fields.mjs`'s
- * `buildNumericField`/`buildStepperField`/`buildSwitch`/`buildInfoIcon`
- * re-exported from here). Free-text fields (`detect_prompt`, `filename`,
- * `path`, …) have no Control Panel analogue, so `buildTextField` stays local
- * to this module.
+ * re-exports from `js/shared/fields.mjs` (`buildNumericField`/
+ * `buildStepperField`/`buildSwitch`/`buildInfoIcon`, and — 2026-07-29,
+ * seed-row/field-library dispatch — `buildTextField`/`buildBoolField`/
+ * `buildSublabel`/`buildMissing`, moved there from this file verbatim: all
+ * four were generic templates with no Anima-specific behaviour, so they
+ * belong in the pack's one shared field library rather than duplicated per
+ * track. This module keeps re-exporting them under their own names so no
+ * call site here (or in `interaction.mjs`, or this file's own
+ * `test_resize.mjs`) had to change.
  *
  * ## Wheel: scroll the panel when it has room, zoom the canvas otherwise
  *
@@ -178,6 +182,7 @@
 import { MAX_DETAILER_PASSES, isBuiltinDetailerBlock } from "./state.mjs";
 import {
   injectFieldStyles, buildSwitch, buildInfoIcon, buildGearIcon,
+  buildTextField, buildBoolField, buildSublabel, buildMissing,
   FLD_ROW_H, FLD_ROW_GAP, applyFieldFontScale,
 } from "../shared/fields.mjs";
 // Re-exported below (never redefined here) so `index.js` can reach it as
@@ -411,27 +416,15 @@ function buildCss() {
 .wtn-an-fieldrow { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 .wtn-an-fieldrow > *:first-child { flex: 1; min-width: 0; margin-bottom: 0; }
 
-/* ── free-text field (no Control Panel analogue -- see this module's top
-   doc comment) ── */
-.wtn-an-field { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 2px; }
-.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 135px; flex: none; }
-.wtn-an-field input { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
-  font-size: 13px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
-  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 5px 7px; outline: none; }
-.wtn-an-field input:focus { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
-
-/* ── boolean field: label + shared pill switch ── */
-.wtn-an-boolfield { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 5px; }
-.wtn-an-boolfield > span:first-child { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
-.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 12px;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
-
-.wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em; text-transform: uppercase;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
-  display: flex; align-items: center; gap: 7px; }
-.wtn-an-sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.wtn-an-missing { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
-  padding: 11px 12px; border-radius: 8px; margin-bottom: 12px; background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28); }
+/* ── .wtn-an-field / .wtn-an-boolfield / .wtn-an-sublab / .wtn-an-missing --
+   MOVED to js/shared/fields.mjs's own injected stylesheet (2026-07-29,
+   seed-row/field-library dispatch), alongside the JS builders that use them
+   (\`buildTextField\`/\`buildBoolField\`/\`buildSublabel\`/\`buildMissing\`, now
+   re-exported from there -- this file's own top import). \`injectStyles\`
+   below already calls \`injectFieldStyles\` first, so these rules are on the
+   page before this function's own <style> tag lands; removing them from
+   here is not a behaviour change, just following the CSS to where its JS
+   now lives. ── */
 .wtn-an-passtabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .wtn-an-passtabs button { font-family: var(--wtn-font-mono, monospace); font-size: 12px; padding: 5px 11px; cursor: pointer;
   border-radius: 6px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); background: var(--wtn-surface-2, ${TOKENS.surface2});
@@ -621,12 +614,6 @@ function el(doc, tag, className) {
   return e;
 }
 
-function text(doc, tag, className, str) {
-  const e = el(doc, tag, className);
-  e.textContent = str;
-  return e;
-}
-
 /** The panel shell -- ONE scrollable box (this module's top doc comment).
  * `root` is the DOM widget's actual root (what `index.js`'s `addDOMWidget`
  * mounts and what `installCanvasZoomPassthrough` installs on); `panel` is
@@ -804,65 +791,15 @@ export function sectionLabel(doc, label, count) {
   return sec;
 }
 
-// ---------------------------------------------------------------------------
-// Local field builders -- these have no Control Panel analogue (free text)
-// or are a trivial label+switch combination not worth its own shared module
-// entry (see this module's top doc comment).
-// ---------------------------------------------------------------------------
-
-/** A plain labeled text `<input>`. Returns `{ root, control }`. */
-export function buildTextField(doc, label, value) {
-  const field = el(doc, "div", "wtn-an-field");
-  const span = el(doc, "span");
-  span.textContent = label;
-  field.appendChild(span);
-  const control = el(doc, "input");
-  control.type = "text";
-  control.value = value == null ? "" : String(value);
-  field.appendChild(control);
-  return { root: field, control };
-}
-
-/** A label + `js/shared/fields.mjs` pill switch, with an inline on/off word
- * (mirrors this module's inline-note habit rather than a bare pill with no
- * text). Returns `{ root, switchEl, word }`. */
-export function buildBoolField(doc, label, value) {
-  const field = el(doc, "div", "wtn-an-boolfield");
-  const span = el(doc, "span");
-  span.textContent = label;
-  const switchEl = buildSwitch(doc, !!value);
-  const word = el(doc, "span");
-  word.textContent = value ? "on" : "off";
-  field.appendChild(span);
-  field.appendChild(switchEl);
-  field.appendChild(word);
-  return { root: field, switchEl, word };
-}
-
-/** An uppercase mono group sub-label, optionally carrying its own ⓘ (this
- * module's top doc comment: one consistent affordance for explanatory text
- * instead of a `buildNote` text block eating vertical space). */
-export function buildSublabel(doc, str, infoTooltip, infoWarn) {
-  const root = el(doc, "div", "wtn-an-sublab");
-  const span = el(doc, "span");
-  span.textContent = str;
-  root.appendChild(span);
-  if (infoTooltip) {
-    root.appendChild(buildInfoIcon(doc, infoTooltip, infoWarn));
-  }
-  return root;
-}
-
-/** A short "this section is unavailable" status block -- rendered inside an
- * expanded section body when a required soft-import package is absent (the
- * header's own ⓘ already carries the SAME text as its tooltip; this is the
- * body's fuller, always-visible restatement for when the section is open). */
-export function buildMissing(doc, str) {
-  const m = el(doc, "div", "wtn-an-missing");
-  const k = text(doc, "span", "", str);
-  m.appendChild(k);
-  return m;
-}
+// buildTextField / buildBoolField / buildSublabel / buildMissing used to be
+// defined here (a plain labeled text input, a label+switch combo, an
+// uppercase sub-label, and a "section unavailable" block) -- all four were
+// generic templates with no Anima-specific behaviour, so they MOVED to
+// `js/shared/fields.mjs` (2026-07-29, seed-row/field-library dispatch) and
+// are re-exported below (imported at this file's own top) so every call
+// site here, in `interaction.mjs`, and in this file's own `test_resize.mjs`
+// keeps working unchanged.
+export { buildTextField, buildBoolField, buildSublabel, buildMissing };
 
 // ---------------------------------------------------------------------------
 // Resize -- 2026-07-28 (this dispatch) reversal from the ComfyUI-Pixaroma

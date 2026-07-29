@@ -1,4 +1,30 @@
 /**
+ * ## Module contract (2026-07-29, seed-row/field-library dispatch)
+ *
+ * **This is the pack's field library.** Every node UI in this repo composes
+ * its body out of the builders exported below (a pill switch, a numeric drag
+ * row, a stepper, a seed row, a plain text field, a bool field, a sub-label,
+ * a "section unavailable" block, the ⓘ/⚙ glyphs) rather than hand-rolling an
+ * equivalent locally. **A track that needs a new field adds it HERE** (or
+ * reuses an existing export) — never as a local variant sitting only in that
+ * track's own `render.mjs`. This is the concrete lesson of the seed field:
+ * an earlier dispatch built a fresh `buildSeedField` here while `js/
+ * controls/` already had a complete seed affordance, AND laid the Generator's
+ * seed out as two stacked rows (value, then a separate mode stepper) instead
+ * of matching the Control Panel's one-row-plus-gear shape — both mistakes
+ * this comment exists to stop from recurring.
+ *
+ * **What does NOT belong here: rows, sockets, slots.** A Controls *row*
+ * (`js/controls/render.mjs`'s `buildRowElement`) is a different thing from a
+ * FIELD — it's the OUTER, unclipped positioning context for a litegraph
+ * output socket, a slot, and drag-to-reorder (that file's own top doc
+ * comment). Nothing with socket/slot/output-dot bookkeeping ever moves into
+ * this module; only the field-level content a row or a section body wraps
+ * around. `js/controls/rows.mjs`'s PURE maths (`clampNumeric`/`rangeOf`/
+ * `clampSeedString`/etc) is a separate, one-directional import INTO this
+ * file (see below) — that stays as-is, it's the reused arithmetic, not a
+ * DOM shape.
+ *
  * fields.mjs — small themed field primitives shared across tracks: a pill
  * switch, an info glyph, a drag-to-set numeric row with an inline fill, and a
  * `◀ [ value ] ▶` stepper row. Extracted while building `js/anima/`
@@ -303,6 +329,14 @@ function buildCss() {
   color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-fld-gear:hover, .wtn-fld-gear.wtn-fld-gear-active { color: var(--wtn-accent, ${TOKENS.accent});
   background: rgba(45,212,191,.12); }
+/* 2026-07-29 (seed-row/field-library dispatch) -- a gear can disable
+   coherently with the field it belongs to (the seed row's own ⚙: nothing to
+   advance once the context supplies \`seed\` itself). \`pointer-events: none\`
+   is the actual disable (no click reaches the handler at all, same as
+   \`.wtn-fld-seed.wtn-fld-disabled .wtn-fld-seed-roll\`'s own rule); the
+   opacity/cursor match every other \`.wtn-fld-disabled\` treatment in this
+   file so a disabled gear reads the same dimmed way a disabled field does. */
+.wtn-fld-gear.wtn-fld-disabled { opacity: .4; cursor: default; pointer-events: none; }
 
 /* ── ⓘ hover tooltip -- this module's own fallback for js/shared/theme.css's
    \`.wtn-tip\` (this pack's convention: theme.css may not have landed). The
@@ -422,6 +456,35 @@ function buildCss() {
   color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-fld-seed-roll:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-fld-seed.wtn-fld-disabled .wtn-fld-seed-roll { pointer-events: none; cursor: default; }
+
+/* ── the four builders below this file's "Local field builders, moved from
+   js/anima/render.mjs" section -- CSS moved here VERBATIM (2026-07-29,
+   seed-row/field-library dispatch) along with the JS. Class names are
+   UNCHANGED (\`wtn-an-field\`/\`wtn-an-boolfield\`/\`wtn-an-sublab\`/
+   \`wtn-an-missing\`, still \`an\`-prefixed) even though the builders now
+   live in a shared module -- \`js/anima/test_resize.mjs\` asserts on these
+   exact class names in dozens of places, and this is a pure relocation, not
+   a rename; renaming would be its own (untested-by-this-dispatch) churn for
+   no behavioural gain. If a SECOND track ever reuses these builders, that's
+   the point to revisit the naming -- not before. ── */
+.wtn-an-field { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 2px; }
+.wtn-an-field > span { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); width: 135px; flex: none; }
+.wtn-an-field input { flex: 1; min-width: 0; font-family: var(--wtn-font-mono, monospace);
+  font-size: 13px; color: var(--wtn-ink, ${TOKENS.ink}); background: var(--wtn-console, ${TOKENS.console});
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 5px; padding: 5px 7px; outline: none; }
+.wtn-an-field input:focus { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+
+.wtn-an-boolfield { display: flex; align-items: center; gap: 9px; font-size: 13.5px; margin-bottom: 5px; }
+.wtn-an-boolfield > span:first-child { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-an-boolfield > span:last-child { margin-left: auto; font-family: var(--wtn-font-mono, monospace); font-size: 12px;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+
+.wtn-an-sublab { font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  display: flex; align-items: center; gap: 7px; }
+.wtn-an-sublab:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.wtn-an-missing { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  padding: 11px 12px; border-radius: 8px; margin-bottom: 12px; background: rgba(251,191,36,.06); border: 1px solid rgba(251,191,36,.28); }
 `;
 }
 
@@ -960,5 +1023,75 @@ export function buildSeedField(doc, spec, { onCommit, onRoll } = {}) {
   }
 
   return { root, input, roll, repaint };
+}
+
+// ---------------------------------------------------------------------------
+// Local field builders, moved from js/anima/render.mjs (2026-07-29,
+// seed-row/field-library dispatch). All four were already generic templates
+// with no Anima-specific behaviour -- a plain labeled text input, a label +
+// pill switch, an uppercase mono sub-label, and a "this section is
+// unavailable" status block -- so they belong in the shared library this
+// module's own top doc comment describes, not duplicated per track.
+// `js/anima/render.mjs` re-exports every one of these under its OWN name
+// (`export { buildTextField, buildBoolField, buildSublabel, buildMissing }
+// from "../shared/fields.mjs"`) so no call site in that track (or its own
+// test file) had to change. Class names are unchanged -- see this file's
+// matching CSS comment, just above `buildCss`'s closing backtick, for why.
+// ---------------------------------------------------------------------------
+
+/** A plain labeled text `<input>`. Returns `{ root, control }`. */
+export function buildTextField(doc, label, value) {
+  const field = el(doc, "div", "wtn-an-field");
+  const span = el(doc, "span");
+  span.textContent = label;
+  field.appendChild(span);
+  const control = el(doc, "input");
+  control.type = "text";
+  control.value = value == null ? "" : String(value);
+  field.appendChild(control);
+  return { root: field, control };
+}
+
+/** A label + this module's own pill switch (`buildSwitch`, above), with an
+ * inline on/off word (mirrors this pack's inline-note habit rather than a
+ * bare pill with no text). Returns `{ root, switchEl, word }`. */
+export function buildBoolField(doc, label, value) {
+  const field = el(doc, "div", "wtn-an-boolfield");
+  const span = el(doc, "span");
+  span.textContent = label;
+  const switchEl = buildSwitch(doc, !!value);
+  const word = el(doc, "span");
+  word.textContent = value ? "on" : "off";
+  field.appendChild(span);
+  field.appendChild(switchEl);
+  field.appendChild(word);
+  return { root: field, switchEl, word };
+}
+
+/** An uppercase mono group sub-label, optionally carrying its own ⓘ (this
+ * pack's convention for a group-level explanatory note instead of a text
+ * block eating vertical space). */
+export function buildSublabel(doc, str, infoTooltip, infoWarn) {
+  const root = el(doc, "div", "wtn-an-sublab");
+  const span = el(doc, "span");
+  span.textContent = str;
+  root.appendChild(span);
+  if (infoTooltip) {
+    root.appendChild(buildInfoIcon(doc, infoTooltip, infoWarn));
+  }
+  return root;
+}
+
+/** A short "this section is unavailable" status block -- rendered inside an
+ * expanded section body when a required soft-import package is absent (a
+ * section header's own ⓘ already carries the SAME text as its tooltip; this
+ * is the body's fuller, always-visible restatement for when the section is
+ * open). */
+export function buildMissing(doc, str) {
+  const m = el(doc, "div", "wtn-an-missing");
+  const k = el(doc, "span");
+  k.textContent = str;
+  m.appendChild(k);
+  return m;
 }
 
