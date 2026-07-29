@@ -562,8 +562,9 @@ function buildCss() {
 /* ── "Save now" (task item 6) -- rendered only while save.enabled is off
    (interaction.mjs's buildSaveNowRow); \`.wtn-btn\`/\`.wtn-btn--primary\` are
    the house button classes theme.css already defines (js/shared/theme.mjs's
-   own \`injectTheme\`), so this row needs no button styling of its own, just
-   layout + the status readout beside it. \`.wtn-an-savenow-err\` swaps the
+   own \`injectTheme\`), so this row needs no LAYOUT-independent button
+   styling of its own beyond the height override just below -- just layout +
+   the status readout beside it. \`.wtn-an-savenow-err\` swaps the
    status text to the theme's bad/error token for a readable failure instead
    of a silently-blank one. Sits INSIDE \`.wtn-an-saverow\` now (beside the
    Save card, not below it) -- \`flex: 0 1 auto\`/\`min-width: 0\` let it
@@ -575,6 +576,26 @@ function buildCss() {
    spacing back when it was a standalone body child below the Save card) --
    the wrapper above now owns that spacing for the row as a whole. ── */
 .wtn-an-savenow { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; }
+
+/* ── the "Save now" BUTTON's own height, pinned to \`SAVE_NOW_BTN_H\` (===
+   \`SHEAD_H\`, see that constant's own doc comment) -- the bug this fixes:
+   \`.wtn-btn\`'s shared \`padding: 9px 15px\` (theme.css, a LOCKED shared file
+   -- see this track's own house-theme skill) renders at its own intrinsic
+   height regardless of \`SHEAD_H\`, so a bare \`height\` override here would
+   still overflow unless the vertical padding is zeroed too. Two classes
+   (\`.wtn-btn.wtn-an-savenow-btn\`) rather than one, so this rule's
+   specificity (0,2,0) beats the shared \`.wtn-btn\` rule (0,1,0) regardless
+   of which stylesheet lands in the page first -- \`theme.css\` and this
+   file's own injected \`<style>\` have no guaranteed relative order (see this
+   file's own top doc comment on \`theme.mjs\`'s guarded dynamic import).
+   \`box-sizing: border-box\` is already the pack-wide default (\`.wtn *\` in
+   theme.css), so \`height\` here already includes the border/padding box,
+   not just the content box -- flex-centering the label is what keeps the
+   text from clipping against the top/bottom now that vertical padding is
+   gone. ── */
+.wtn-an-savenow-btn.wtn-btn { height: ${SAVE_NOW_BTN_H}px; padding-top: 0; padding-bottom: 0;
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+
 .wtn-an-savenow-status { font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .wtn-an-savenow-status.wtn-an-savenow-err { color: var(--wtn-bad, ${TOKENS.bad}); }
@@ -1072,42 +1093,48 @@ export const PREVIEW_MIN_W = 320; // was 444
 // the Preview's smallest possible height.
 export let PREVIEW_IMG_MIN_H = 188; // was 160
 
-// A native \`.wtn-btn\` (\`js/shared/theme.css\`: 13px font, 9px/15px
-// padding, 1px border) rendered at its own intrinsic height, NOT the
-// track's own \`SHEAD_H\` -- the Save-now button comes from the pack's
-// SHARED theme, untouched by this track's own "Node panel type size"
-// scale pass (same reasoning as \`_PREVIEW_CHROME_ADDEND\` below: this is
-// litegraph/theme-native geometry, not this file's own type scale).
-// ~36px (13px line box + 2*9px padding + 2*1px border, rounded) is what
-// the \`.wtn-an-saverow\`'s own height floor below is built from.
-// VERIFY-IN-COMFYUI: read off theme.css's own rule, not measured live.
-const SAVE_NOW_BTN_H = 36;
+// **Bug fix, live-use report (owner): "Save now" was TALLER than the Save
+// card beside it in \`.wtn-an-saverow\`.** This constant used to be its own
+// literal (36 -- a native \`.wtn-btn\`'s intrinsic height: 13px line box +
+// 2*9px padding + 2*1px border, rounded), reasoned as "theme-native
+// geometry, not this file's own type scale" -- which was true but beside
+// the point: \`SHEAD_H\` (the card's height) DOES scale with the "Node
+// panel type size" setting while a bare 36 never did, so the two only ever
+// matched by coincidence at the 14px baseline (36 vs 32, a 4px miss) and
+// diverge further at any other scale (e.g. doubled: 36 vs 64, the button
+// dramatically SHORTER than the card). The fix is definitional, not a
+// bigger literal: this button's height IS \`SHEAD_H\`, always, by
+// construction -- see \`applyPanelFontScale\` below, which keeps this in
+// lockstep with \`SHEAD_H\` the same way every other floor in this section
+// is kept in lockstep with its own \`_PANEL_DEFAULTS\` base. Kept as its own
+// named export (rather than inlining \`SHEAD_H\` at the one CSS call site)
+// purely for readability -- \`.wtn-an-savenow-btn\`'s CSS rule below reads
+// "the save-now button's height" rather than a bare \`SHEAD_H\` reference
+// that says nothing about WHY a button has a header's height.
+// \`.wtn-btn\`'s own \`padding: 9px 15px\` (theme.css, a locked shared file)
+// would otherwise push the rendered box past this -- the CSS rule below
+// zeroes the VERTICAL padding and flex-centers the label instead, on the
+// track-local \`.wtn-an-savenow-btn\` class rather than editing the shared
+// button.
+export let SAVE_NOW_BTN_H = SHEAD_H;
 
 // The Preview PANEL's own floor (`.wtn-an-panel.wtn-an-panel-pv`'s
 // `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
 // `.wtn-an-panel` rule).
 //
-// **Recomputed again (2026-07-29, Compare-card dispatch)** -- 284 -> 292,
-// now that the body carries a real THIRD card (`.wtn-an-comparecard`,
-// replacing the old bottom `.wtn-an-pvbar` row) directly below a Save ROW
-// that itself grew a sibling ("Save now", moved beside the Save card
-// instead of living as its own separate body child below it -- task 1a).
-// Net effect on the sum below: the Save row's own height is now governed
-// by the (slightly taller) "Save now" BUTTON rather than the (slightly
-// shorter) Save card alone whenever the button is present (`save.enabled`
-// off, the default) -- `Math.max(SHEAD_H, SAVE_NOW_BTN_H)` above -- while
-// the Compare card's own contribution is now a real `.wtn-an-shead`-shaped
-// row (`SHEAD_H + SHEAD_GAP`) instead of the old bare `.wtn-an-pvbar`'s
-// smaller intrinsic height. Body child count stays THREE either way
-// (save row / compare card / wipe), so the gap term is unchanged. Sizing
-// for what's actually there is still what lets this panel never scroll,
-// ever, with no auto-grow-on-repaint mechanism needed (this dispatch
-// deliberately does NOT reintroduce `refitNode`/`scheduleRefit` -- see
-// this section's own top comment). Arithmetic, read off the CSS above and
-// `js/shared/fields.mjs`'s own field heights (`SHEAD_H`/`FLD_ROW_H` etc,
-// this file's/that file's own exported constants):
-//   Save ROW (.wtn-an-saverow: max(SHEAD_H 32, SAVE_NOW_BTN_H 36) = 36,
-//     + the wrapper's own margin-bottom SHEAD_GAP 5)                      =  41
+// **Recomputed again (2026-07-29, Save-now-height fix)** -- 292 -> 288, now
+// that "Save now" no longer has its own taller intrinsic height (previous
+// dispatch's `Math.max(SHEAD_H, SAVE_NOW_BTN_H)` collapses to plain
+// `SHEAD_H`, since `SAVE_NOW_BTN_H` IS `SHEAD_H` now -- see that constant's
+// own doc comment above for the bug this fixes). The Compare-card dispatch
+// immediately before this one (284 -> 292) is otherwise unchanged: still a
+// real THIRD card (`.wtn-an-comparecard`) below a Save ROW that carries its
+// own sibling ("Save now", beside the Save card, not below it). Arithmetic,
+// read off the CSS above and `js/shared/fields.mjs`'s own field heights
+// (`SHEAD_H`/`FLD_ROW_H` etc, this file's/that file's own exported
+// constants):
+//   Save ROW (.wtn-an-saverow: max(SHEAD_H 32, SAVE_NOW_BTN_H 32) = 32,
+//     + the wrapper's own margin-bottom SHEAD_GAP 5)                      =  37
 //   Compare CARD (.wtn-an-shead height SHEAD_H 32 + margin-bottom
 //     SHEAD_GAP 5, same shape as the Save card)                          =  37
 //   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                      = 188
@@ -1115,10 +1142,10 @@ const SAVE_NOW_BTN_H = 36;
 //     Save row, the Compare card, and the wipe)                         =  10
 //   .wtn-an-panel's padding (7 top + 7 bottom)                          =  14
 //   .wtn-an-panel's border (1 top + 1 bottom)                          =   2
-//                                                               total   = 292
+//                                                               total   = 288
 // Already a multiple of 4 -- no further rounding needed (matches
 // measureMinHeight's own round-to-4px convention below).
-export let PREVIEW_PANEL_MIN_H = 292; // was 284
+export let PREVIEW_PANEL_MIN_H = 288; // was 292
 
 // The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
 // the DOM widget itself doesn't cover: the title bar (LiteGraph's default
@@ -1135,7 +1162,7 @@ export let PREVIEW_PANEL_MIN_H = 292; // was 284
 // VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
 // read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
 // widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
-export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(284) + 80
+export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(292) + 80 = 372
 
 // The litegraph-native chrome addend just above (80) -- frozen, NEVER
 // scaled by `applyPanelFontScale` (this constant's own doc comment).
@@ -1155,7 +1182,7 @@ const _GENERATOR_CHROME_ADDEND = 100;
 // (idempotent, never compounding).
 const _PANEL_BASE_PX = 14;
 const _PANEL_DEFAULTS = {
-  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 292,
+  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 288,
 };
 
 /** Round `x` to the nearest 4px -- matches `measureMinHeight`'s own
@@ -1166,9 +1193,10 @@ function roundTo4(x) {
 }
 
 /**
- * Recompute `BASE_FONT`/`SHEAD_H`/`SHEAD_GLYPH_SIZE` and the `*_MIN_H`
- * floors (`PANEL_MIN_H`/`PREVIEW_IMG_MIN_H`/`PREVIEW_PANEL_MIN_H`/
- * `PREVIEW_MIN_H`/`GENERATOR_MIN_H`) for a "Node panel type size (px)"
+ * Recompute `BASE_FONT`/`SHEAD_H`/`SHEAD_GLYPH_SIZE`/`SAVE_NOW_BTN_H` and
+ * the `*_MIN_H` floors (`PANEL_MIN_H`/`PREVIEW_IMG_MIN_H`/
+ * `PREVIEW_PANEL_MIN_H`/`PREVIEW_MIN_H`/`GENERATOR_MIN_H`) for a "Node
+ * panel type size (px)"
  * setting value of `px` — the task's own explicit scope ("row heights,
  * SHEAD_H, the *_MIN_H floors... in fields.mjs" — this is the render.mjs
  * half; `applyFieldFontScale` in `js/shared/fields.mjs` is the other).
@@ -1179,6 +1207,11 @@ function roundTo4(x) {
  * policy change, `GENERATOR_MIN_H`'s own doc comment above) -- it is a
  * height floor derived from `PANEL_MIN_H`, exactly like the pre-existing
  * `PREVIEW_MIN_H`/`PREVIEW_PANEL_MIN_H` pair, so it scales the same way.
+ *
+ * `SAVE_NOW_BTN_H` is not its own row in `_PANEL_DEFAULTS` -- it has no
+ * independent default to scale FROM, it is simply re-pinned to the
+ * freshly-scaled `SHEAD_H` (its own doc comment above explains why a
+ * separate literal was the bug in the first place).
  *
  * Same idempotent-by-construction contract as `applyFieldFontScale`: always
  * derives from the frozen `_PANEL_DEFAULTS`/`_PANEL_BASE_PX`, so calling
@@ -1201,6 +1234,8 @@ export function applyPanelFontScale(px) {
   BASE_FONT = Math.round(_PANEL_DEFAULTS.BASE_FONT * ratio);
   SHEAD_H = Math.round(_PANEL_DEFAULTS.SHEAD_H * ratio);
   SHEAD_GLYPH_SIZE = Math.round(BASE_FONT * 1.21);
+  SAVE_NOW_BTN_H = SHEAD_H; // always equal, at every scale -- see this constant's own doc comment
+
   PANEL_MIN_H = roundTo4(_PANEL_DEFAULTS.PANEL_MIN_H * ratio);
   PREVIEW_IMG_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_IMG_MIN_H * ratio);
   PREVIEW_PANEL_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_PANEL_MIN_H * ratio);

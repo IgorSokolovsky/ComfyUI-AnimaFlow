@@ -201,6 +201,7 @@ import {
   BASE_FONT,
   SHEAD_H,
   SHEAD_GAP,
+  SAVE_NOW_BTN_H,
 } from "./render.mjs";
 
 import * as interactionModule from "./interaction.mjs";
@@ -1252,6 +1253,34 @@ test("injected CSS: .wtn-an-panel-pv .wtn-an-wipe cancels the shared aspect-rati
   assert.match(body, /flex:\s*1\s+1\s+auto/, "the preview wipe must flex-fill its container");
   assert.ok(body.includes("aspect-ratio: auto"), "the preview wipe must cancel the shared aspect-ratio: 1/1");
   assert.ok(body.includes(`min-height: ${PREVIEW_IMG_MIN_H}px`), "the preview wipe's own floor must match PREVIEW_IMG_MIN_H");
+});
+
+test("injected CSS: the 'Save now' button (.wtn-an-savenow-btn.wtn-btn) declares the SAME height as the Save card (.wtn-an-shead) beside it -- owner bug report: the button used to be a fixed 36 while the card's SHEAD_H scales with the font-size setting, so they only matched at one setting by coincidence", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+
+  const cardBody = cssRuleBody(cssText, ".wtn-an-shead");
+  assert.ok(cardBody, "expected a .wtn-an-shead rule in the injected CSS");
+  assert.ok(cardBody.includes(`height: ${SHEAD_H}px`), "sanity: the Save card's own height is SHEAD_H");
+
+  const btnBody = cssRuleBody(cssText, ".wtn-an-savenow-btn.wtn-btn");
+  assert.ok(btnBody, "expected a .wtn-an-savenow-btn.wtn-btn rule in the injected CSS");
+  assert.ok(btnBody.includes(`height: ${SHEAD_H}px`), "the Save-now button's declared height must equal SHEAD_H, not an independent literal");
+  assert.equal(SAVE_NOW_BTN_H, SHEAD_H, "the exported constant itself must equal SHEAD_H");
+
+  // The rendered box must actually match, not just the declared `height`
+  // property -- `.wtn-btn`'s shared vertical padding (theme.css, a locked
+  // file) would otherwise push the real box past SHEAD_H even with a
+  // correct `height` override.
+  assert.ok(/padding-top:\s*0\b/.test(btnBody), "vertical padding must be zeroed so the shared button's own padding can't push the box past SHEAD_H");
+  assert.ok(/padding-bottom:\s*0\b/.test(btnBody), "vertical padding must be zeroed so the shared button's own padding can't push the box past SHEAD_H");
+});
+
+test("render.mjs: no bare 36 literal remains for the Save-now button's height -- SAVE_NOW_BTN_H is defined in terms of SHEAD_H, never its own independent constant", () => {
+  const renderSource = readFileSync(path.join(__dirname, "render.mjs"), "utf8");
+  assert.match(renderSource, /SAVE_NOW_BTN_H\s*=\s*SHEAD_H/, "SAVE_NOW_BTN_H must be assigned directly from SHEAD_H");
+  assert.doesNotMatch(renderSource, /SAVE_NOW_BTN_H\s*=\s*36\b/, "SAVE_NOW_BTN_H must never be a bare 36 literal again");
 });
 
 test("measurePreviewMinHeight floors the Preview's widget at PREVIEW_PANEL_MIN_H, with the SAME no-ceiling contract as measureMinHeight (never scales up with the panel's real, stretched offsetHeight)", () => {
@@ -5178,11 +5207,18 @@ test("font/height constants (task item 4) are internally consistent: every row/h
   // asserts the new direction instead of the old "grew from 380" one.
   assert.ok(PREVIEW_MIN_W < 444 && PREVIEW_MIN_W > 200, "PREVIEW_MIN_W must have shrunk well below the old segmented-group floor, but stay a sane, non-degenerate width");
 
-  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (2026-07-29, Compare-card
-  // dispatch: a real third card replaces the old bottom pvbar row, and
-  // "Save now" moved beside the Save card instead of below it) sums to
-  // within rounding of the exported constant.
-  const saveRowH = Math.max(SHEAD_H, 36) + SHEAD_GAP; // .wtn-an-saverow: max(card, "Save now" button) + its own margin-bottom
+  // SAVE_NOW_BTN_H must equal SHEAD_H, always -- the whole point of the
+  // Save-now-height fix (this constant's own doc comment in render.mjs).
+  // Asserted here too (not just the dedicated tests below) so this file's
+  // one arithmetic self-check never silently drifts back to a bare literal.
+  assert.equal(SAVE_NOW_BTN_H, SHEAD_H, "the Save-now button's height must be driven by SHEAD_H, not an independent constant");
+
+  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (2026-07-29, Save-now-
+  // height fix: a real third card replaces the old bottom pvbar row, "Save
+  // now" sits beside the Save card, and the Save row's own height is now
+  // SHEAD_H -- SAVE_NOW_BTN_H no longer contributes anything ABOVE it) sums
+  // to within rounding of the exported constant.
+  const saveRowH = Math.max(SHEAD_H, SAVE_NOW_BTN_H) + SHEAD_GAP; // .wtn-an-saverow: max(card, "Save now" button) + its own margin-bottom
   const compareCardH = SHEAD_H + SHEAD_GAP; // .wtn-an-comparecard is a plain .wtn-an-shead, same shape as the Save card
   const bodyGaps = 5 * 2; // 3 children (save row / compare card / wipe) -> 2 gaps
   const panelChrome = 7 * 2 + 1 * 2; // padding top+bottom, border top+bottom
@@ -5346,29 +5382,32 @@ test("applyPanelFontScale(14) (the default/baseline) reproduces every original l
   try {
     assert.equal(render.BASE_FONT, 14);
     assert.equal(render.SHEAD_H, 32);
+    assert.equal(render.SAVE_NOW_BTN_H, 32, "Save-now-height fix: the button's height must be SHEAD_H, not the old fixed 36");
     assert.equal(render.SHEAD_GLYPH_SIZE, 17);
     assert.equal(render.PANEL_MIN_H, 256);
     assert.equal(render.PREVIEW_IMG_MIN_H, 188);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 292);
-    assert.equal(render.PREVIEW_MIN_H, 372);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 288, "was 292 before the Save-now-height fix collapsed max(SHEAD_H, SAVE_NOW_BTN_H) to plain SHEAD_H");
+    assert.equal(render.PREVIEW_MIN_H, 368, "was 372 before the Save-now-height fix");
     assert.equal(render.GENERATOR_MIN_H, 356, "PANEL_MIN_H(256) + the Generator's own chrome addend(100)");
   } finally {
     render.applyPanelFontScale(14);
   }
 });
 
-test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, proportionally, and the litegraph chrome addends (80 for the Preview, 100 for the Generator) stay fixed", () => {
+test("applyPanelFontScale scales BASE_FONT/SHEAD_H/SAVE_NOW_BTN_H/the *_MIN_H floors together, proportionally, and the litegraph chrome addends (80 for the Preview, 100 for the Generator) stay fixed -- this is the assertion that would have caught the original bug: it proves the button and the card stay equal at a DIFFERENT scale, not just at the 14px baseline where they used to match by coincidence", () => {
   render.applyPanelFontScale(28); // exactly double the 14px baseline
   try {
     assert.equal(render.BASE_FONT, 28);
     assert.equal(render.SHEAD_H, 64);
+    assert.equal(render.SAVE_NOW_BTN_H, render.SHEAD_H, "at double scale the button must still equal the card's height (64), not stay pinned at the old fixed 36");
+    assert.equal(render.SAVE_NOW_BTN_H, 64);
     assert.equal(render.PANEL_MIN_H, 512);
     assert.equal(render.PREVIEW_IMG_MIN_H, 376);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 584);
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 576, "was 584 before the Save-now-height fix");
     // The +80/+100 chrome addends must NOT double along with everything
     // else -- this file's own PREVIEW_MIN_H/GENERATOR_MIN_H doc comments
     // ("litegraph's OWN native pixel geometry... deliberately NOT scaled").
-    assert.equal(render.PREVIEW_MIN_H, 584 + 80);
+    assert.equal(render.PREVIEW_MIN_H, 576 + 80);
     assert.equal(render.PREVIEW_MIN_H - render.PREVIEW_PANEL_MIN_H, 80);
     assert.equal(render.GENERATOR_MIN_H, 512 + 100);
     assert.equal(render.GENERATOR_MIN_H - render.PANEL_MIN_H, 100, "the Generator's own chrome addend must stay 100 regardless of the type-scale pass");
