@@ -694,12 +694,25 @@ them anywhere, making its saves worse than stock `SaveImage`).
     ComfyUI. `js/anima/interaction.mjs` is the fetch call plus a one-line status readout, never a
     second copy of that logic. `resolve_save_now_stage` deliberately reuses `resolve_shown_stage`'s
     `_SHOWN_PRIORITY` rather than inventing a second "most-finished result" ranking.
-  - **Two honest limits, and they are in the code comments rather than hidden.** Outside a run there
-    is no `PROMPT`/`EXTRA_PNGINFO`, so a Save-now file **cannot embed workflow metadata**
-    (`save.embed_workflow` is silently not honoured on this path), and **`%seed%` falls back
-    to `0`** for the same reason — the frontend posts only `{stages, preview_state}`, so
-    `src/anima/api.py`'s `payload.get("seed", 0)` always takes the fallback. Wrong-looking on disk;
-    tracked in [`TODO.md`](TODO.md).
+  - **One honest limit, in the code comments rather than hidden.** Outside a run there is no
+    `PROMPT`/`EXTRA_PNGINFO`, so a Save-now file **cannot embed workflow metadata**
+    (`save.embed_workflow` is silently not honoured on this path).
+  - **`%seed%` resolves to the real seed (fixed 2026-07-29).** It used to always be `0`, and the cause
+    was not a missing feature but a discarded value: the seed *was* computed during the run
+    (`preview.py`'s `extract_seed_from_prompt`) and then thrown away, because the `ui` payload carried
+    only `anima_stages` — so the frontend had nothing to post and `src/anima/api.py`'s
+    `payload.get("seed", 0)` always took its fallback. The run now ships it as
+    **`anima_seed: [str(seed)]`** and Save-now echoes it back verbatim. Two of this pack's own past
+    bugs constrain that one line: a `ui` value **must be a list** or it flattens to its keys
+    (`f22b3c0`/`885410b`), and the seed **must travel as a decimal string** — past
+    `Number.MAX_SAFE_INTEGER` a JS number silently corrupts it, the same reason `sampler.seed` became a
+    STRING in §8. It is converted to `int` **exactly once**, at `format_filename`'s call site via
+    `resolve_seed_int`, mirroring `pipeline.py`'s convert-once-at-the-KSampler-boundary discipline.
+    **The remaining gap, deliberately not papered over:** a **cached** Preview node emits no `ui`
+    payload at all for that queue, so nothing populates its seed and the next Save-now click correctly
+    falls back to `0`. Same class as §5a-0's "a cached node emits no report" — a normal state, not a
+    failure. Reading the Generator's `sampler.seed` instead was considered and **rejected**: that value
+    is frequently the `-1` random sentinel, and it is the *resolved* seed that belongs in a filename.
 - `which`: the shown image / both compared / **every wired input** (`SAVE_WHICH_OPTIONS`, default
   `"shown"`). The last is the interesting one — it lands a whole comparison set in one run.
 - Filename tokens: **`%stage%`** (`base`/`mid`/`final`) is the one that justifies putting save here at

@@ -18,11 +18,29 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-| # | Item | Notes |
-|---|---|---|
-| 1 | **`%seed%` resolves to `0` in a Save-now filename** | No seed is wired from the frontend to the route (`js/anima/interaction.mjs` posts only `{stages, preview_state}`, so `src/anima/api.py`'s `payload.get("seed", 0)` always takes the fallback) — same fallback `extract_seed_from_prompt` already uses. Fine for now, wrong-looking on disk. Documented as a known limit in `generator-design.md` §7a. |
+*Now is empty.* The `%seed%` follow-up shipped — see Done below.
 
-Everything else from the 2026-07-29 batch shipped in `cec90cd` — see Done below.
+> ### ⚠️ Deployment lesson, 2026-07-29 — the board's SHAs are mostly unreachable from `origin/master`
+>
+> Two `cec90cd` fixes were reported missing in a live ComfyUI. Neither was broken: **the Colab box's
+> `git pull` had been failing** with `fatal: Not possible to fast-forward`, so the files on disk were
+> months of commits stale while GitHub had everything. The box's `master` carried **pre-rewrite twins**
+> of three commits (`c5cb2cc`/`b921df6`/`717feaa`), content-identical to their post-rewrite counterparts
+> (`2a124cd`/`b7e66dc`/`d1f8942`) but with different SHAs — the 2026-07-29 history rewrite renumbered
+> them, and a checkout that predates it can never fast-forward again. Fixed with
+> `git reset --hard origin/master` (untracked user data such as `rules/*.yaml` survives that; only
+> `git clean` would remove it).
+>
+> **Consequence this board has to own: 10 of the 15 SHAs cited below are NOT reachable from
+> `origin/master`** — they are pre-rewrite SHAs that resolve only in a clone old enough to still hold
+> the objects. `10f8708`, `717feaa`, `885410b`, `8de4d18`, `b921df6`, `c2a0f1c`, `ca8f145`, `d4918bf`,
+> `dc44d75`, `f0d2309`. That directly breaks this file's own rule — *"a claim you can't trace to a SHA
+> is a claim you can't check"* — for anyone on a fresh clone. Each has a same-subject, same-tree twin
+> that IS reachable, so the mapping is mechanical; **not yet applied.**
+>
+> **Two rules earned here:** never conclude a feature is broken live before confirming what the box's
+> own `git log` actually says (an ancestor of `origin/master` proves it is on *GitHub*, not deployed),
+> and after any history rewrite, re-point every SHA the docs cite.
 
 > **`.claude/CLAUDE.md` had two countable claims wrong** and they were fixed on 2026-07-29 in the same
 > pass as `1fe13a6`: **7** registered nodes, not 6 (it omitted `AnimaContextBridge` from both the count
@@ -129,7 +147,9 @@ Shipped and green, not yet exercised against a running ComfyUI.
 | Seed as a string, text+roll row, `seed_after_generate` implemented | `717feaa` |
 | One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
-| Enabled section card border dimmed to `rgba(45,212,191,.35)`, the warn border's own restraint level | `98d0fe5` |
+| `%seed%` in a Save-now filename resolves to the real seed — carried as `anima_seed: [str(seed)]`, string end-to-end, `int` once at `format_filename` | `9874426` |
+| Enabled section card border keeps **no accent at all** (`--wtn-line-soft`, identical on/off) — round 3, after full accent and `.35` both read too light live. Also adds the missing `TOKENS.lineSoft`, fixing an inert `var(…, undefined)` fallback at 10 sites | `a6478f0` |
+| Enabled section card border dimmed to `rgba(45,212,191,.35)`, the warn border's own restraint level — superseded same day by the row above | `98d0fe5` |
 | Bool switch owns its state; word dropped, switch right-aligned; inherit ⓘ next to its label | `cec90cd` |
 | Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
 | Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
