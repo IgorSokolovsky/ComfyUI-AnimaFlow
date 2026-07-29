@@ -20,10 +20,17 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 | # | Item | Notes |
 |---|---|---|
-| 1 | **Record this pass's reversals in `generator-design.md`** | §7a said Save is "on by default, since it's the only node in the pair that saves" — now off by default, with a Save-now button. §2/§7/§12 also want the bool-row and nested-overlay changes. The doc currently contradicts the code. |
-| 2 | **`%seed%` resolves to `0` in a Save-now filename** | No seed is wired from the frontend to the route, so the template's `%seed%` falls back — same fallback `extract_seed_from_prompt` already uses. Fine for now, wrong-looking on disk. |
+| 1 | **`%seed%` resolves to `0` in a Save-now filename** | No seed is wired from the frontend to the route (`js/anima/interaction.mjs` posts only `{stages, preview_state}`, so `src/anima/api.py`'s `payload.get("seed", 0)` always takes the fallback) — same fallback `extract_seed_from_prompt` already uses. Fine for now, wrong-looking on disk. Documented as a known limit in `generator-design.md` §7a. |
 
 Everything else from the 2026-07-29 batch shipped in `cec90cd` — see Done below.
+
+> **`.claude/CLAUDE.md` had two countable claims wrong** and they were fixed on 2026-07-29 in the same
+> pass as `1fe13a6`: **7** registered nodes, not 6 (it omitted `AnimaContextBridge` from both the count
+> and the per-track table), and **322** `tests/test_anima_*.py` assertions, not 129. Its JS-budget
+> paragraph also said `js/anima/` registers "both" node classes; it covers **three**.
+> **Those edits are not in this repo and cannot be** — `.claude/` is excluded via `.git/info/exclude`,
+> which is *machine-local*, so they live on one machine only (the same consequence the Deferred row
+> below already flags). Anyone cloning this repo gets a CLAUDE.md without them.
 
 ## Next
 
@@ -122,6 +129,7 @@ Shipped and green, not yet exercised against a running ComfyUI.
 | Seed as a string, text+roll row, `seed_after_generate` implemented | `717feaa` |
 | One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
+| Enabled section card border dimmed to `rgba(45,212,191,.35)`, the warn border's own restraint level | `98d0fe5` |
 | Bool switch owns its state; word dropped, switch right-aligned; inherit ⓘ next to its label | `cec90cd` |
 | Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
 | Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
@@ -131,6 +139,7 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 | Item | Commit |
 |---|---|
+| `generator-design.md` catches up with `cec90cd` — §7a's Save-off reversal, §8's two stale blob values, §12's stale "overlay.mjs is untouched" retraction, and the "index.js registers both node classes" claim (it covers three) | `1fe13a6` — every claim checked against source, so nothing here is waiting on a live box |
 | V3 `NodeOutput` unwrapping — the Detailer runs | `d4918bf` |
 | Model pickers + readable pre-flight error for a missing model file | `d4918bf` |
 | Node defs in both V1 and V3 combo schemas; live sampler/scheduler lists | `c2a0f1c` |
