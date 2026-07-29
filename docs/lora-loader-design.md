@@ -495,10 +495,31 @@ suggested:
 `cec90cd`'s display-name map (`Mode`, not `mode_type`), with the settings *path* untouched. Same rule
 here: the UI says `Standard`, the state stores `last`.
 
-**"Civitai lookup button" is more important for us than for them.** Turning it off means the node
-*never makes a network call* — so §9's "degrade silently offline" becomes a **user-selectable posture**
-rather than only a failure path. That is worth having on day one even though search/download land in
-milestone 2, and it is cheap: the button either renders or it doesn't.
+**"Civitai lookup button" is more important for us than for them, and it governs MORE than theirs
+does.** Upstream's toggle hides one thing: the lookup inside the info panel. **Ours hides every network
+affordance on the node** — the ⓘ panel's `↻ Civitai` *and* the 🔍 browse button (below). One switch,
+and the node is provably offline: there is no path left from which a request could originate.
+
+That turns §9's "degrade silently offline" into a **user-selectable posture** rather than only a failure
+path — worth having on day one even though search and download are milestone 2, and cheap, because each
+affordance either renders or it doesn't. Name the setting **Civitai** rather than "Civitai lookup
+button", since it now governs the whole capability rather than one button.
+
+### Where the node's Browse button goes (owner, 2026-07-29)
+
+**An icon-only button immediately beside the ⚙**, in the single header row (§1a-ii) — *not* a
+full-width labelled button on its own row, which is what an earlier draft had. Reasons: the header
+already carries the node's controls so a browse action belongs with them rather than claiming a row of
+its own, and in a Class A node (§6) every row of chrome is permanent height that cannot be scrolled
+away.
+
+Header row, final: `＋ Add LoRA` · *(slack)* · master switch · `N/M` · **🔍** · **⚙**.
+
+> 🎨 **Use an inline SVG or CSS-drawn icon, not an emoji.** The mockup uses 🔍 as a placeholder;
+> emoji render inconsistently across platforms and clash with a dark theme. This pack ships no icon
+> assets, which is exactly why the Rule Builder's toolbar button draws its own icon in CSS — its
+> `index.js` says so explicitly, contrasting itself with Pixaroma's `/pixaroma/assets/icons/...`.
+> Follow that precedent.
 
 ### Why the two drops
 
