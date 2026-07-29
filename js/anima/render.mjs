@@ -347,9 +347,14 @@ function buildCss() {
    its own bottom corners and drops its own bottom margin to zero, so
    \`.wtn-an-sbody\` right below it (this file's next CSS block) reads as ONE
    joined shape instead of a header floating disconnected from its body.
-   The accent border this rule ALSO sets is what \`.wtn-an-sbody\`'s own
-   border colour continues below -- see that block's own comment. ── */
-.wtn-an-shead.wtn-an-expanded { border-color: var(--wtn-accent, ${TOKENS.accent});
+   The dimmed-accent border this rule ALSO sets is what \`.wtn-an-sbody\`'s own
+   border colour continues below -- see that block's own comment.
+   2026-07-29 (owner review): full-strength \`--wtn-accent\` here read as too
+   glaring for a merely-enabled/expanded stage -- dimmed to the same
+   \`rgba(45,212,191,.35)\` restraint level as the \`.wtn-an-dep\` warn border
+   two rules below, deliberately matching its alpha rather than inventing a
+   new one. ── */
+.wtn-an-shead.wtn-an-expanded { border-color: rgba(45,212,191,.35);
   border-radius: 8px 8px 0 0; margin-bottom: 0; }
 /* Pure state indicator, never a click target of its own (the whole header
    is), so it gets NO hit-area treatment -- just size + contrast, matching
@@ -389,7 +394,7 @@ function buildCss() {
 
 /* ── section body -- CARD treatment attached to its own header (task item 1,
    2026-07-28). Rendered only while its header is expanded, so it only ever
-   needs to continue an EXPANDED (accent-bordered) header: same surface as
+   needs to continue an EXPANDED (dimmed-accent-bordered) header: same surface as
    the header (\`--wtn-surface-2\`), the SAME border colour continued
    (\`border-top: none\` is what removes the seam -- the header's own bottom
    border and this element's own top edge would otherwise double up into a
@@ -401,11 +406,15 @@ function buildCss() {
    margin-bottom already provides). \`.wtn-an-dep\` mirrors the header's own
    warn-tinted border so a missing-dependency section reads coherently
    whether it's the header or the body catching your eye. Indented under
-   the chevron so the nesting still reads clearly while the panel scrolls. ── */
+   the chevron so the nesting still reads clearly while the panel scrolls.
+   2026-07-29 (owner review): matches \`.wtn-an-expanded\`'s own dimming above
+   -- same \`rgba(45,212,191,.35)\`, so the header/body seam still reads as
+   ONE continuous outline (just a quieter one), and the \`.wtn-an-dep\` warn
+   override two rules below still wins by source order either way. ── */
 .wtn-an-sbody { display: flex; flex-direction: column; gap: 5px; padding: 3px 5px 10px 23px;
   margin-top: 0; margin-bottom: ${SHEAD_GAP}px;
   background: var(--wtn-surface-2, ${TOKENS.surface2});
-  border: 1px solid var(--wtn-accent, ${TOKENS.accent}); border-top: none;
+  border: 1px solid rgba(45,212,191,.35); border-top: none;
   border-radius: 0 0 8px 8px; }
 .wtn-an-sbody.wtn-an-dep { border-color: rgba(251,191,36,.35); }
 
