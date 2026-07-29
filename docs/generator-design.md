@@ -156,7 +156,7 @@ one:
   kwarg defaults are a `MISSING` sentinel, not plain `None` (`context.py`'s own docstring has the
   mechanism). Nothing downstream should ever need to guess.
 - **`AnimaContextBridge`'s own socket order is append-only**, same reasoning as the flag-era
-  pickers (`BACKLOG.md` §4, `42336c0`) — a new context field goes at the end of `OPTIONAL_KEY_ORDER`,
+  pickers (`BACKLOG.md` §4, `9388cf9`) — a new context field goes at the end of `OPTIONAL_KEY_ORDER`,
   never inserted.
 
 **LoRAs still need no socket of their own** — this is UNCHANGED by the reversal, just moved one
@@ -537,7 +537,7 @@ LoRAs are cheap to add and detailer passes are not. May grow later, never shrink
 machinery is needed at all.
 
 4. **Upscale** — USDU only, with seam-fix and tile controls exposed (upstream's `seam_fix_mode`
-   was hardcoded to `"None"` in the old port, making seam repair unreachable; `29ac56d` fixed
+   was hardcoded to `"None"` in the old port, making seam repair unreachable; `7ca9a1c` fixed
    that and the work is recoverable from git). `mode_type` (Linear/Chess/None) is tile **order**;
    `tiled_decode` is an unrelated VAE flag — do not conflate them.
 5. **Postprocess** — the output size cap (`max_long_edge` / `max_megapixels`,
@@ -704,7 +704,7 @@ them anywhere, making its saves worse than stock `SaveImage`).
     `payload.get("seed", 0)` always took its fallback. The run now ships it as
     **`anima_seed: [str(seed)]`** and Save-now echoes it back verbatim. Two of this pack's own past
     bugs constrain that one line: a `ui` value **must be a list** or it flattens to its keys
-    (`f22b3c0`/`885410b`), and the seed **must travel as a decimal string** — past
+    (`f22b3c0`/`f22b3c0`), and the seed **must travel as a decimal string** — past
     `Number.MAX_SAFE_INTEGER` a JS number silently corrupts it, the same reason `sampler.seed` became a
     STRING in §8. It is converted to `int` **exactly once**, at `format_filename`'s call site via
     `resolve_seed_int`, mirroring `pipeline.py`'s convert-once-at-the-KSampler-boundary discipline.
@@ -814,7 +814,7 @@ zero Python changes. Version bumps migrate forward, never reject.
 ## 9. Three divergences the old port had — do not reintroduce
 
 From `BACKLOG.md` §1a. All three were in files that no longer exist; recover the fixes from
-`e1080e4` / `29ac56d` rather than assuming anything current has them.
+`45e7691` / `7ca9a1c` rather than assuming anything current has them.
 
 1. **`guide_size_for` must be `False`.** The old port shipped `True`; upstream ships `False` for
    both detailer targets (`generation_defaults.py:306`, `:372`). It decides whether Impact

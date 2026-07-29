@@ -443,7 +443,7 @@ js/controls/{index.js, rows.mjs, render.mjs, interaction.mjs, settings.mjs,
   library anyway, so the budget goes 3 → **4**, and CLAUDE.md's count gets updated to 4 with the
   reason.
 - The theme skill still cites `js/anima_prompt/...` paths, which became `js/prompt_rules/...` in
-  `e703dd2`. Worth fixing while in there.
+  `e936a36`. Worth fixing while in there.
 
 `EXPERIMENTAL = True` on both classes; tooltips on every input and every return.
 

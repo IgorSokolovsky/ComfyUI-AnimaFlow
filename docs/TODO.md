@@ -20,27 +20,36 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 *Now is empty.* The `%seed%` follow-up shipped — see Done below.
 
-> ### ⚠️ Deployment lesson, 2026-07-29 — the board's SHAs are mostly unreachable from `origin/master`
+> ### ⚠️ Deployment lesson, 2026-07-29 — and why every SHA in the docs was re-pointed
 >
-> Two `cec90cd` fixes were reported missing in a live ComfyUI. Neither was broken: **the Colab box's
-> `git pull` had been failing** with `fatal: Not possible to fast-forward`, so the files on disk were
-> months of commits stale while GitHub had everything. The box's `master` carried **pre-rewrite twins**
-> of three commits (`c5cb2cc`/`b921df6`/`717feaa`), content-identical to their post-rewrite counterparts
-> (`2a124cd`/`b7e66dc`/`d1f8942`) but with different SHAs — the 2026-07-29 history rewrite renumbered
-> them, and a checkout that predates it can never fast-forward again. Fixed with
-> `git reset --hard origin/master` (untracked user data such as `rules/*.yaml` survives that; only
-> `git clean` would remove it).
+> Two `cec90cd` fixes were reported missing in a live ComfyUI. **Neither was broken.** The Colab box's
+> `git pull` had been failing with `fatal: Not possible to fast-forward`, so its files on disk were many
+> commits stale while GitHub had everything. Its `master` carried **pre-rewrite twins** — commits with
+> content-identical trees but different SHAs, because the 2026-07-29 history rewrite (stripping 64
+> `Co-Authored-By` trailers) renumbered every commit from its earliest rewritten one onward. A checkout
+> predating that can never fast-forward again. Fixed on the box with `git reset --hard origin/master`;
+> untracked user data (`rules/*.yaml`) survives that, only `git clean` would remove it.
 >
-> **Consequence this board has to own: 10 of the 15 SHAs cited below are NOT reachable from
-> `origin/master`** — they are pre-rewrite SHAs that resolve only in a clone old enough to still hold
-> the objects. `10f8708`, `717feaa`, `885410b`, `8de4d18`, `b921df6`, `c2a0f1c`, `ca8f145`, `d4918bf`,
-> `dc44d75`, `f0d2309`. That directly breaks this file's own rule — *"a claim you can't trace to a SHA
-> is a claim you can't check"* — for anyone on a fresh clone. Each has a same-subject, same-tree twin
-> that IS reachable, so the mapping is mechanical; **not yet applied.**
+> **The docs were collateral damage, and are now fixed.** 17 SHAs cited across `TODO.md`, `BACKLOG.md`,
+> `generator-design.md`, `control-panel-design.md`, `pixaroma-review-rounds-plan.md` and
+> `.claude/CLAUDE.md` were *pre-rewrite* SHAs — resolvable only in a clone old enough to still hold the
+> dangling objects, and invisible to anyone on a fresh clone. That silently broke this file's own
+> founding rule: *a claim you can't trace to a SHA is a claim you can't check*. All **44 citations** were
+> re-pointed to the reachable twin, each match verified two ways — **identical subject line AND
+> identical tree** (`git diff` between the pair empty), with exactly one candidate per orphan, so no
+> judgement calls were involved.
 >
-> **Two rules earned here:** never conclude a feature is broken live before confirming what the box's
-> own `git log` actually says (an ancestor of `origin/master` proves it is on *GitHub*, not deployed),
-> and after any history rewrite, re-point every SHA the docs cite.
+> **One SHA was deliberately NOT rewritten: `0ad756b` in `BACKLOG.md` §1.** It is an **upstream
+> EasyUseAnima** SHA that happens to collide with the short SHA of one of our own commits, so it
+> *resolves* here and looks like an orphan. Rewriting it would have silently redirected an upstream
+> citation at our history. **Always read the surrounding sentence before treating a resolvable SHA as
+> one of ours** — this is the one that nearly got it wrong.
+>
+> **Three rules earned here:**
+> 1. An ancestor of `origin/master` proves a commit is on **GitHub**, not that it is **deployed** — check
+>    the box's own `git log` before believing any "it's broken live" report.
+> 2. After any history rewrite, re-point every SHA the docs cite, in the same change.
+> 3. Verify a SHA re-point by tree, not by subject alone.
 
 > **`.claude/CLAUDE.md` had two countable claims wrong** and they were fixed on 2026-07-29 in the same
 > pass as `1fe13a6`: **7** registered nodes, not 6 (it omitted `AnimaContextBridge` from both the count
@@ -139,12 +148,12 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 | Item | Commit |
 |---|---|
-| Settings section, seven settings | `b921df6` — **confirmed working 2026-07-29** |
-| Server-side run logging (stage status, sampler provenance, model files) | `8de4d18` |
-| `ui` payload must be a list — post-run values/disable reaching the panel at all | `885410b` |
-| Chevron + gear visibility, gear pinned right | `f0d2309` |
-| Subgraph boundary crossing for the context walk | `10f8708` |
-| Seed as a string, text+roll row, `seed_after_generate` implemented | `717feaa` |
+| Settings section, seven settings | `b7e66dc` — **confirmed working 2026-07-29** |
+| Server-side run logging (stage status, sampler provenance, model files) | `9addec1` |
+| `ui` payload must be a list — post-run values/disable reaching the panel at all | `f22b3c0` |
+| Chevron + gear visibility, gear pinned right | `dd89b9d` |
+| Subgraph boundary crossing for the context walk | `84ec4a5` |
+| Seed as a string, text+roll row, `seed_after_generate` implemented | `d1f8942` |
 | One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
 | `%seed%` in a Save-now filename resolves to the real seed — carried as `anima_seed: [str(seed)]`, string end-to-end, `int` once at `format_filename` | `9874426` |
@@ -160,10 +169,10 @@ Shipped and green, not yet exercised against a running ComfyUI.
 | Item | Commit |
 |---|---|
 | `generator-design.md` catches up with `cec90cd` — §7a's Save-off reversal, §8's two stale blob values, §12's stale "overlay.mjs is untouched" retraction, and the "index.js registers both node classes" claim (it covers three) | `1fe13a6` — every claim checked against source, so nothing here is waiting on a live box |
-| V3 `NodeOutput` unwrapping — the Detailer runs | `d4918bf` |
-| Model pickers + readable pre-flight error for a missing model file | `d4918bf` |
-| Node defs in both V1 and V3 combo schemas; live sampler/scheduler lists | `c2a0f1c` |
-| Accordion cards, ⚙ menus, 14px type, working stepper dropdowns | `dc44d75` |
-| Saved node size surviving refresh (both tracks) | `dc44d75`, `ca8f145` |
-| Use Everywhere submit-churn no longer wiping the run report | `dc44d75` |
-| Preview: image fills the node, no internal scroll, one preview not two | `885410b`, earlier |
+| V3 `NodeOutput` unwrapping — the Detailer runs | `d2b35da` |
+| Model pickers + readable pre-flight error for a missing model file | `d2b35da` |
+| Node defs in both V1 and V3 combo schemas; live sampler/scheduler lists | `1d3fa41` |
+| Accordion cards, ⚙ menus, 14px type, working stepper dropdowns | `60d46e4` |
+| Saved node size surviving refresh (both tracks) | `60d46e4`, `f9e5c79` |
+| Use Everywhere submit-churn no longer wiping the run report | `60d46e4` |
+| Preview: image fills the node, no internal scroll, one preview not two | `f22b3c0`, earlier |

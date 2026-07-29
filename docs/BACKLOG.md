@@ -16,7 +16,7 @@ other can't see.
 > **Section 1 is therefore reference material for that rebuild, not a to-do list.** Every
 > `nodes/anima/...` path it cites is gone from `HEAD`. Items marked ✅ below were genuinely
 > fixed at the time, but in files that no longer exist — recover them from git history
-> (`e1080e4`, `29ac56d`) rather than assuming current code has them.
+> (`45e7691`, `7ca9a1c`) rather than assuming current code has them.
 
 > Licensing: `../ComfyUI-EasyUseAnima` is **MIT © n0va39**, credited in
 > [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — porting from it is fine **with
@@ -28,6 +28,11 @@ other can't see.
 ## 1. Reference for rebuilding the anima line
 
 Upstream line numbers were correct as of `0ad756b`. **Re-verify before trusting them.**
+
+> ⚠️ **`0ad756b` is an `../ComfyUI-EasyUseAnima` SHA, not one of ours** — and it collides with the short
+> SHA of an unrelated commit in *this* repo, so it resolves locally and looks like a stale
+> AnimaFlow citation. It was explicitly excluded from the 2026-07-29 re-pointing pass
+> ([`TODO.md`](TODO.md)'s deployment note) for exactly that reason. Don't "fix" it.
 
 > **The generator rebuild is now specified: [`generator-design.md`](generator-design.md)**
 > (2026-07-27). It supersedes this section for the Generator + Preview pair — dependency
@@ -41,10 +46,10 @@ Upstream line numbers were correct as of `0ad756b`. **Re-verify before trusting 
 - **`guide_size_for` was `True`; upstream ships `False`** for both detailer targets
   (`easyuse_anima/aio/generation_defaults.py:306`, `:372`). Decides whether Impact measures
   `guide_size` against the tight bbox or the padded crop region — same `guide_size`
-  resampled at a different scale. *(was fixed in `e1080e4`)*
+  resampled at a different scale. *(was fixed in `45e7691`)*
 - **`noise_mask_feather` was `0`; upstream ships `10`** (face, `:321`) **/ `20`** (eye,
   `:387`). Feathers the noise mask inside the detail crop; the main control against visible
-  detailer seams. Upstream never ships `0`. *(was fixed in `e1080e4` — set to `10`, since
+  detailer seams. Upstream never ships `0`. *(was fixed in `45e7691` — set to `10`, since
   our stage was one generic pass over any `SEGS` rather than separate face/eye targets, so
   the conservative face value was chosen)*
 - **Saved images carried no workflow or prompt metadata** — the node declared no hidden
@@ -84,7 +89,7 @@ branch in the upscale path.
    `inherit_sampler_settings` per stage (20 steps, cfg 8.0, euler; `sgm_uniform` for the
    detailer). Ref: `aio/sampling.py:378-452`. **Never built.**
 3. **USDU seam fixing + tile control** — the old port hardcoded `seam_fix_mode="None"`,
-   making seam repair unreachable. *(was built in `29ac56d`: nine widgets incl. seam-fix
+   making seam repair unreachable. *(was built in `7ca9a1c`: nine widgets incl. seam-fix
    mode/denoise/width/blur/padding, tile blur/padding, `mode_type`, `auto_tile`, plus a pure
    `plan_usdu_tiles`. Note `mode_type` — Linear/Chess/None — is tile **order**; `tiled_decode`
    is an unrelated VAE flag. Ground truth was `generation_defaults.py:458-464`, `:246-266`
@@ -188,7 +193,7 @@ are still open — reproduced-against or written-off findings, not fixes.
   `optional`), never inserted. Node widgets are positional, so inserting mid-list silently
   shifts every later value in already-saved workflows — and it fails *quietly*, because
   litegraph coerces or falls back, so the node loads looking fine with wrong settings.
-  - **This already bit us once:** `42336c0` inserted `shift` as the first widget and
+  - **This already bit us once:** `9388cf9` inserted `shift` as the first widget and
     `highres_scale_by` mid-group, misaligning every slot for workflows saved before it
     (`shift`←seed, `seed`←steps, `cfg`←the sampler *string*). Never repaired, deliberately —
     the user had no saved workflows worth migrating.

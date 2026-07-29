@@ -3,7 +3,7 @@
 **Status: in progress.** A backlog of concrete, already-found bugs to check our `js/controls/`
 against. Nothing here is speculative — every item is a bug someone else already hit, diagnosed, and
 fixed in a node that works the same way ours does. Tier 2 items **8** and **9** below are fixed
-(2026-07-28), and item **10**'s base wheel-zoom passthrough predates this file (`6ccbf9c`) — its
+(2026-07-28), and item **10**'s base wheel-zoom passthrough predates this file (`4d0a7e0`) — its
 own "do the audit" follow-up is still open. Tier 1 items **1–5** are still open: reproduced-against
 or written-off findings, not yet fixes.
 
@@ -102,7 +102,7 @@ nodes are common enough that refusing them reads as "the panel is broken".
 > "turning randomize OFF reverted to the old stored seed instead of the one that just ran. It now
 > locks in the last rolled value (**matches native ComfyUI**)."
 
-We shipped seed after-generate in `596ff98`. Ours: the `F/R/I/D` button flips to `fixed` and keeps
+We shipped seed after-generate in `2994dbb`. Ours: the `F/R/I/D` button flips to `fixed` and keeps
 `row.value` — which after our queue hook is the **next** seed, not the one that ran (that's
 `opts.lastUsed`). So we have their bug, with the fix already sitting in `applyAfterGenerate`.
 **Likely fix:** switching to `fixed` sets `value = lastUsed`. That is exactly what our `↺` button
@@ -173,7 +173,7 @@ drift that merely rounds to all-zeros at the step's own decimal count. Unit-test
 > "Audit of every node with a DOM panel found **7** built after the fix that never called
 > `installCanvasZoomPassthrough`... **Nothing failed loudly, which is why they were missed.**"
 
-We fixed ours in `6ccbf9c`. The transferable part is the **audit habit**: they added a CLAUDE.md
+We fixed ours in `4d0a7e0`. The transferable part is the **audit habit**: they added a CLAUDE.md
 convention with an audit command so a new DOM node can't quietly reintroduce it. **Do the same before
 the Generator/Preview nodes ship** — they are exactly the "new DOM-widget node" case, and
 `generator-design.md` should carry the requirement.
