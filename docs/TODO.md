@@ -144,23 +144,23 @@ Shipped and green, not yet exercised against a running ComfyUI.
 |---|---|
 | Class A sizing: panel height content-fixed. **Four layers**, primary being `getMaxHeight === getMinHeight` on every mounted DOM widget (the only real lock — litegraph's drag min-clamps both axes with NO maximum), plus a `setSize` wrap (pre-paint), the per-frame draw hook, and the load-path correction. Confirmed live: self-sizes on row change, height ends at content. **Still to confirm: that a height drag no longer moves it even transiently.** | `dd7261a` → `d9b9106` → *pending* |
 | Class B sizing: `GENERATOR_MIN_H` (356 at the 14px base) + `clampGeneratorSize` clamping both axes, and the fresh-node default guarded against the floor at large font scales | `be6ea69` |
-| `Save now` button height matches its card at every font scale (`SAVE_NOW_BTN_H = SHEAD_H`); floors moved to 288/368 | `f620f4b` |
 | Hover tint + `cursor: pointer` scoped to genuinely clickable headers (Sampler, Save row) — not switch-bearing sections, not the Compare card | `61716f9` |
-| Settings section, seven settings | `b7e66dc` — **confirmed working 2026-07-29** |
-| Server-side run logging (stage status, sampler provenance, model files) | `9addec1` |
-| `ui` payload must be a list — post-run values/disable reaching the panel at all | `f22b3c0` |
-| Chevron + gear visibility, gear pinned right | `dd89b9d` |
-| Subgraph boundary crossing for the context walk | `84ec4a5` |
-| Seed as a string, text+roll row, `seed_after_generate` implemented | `d1f8942` |
-| One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
-| `%seed%` in a Save-now filename resolves to the real seed — carried as `anima_seed: [str(seed)]`, string end-to-end, `int` once at `format_filename` | `9874426` |
-| Preview Save defaults off, plus a **Save now** button (`POST /wtn/anima/preview/save_now`) | `cec90cd` |
 
 ## Done (confirmed by use)
 
 | Item | Commit |
 |---|---|
+| `Save now` button height matches its card at every font scale (`SAVE_NOW_BTN_H = SHEAD_H`); floors moved to 288/368 | `f620f4b` — owner confirmed directly |
+| Settings section, seven settings | `b7e66dc` — **confirmed working 2026-07-29** |
+| Chevron + gear visibility, gear pinned right | `dd89b9d` — entailed: the nested-⚙-menu check requires an open gear menu |
+| One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` — entailed: the `seed_after_generate` check exercises the seed row |
+| Preview Save defaults off, plus a **Save now** button (`POST /wtn/anima/preview/save_now`) | `cec90cd` — entailed: the `%seed%` check requires clicking **Save now** |
+| Server-side run logging (stage status, sampler provenance, model files) | `9addec1` |
+| `ui` payload must be a list — post-run values/disable reaching the panel at all | `f22b3c0` |
+| Subgraph boundary crossing for the context walk | `84ec4a5` |
+| Seed as a string, text+roll row, `seed_after_generate` implemented | `d1f8942` |
+| `%seed%` in a Save-now filename resolves to the real seed — carried as `anima_seed: [str(seed)]`, string end-to-end, `int` once at `format_filename` | `9874426` |
 | Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
 | Bool switch owns its state; on/off word dropped, switch right-aligned; inherit ⓘ beside its label | `cec90cd` |
 | Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
