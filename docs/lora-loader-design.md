@@ -43,6 +43,7 @@ off, open the modal and click a result card.
 | 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
 | 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
+| 21 | The ⓘ panel's **identity header is itself a picker** — switch LoRA without leaving the panel (and the same in the Loader Panel's model info) | §1a-iv |
 
 ### 0b. The ONE thing still open
 
@@ -242,6 +243,33 @@ trigger words the notes have exactly one source and the panel should not imply o
 **The `↻ Civitai` footer button is the thing §7b's "Civitai lookup button" setting hides.** With that
 setting off, this button does not render and the panel is fully offline — which is what makes offline a
 posture rather than a failure.
+
+### 1a-iv. The ⓘ panel can SWITCH which LoRA it is showing (owner, 2026-07-29)
+
+**The identity header is a picker.** Click the title/filename and the same searchable, subfolder-grouped
+dropdown opens — so you can read one LoRA's trigger words and notes, then look at another, without
+closing the panel, changing the row, and reopening ⓘ. That is the actual workflow when *choosing* between
+candidates, and today it costs three interactions per comparison.
+
+**Applies equally to the Loader Panel's model info** (M3), for checkpoints/UNET.
+
+**Switching sets the row** — it is not a preview-only browser. Two different meanings for "select" in one
+node would be a trap: you would never know whether what you were looking at was what the graph would run.
+One selection, one meaning.
+
+⚠️ **The subtle part: what happens to the trigger words you had picked.** They live on the row
+(`triggers[]`), and the new LoRA's candidate list is different. The rule:
+
+- **Words you authored yourself SURVIVE the switch.** They are yours, not the file's — the same principle
+  that gives them an `✕` and denies one to derived words (§1a-i).
+- **Derived picks (file / Civitai) are dropped** unless the new LoRA offers the same word, in which case it
+  stays selected. Carrying a word the new file has never heard of into `triggers` would be exactly the
+  false claim §1b's provenance rule exists to prevent.
+- The source pill re-resolves (a sidecar may exist for one LoRA and not the other), and the notes section
+  reloads or empties.
+
+State that in the UI when it happens rather than silently editing the user's picks — dropping selections
+without a word is the kind of quiet data loss that erodes trust in a panel.
 
 ### 1b. Two pieces of its Python worth copying for the reasoning, not just the code
 
