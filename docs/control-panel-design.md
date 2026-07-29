@@ -435,6 +435,50 @@ rather than one policy for the whole pack.
 → `bodyHeight`), with `bodyHeight` as the direct fallback. Two independent derivations that merely
 happen to agree is the defect this contract replaced — see §4a and the `fitNodeH` helper.
 
+#### Enforcing Class A takes TWO hooks, not one (measured 2026-07-29 — do not ship only one)
+
+**`onResize` is never called on the legacy resize-drag path.** Measured on a live 3-row panel after
+actually dragging the height: `onResizeCalls: 0`, with `onResizeInstalled: true` and
+`vueNodesMode: false` — correctly wired, not self-disabled, simply never invoked. A first attempt
+(`dd7261a`) hung the whole height lock off `onResize` and was therefore dead code on a drag. The
+reference implementation had already said so in a comment — *"onResize does not fire on every legacy
+resize path"* — and carries a second clamp for it.
+
+So Class A needs **both**:
+
+| hook | why |
+|---|---|
+| `onResizeControls` (`onResize`) | correct wherever it *does* fire — other paths, other frontends |
+| `onDrawForegroundControls` (`onDrawForeground`) | runs **every frame**, so it survives both `onResize` never firing *and* litegraph re-applying a dragged size afterwards |
+| `applyContentHeight` (load path) | corrects a stale/hand-edited saved height on restore, leaving width alone |
+
+**The per-frame hook must be silent and cheap** — it runs for every panel on the canvas, every frame.
+Compare before assigning; never call `setSize`; **never** `setDirtyCanvas` (that is an infinite repaint
+loop). Both size hooks bail under `isVueNodes()` so Nodes 2.0 keeps owning its own sizing, and under
+`isGraphLoading()`/`_ctrlConfiguring` so a clean workflow never opens "modified".
+
+#### Hiding the state widget is already correct — `.hidden` removes it from layout
+
+Worth recording because it looked like a second cause and cost a round of investigation. Decompiling
+the actually-installed `comfyui_frontend_package` **1.47.10**:
+
+```js
+isWidgetVisible(e){return!(this.collapsed||e.hidden||e.advanced&&!this.showAdvanced)}
+getLayoutWidgets(){return this.widgets?.filter(e=>!e.hidden)??[]}
+```
+
+`_arrangeWidgets` — which assigns every widget's `.y` and sums their heights into the node's natural
+size — iterates **only** `getLayoutWidgets()`. So a widget with `.hidden === true` contributes **zero**
+to layout and is skipped before drawing touches `.last_y`. `hideStateWidget` sets exactly that flag, so
+a stale-looking `.y` on the hidden `panel_state` widget (a probe once showed `y: 166` on a node whose
+content height was 157) is **inert**, not a sizing participant. Don't "fix" it — that widget carries the
+serialized `panel_state`, i.e. the user's rows.
+
+*Incidental, awareness only:* the same build's `_arrangeWidgets` can itself call `setSize` and dirty the
+canvas when the real widget-stack sum exceeds the node's current `size[1]`. Our `bodyHeight` uses a 7px
+`ROW_GAP` against litegraph's own 4px inter-widget gap, so it stays more generous and that path should
+not fire for our nodes.
+
 ### 7b. Renderer notes
 
 Legacy litegraph is the target; the legacy path must work standalone, with `computeLayoutSize` +

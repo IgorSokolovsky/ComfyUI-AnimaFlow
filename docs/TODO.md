@@ -18,46 +18,34 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-*Now is empty.* The `%seed%` follow-up shipped — see Done below.
+*Now is empty.*
 
-> ### ⚠️ Deployment lesson, 2026-07-29 — and why every SHA in the docs was re-pointed
+> ### ✅ Resolved 2026-07-29 — the Class A height bug, on the third attempt
 >
-> Two `cec90cd` fixes were reported missing in a live ComfyUI. **Neither was broken.** The Colab box's
-> `git pull` had been failing with `fatal: Not possible to fast-forward`, so its files on disk were many
-> commits stale while GitHub had everything. Its `master` carried **pre-rewrite twins** — commits with
-> content-identical trees but different SHAs, because the 2026-07-29 history rewrite (stripping 64
-> `Co-Authored-By` trailers) renumbered every commit from its earliest rewritten one onward. A checkout
-> predating that can never fast-forward again. Fixed on the box with `git reset --hard origin/master`;
-> untracked user data (`rules/*.yaml`) survives that, only `git clean` would remove it.
+> `dd7261a` shipped a height lock that **did not work**, and the reason was only ever findable by
+> measuring the running node. On a live 3-row `AnimaControlPanel`, after dragging the height:
+> `onResizeCalls: 0`, `onResizeInstalled: true`, `vueNodesMode: false` — correctly wired, not
+> self-disabled, **never invoked**. Litegraph does not call `onResize` on that renderer's resize-drag
+> path, so every correction hanging off it was dead code on a drag. Fixed in `d9b9106` with a
+> per-frame `onDrawForeground` correction, which survives both that and litegraph re-applying a dragged
+> size afterwards. `onResizeControls` is kept — it is correct wherever it *does* fire, and the
+> reference implementation carries both hooks for exactly this reason.
 >
-> **The docs were collateral damage, and are now fixed.** 17 SHAs cited across `TODO.md`, `BACKLOG.md`,
-> `generator-design.md`, `control-panel-design.md`, `pixaroma-review-rounds-plan.md` and
-> `.claude/CLAUDE.md` were *pre-rewrite* SHAs — resolvable only in a clone old enough to still hold the
-> dangling objects, and invisible to anyone on a fresh clone. That silently broke this file's own
-> founding rule: *a claim you can't trace to a SHA is a claim you can't check*. All **44 citations** were
-> re-pointed to the reachable twin, each match verified two ways — **identical subject line AND
-> identical tree** (`git diff` between the pair empty), with exactly one candidate per orphan, so no
-> judgement calls were involved.
+> **The hidden `panel_state` widget was NOT a second cause** — settled by decompiling the installed
+> `comfyui_frontend_package` 1.47.10 rather than by argument:
+> `getLayoutWidgets(){return this.widgets?.filter(e=>!e.hidden)??[]}`, and `_arrangeWidgets` (which
+> assigns each widget's `.y` and sums heights into the node's natural size) iterates **only** that
+> filtered list. Our `hideStateWidget` sets `.hidden = true`, so the technique is correct and the
+> `y: 166` in the probe was a stale inert value. The 198 was simply where the test drag landed,
+> uncorrected. `hideStateWidget` was deliberately left alone: nothing to fix, and it carries the
+> serialized `panel_state`.
 >
-> **One SHA was deliberately NOT rewritten: `0ad756b` in `BACKLOG.md` §1.** It is an **upstream
-> EasyUseAnima** SHA that happens to collide with the short SHA of one of our own commits, so it
-> *resolves* here and looks like an orphan. Rewriting it would have silently redirected an upstream
-> citation at our history. **Always read the surrounding sentence before treating a resolvable SHA as
-> one of ours** — this is the one that nearly got it wrong.
->
-> **Three rules earned here:**
-> 1. An ancestor of `origin/master` proves a commit is on **GitHub**, not that it is **deployed** — check
->    the box's own `git log` before believing any "it's broken live" report.
-> 2. After any history rewrite, re-point every SHA the docs cite, in the same change.
-> 3. Verify a SHA re-point by tree, not by subject alone.
-
-> **`.claude/CLAUDE.md` had two countable claims wrong** and they were fixed on 2026-07-29 in the same
-> pass as `1fe13a6`: **7** registered nodes, not 6 (it omitted `AnimaContextBridge` from both the count
-> and the per-track table), and **322** `tests/test_anima_*.py` assertions, not 129. Its JS-budget
-> paragraph also said `js/anima/` registers "both" node classes; it covers **three**.
-> **Those edits are not in this repo and cannot be** — `.claude/` is excluded via `.git/info/exclude`,
-> which is *machine-local*, so they live on one machine only (the same consequence the Deferred row
-> below already flags). Anyone cloning this repo gets a CLAUDE.md without them.
+> **Process lesson, and this one cost three passes.** Two diagnoses before this were argued from
+> reading source, both survived a review, and both were wrong — the code was correct, it was simply
+> never called. A third hypothesis (the hidden widget) was also wrong. `onResizeCalls: 0` is a fact no
+> amount of code reading produces. **For a live-behaviour bug, measure the running thing first;** and
+> when a reference implementation carries a comment explaining why it needs a second mechanism,
+> porting only the first one is a decision that needs a trigger, not a footnote.
 
 ## Next
 
@@ -154,6 +142,10 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 | Item | Commit |
 |---|---|
+| Class A sizing: panel height content-fixed via a **per-frame** `onDrawForeground` correction (plus the `onResize` and load-path hooks) — a 3-row panel should settle at exactly 157 | `dd7261a` → `d9b9106` |
+| Class B sizing: `GENERATOR_MIN_H` (356 at the 14px base) + `clampGeneratorSize` clamping both axes, and the fresh-node default guarded against the floor at large font scales | `be6ea69` |
+| `Save now` button height matches its card at every font scale (`SAVE_NOW_BTN_H = SHEAD_H`); floors moved to 288/368 | `f620f4b` |
+| Hover tint + `cursor: pointer` scoped to genuinely clickable headers (Sampler, Save row) — not switch-bearing sections, not the Compare card | `61716f9` |
 | Settings section, seven settings | `b7e66dc` — **confirmed working 2026-07-29** |
 | Server-side run logging (stage status, sampler provenance, model files) | `9addec1` |
 | `ui` payload must be a list — post-run values/disable reaching the panel at all | `f22b3c0` |
@@ -163,22 +155,24 @@ Shipped and green, not yet exercised against a running ComfyUI.
 | One seed row; four field builders moved to `js/shared/fields.mjs` | `21ccd1d` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
 | `%seed%` in a Save-now filename resolves to the real seed — carried as `anima_seed: [str(seed)]`, string end-to-end, `int` once at `format_filename` | `9874426` |
-| Enabled section card border keeps **no accent at all** (`--wtn-line-soft`, identical on/off) — round 3, after full accent and `.35` both read too light live. Also adds the missing `TOKENS.lineSoft`, fixing an inert `var(…, undefined)` fallback at 10 sites | `a6478f0` |
-| Enabled section card border dimmed to `rgba(45,212,191,.35)`, the warn border's own restraint level — superseded same day by the row above | `98d0fe5` |
-| Bool switch owns its state; word dropped, switch right-aligned; inherit ⓘ next to its label | `cec90cd` |
-| Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
-| Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
 | Preview Save defaults off, plus a **Save now** button (`POST /wtn/anima/preview/save_now`) | `cec90cd` |
 
 ## Done (confirmed by use)
 
 | Item | Commit |
 |---|---|
+| Nested overlays — a ⚙ menu survives opening a stepper's option list inside it | `cec90cd` |
+| Bool switch owns its state; on/off word dropped, switch right-aligned; inherit ⓘ beside its label | `cec90cd` |
+| Human field labels via a display-name map (settings paths unchanged) | `cec90cd` |
+| Card border carries **no accent at all** — three live rounds: full accent too glaring, `rgba(…,.35)` still too light, now plain `--wtn-line-soft`. Also fixed the missing `TOKENS.lineSoft` (an inert `var(…, undefined)` fallback at 10 sites) | `98d0fe5` → `a6478f0` |
+| Field rows painted `--wtn-console`; the old `--wtn-surface-2` look now means **disabled** | `61716f9` |
+| Preview body: `Save now` beside the Save card, one-row Compare card, segmented groups → menu pickers | `61716f9` |
+| Section body's `23px` left indent dropped — the card border carries the nesting now | `61716f9` |
 | `generator-design.md` catches up with `cec90cd` — §7a's Save-off reversal, §8's two stale blob values, §12's stale "overlay.mjs is untouched" retraction, and the "index.js registers both node classes" claim (it covers three) | `1fe13a6` — every claim checked against source, so nothing here is waiting on a live box |
 | V3 `NodeOutput` unwrapping — the Detailer runs | `d2b35da` |
 | Model pickers + readable pre-flight error for a missing model file | `d2b35da` |
 | Node defs in both V1 and V3 combo schemas; live sampler/scheduler lists | `1d3fa41` |
 | Accordion cards, ⚙ menus, 14px type, working stepper dropdowns | `60d46e4` |
-| Saved node size surviving refresh (both tracks) | `60d46e4`, `f9e5c79` |
+| Saved node **width** surviving refresh (both tracks) | `60d46e4`, `f9e5c79` — ⚠️ **narrowed 2026-07-29.** This row used to claim "size", which live measurement disproved for HEIGHT on the Controls track (a 3-row panel sat at 198 against a content height of 157 — see Now items 1–2). Width is confirmed; height is a different mechanism entirely and, under the Class A contract, is not meant to be persisted at all. |
 | Use Everywhere submit-churn no longer wiping the run report | `60d46e4` |
 | Preview: image fills the node, no internal scroll, one preview not two | `f22b3c0`, earlier |
