@@ -64,6 +64,16 @@ The four features a source read did not surface, all worth keeping:
 1. **The user can ADD their own trigger words** — a text field plus `Add`. This is the important one:
    the `triggers` output is **not** limited to what the file or Civitai provide. Custom words are part
    of the row's `triggers[]` like any other, so they persist with the workflow.
+
+   **Chip affordances differ by origin, and the rule is a principle worth keeping** (owner reference
+   shots, 2026-07-29): a **user-authored** chip carries an inline **`✕`** to delete it; a **file- or
+   Civitai-derived** chip does **not**. You may delete what you wrote; the file's and Civitai's words
+   are *candidates to select*, not data you own — deleting one would imply an edit to a source we don't
+   control. Selection is additionally marked with a **`✓`** inside the chip, so selected-ness doesn't
+   rest on colour alone. The `✕` must `stopPropagation` or clicking it also toggles the chip.
+
+   Implementation note: a custom word is arbitrary user text, so write it with `textContent`, never
+   `innerHTML`.
 2. **`all` / `none` quick-select** beside the section label.
 3. **A source pill** (`from file` / `from Civitai`) rather than a segmented toggle — it states where the
    candidate words came from and switches the view, while *selections* survive the switch.

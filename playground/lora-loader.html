@@ -101,8 +101,16 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
 /* chips (trigger words) */
 .chips{display:flex;flex-wrap:wrap;gap:5px;max-height:96px;overflow:auto;padding:2px 0 6px}
 .chip{font:11px var(--mono);padding:3px 8px;border-radius:11px;background:var(--console);
-  border:1px solid var(--line-soft);color:var(--ink-dim);cursor:pointer}
+  border:1px solid var(--line-soft);color:var(--ink-dim);cursor:pointer;
+  display:inline-flex;align-items:center;gap:5px}
 .chip.on{background:rgba(45,212,191,.16);border-color:var(--accent-deep);color:var(--accent-strong)}
+/* the ✓ only exists on a SELECTED chip, so selection reads without relying on colour alone */
+.chip .tick{display:none;font-size:9px}
+.chip.on .tick{display:inline}
+/* ✕ appears ONLY on user-authored words: you may delete what you wrote, but the file's and
+   Civitai's words are candidates to select, not data you own. */
+.chip .del{color:var(--ink-faint);font-size:10px;padding:0 1px;border-radius:3px}
+.chip .del:hover{color:var(--bad);background:rgba(248,113,113,.12)}
 .thumb{width:100%;height:112px;border-radius:7px;background:var(--console);border:1px solid var(--line-soft);
   display:grid;place-items:center;color:var(--ink-faint);font-size:11px;margin-bottom:9px}
 .status{display:flex;align-items:center;gap:6px;font:11px var(--mono);padding:5px 8px;border-radius:6px;
@@ -223,10 +231,13 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
         </div>
 
         <div class="chips" id="chipbox">
-          <div class="chip on" onclick="tog(this)">detailed skin</div>
-          <div class="chip on" onclick="tog(this)">freckles</div>
-          <div class="chip" onclick="tog(this)">pores</div>
-          <div class="chip" onclick="tog(this)">realistic skin texture</div>
+          <!-- from the file / Civitai: NO ✕ -->
+          <div class="chip on" onclick="tog(this)"><span class="tick">✓</span><span>detailed skin</span></div>
+          <div class="chip on" onclick="tog(this)"><span class="tick">✓</span><span>freckles</span></div>
+          <div class="chip" onclick="tog(this)"><span class="tick">✓</span><span>pores</span></div>
+          <div class="chip" onclick="tog(this)"><span class="tick">✓</span><span>realistic skin texture</span></div>
+          <!-- user-authored: HAS ✕ -->
+          <div class="chip on" onclick="tog(this)" title="your own word"><span class="tick">✓</span><span>elf ears</span><span class="del" onclick="delChip(event,this)">✕</span></div>
         </div>
 
         <!-- add your own -->
@@ -375,10 +386,12 @@ function addRow(){ LORAS.push({name:"(pick a LoRA)",on:true,sm:0.8,sc:0.8,missin
 function pickName(n){ const r=LORAS.find(x=>x.name==="(pick a LoRA)")||LORAS[1]; r.name=n; r.missing=false; render(); hide('pick'); }
 function menu(ev,i){ ev.preventDefault(); alert("Row menu: ↑  ↓  ⧉ Duplicate  ⌫ Remove"); }
 function tog(el){ el.classList.toggle("on"); syncTrig(); }
+function wordOf(chip){ return chip.querySelectorAll("span")[1]?.textContent.trim() || ""; }
 function syncTrig(){
-  const on=[...document.querySelectorAll("#chipbox .chip.on")].map(c=>c.textContent.trim());
+  const on=[...document.querySelectorAll("#chipbox .chip.on")].map(wordOf).filter(Boolean);
   document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
 }
+function delChip(ev,x){ ev.stopPropagation(); x.closest(".chip").remove(); syncTrig(); }
 function allNone(on){
   document.querySelectorAll("#chipbox .chip").forEach(c=>c.classList.toggle("on", !!on));
   syncTrig();
@@ -387,13 +400,15 @@ function addOwn(){
   const i=document.getElementById("ownword"), w=i.value.trim();
   if(!w) return;
   const c=document.createElement("div");
-  c.className="chip on"; c.textContent=w;
+  c.className="chip on";
   c.title="your own word — not from the file or Civitai";
-  c.style.borderStyle="dashed";
+  c.innerHTML='<span class="tick">✓</span><span></span><span class="del" onclick="delChip(event,this)">✕</span>';
+  c.querySelectorAll("span")[1].textContent = w;   // textContent, never innerHTML: user input
   c.onclick=()=>tog(c);
   document.getElementById("chipbox").appendChild(c);
   i.value=""; syncTrig();
 }
+document.getElementById("ownword").addEventListener("keydown", e=>{ if(e.key==="Enter") addOwn(); });
 function show(id){ document.getElementById(id).style.outline="1px solid var(--accent-deep)";
   document.getElementById(id).scrollIntoView({block:"nearest",behavior:"smooth"});
   setTimeout(()=>document.getElementById(id).style.outline="",900); }
