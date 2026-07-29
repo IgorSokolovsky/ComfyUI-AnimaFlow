@@ -86,14 +86,12 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
     if obj.get("baseModel"):
         out["base_model"] = str(obj["baseModel"])
 
-    if obj.get("description"):
-        out["description"] = str(obj["description"])
-
     # `tags` -- KEPT, unlike upstream (see module docstring). Seen on both
     # the version object itself and its embedded `model`, depending on
     # which Civitai endpoint answered; prefer the top-level one if both are
     # present, since it's the more specific of the two when they disagree.
     model = obj.get("model")
+    model_description = None
     if isinstance(model, dict):
         if model.get("name"):
             out["name"] = str(model["name"])
@@ -102,10 +100,30 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
         model_tags = _clean_strings(model.get("tags"))
         if model_tags:
             out["tags"] = model_tags
+        if model.get("description"):
+            model_description = str(model["description"])
 
     top_tags = _clean_strings(obj.get("tags"))
     if top_tags:
         out["tags"] = top_tags
+
+    # BUG 2 (2026-07-29 owner report): a LoRA that matched on Civitai and DID
+    # have an author write-up still showed "no author's notes" -- this used
+    # to read `obj["description"]` ONLY, the per-VERSION field (often null,
+    # or a short changelog). The author's MAIN description lives on the
+    # MODEL, not the version, so it wins here when present. In practice the
+    # by-hash endpoint's embedded `model` object almost never actually
+    # carries one (verified live, 2026-07-29: it's `{name, type, nsfw, poi}`
+    # only) -- `lookup.py`'s `_augment_with_model_description` is the
+    # fallback that actually supplies it most of the time, by fetching
+    # `/api/v1/models/{id}` once and caching the result back into this same
+    # shape (so a future parse of the cached sidecar finds it right here,
+    # with no second fetch). This branch exists for whichever endpoint DOES
+    # embed it, and to keep the priority order correct if Civitai's response
+    # shape ever changes.
+    description = model_description or (str(obj["description"]) if obj.get("description") else None)
+    if description:
+        out["description"] = description
 
     mid = _clean_id(obj.get("modelId"))
     if mid is not None:
@@ -178,4 +196,24 @@ def _pick_thumbnail(images: Any) -> Optional[str]:
     return _thumb_url(fallback) if fallback else None
 
 
-__all__ = ("parse_model_version",)
+def parse_model_description(obj: Any) -> Optional[str]:
+    """A Civitai `GET /api/v1/models/{id}` response -> its own top-level
+    `description` (the author's main write-up for the WHOLE model, as
+    opposed to `parse_model_version`'s per-VERSION one) -- `None` if the
+    field is missing, blank, or `obj` isn't a dict at all. Pure, offline-
+    testable against recorded JSON (verified live against a real response,
+    2026-07-29 -- the field is a plain top-level string, HTML-flavoured
+    text). `lookup.py`'s `_augment_with_model_description` is the only
+    caller -- BUG 2's fallback fetch for the case (the common one) where the
+    by-hash endpoint's embedded `model` object didn't carry a description at
+    all.
+    """
+    if not isinstance(obj, dict):
+        return None
+    description = obj.get("description")
+    if isinstance(description, str) and description.strip():
+        return description
+    return None
+
+
+__all__ = ("parse_model_version", "parse_model_description")

@@ -132,7 +132,9 @@ import {
   ROW_H,
   ROW_GAP,
   MIN_W,
+  MIN_W_SEP,
   DEFAULT_W,
+  WIDGETS_START_Y,
 } from "./lora_render.mjs";
 
 // Duck-typed size-pair check -- `node.size` on a live litegraph node is a
@@ -767,6 +769,13 @@ function openLoraSettings(node, ctx, anchorEl) {
     setSepStrengths(state, !state.sepStrengths);
     persistState(node, ctx);
     refreshFromState();
+    // BUG 7 (2026-07-29 owner report): sepStrengths has its OWN, higher
+    // width floor (MIN_W_SEP) -- a legitimate user-initiated resize, so
+    // widen a too-narrow node up to it now rather than leaving the new
+    // stepper clipped until the next manual drag. Turning it back OFF must
+    // never shrink a node the user has already widened -- `enforceWidthFloor`
+    // only ever grows (see its own doc comment).
+    enforceWidthFloor(node, ctx);
     syncRows(node, ctx); // rows must repaint to show/hide the clip stepper (§7b)
   });
   refs.sepInput.addEventListener("input", () => {
@@ -1036,10 +1045,26 @@ export function teardownLoraNode(node) {
 // `onDrawForeground` is the per-frame backstop that survives both gaps.
 // ---------------------------------------------------------------------------
 
+/** The current width FLOOR for `node` -- `MIN_W_SEP` while `sepStrengths` is
+ * on, `MIN_W` otherwise (BUG 7, 2026-07-29 owner report: "the floor doesn't
+ * depend on mode" let a node resized to the single-strength floor break the
+ * instant sepStrengths was turned on). Every enforcement layer below reads
+ * THIS, never the flat `MIN_W` directly, so toggling the setting can never
+ * leave one layer clamping to the wrong number while another has already
+ * moved on. */
+function currentMinW(node, ctx) {
+  const state = ensureState(node, ctx);
+  return state.sepStrengths ? MIN_W_SEP : MIN_W;
+}
+
 /** The single authority for "what should node.size[1] be right now" --
  * `node.computeSize()` when present (the SAME function every layer below
- * defers to, never a second formula), else `contentHeight(rows.length)`
- * directly. Mirrors `interaction.mjs`'s own `fitNodeH` exactly. */
+ * defers to, never a second formula), else `WIDGETS_START_Y +
+ * contentHeight(rows.length)` directly (BUG 3: the fallback must reserve
+ * the same fixed output-socket column `computeLoraSize` does, or a node
+ * whose `computeSize` is ever missing/broken would size itself right back
+ * under the sockets). Mirrors `interaction.mjs`'s own `fitNodeH` exactly,
+ * modulo that one addition. */
 function fitNodeH(node, ctx) {
   try {
     const cs = typeof node.computeSize === "function" ? node.computeSize() : null;
@@ -1051,7 +1076,7 @@ function fitNodeH(node, ctx) {
     // fall through to the arithmetic fallback below.
   }
   const state = ensureState(node, ctx);
-  return contentHeight(state.rows.length);
+  return WIDGETS_START_Y + contentHeight(state.rows.length);
 }
 
 /** Auto-fit the node to its content -- bails on the load path via BOTH
@@ -1064,7 +1089,7 @@ export function fitNode(node, ctx) {
   if (node._lrConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
     return;
   }
-  const w = Math.max((node.size && node.size[0]) || DEFAULT_W, MIN_W);
+  const w = Math.max((node.size && node.size[0]) || DEFAULT_W, currentMinW(node, ctx));
   const h = fitNodeH(node, ctx);
   if (typeof node.setSize === "function") {
     node.setSize([w, h]);
@@ -1108,8 +1133,9 @@ export function onResizeLora(node, ctx, size) {
   if (!isSizeLike(arr)) {
     return;
   }
-  if (arr[0] < MIN_W) {
-    arr[0] = MIN_W;
+  const floor = currentMinW(node, ctx);
+  if (arr[0] < floor) {
+    arr[0] = floor;
   }
   arr[1] = fitNodeH(node, ctx);
   if (arr !== node.size && isSizeLike(node.size)) {
@@ -1140,8 +1166,9 @@ export function onDrawForegroundLora(node, ctx) {
   if (!isSizeLike(node.size)) {
     return;
   }
-  if (node.size[0] < MIN_W) {
-    node.size[0] = MIN_W;
+  const floor = currentMinW(node, ctx);
+  if (node.size[0] < floor) {
+    node.size[0] = floor;
   }
   const h = fitNodeH(node, ctx);
   if (node.size[1] !== h) {
@@ -1174,8 +1201,9 @@ export function wrapSetSizeLora(node, ctx) {
     if (!arr) {
       return original(size);
     }
-    if (arr[0] < MIN_W) {
-      arr[0] = MIN_W;
+    const floor = currentMinW(node, ctx);
+    if (arr[0] < floor) {
+      arr[0] = floor;
     }
     arr[1] = fitNodeH(node, ctx);
     return original(arr);
@@ -1198,6 +1226,25 @@ export function applyContentHeightLora(node, ctx) {
   node.size[1] = fitNodeH(node, ctx);
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
+  }
+}
+
+/**
+ * BUG 7 (2026-07-29 owner report): toggling `sepStrengths` ON can move
+ * `currentMinW`'s answer past the node's CURRENT width -- unlike every other
+ * layer above (which only ever clamp a drag/paint back down to a floor),
+ * this one is allowed to actually GROW the node, because it's reacting to a
+ * genuine user action (flipping the ⚙ switch), not a drag or a load. It
+ * never shrinks a node the user has already widened themselves: calling
+ * `node.setSize` with the CURRENT size unchanged is enough, because
+ * `wrapSetSizeLora` (installed once, in `setupLoraNode`, long before any ⚙
+ * dialog can be opened) already re-clamps `arr[0]` up to `currentMinW`'s
+ * CURRENT answer on every call -- reusing that one floor rather than
+ * duplicating the comparison a second time here.
+ */
+export function enforceWidthFloor(node, ctx) {
+  if (typeof node.setSize === "function" && isSizeLike(node.size)) {
+    node.setSize([node.size[0], node.size[1]]);
   }
 }
 
@@ -1229,15 +1276,18 @@ export function setupLoraNode(node, ctx) {
     applyNodeChrome(node);
   }
 
-  // Without this, widget Y depends on slot bounds which depend on widget Y
-  // -- same reasoning `js/controls/index.js`'s `setupNode` gives (itself
-  // citing ComfyUI-Pixaroma's `js/sliders/index.js`); this node's hidden
-  // `lora_state` widget is the one thing besides the DOM widget itself that
-  // could otherwise interact with that layout pass.
-  node.widgets_start_y = 2;
+  // BUG 3 (2026-07-29 owner report): this used to be the flat `2` Control
+  // Panel uses -- correct THERE (its own outputs are parked at each row's
+  // widget Y, so nothing above the widget needs reserving), wrong HERE
+  // (this node's `MODEL`/`CLIP`/`triggers` outputs are FIXED, drawn at their
+  // own native slot positions -- see `lora_render.mjs`'s own top doc comment
+  // for the decompiled litegraph formula this replaces). `WIDGETS_START_Y`
+  // reserves that real slot-column height instead, so the DOM widget starts
+  // BELOW the sockets rather than painted on top of them.
+  node.widgets_start_y = WIDGETS_START_Y;
 
   node.computeSize = function computeLoraSize() {
-    return [MIN_W, contentHeight(rowCountOf(node, ctx))];
+    return [currentMinW(node, ctx), WIDGETS_START_Y + contentHeight(rowCountOf(node, ctx))];
   };
 
   // THIRD Class A hook (alongside onResize/onDrawForeground, wired from
@@ -1245,14 +1295,17 @@ export function setupLoraNode(node, ctx) {
   wrapSetSizeLora(node, ctx);
 
   // Initial floor sizing -- see this function's own doc comment for the
-  // double guard.
+  // double guard. Height goes through `fitNodeH` (not a bare `contentHeight`
+  // call) so it picks up the same `WIDGETS_START_Y` offset `computeLoraSize`
+  // above does -- `node.computeSize` is already assigned by this point, so
+  // `fitNodeH` reads it rather than falling back to raw arithmetic.
   if (!(ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading()) && !node._lrConfiguring) {
-    if (!isSizeLike(node.size) || node.size[0] < MIN_W) {
+    if (!isSizeLike(node.size) || node.size[0] < currentMinW(node, ctx)) {
       if (!node.size) {
         node.size = [0, 0];
       }
       node.size[0] = DEFAULT_W;
-      node.size[1] = contentHeight(rowCountOf(node, ctx));
+      node.size[1] = fitNodeH(node, ctx);
     }
   }
 
@@ -1273,7 +1326,7 @@ export function setupLoraNode(node, ctx) {
 export function restoreLoraNode(node, ctx) {
   hideStateWidget(node);
   restoreStateFromWidget(node, ctx);
-  node.widgets_start_y = 2;
+  node.widgets_start_y = WIDGETS_START_Y; // BUG 3 -- see setupLoraNode's own doc comment
   mountLoraNode(node, ctx);
   applyContentHeightLora(node, ctx);
 }

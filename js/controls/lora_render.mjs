@@ -26,6 +26,29 @@
  * are separate `document.body` overlays, never part of this root's own
  * flow height).
  *
+ * ## BUG 3 (2026-07-29 owner report) — the header collided with the fixed
+ * output sockets, and why
+ *
+ * `MODEL`/`CLIP`/`triggers` are three FIXED outputs at the node's top-right
+ * (unlike Control/Loader Panel rows, which park their own socket at the
+ * widget's own `.y` — see the doc comment above). Legacy litegraph reserves
+ * a fixed vertical band above any widget for its slot column
+ * (`max(inputCount, outputCount) * NODE_SLOT_HEIGHT`, decompiled from the
+ * installed `comfyui_frontend_package` bundle per
+ * `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md`) — UNLESS
+ * `node.widgets_start_y` is explicitly set, in which case that reservation is
+ * bypassed entirely and the widget starts painting at exactly that Y,
+ * regardless of the slot column. `lora_interaction.mjs` had copied Control
+ * Panel's `node.widgets_start_y = 2` verbatim — correct THERE (Control parks
+ * its own outputs at each row's widget `.y`, so nothing is lost), wrong HERE
+ * (this node's outputs are drawn at their own native slot positions, which
+ * `widgets_start_y = 2` then paints straight over). `SLOT_HEADER_H`/
+ * `WIDGETS_START_Y` below are the fix: reserve the real slot-column height
+ * (`INPUT_SLOT_COUNT`/`OUTPUT_SLOT_COUNT` below, matching
+ * `nodes/controls/lora_loader.py`'s actual socket counts) before the widget
+ * ever starts, mirroring litegraph's own default "+2" gap. See
+ * `lora_interaction.mjs`'s own top doc comment for where these are consumed.
+ *
  * ## Vocabulary: `.wtn-ctl-*` (owner's decision, 2026-07-29)
  *
  * This file reuses the `.wtn-ctl-row` / `.wtn-ctl-body` / `.wtn-ctl-name` /
@@ -48,18 +71,53 @@
  *
  * Exactly like `render.mjs`'s `bodyHeight`: `contentHeight` below is pure
  * arithmetic on the row COUNT, matching this file's own CSS constants
- * (`ROW_H`/`ROW_GAP`/`HEADER_H`/`BODY_PAD`) byte-for-byte, so
+ * (`ROW_H`/`ROW_GAP`/`HEADER_H`/`BODY_PAD`, plus the rows-card's own
+ * `CARD_PAD`/`CARD_BORDER` — BUG 7, below) byte-for-byte, so
  * `lora_interaction.mjs`'s Class A sizing never has to read the live DOM.
+ *
+ * ## BUG 7 (2026-07-29 owner report) — the row floor, and the rows-card
+ *
+ * Two owner reports drove the width/layout constants below:
+ *
+ *   - At the shipped floor, `sepStrengths` on (two strength steppers per
+ *     row) truncated names to ~6 characters and clipped the on/off switch
+ *     under the node's right edge. The "M"/"C" letter tags that used to sit
+ *     in each stepper cell are GONE now (their naming moved to a `title`
+ *     tooltip — "Model strength"/"Clip strength" — on the stepper cell
+ *     itself; fixed order, model always first), and every remaining control
+ *     width below (`GRIP_W`/`INFO_W`/`SWITCH_W`/`STEPPER_W`) is a REAL CSS
+ *     box size from this file's own CSS, not a guess — `MIN_W`/`MIN_W_SEP`
+ *     are a straight sum of them plus `NAME_MIN_W` (the one deliberately
+ *     chosen number here — see its own comment). `sepStrengths` therefore
+ *     gets its OWN, higher floor (`MIN_W_SEP`) — `lora_interaction.mjs`'s
+ *     `enforceWidthFloor` widens a too-narrow node up to whichever floor is
+ *     current the moment the setting is toggled ON, and never shrinks one
+ *     the user has already widened.
+ *   - The owner also asked for the row list to sit in a bordered "card"
+ *     (`js/shared/theme.css`'s `.wtn-card` idiom), with the row gap tightened
+ *     to 4px — `ROW_GAP` below (was 7; `HEADER_GAP`, a NEW separate constant,
+ *     keeps the header-to-card gap at the old 7, since that one is not "the
+ *     gap between one row and the next"). Per `98d0fe5`/`a6478f0`'s own
+ *     hard-won lesson (three live rounds on the Control Panel's own enabled-
+ *     section border), the card's border is plain `--wtn-line-soft` — no
+ *     accent at any alpha, full-strength or dimmed; the "own house style"
+ *     conclusion from that saga generalizes here rather than being
+ *     re-litigated per node.
  *
  * ## Icons: CSS-mask glyphs, not emoji (`.claude/CLAUDE.md`,
  * `js/prompt_rules/rule_builder/index.js:44-92`'s precedent)
  *
- * The header's 🔍/⚙ placeholders (inert this slice — Slice 3/5 wire them)
- * are drawn as `mask-image` data-URI SVGs tinted via `currentColor`,
- * matching the Rule Builder's own toolbar-icon technique, rather than the
- * literal emoji characters the mockup uses as placeholders. Hand-rolled
- * geometry (a ring+handle for search, a hub+8 teeth for the gear) — not
- * lifted from a named icon set, so there is nothing to attribute.
+ * The header's 🔍/⚙ placeholders are drawn as `mask-image` data-URI SVGs
+ * tinted via `currentColor`, matching the Rule Builder's own toolbar-icon
+ * technique, rather than the literal emoji characters the mockup uses as
+ * placeholders. Hand-rolled geometry (a ring+handle for search, a hub+8 teeth
+ * for the gear) — not lifted from a named icon set, so there is nothing to
+ * attribute. `⚙` is wired (Slice 5); `🔍` (search/browse) is rendered
+ * **visibly disabled** (BUG 6, 2026-07-29 owner report: it "looks live but
+ * does nothing") — dimmed, `cursor: default`, and a `title` naming search as
+ * a later milestone — because M2 (Civitai search) hasn't landed yet, and a
+ * normal-looking, silently-inert button reads as broken rather than
+ * "not yet available".
  */
 
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
@@ -90,7 +148,10 @@ const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 
 // Mirrors js/shared/theme.mjs's TOKENS exactly (see this module's top doc
 // comment for why every render.mjs in this pack keeps its own hardcoded
-// fallback copy rather than importing one).
+// fallback copy rather than importing one). `lineSoft` in particular is
+// worth double-checking resolves (a missing token here left an inert
+// `var(..., undefined)` at ten sites elsewhere in this pack, `a6478f0`) --
+// it's present, below.
 const TOKENS = {
   surface: "#151a21",
   surface2: "#1b212a",
@@ -108,6 +169,114 @@ const TOKENS = {
 };
 
 // ---------------------------------------------------------------------------
+// Sizing / layout constants -- declared BEFORE the `CSS` template literal
+// below so they can be interpolated straight into it (the one true source
+// for both the painted CSS and the pure-arithmetic `contentHeight`/floor
+// math -- no second, hand-kept-in-sync copy of any of these numbers).
+// ---------------------------------------------------------------------------
+
+export const ROW_H = 30;
+// Vertical gap between ONE LORA ROW AND THE NEXT (owner, 2026-07-29 -- was
+// 7). Distinct from `HEADER_GAP` below, which is a different gap (header
+// strip -> rows-card) the owner did NOT ask to change.
+export const ROW_GAP = 4;
+export const HEADER_H = 30;
+export const BODY_PAD = 9;
+// The gap between the header row and the rows-card below it (BUG 7's new
+// card wrapper) -- kept at the ORIGINAL 7px `ROW_GAP` used to share with
+// `ROW_GAP` above before the owner asked for the between-rows gap
+// specifically to tighten to 4.
+export const HEADER_GAP = 7;
+
+// -- BUG 7: the rows-card wrapper -----------------------------------------
+// Plain `--wtn-line-soft` border, per `98d0fe5`/`a6478f0`'s own hard-won
+// conclusion (three live rounds on the Control Panel's enabled-section
+// border: full accent too glaring, a dimmed accent still too light, plain
+// `--wtn-line-soft` was the answer that stuck) -- this card never needed its
+// own round of that argument because that lesson already generalizes.
+export const CARD_BORDER = 1;
+export const CARD_PAD = 8;
+
+// -- BUG 3: the fixed output-socket column ----------------------------------
+// `NODE_SLOT_H` is litegraph's own `NODE_SLOT_HEIGHT` (decompiled from the
+// installed `comfyui_frontend_package` bundle, 2026-07-29 --
+// `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md`'s own citation
+// method: `grep NODE_SLOT_HEIGHT` in the bundle's `assets/*.js`). Litegraph
+// reserves `max(inputCount, outputCount) * NODE_SLOT_H` above any widget by
+// default; `nodes/controls/lora_loader.py`'s actual socket counts --
+// `model`+`clip` (2 inputs), `MODEL`/`CLIP`/`triggers` (3 outputs, FIXED,
+// never per-row -- design doc §5) -- are what `SLOT_HEADER_H` reserves here,
+// explicitly, since `lora_interaction.mjs` sets `node.widgets_start_y`
+// (which bypasses litegraph's own reservation entirely -- see this file's
+// top doc comment for the decompiled formula that proves it).
+export const NODE_SLOT_H = 20;
+export const INPUT_SLOT_COUNT = 2; // model (required), clip (optional)
+export const OUTPUT_SLOT_COUNT = 3; // MODEL, CLIP, triggers
+export const SLOT_HEADER_H = Math.max(INPUT_SLOT_COUNT, OUTPUT_SLOT_COUNT) * NODE_SLOT_H; // 60
+// "+2" mirrors litegraph's OWN default gap when `widgets_start_y` is left
+// unset (`this.widgets_start_y ?? (this.widgets_up ? 0 : slotBottom) + 2` --
+// see `lora_interaction.mjs`'s own top doc comment for the exact decompiled
+// line) -- explicit here rather than measured, since the socket counts above
+// are fixed and never vary per row.
+export const WIDGETS_START_Y = SLOT_HEADER_H + 2; // 62
+
+// -- BUG 7: row control widths -- every one of these matches a REAL CSS box
+// size below; re-deriving MIN_W/MIN_W_SEP after a future CSS change is a
+// matter of re-running this same sum, never eyeballing a new number.
+export const GRIP_W = 9;
+export const INFO_W = 18;
+export const SWITCH_W = 30;
+export const STR_VAL_W = 34;
+export const STR_SPIN_W = 9;
+// Gap INSIDE one stepper cell, between its value and its ▲▼ -- the "M"/"C"
+// tag that used to occupy this slot is GONE (BUG 7); the cell's `title`
+// ("Model strength"/"Clip strength") carries that naming now.
+export const STR_CELL_GAP = 5;
+// `.wtn-ctl-body`'s own gap, AND `.wtn-lora-str`'s internal gap between the
+// model/clip cells -- deliberately UNCHANGED (owner correction, 2026-07-29:
+// intra-row control spacing was NOT part of the 4px change; only the
+// between-ROWS gap, `ROW_GAP` above, was).
+export const CTRL_GAP = 8;
+export const ROW_PAD_L = 10;
+// Bumped from 8 -- BUG 3/7's "reserve room for the socket column" applied to
+// the row too, not just the header (the header's own fix is the vertical
+// `WIDGETS_START_Y` above; this is the row's own defensive breathing room
+// from the node's right edge).
+export const ROW_PAD_R = 12;
+// The one NUMBER in this whole derivation that's a deliberate choice rather
+// than a measured CSS box size: picked to show roughly 16-18 characters of a
+// real LoRA filename at 12px -- a straight improvement over the ~6 the BUG 7
+// screenshot showed, without being so generous the floor balloons.
+// VERIFY-IN-COMFYUI: real glyph metrics can't be rendered in this headless
+// environment; eyeball against `playground/lora-loader.html` once landed.
+export const NAME_MIN_W = 130;
+// One stepper cell, no tag: value + gap + spinner.
+export const STEPPER_W = STR_VAL_W + STR_CELL_GAP + STR_SPIN_W; // 48
+
+// grip · gap · name · gap · ONE stepper · gap · ⓘ · gap · switch, plus the
+// row's own left/right padding (4 gaps total between 5 children).
+const SINGLE_FIXED_W = GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
+export const MIN_W = NAME_MIN_W + SINGLE_FIXED_W; // 289
+
+// `sepStrengths` on (§7b "Show two strengths per row") adds a SECOND
+// stepper cell plus the gap between the two -- BUG 7's "two floors, not
+// one".
+const SEP_FIXED_W = SINGLE_FIXED_W + STEPPER_W + CTRL_GAP;
+export const MIN_W_SEP = NAME_MIN_W + SEP_FIXED_W; // 345
+
+export const DEFAULT_W = 340;
+
+// -- BUG 4: the '+ Add LoRA' button ------------------------------------------
+// Content ("＋ Add LoRA", 12px/600) plus its own 11px-each-side padding --
+// alongside (never instead of) the existing `max-width: 30%` cap, so the
+// button never truncates at any width the header's OTHER controls
+// (master/count/search/gear, comfortably under half of MIN_W together) leave
+// room for. CSS `min-width` legitimately wins over a smaller `max-width` at
+// very narrow widths (spec behaviour) -- that's the intended outcome here:
+// readable over exactly-30%.
+export const ADD_MIN_W = 112;
+
+// ---------------------------------------------------------------------------
 // Icons — CSS mask-image data URIs (see this module's top doc comment).
 // `<`/`>` percent-encoded (`%3C`/`%3E`) so the URL survives being embedded in
 // a CSS `url(...)`, matching `js/prompt_rules/rule_builder/index.js`'s own
@@ -123,7 +292,7 @@ const GEAR_ICON_SVG =
 
 const CSS = `
 .wtn-lora-root {
-  display: flex; flex-direction: column; gap: 7px; width: 100%; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: ${HEADER_GAP}px; width: 100%; box-sizing: border-box;
   padding: 9px 9px 10px; font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
 }
@@ -135,9 +304,12 @@ const CSS = `
 
 /* Content + padding, capped at 30% of the node -- must NOT flex, or it grows
    without limit on a wide node while the switch/counter/icons stay fixed
-   (design doc §1a-ii's whole reasoning for the cap). */
+   (design doc §1a-ii's whole reasoning for the cap). 'min-width' (BUG 4,
+   2026-07-29 owner report: "+ Add Lo...", truncated even at the default
+   width) is the OTHER half -- see this file's own 'ADD_MIN_W' comment for
+   why the two co-exist rather than one replacing the other. */
 .wtn-lora-add {
-  flex: 0 0 auto; max-width: 30%; height: 30px; box-sizing: border-box;
+  flex: 0 0 auto; max-width: 30%; min-width: ${ADD_MIN_W}px; height: 30px; box-sizing: border-box;
   padding: 0 11px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent});
@@ -179,9 +351,9 @@ const CSS = `
 }
 
 /* 🔍 / ⚙ placeholders -- CSS-mask glyphs (see this module's top doc
-   comment), inert this slice. Reuses '.wtn-ctl-gear''s box (18px, centered,
-   ink-faint -> accent on hover) so the two eventual icon buttons sit in the
-   exact same slot a Control/Loader Panel row's own ⚙ would. */
+   comment). Reuses '.wtn-ctl-gear''s box (18px, centered, ink-faint ->
+   accent on hover) so the two icon buttons sit in the exact same slot a
+   Control/Loader Panel row's own ⚙ would. */
 .wtn-lora-icon {
   flex: none; width: 18px; height: 18px; cursor: pointer;
   background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -191,9 +363,27 @@ const CSS = `
 .wtn-lora-icon:hover { background-color: var(--wtn-accent, ${TOKENS.accent}); }
 .wtn-lora-icon.wtn-lora-search { mask-image: url("${SEARCH_ICON_SVG}"); -webkit-mask-image: url("${SEARCH_ICON_SVG}"); }
 .wtn-lora-icon.wtn-lora-gear { mask-image: url("${GEAR_ICON_SVG}"); -webkit-mask-image: url("${GEAR_ICON_SVG}"); }
+/* BUG 6 (2026-07-29 owner report): Civitai search/browse is M2, unbuilt --
+   render this button VISIBLY disabled rather than a normal-looking control
+   that silently does nothing on click. 'cursor: default' and a dimmed fill
+   (no hover accent at all -- the two rules below win on specificity over
+   the plain '.wtn-lora-icon'/':hover' rules above, regardless of source
+   order, since both carry an extra class). */
+.wtn-lora-icon.wtn-lora-icon-disabled { cursor: default; opacity: .45; }
+.wtn-lora-icon.wtn-lora-icon-disabled:hover { background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+
+/* ── rows-CARD (BUG 7, owner request, 2026-07-29): wraps the rows host +
+   empty state in the pack's '.wtn-card' idiom ('js/shared/theme.css'), but
+   with a PLAIN '--wtn-line-soft' border, never an accent -- see this file's
+   top doc comment for why that's settled rather than a fresh choice. ── */
+.wtn-lora-rows-card {
+  border: ${CARD_BORDER}px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  border-radius: var(--wtn-radius, 10px); background: var(--wtn-surface, ${TOKENS.surface});
+  padding: ${CARD_PAD}px; box-sizing: border-box;
+}
 
 /* ── rows host + empty state ── */
-.wtn-lora-rows { display: flex; flex-direction: column; gap: 7px; }
+.wtn-lora-rows { display: flex; flex-direction: column; gap: ${ROW_GAP}px; }
 .wtn-lora-empty {
   height: 30px; display: flex; align-items: center; justify-content: center;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11.5px; font-style: italic;
@@ -203,8 +393,8 @@ const CSS = `
    render.mjs's own vocabulary (see this module's top doc comment) ── */
 .wtn-ctl-row { position: relative; width: 100%; height: 30px; box-sizing: border-box; }
 .wtn-ctl-body {
-  position: relative; display: flex; align-items: center; gap: 8px;
-  width: 100%; height: 100%; box-sizing: border-box; padding: 0 8px 0 10px;
+  position: relative; display: flex; align-items: center; gap: ${CTRL_GAP}px;
+  width: 100%; height: 100%; box-sizing: border-box; padding: 0 ${ROW_PAD_R}px 0 ${ROW_PAD_L}px;
   border-radius: 7px; background: var(--wtn-console, ${TOKENS.console});
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); overflow: hidden;
   font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -241,7 +431,7 @@ const CSS = `
 .wtn-ctl-row.wtn-lora-off .wtn-lora-icon-info { opacity: .45; }
 
 .wtn-ctl-grip {
-  flex: none; width: 9px; height: 15px; cursor: grab; touch-action: none;
+  flex: none; width: ${GRIP_W}px; height: 15px; cursor: grab; touch-action: none;
   background-image: radial-gradient(circle, var(--wtn-ink-faint, ${TOKENS.inkFaint}) 1.1px, transparent 1.3px);
   background-size: 4px 4px; opacity: .5;
 }
@@ -249,17 +439,21 @@ const CSS = `
 .wtn-ctl-grip:active { cursor: grabbing; }
 
 /* Name button -- content area 1: the LoRA's own name (or a placeholder), a
-   trailing ▾ caret hinting the picker (Slice 3). Plain <button>, no
-   .wtn-ctl-* box styling of its own beyond what render.mjs's '.wtn-ctl-name'
-   already gives text layout -- background/border come from the shared
-   '.wtn-ctl-body' it sits inside. */
+   trailing ▾ caret hinting the picker (Slice 3). 'flex: 1 1 auto' + 'min-
+   width: 0' (BUG 7: "the name field takes the remaining space") is what
+   actually lets it ellipsize under pressure -- a flex item's default min-
+   width is its OWN content size, which defeats 'text-overflow: ellipsis'
+   entirely until overridden. */
 .wtn-ctl-name.wtn-lora-name {
   background: transparent; border: none; padding: 0; text-align: left; cursor: pointer;
   font: inherit; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px;
+  overflow: hidden;
 }
 .wtn-ctl-name.wtn-lora-name:hover { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
+.wtn-lora-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wtn-lora-caret {
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 9px; margin-left: 4px;
+  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 9px; margin-left: 4px; flex: none;
 }
 /* Missing-file mark (design doc §1a-iii): the WHOLE name field turns red,
    border included -- not just the text, so it reads at a glance even in a
@@ -273,28 +467,26 @@ const CSS = `
 /* Strength stepper -- value + stacked ▲▼, DRAWN triangles per this pack's
    own convention (render.mjs's '.wtn-ctl-arrow' comment: "a glyph's side
    bearing means padding can't ever render as an exact px value"). One
-   '.wtn-lora-str' group holds TWO cells (model, clip) -- the clip one, and
-   both 'M'/'C' tags, are hidden by default (single-strength mode, the
-   default) and shown only when the ⚙ dialog's "Show two strengths per row"
-   is on (§7b, Slice 5) -- paintRow's own sepStrengths parameter toggles
-   '.wtn-lora-two' on the group. This keeps the SAME single top-level '.str'
-   child the row's fixed grip/name/str/info/switch order already asserts
-   (test_lora_resize.mjs's own "in that order" test) -- only its INSIDES
-   change shape. */
-.wtn-lora-str { display: flex; align-items: center; gap: 8px; flex: none; }
-.wtn-lora-str-cell { display: flex; align-items: center; gap: 5px; }
-.wtn-lora-str-tag {
-  display: none; font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; font-weight: 700;
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
-}
-.wtn-lora-str.wtn-lora-two .wtn-lora-str-tag { display: inline; }
+   '.wtn-lora-str' group holds TWO cells (model, clip) -- the clip one is
+   hidden by default (single-strength mode, the default) and shown only when
+   the ⚙ dialog's "Show two strengths per row" is on (§7b, Slice 5) --
+   paintRow's own sepStrengths parameter toggles '.wtn-lora-two' on the
+   group. BUG 7 (2026-07-29): the "M"/"C" letter tag each cell used to carry
+   is GONE -- naming moved to the cell's own 'title' ("Model
+   strength"/"Clip strength"), and the model cell is ALWAYS first, never
+   reordered, since position is now the only thing telling the two apart.
+   This keeps the SAME single top-level '.str' child the row's fixed
+   grip/name/str/info/switch order already asserts (test_lora_resize.mjs's
+   own "in that order" test) -- only its INSIDES change shape. */
+.wtn-lora-str { display: flex; align-items: center; gap: ${CTRL_GAP}px; flex: none; }
+.wtn-lora-str-cell { display: flex; align-items: center; gap: ${STR_CELL_GAP}px; }
 .wtn-lora-str-clip { display: none; }
 .wtn-lora-str.wtn-lora-two .wtn-lora-str-clip { display: flex; }
 .wtn-lora-str-val {
   font-family: var(--wtn-font-mono, monospace); font-size: 11.5px; font-weight: 640;
-  color: var(--wtn-ink, ${TOKENS.ink}); width: 34px; text-align: right;
+  color: var(--wtn-ink, ${TOKENS.ink}); width: ${STR_VAL_W}px; text-align: right;
 }
-.wtn-lora-spin { display: flex; flex-direction: column; gap: 1px; }
+.wtn-lora-spin { display: flex; flex-direction: column; gap: 1px; width: ${STR_SPIN_W}px; align-items: center; }
 .wtn-lora-arrow { width: 0; height: 0; cursor: pointer; opacity: .85; }
 .wtn-lora-arrow:hover { opacity: 1; }
 .wtn-lora-arrow.wtn-lora-up {
@@ -358,6 +550,11 @@ const CSS = `
 .wtn-lora-set-close:hover { color: var(--wtn-ink, ${TOKENS.ink}); }
 .wtn-lora-set-body { padding: 10px 11px 11px; }
 .wtn-lora-set-fld { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+/* BUG 5 (2026-07-29 owner report): "LoRA memory use" wrapped onto three
+   lines because the label shared a horizontal row with the Standard/Fast/
+   Lowest segmented control. This modifier stacks label-then-control
+   instead, so the label gets the row's FULL width to lay out in. */
+.wtn-lora-set-fld.wtn-lora-set-fld-stack { flex-direction: column; align-items: stretch; gap: 5px; }
 .wtn-lora-set-label { flex: 1 1 auto; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-lora-set-hint { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; margin-top: 1px; line-height: 1.35; }
 .wtn-lora-set-num {
@@ -369,11 +566,6 @@ const CSS = `
   width: 62px; box-sizing: border-box; background: var(--wtn-console, ${TOKENS.console});
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); color: var(--wtn-ink, ${TOKENS.ink});
   font: 11.5px var(--wtn-font-mono, monospace); padding: 4px 6px; border-radius: 5px;
-}
-.wtn-lora-set-subhint { margin: -5px 0 9px; }
-.wtn-lora-set-dropped {
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; line-height: 1.4;
-  border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); padding-top: 8px; margin-top: 3px;
 }
 `;
 
@@ -431,10 +623,11 @@ function el(doc, tag, className) {
 }
 
 /**
- * Builds the WHOLE node body once: header strip + rows host + empty-state
- * line. Returns every ref `lora_interaction.mjs` needs to wire events onto
- * or repaint. This is the element handed to the node's single
- * `addDOMWidget` call (`lora_interaction.mjs`'s `setupLoraNode`).
+ * Builds the WHOLE node body once: header strip + rows-card (holding the
+ * rows host + empty-state line, BUG 7). Returns every ref
+ * `lora_interaction.mjs` needs to wire events onto or repaint. This is the
+ * element handed to the node's single `addDOMWidget` call
+ * (`lora_interaction.mjs`'s `setupLoraNode`).
  */
 export function buildRoot(doc) {
   const root = el(doc, "div", "wtn-lora-root wtn");
@@ -455,8 +648,13 @@ export function buildRoot(doc) {
   const master = el(doc, "div", "wtn-lora-switch wtn-lora-master");
   master.title = "Turn every LoRA on or off";
   const count = el(doc, "span", "wtn-lora-count");
-  const searchBtn = el(doc, "span", "wtn-lora-icon wtn-lora-search");
-  searchBtn.title = "Browse Civitai (LoRAs)";
+  const searchBtn = el(doc, "span", "wtn-lora-icon wtn-lora-search wtn-lora-icon-disabled");
+  // BUG 6 (2026-07-29 owner report): "civitai icon button doesnt open" --
+  // it's inert by design (search is M2, unbuilt), but a normal-looking
+  // button that silently does nothing is a bug in its own right. Visibly
+  // disabled (see this file's own CSS) + a title that says why, rather than
+  // presenting it as live.
+  searchBtn.title = "Browse Civitai — arrives with search, not built yet";
   const settingsBtn = el(doc, "span", "wtn-lora-icon wtn-lora-gear");
   settingsBtn.title = "LoRA Loader settings";
   header.appendChild(addBtn);
@@ -465,26 +663,32 @@ export function buildRoot(doc) {
   header.appendChild(searchBtn);
   header.appendChild(settingsBtn);
 
+  // BUG 7 (owner request): the rows list sits in a bordered card, matching
+  // the pack's own `.wtn-card` idiom -- see this file's top doc comment.
+  const card = el(doc, "div", "wtn-lora-rows-card");
   const rowsHost = el(doc, "div", "wtn-lora-rows");
   const empty = el(doc, "div", "wtn-lora-empty");
   empty.textContent = "No LoRAs yet — click ＋ Add LoRA.";
+  card.appendChild(rowsHost);
+  card.appendChild(empty);
 
   root.appendChild(header);
-  root.appendChild(rowsHost);
-  root.appendChild(empty);
+  root.appendChild(card);
 
-  return { root, header, addBtn, master, count, searchBtn, settingsBtn, rowsHost, empty };
+  return { root, header, addBtn, master, count, searchBtn, settingsBtn, card, rowsHost, empty };
 }
 
-/** Builds ONE strength cell (a tag + value + ▲▼ stepper) -- shared shape for
- * the model ("M") and clip ("C") cells `buildRowElement` builds below. Tags
- * are hidden by default (single-strength mode); `.wtn-lora-str.wtn-lora-two`
- * (toggled by `paintRow`) reveals them, and `.wtn-lora-str-clip` additionally
- * gates the CLIP cell's own visibility. */
-function buildStrCell(doc, tagText, extraClass, upTitle, downTitle) {
+/** Builds ONE strength cell (a value + ▲▼ stepper) -- shared shape for the
+ * model and clip cells `buildRowElement` builds below. `cellTitle` ("Model
+ * strength"/"Clip strength") is the cell's OWN identity now that the "M"/"C"
+ * letter tag is gone (BUG 7, 2026-07-29) -- the up/down arrows carry their
+ * own, more specific titles too ("Increase/decrease model strength" etc),
+ * so hovering ANY part of the control names what it does. The clip cell is
+ * hidden by default (single-strength mode); `.wtn-lora-str.wtn-lora-two`
+ * (toggled by `paintRow`) reveals it. */
+function buildStrCell(doc, cellTitle, extraClass, upTitle, downTitle) {
   const cell = el(doc, "div", `wtn-lora-str-cell${extraClass ? ` ${extraClass}` : ""}`);
-  const tag = el(doc, "span", "wtn-lora-str-tag");
-  tag.textContent = tagText;
+  cell.title = cellTitle;
   const val = el(doc, "span", "wtn-lora-str-val");
   const spin = el(doc, "div", "wtn-lora-spin");
   const up = el(doc, "span", "wtn-lora-arrow wtn-lora-up");
@@ -493,7 +697,6 @@ function buildStrCell(doc, tagText, extraClass, upTitle, downTitle) {
   down.title = downTitle;
   spin.appendChild(up);
   spin.appendChild(down);
-  cell.appendChild(tag);
   cell.appendChild(val);
   cell.appendChild(spin);
   return { cell, val, up, down };
@@ -507,8 +710,8 @@ function buildStrCell(doc, tagText, extraClass, upTitle, downTitle) {
  * The strength "group" (`order[2]` in `test_lora_resize.mjs`'s own "in that
  * order" test) is still exactly ONE child of `body` -- `.wtn-lora-str` --
  * matching every pre-Slice-5 assertion about row shape; it just holds TWO
- * cells inside now (model + clip), the clip one hidden unless the ⚙
- * dialog's "Show two strengths per row" (§7b) is on.
+ * cells inside now (model + clip, model ALWAYS first -- BUG 7), the clip
+ * one hidden unless the ⚙ dialog's "Show two strengths per row" (§7b) is on.
  */
 export function buildRowElement(doc) {
   const rowEl = el(doc, "div", "wtn-ctl-row wtn");
@@ -529,8 +732,11 @@ export function buildRowElement(doc) {
   body.appendChild(nameBtn);
 
   const str = el(doc, "div", "wtn-lora-str");
-  const model = buildStrCell(doc, "M", "wtn-lora-str-model", "Increase model strength", "Decrease model strength");
-  const clip = buildStrCell(doc, "C", "wtn-lora-str-clip", "Increase clip strength", "Decrease clip strength");
+  // Fixed order: model strength FIRST, then clip -- ALWAYS (BUG 7). With the
+  // "M"/"C" letters gone, position is the only thing distinguishing the two,
+  // so this order must never vary between rows or modes.
+  const model = buildStrCell(doc, "Model strength", "wtn-lora-str-model", "Increase model strength", "Decrease model strength");
+  const clip = buildStrCell(doc, "Clip strength", "wtn-lora-str-clip", "Increase clip strength", "Decrease clip strength");
   str.appendChild(model.cell);
   str.appendChild(clip.cell);
   body.appendChild(str);
@@ -567,8 +773,8 @@ export function buildRowElement(doc) {
  * value edit (strength bump, on/off toggle) without touching DOM structure.
  * `sepStrengths` (§7b "Show two strengths per row", Slice 5) toggles
  * `.wtn-lora-two` on the strength group, which is what reveals the clip
- * cell/tags via CSS (`lora_render.mjs`'s own CSS, above) -- defaults to
- * falsy (single-strength mode), unchanged from every pre-Slice-5 caller.
+ * cell via CSS (`lora_render.mjs`'s own CSS, above) -- defaults to falsy
+ * (single-strength mode), unchanged from every pre-Slice-5 caller.
  *
  * Missing-file mark (design doc §1a-iii, "the WHOLE name field red, border
  * included"): `hasFile("loras", row.name)` is `null` until the list has
@@ -635,10 +841,15 @@ function fieldRow(doc, labelText, hintText) {
  * state blob (§7b's ownership split is invisible in the UI on purpose -- the
  * dialog reads as ONE list of eight settings, not two).
  *
- * Dropped from upstream (documented in the panel itself, `dropped` below,
- * matching the mockup verbatim): Highlight colour, and the
- * Set-as-default/Every-Pixaroma-node/Done footer -- no footer buttons here
- * at all; edits apply immediately, ✕ closes.
+ * BUG 1 (2026-07-29 owner report): this dialog used to also render two
+ * strings of pure internal/design-doc reasoning -- "stored as last / all /
+ * none — human label, raw key in state" under the memory-use row, and a
+ * whole paragraph naming what was DROPPED from upstream Pixaroma's dialog
+ * and why. Neither is information a user who has never read the design doc
+ * can act on; both are gone. What replaced the first is a hint that
+ * actually explains the three choices (see `rowMode` below); the second had
+ * nothing user-facing to replace it with at all -- there is no user-facing
+ * fact "we dropped a button" states.
  */
 export function buildSettingsPanel(doc) {
   const root = el(doc, "div", "wtn-lora-set wtn");
@@ -691,7 +902,20 @@ export function buildSettingsPanel(doc) {
   body.appendChild(rowSep);
 
   // -- LoRA memory use (segmented, human labels over raw keys) -------------
-  const rowMode = fieldRow(doc, "LoRA memory use", "Keeps the last used LoRA in memory, like ComfyUI");
+  // BUG 1 audit: the hint used to describe ONLY "Standard" ("Keeps the last
+  // used LoRA in memory, like ComfyUI"), leaving "Fast"/"Lowest" completely
+  // unexplained next to a 3-way control a first-time user has to choose
+  // between blind. Now names the actual memory/speed trade-off for all
+  // three. Stacked layout (BUG 5): see `.wtn-lora-set-fld-stack`'s own CSS
+  // comment for why.
+  const rowMode = fieldRow(
+    doc,
+    "LoRA memory use",
+    "Standard keeps only the most-recently-used LoRA loaded (like ComfyUI's own caching). "
+      + "Fast keeps every LoRA loaded at once — quicker re-runs, more memory. "
+      + "Lowest frees each one right away — least memory, slower re-runs.",
+  );
+  rowMode.classList.add("wtn-lora-set-fld-stack");
   const seg = el(doc, "span", "wtn-seg");
   const cacheModeBtns = CACHE_MODE_ORDER.map((mode) => {
     const btn = el(doc, "button", "");
@@ -703,9 +927,6 @@ export function buildSettingsPanel(doc) {
   });
   rowMode.appendChild(seg);
   body.appendChild(rowMode);
-  const modeSubHint = el(doc, "div", "wtn-lora-set-hint wtn-lora-set-subhint");
-  modeSubHint.textContent = "stored as last / all / none — human label, raw key in state";
-  body.appendChild(modeSubHint);
 
   // -- Hide file extension (Settings -> AnimaFlow) --------------------------
   const rowHideExt = fieldRow(doc, "Hide file extension", "Show the name without .safetensors");
@@ -714,12 +935,21 @@ export function buildSettingsPanel(doc) {
   body.appendChild(rowHideExt);
 
   // -- Civitai (Settings -> AnimaFlow) ---------------------------------------
-  const rowCivitai = fieldRow(doc, "Civitai", "Show the lookup in the info panel and the header's Browse Civitai button");
+  // BUG 1 audit: reworded to name the SPECIFIC controls it governs in plain
+  // terms (a user has no reason to know what "the header's Browse Civitai
+  // button" looks like before ever having noticed it) and to say search
+  // isn't built yet, matching BUG 6's own header-icon tooltip wording.
+  const rowCivitai = fieldRow(
+    doc,
+    "Civitai",
+    "Turns on every Civitai feature on this node: the ⓘ panel's lookup and re-fetch, "
+      + "and the header's Browse button (search arrives in a later update).",
+  );
   const civitaiSwitch = el(doc, "div", "wtn-lora-switch");
   rowCivitai.appendChild(civitaiSwitch);
   body.appendChild(rowCivitai);
   const civitaiHint = el(doc, "div", "wtn-lora-set-hint");
-  civitaiHint.textContent = "Off hides EVERY network affordance on this node -- provably offline.";
+  civitaiHint.textContent = "Off hides every Civitai-related control on this node, so it never makes a network request.";
   body.appendChild(civitaiHint);
 
   // -- Show preview thumbnails (Settings -> AnimaFlow) -----------------------
@@ -727,14 +957,6 @@ export function buildSettingsPanel(doc) {
   const thumbsSwitch = el(doc, "div", "wtn-lora-switch");
   rowThumbs.appendChild(thumbsSwitch);
   body.appendChild(rowThumbs);
-
-  // -- Dropped-from-upstream note (documentation, matches the mockup) -------
-  const dropped = el(doc, "div", "wtn-lora-set-dropped");
-  dropped.textContent =
-    "Dropped from upstream's dialog: Highlight colour (this pack has one house accent, THEME.md) and "
-    + "the Set as default / Every Pixaroma node / Done footer (cross-node defaults live in Settings -> "
-    + "AnimaFlow instead). Edits here apply immediately; ✕ closes.";
-  body.appendChild(dropped);
 
   return {
     root,
@@ -756,19 +978,22 @@ export function buildSettingsPanel(doc) {
 // module's top doc comment.
 // ---------------------------------------------------------------------------
 
-export const ROW_H = 30;
-export const ROW_GAP = 7;
-export const HEADER_H = 30;
-export const BODY_PAD = 9;
-export const MIN_W = 300;
-export const DEFAULT_W = 340;
-
 /** Total node-body height for `rowCount` rows: top/bottom padding + the
- * header + one inter-block gap + either the rows themselves or the single
- * empty-state line (which occupies exactly one row's height, so the
- * arithmetic never branches on a DIFFERENT constant for the empty case). */
+ * header + one inter-block gap + the rows-CARD (BUG 7: border + padding on
+ * both axes) wrapping either the rows themselves or the single empty-state
+ * line (which occupies exactly one row's height, so the arithmetic never
+ * branches on a DIFFERENT constant for the empty case).
+ *
+ * This is the WIDGET's own box height -- it deliberately does NOT include
+ * `WIDGETS_START_Y` (the fixed output-socket column reserved above the
+ * widget, BUG 3): that offset belongs to the NODE's total height
+ * (`lora_interaction.mjs`'s `computeLoraSize`/`fitNodeH`), not to this
+ * widget's own `getMinHeight`/`getMaxHeight` -- see this file's top doc
+ * comment.
+ */
 export function contentHeight(rowCount) {
   const n = Math.max(0, rowCount);
   const rowsBlockH = n > 0 ? n * ROW_H + (n - 1) * ROW_GAP : ROW_H;
-  return BODY_PAD * 2 + HEADER_H + ROW_GAP + rowsBlockH;
+  const cardH = rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
+  return BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH;
 }

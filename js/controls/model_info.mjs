@@ -261,6 +261,23 @@ const CSS = `
   max-height: 128px; overflow-y: auto; white-space: pre-wrap;
 }
 
+/* ── the compact "found" row (BUG 8, 2026-07-29 owner report) -- sits
+   directly ABOVE the footer's ↻ Civitai, replacing the full status box for
+   the ONE state that's a success rather than a degradation (§7e's other
+   three states keep the full box -- see 'renderStatus''s own comment). ── */
+.wtn-mi-status-compact {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 11px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); margin-top: 8px;
+}
+.wtn-mi-status-compact-label { display: flex; align-items: center; gap: 5px; }
+.wtn-mi-status-compact-label b { color: var(--wtn-ok, ${TOKENS.ok}); font-weight: 600; }
+.wtn-mi-status-compact-btn {
+  flex: none; font-family: var(--wtn-font-mono, monospace); font-size: 10.5px; padding: 3px 8px;
+  border-radius: 5px; cursor: pointer; background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  border: 1px dashed var(--wtn-line, ${TOKENS.line});
+}
+.wtn-mi-status-compact-btn:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+
 /* ── footer ── */
 .wtn-mi-footer { display: flex; gap: 8px; margin-top: 11px; flex: none; }
 .wtn-mi-done {
@@ -409,15 +426,19 @@ export function lookupStateView(status) {
   const r = (status.response && typeof status.response === "object") ? status.response : {};
 
   if (r.reason === "found") {
+    // BUG 8 (2026-07-29 owner report): `Re-fetch` used to sit here too, but
+    // it does exactly what the footer's `↻ Civitai` already does -- dropped,
+    // not merely relabeled. `Forget cached` -> `Clear cache` (owner: "more
+    // like clear cache" -- reads as an action on stored data, not a
+    // preference). This is also the ONE state `renderStatus` renders as a
+    // compact single line rather than the full box -- see that function's
+    // own comment for why only `found` gets that treatment.
     return {
       cssState: "found",
       icon: "✓",
       headline: "Matched on Civitai",
       why: "Cached next to the file — instant and offline from now on.",
-      actions: [
-        { id: "refetch", label: "Re-fetch" },
-        { id: "forget", label: "Forget cached" },
-      ],
+      actions: [{ id: "forget", label: "Clear cache" }],
     };
   }
 
@@ -709,6 +730,13 @@ export function openModelInfo({
 
   panel.appendChild(el(doc, "hr", "wtn-mi-sep"));
 
+  // BUG 8 (2026-07-29 owner report): the `found` state's compact single-line
+  // row lives HERE -- directly above the footer's `↻ Civitai` -- rather than
+  // in `statusHost`'s own position near the top; see `renderStatus`'s own
+  // comment for the split.
+  const foundHost = el(doc, "div");
+  panel.appendChild(foundHost);
+
   // ---- footer ---------------------------------------------------------------
   const footer = el(doc, "div", "wtn-mi-footer");
   const doneBtn = el(doc, "button", "wtn-mi-done");
@@ -764,13 +792,49 @@ export function openModelInfo({
     civLinkRow.appendChild(a);
   }
 
+  /**
+   * BUG 8 (2026-07-29 owner report): the `found` state renders as ONE
+   * compact line (label + a single small button) sitting directly above the
+   * footer's `↻ Civitai`, in `foundHost` -- it's the SUCCESS state, so it
+   * needs the least explaining. The other three (`searching`/`notfound`/
+   * `offline`) keep the full icon+headline+cause+action box in
+   * `statusHost`, near the top -- §7e's whole point is that two of those
+   * three are failures and a bare status line is a dead end for them; only
+   * `found` earns the lighter treatment. Both hosts are always cleared
+   * first, so whichever state is current, exactly one of them ever has
+   * content.
+   */
   function renderStatus() {
     statusHost.innerHTML = "";
+    foundHost.innerHTML = "";
     if (!civitaiEnabled) {
       return; // no network affordance at all when the setting is off (§7b decision 20)
     }
     const view = lookupStateView(status);
     if (!view) {
+      return;
+    }
+    if (view.cssState === "found") {
+      const row = el(doc, "div", "wtn-mi-status-compact");
+      const label = el(doc, "span", "wtn-mi-status-compact-label");
+      const headline = el(doc, "b");
+      headline.textContent = view.headline;
+      label.appendChild(headline);
+      row.appendChild(label);
+      for (const action of view.actions) {
+        const btn = el(doc, "button", "wtn-mi-status-compact-btn");
+        btn.type = "button";
+        btn.textContent = action.label;
+        if (action.title) {
+          btn.title = action.title;
+        }
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onStatusAction(action.id);
+        });
+        row.appendChild(btn);
+      }
+      foundHost.appendChild(row);
       return;
     }
     const box = el(doc, "div", `wtn-mi-status wtn-mi-status-${view.cssState}`);
@@ -900,9 +964,23 @@ export function openModelInfo({
    * displays). The "turn Civitai on" line is shown ONLY when there is
    * genuinely nothing cached yet AND the setting is off -- i.e. we
    * actually don't know, not merely "the switch happens to be off right
-   * now". A cached record with no `description` field gets the SAME "no
-   * notes yet" wording the online case would use, since that describes
-   * what's actually known either way.
+   * now".
+   *
+   * BUG 2 (2026-07-29 owner report): a LoRA that DID match on Civitai and
+   * genuinely HAS an author description used to show "No author's notes
+   * yet" regardless -- the root cause was Python reading only the per-
+   * VERSION `description` (`src/model_browser/civitai_parse.py`), never the
+   * MODEL's own write-up. That's fixed server-side now (`parse_model_version`
+   * prefers `model.description`, and `lookup.py`'s `_augment_with_model_
+   * description` fetches `/api/v1/models/{id}` once when neither is present
+   * and caches the result) -- so by the time `civitaiRecord` reflects a
+   * `found` result from a live-or-cached lookup that was actually ALLOWED to
+   * run the network step, a missing `description` here means "genuinely has
+   * none," not "haven't tried yet." The one case that's STILL "haven't tried
+   * yet" rather than "confirmed absent" is a cached record read with
+   * Civitai OFF (`cached_only`) -- the augmentation fetch is exactly the
+   * network step that setting disables, so this function says so instead
+   * of implying the LoRA has no notes.
    */
   function renderNotes() {
     notesCaret.textContent = notesOpen ? "▾" : "▸";
@@ -913,11 +991,13 @@ export function openModelInfo({
       notesBody.textContent = description;
       return;
     }
-    if (!civitaiEnabled && !civitaiRecord) {
-      notesBody.textContent = "Author's notes come from Civitai — turn the Civitai setting on to see them (nothing is cached for this file yet).";
+    if (!civitaiEnabled) {
+      notesBody.textContent = civitaiRecord
+        ? "Author's notes haven't been checked yet — turn the Civitai setting on and re-check to see them."
+        : "Author's notes come from Civitai — turn the Civitai setting on to see them (nothing is cached for this file yet).";
       return;
     }
-    notesBody.textContent = "No author's notes yet — look this LoRA up on Civitai to see them.";
+    notesBody.textContent = "This LoRA has no author's notes on Civitai.";
   }
 
   function applyFoundRecord(data) {

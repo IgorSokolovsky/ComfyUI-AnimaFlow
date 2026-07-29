@@ -423,6 +423,44 @@ def test_parse_model_version_all_explicit_gallery_yields_no_thumbnail():
 
 
 # ---------------------------------------------------------------------------
+# BUG 2 (2026-07-29 owner report): author's notes never appeared even when
+# Civitai has them -- root cause was reading only the per-VERSION
+# `description`, never `model.description`.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_model_version_prefers_model_description_over_version_description():
+    obj = {
+        "description": "v2: minor retrain.",  # per-VERSION -- a changelog, not the write-up
+        "model": {"name": "X", "description": "The author's real write-up."},
+    }
+    assert civitai_parse.parse_model_version(obj)["description"] == "The author's real write-up."
+
+
+def test_parse_model_version_falls_back_to_version_description_when_model_has_none():
+    # The REAL by-hash shape (verified live, 2026-07-29): `model` is
+    # `{name, type, nsfw, poi}` -- no `description` at all.
+    obj = {"description": "Use at 0.8 strength.", "model": {"name": "X", "type": "LORA", "nsfw": False, "poi": False}}
+    assert civitai_parse.parse_model_version(obj)["description"] == "Use at 0.8 strength."
+
+
+def test_parse_model_version_no_description_anywhere_is_simply_absent():
+    obj = {"model": {"name": "X"}}
+    assert "description" not in civitai_parse.parse_model_version(obj)
+
+
+def test_parse_model_description_extracts_top_level_field():
+    assert civitai_parse.parse_model_description({"id": 1, "description": "Full write-up."}) == "Full write-up."
+
+
+def test_parse_model_description_blank_or_missing_is_none():
+    assert civitai_parse.parse_model_description({"description": "   "}) is None
+    assert civitai_parse.parse_model_description({}) is None
+    assert civitai_parse.parse_model_description(None) is None
+    assert civitai_parse.parse_model_description("not-a-dict") is None
+
+
+# ---------------------------------------------------------------------------
 # civitai_client.py -- HTTP transport, via an injectable fake opener.
 # ---------------------------------------------------------------------------
 
@@ -543,6 +581,45 @@ def test_lookup_by_hash_429_is_distinct_reason_and_falls_through():
 
 
 # ---------------------------------------------------------------------------
+# civitai_client.lookup_model_by_id -- BUG 2's fallback fetch, same
+# transport rules as lookup_by_hash (not re-tested exhaustively -- shared
+# implementation shape, just the model-specific bits).
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_model_by_id_success_on_first_host():
+    body = json.dumps({"id": 1, "description": "Full write-up."}).encode("utf-8")
+    opener, calls = _sequence_opener([lambda: _FakeResponse(body)])
+    result = civitai_client.lookup_model_by_id(1, opener=opener)
+    assert result["reason"] == "found"
+    assert result["data"]["description"] == "Full write-up."
+    assert len(calls) == 1
+    assert "/api/v1/models/1" in calls[0][0]
+
+
+def test_lookup_model_by_id_404_is_definitive_and_never_tries_backup_host():
+    def raise_404():
+        raise urllib.error.HTTPError("url", 404, "Not Found", None, None)
+
+    opener, calls = _sequence_opener([raise_404])
+    result = civitai_client.lookup_model_by_id(999999, opener=opener)
+    assert result["reason"] == "notfound"
+    assert len(calls) == 1
+
+
+def test_lookup_model_by_id_timeout_is_distinct_reason():
+    import socket
+
+    def raise_timeout():
+        raise socket.timeout("timed out")
+
+    opener, calls = _sequence_opener([raise_timeout, raise_timeout])
+    result = civitai_client.lookup_model_by_id(1, opener=opener)
+    assert result["reason"] == "offline"
+    assert result["offline_reason"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
 # hashing.py -- chunked sha256 against a real file.
 # ---------------------------------------------------------------------------
 
@@ -592,11 +669,19 @@ def test_lookup_model_info_cached_sidecar_short_circuits_network():
             names_by_folder={"loras": ["a.safetensors"]},
         )
         previous_lookup = civitai_client.lookup_by_hash
+        previous_by_id = civitai_client.lookup_model_by_id
 
         def _must_not_be_called(*args, **kwargs):
             raise AssertionError("network lookup must not run when a sidecar is cached")
 
+        # BUG 2's description-fallback augmentation DOES run here (this
+        # sidecar has a `modelId` but no `description`) -- offline, so it
+        # changes nothing and never marks "checked" (transient-retry rule).
+        def _fake_by_id(*args, **kwargs):
+            return {"reason": "offline", "offline_reason": "timeout", "message": "", "data": None}
+
         lookup.civitai_client.lookup_by_hash = _must_not_be_called
+        lookup.civitai_client.lookup_model_by_id = _fake_by_id
         try:
             result = lookup.lookup_model_info("loras", "a.safetensors")
             assert result["reason"] == "found"
@@ -604,6 +689,7 @@ def test_lookup_model_info_cached_sidecar_short_circuits_network():
             assert result["data"]["base_model"] == "SDXL"
         finally:
             lookup.civitai_client.lookup_by_hash = previous_lookup
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
             restore()
 
 
@@ -620,6 +706,7 @@ def test_lookup_model_info_no_sidecar_fetches_hashes_and_writes_sidecar():
             names_by_folder={"loras": ["a.safetensors"]},
         )
         previous_lookup = civitai_client.lookup_by_hash
+        previous_by_id = civitai_client.lookup_model_by_id
         seen_hashes = []
 
         def fake_lookup_by_hash(sha, **kwargs):
@@ -629,7 +716,15 @@ def test_lookup_model_info_no_sidecar_fetches_hashes_and_writes_sidecar():
                 "data": {"modelId": 7, "id": 8, "baseModel": "Pony"},
             }
 
+        # BUG 2's description-fallback augmentation runs on this "found"
+        # result too (no `description` in the fixture, `modelId` present) --
+        # offline here so it's a no-op, same reasoning as the sibling test
+        # above.
+        def _fake_by_id(*args, **kwargs):
+            return {"reason": "offline", "offline_reason": "timeout", "message": "", "data": None}
+
         lookup.civitai_client.lookup_by_hash = fake_lookup_by_hash
+        lookup.civitai_client.lookup_model_by_id = _fake_by_id
         try:
             result = lookup.lookup_model_info("loras", "a.safetensors")
             assert result["reason"] == "found"
@@ -644,6 +739,7 @@ def test_lookup_model_info_no_sidecar_fetches_hashes_and_writes_sidecar():
             assert result2["reason"] == "found" and result2["source"] == "sidecar"
         finally:
             lookup.civitai_client.lookup_by_hash = previous_lookup
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
             restore()
 
 
@@ -700,6 +796,112 @@ def test_lookup_model_info_found_but_unparseable_degrades_to_notfound():
             assert result["reason"] == "notfound"
         finally:
             lookup.civitai_client.lookup_by_hash = previous_lookup
+            restore()
+
+
+# ---------------------------------------------------------------------------
+# BUG 2 -- the model-id description fallback, wired into lookup_model_info.
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_model_info_fetches_model_description_fallback_when_missing_and_caches_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        # A sidecar with a modelId but NO description -- the real by-hash
+        # shape when the embedded `model` object is `{name, type, nsfw, poi}`.
+        sidecar.write_sidecar(model_path, {"modelId": 42, "id": 1, "baseModel": "SDXL", "model": {"name": "X"}})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_by_id = civitai_client.lookup_model_by_id
+        seen_ids = []
+
+        def fake_by_id(model_id, **kwargs):
+            seen_ids.append(model_id)
+            return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 42, "description": "The real write-up."}}
+
+        lookup.civitai_client.lookup_model_by_id = fake_by_id
+        try:
+            result = lookup.lookup_model_info("loras", "a.safetensors")
+            assert result["reason"] == "found"
+            assert result["data"]["description"] == "The real write-up."
+            assert seen_ids == [42]
+
+            # Cached into the sidecar -- re-reading it directly shows the
+            # description folded into `model`, plus the once-only marker.
+            cached = sidecar.read_sidecar(model_path)
+            assert cached["model"]["description"] == "The real write-up."
+            assert cached["_wtn_description_checked"] is True
+
+            # A SECOND call must NOT re-ask -- once-only cost.
+            lookup.civitai_client.lookup_model_by_id = _must_not_be_called_again
+            result2 = lookup.lookup_model_info("loras", "a.safetensors")
+            assert result2["data"]["description"] == "The real write-up."
+        finally:
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
+            restore()
+
+
+def test_lookup_model_info_description_fallback_skipped_when_cached_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"modelId": 42, "id": 1, "baseModel": "SDXL"})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_by_id = civitai_client.lookup_model_by_id
+
+        def _must_not_run(*args, **kwargs):
+            raise AssertionError("cached_only must never reach the model-id fallback fetch either")
+
+        lookup.civitai_client.lookup_model_by_id = _must_not_run
+        try:
+            result = lookup.lookup_model_info("loras", "a.safetensors", cached_only=True)
+            assert result["reason"] == "found"
+            assert "description" not in result["data"]
+        finally:
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
+            restore()
+
+
+def test_lookup_model_info_description_fallback_transient_offline_does_not_mark_checked():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"modelId": 42, "id": 1, "baseModel": "SDXL"})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_by_id = civitai_client.lookup_model_by_id
+        calls = []
+
+        def fake_by_id(model_id, **kwargs):
+            calls.append(model_id)
+            return {"reason": "offline", "offline_reason": "timeout", "message": "", "data": None}
+
+        lookup.civitai_client.lookup_model_by_id = fake_by_id
+        try:
+            lookup.lookup_model_info("loras", "a.safetensors")
+            lookup.lookup_model_info("loras", "a.safetensors")
+            assert len(calls) == 2, "a transient offline failure must NOT set the once-only marker -- retry on the next open"
+            cached = sidecar.read_sidecar(model_path)
+            assert "_wtn_description_checked" not in cached
+        finally:
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
             restore()
 
 
@@ -1006,6 +1208,11 @@ ALL_TESTS = [
     test_parse_model_version_tags_as_dicts_are_tolerated,
     test_parse_model_version_explicit_gallery_falls_back_to_non_adult,
     test_parse_model_version_all_explicit_gallery_yields_no_thumbnail,
+    test_parse_model_version_prefers_model_description_over_version_description,
+    test_parse_model_version_falls_back_to_version_description_when_model_has_none,
+    test_parse_model_version_no_description_anywhere_is_simply_absent,
+    test_parse_model_description_extracts_top_level_field,
+    test_parse_model_description_blank_or_missing_is_none,
     test_lookup_by_hash_success_on_first_host,
     test_lookup_by_hash_404_is_definitive_and_never_tries_backup_host,
     test_lookup_by_hash_non_404_error_falls_through_to_backup_host,
@@ -1014,6 +1221,9 @@ ALL_TESTS = [
     test_lookup_by_hash_timeout_is_distinct_reason,
     test_lookup_by_hash_dns_failure_is_distinct_reason,
     test_lookup_by_hash_429_is_distinct_reason_and_falls_through,
+    test_lookup_model_by_id_success_on_first_host,
+    test_lookup_model_by_id_404_is_definitive_and_never_tries_backup_host,
+    test_lookup_model_by_id_timeout_is_distinct_reason,
     test_sha256_file_matches_hashlib_and_streams_in_chunks,
     test_sha256_file_missing_file_raises_oserror,
     test_lookup_model_info_missing_file_is_offline_missing_file,
@@ -1021,6 +1231,9 @@ ALL_TESTS = [
     test_lookup_model_info_no_sidecar_fetches_hashes_and_writes_sidecar,
     test_lookup_model_info_offline_and_notfound_pass_through,
     test_lookup_model_info_found_but_unparseable_degrades_to_notfound,
+    test_lookup_model_info_fetches_model_description_fallback_when_missing_and_caches_it,
+    test_lookup_model_info_description_fallback_skipped_when_cached_only,
+    test_lookup_model_info_description_fallback_transient_offline_does_not_mark_checked,
     test_lookup_model_info_cached_only_with_a_sidecar_returns_found_and_never_touches_network,
     test_lookup_model_info_cached_only_with_no_sidecar_degrades_offline_civitai_disabled_before_hashing,
     test_lookup_impl_passes_cached_only_through_to_lookup_model_info,

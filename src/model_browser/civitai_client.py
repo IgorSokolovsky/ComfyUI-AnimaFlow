@@ -165,4 +165,85 @@ def lookup_by_hash(
     return {"reason": "offline", "offline_reason": last_offline_reason, "message": last_message, "data": None}
 
 
-__all__ = ("lookup_by_hash",)
+def lookup_model_by_id(
+    model_id: Any,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    hosts: Sequence[str] = _CIVITAI_HOSTS,
+    opener: Optional[Callable[[str, float], Any]] = None,
+) -> Dict[str, Any]:
+    """Ask Civitai's public MODEL endpoint (`/api/v1/models/{id}`) about
+    `model_id` -- BUG 2 (2026-07-29 owner report)'s fallback, used by
+    `lookup.py`'s `_augment_with_model_description` when a by-hash lookup's
+    embedded `model` sub-object (see `civitai_parse.py`'s own doc comment)
+    didn't carry a `description` at all, which is the common case (verified
+    live, 2026-07-29: that sub-object is `{name, type, nsfw, poi}` only).
+    Public, no API key needed -- same as `lookup_by_hash` (§2b) -- and the
+    SAME envelope/rules (two hosts with a definitive 404, 30s timeout, 4 MB
+    body cap, distinct offline reasons); see that function's own docstring
+    for the full rationale, not repeated here.
+    """
+    opener = opener or _default_opener
+    last_offline_reason = "unknown"
+    last_message = "Could not reach Civitai."
+
+    for host in hosts:
+        url = f"https://{host}/api/v1/models/{model_id}"
+        try:
+            with opener(url, timeout) as response:
+                body = response.read(max_body_bytes + 1)
+                if len(body) > max_body_bytes:
+                    return {
+                        "reason": "offline",
+                        "offline_reason": "unreadable",
+                        "message": "Civitai response too large.",
+                        "data": None,
+                    }
+                try:
+                    data = json.loads(body)
+                except (ValueError, TypeError):
+                    return {
+                        "reason": "offline",
+                        "offline_reason": "unreadable",
+                        "message": "Civitai sent an unreadable reply (a login or block page?).",
+                        "data": None,
+                    }
+                return {"reason": "found", "offline_reason": None, "message": "", "data": data}
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                # DEFINITIVE -- do NOT try the backup host (same rule as
+                # `lookup_by_hash`).
+                return {
+                    "reason": "notfound",
+                    "offline_reason": None,
+                    "message": "This model isn't on Civitai.",
+                    "data": None,
+                }
+            if exc.code == 429:
+                last_offline_reason = "rate_limited"
+                last_message = "Civitai returned 429 (rate limited)."
+                continue
+            last_offline_reason = "unknown"
+            last_message = f"Civitai returned {exc.code}."
+            continue
+        except urllib.error.URLError as exc:
+            last_offline_reason = _classify_urlerror(exc)
+            last_message = (
+                "Civitai timed out." if last_offline_reason == "timeout"
+                else "Couldn't reach Civitai (DNS/TLS)."
+            )
+            continue
+        except (socket.timeout, TimeoutError):
+            last_offline_reason = "timeout"
+            last_message = "Civitai timed out."
+            continue
+        except Exception as exc:  # noqa: BLE001 - degrade to offline, never raise
+            last_offline_reason = "unknown"
+            last_message = f"Could not reach Civitai ({type(exc).__name__})."
+            continue
+
+    return {"reason": "offline", "offline_reason": last_offline_reason, "message": last_message, "data": None}
+
+
+__all__ = ("lookup_by_hash", "lookup_model_by_id")

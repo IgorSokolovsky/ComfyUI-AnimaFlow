@@ -153,10 +153,11 @@ test("lookupStateView: searching -- spinner + Cancel", () => {
   assert.deepEqual(view.actions.map((a) => a.id), ["cancel"]);
 });
 
-test("lookupStateView: found -- Re-fetch + Forget cached", () => {
+test("lookupStateView: found -- Clear cache ONLY (BUG 8: Re-fetch dropped, it duplicated the footer's own ↻ Civitai)", () => {
   const view = lookupStateView({ phase: "result", response: { reason: "found", data: {} } });
   assert.equal(view.cssState, "found");
-  assert.deepEqual(view.actions.map((a) => a.id), ["refetch", "forget"]);
+  assert.deepEqual(view.actions.map((a) => a.id), ["forget"]);
+  assert.equal(view.actions[0].label, "Clear cache", "owner: 'more like clear cache' -- renamed from 'Forget cached'");
 });
 
 test("lookupStateView: notfound -- explains the hash, offers search-by-name DISABLED (M2 doesn't exist)", () => {
@@ -437,6 +438,77 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
     assert.ok(lastSelected.includes("file-word-b"));
     assert.ok(lastSelected.includes("file-word-a"));
     assert.deepEqual(lastCustom, []);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ALSO CHECK (owner brief, 2026-07-29): with a Civitai match that DOES carry
+// trainedWords, does the 'from file'/'from Civitai' source pill actually
+// switch the candidate list, with selections surviving the switch (§1a-i
+// item 3)? Verified here -- both the initial pill click (auto-switch is
+// gated on `sourceTouched`, and only fires when the FILE has nothing at
+// all, so a non-empty fileTriggers fixture like this one genuinely
+// exercises the manual pill click, not the auto-switch) and a round trip
+// back.
+// ---------------------------------------------------------------------------
+
+await asyncTest("openModelInfo: the source pill switches the candidate list, and SELECTIONS survive the switch in both directions", async () => {
+  const kind = "loras";
+  const name = "info-source-pill.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "X", triggers: ["civ-word-a", "civ-word-b"] },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      fileTriggers: ["file-word-a", "file-word-b"], // non-empty -- the auto-switch to civitai never fires
+      selectedTriggers: ["file-word-a"],
+      civitaiEnabled: true,
+    });
+    await settle(); // let the civitai lookup resolve
+
+    // Still showing the FILE list (fileTriggers non-empty -- no auto-switch).
+    let chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.deepEqual(chips.map((c) => c.children[1].textContent), ["file-word-a", "file-word-b"]);
+    assert.ok(chips[0].classList.contains("wtn-mi-chip-on"), "file-word-a starts selected");
+
+    const pill = findAll(handle.overlay, "wtn-mi-pill").find((p) => !p.classList.contains("wtn-mi-pill-static"));
+    assert.equal(pill.textContent, "from file");
+
+    pill.click(); // manual switch -> civitai
+    assert.equal(pill.textContent, "from Civitai");
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.deepEqual(chips.map((c) => c.children[1].textContent), ["civ-word-a", "civ-word-b"], "the candidate LIST switched");
+    assert.equal(chips[0].classList.contains("wtn-mi-chip-on"), false, "civ-word-a was never selected");
+
+    chips[1].click(); // select "civ-word-b" while viewing the civitai list
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.ok(chips[1].classList.contains("wtn-mi-chip-on"));
+
+    pill.click(); // switch BACK to file
+    assert.equal(pill.textContent, "from file");
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.deepEqual(chips.map((c) => c.children[1].textContent), ["file-word-a", "file-word-b"]);
+    assert.ok(chips[0].classList.contains("wtn-mi-chip-on"), "file-word-a's selection survived the round trip");
+
+    pill.click(); // switch to civitai ONE more time -- civ-word-b's selection must ALSO have survived
+    chips = findAll(handle.overlay, "wtn-mi-chip");
+    assert.ok(chips[1].classList.contains("wtn-mi-chip-on"), "civ-word-b's selection survived the switch away and back");
 
     handle.close();
   } finally {
@@ -735,9 +807,14 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
     invalidateInfo(kind, nameNoCache);
   }
 
-  // Case 2: off, but SOMETHING is cached (just no description in it) -- must
-  // read as "no notes from Civitai", never "turn the setting on" (we already
-  // know, turning it on wouldn't reveal anything more).
+  // Case 2: off, but SOMETHING is cached (just no description in it) -- BUG 2
+  // (2026-07-29 owner report): this must read as "haven't been checked yet",
+  // NOT "this LoRA has no notes" -- with Civitai off, `lookup.py`'s
+  // `_augment_with_model_description` model-id fallback (the thing that
+  // actually supplies the model's own description most of the time, since
+  // the by-hash endpoint's embedded `model` object almost never carries one)
+  // is exactly the network step this setting disables, so "we already know"
+  // would be false: turning it on and re-checking genuinely COULD reveal one.
   globalThis.fetch = async () => ({
     json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X" }, source: "sidecar" }),
   });
@@ -752,8 +829,8 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
     });
     await settle();
     const notesText = findAll(handle.overlay, "wtn-mi-notes")[0].textContent;
-    assert.doesNotMatch(notesText, /turn the Civitai setting on/);
-    assert.match(notesText, /No author's notes yet/);
+    assert.match(notesText, /haven't been checked yet/);
+    assert.match(notesText, /turn the Civitai setting on/);
     handle.close();
   } finally {
     globalThis.fetch = _origFetch;
@@ -761,7 +838,34 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
   }
 });
 
-await asyncTest("openModelInfo: 'Forget cached' posts /forget and returns the panel to a clean, un-found state", async () => {
+await asyncTest("openModelInfo: found + Civitai ON + genuinely no description -- confirmed-absent wording, not 'haven't fetched yet'", async () => {
+  const kind = "loras";
+  const name = "info-notes-confirmed-empty.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X" } }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    const notesText = findAll(handle.overlay, "wtn-mi-notes")[0].textContent;
+    assert.match(notesText, /has no author's notes on Civitai/);
+    assert.doesNotMatch(notesText, /haven't been checked/);
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: found state renders the COMPACT row (BUG 8), not the full status box, and 'Clear cache' posts /forget and returns the panel to a clean, un-found state", async () => {
   const kind = "loras";
   const name = "info-dom-e.safetensors";
   invalidateInfo(kind, name);
@@ -786,14 +890,27 @@ await asyncTest("openModelInfo: 'Forget cached' posts /forget and returns the pa
     await settle();
     assert.ok(findAll(handle.overlay, "wtn-mi-civlink").length, "sanity: found a version before forgetting");
 
-    const actionButtons = findAll(handle.overlay, "wtn-mi-status-actions")[0].children;
-    const forgetBtn = actionButtons.find((b) => b.textContent === "Forget cached");
-    assert.ok(forgetBtn, "found state must offer Forget cached");
+    // BUG 8: the `found` state is the COMPACT row, not the full status box --
+    // no `wtn-mi-status`/`wtn-mi-status-actions` at all for this state.
+    assert.equal(findAll(handle.overlay, "wtn-mi-status").length, 0, "found must not render the full status box");
+    const compactRows = findAll(handle.overlay, "wtn-mi-status-compact");
+    assert.equal(compactRows.length, 1, "found renders exactly one compact row");
+    const compactLabel = findAll(handle.overlay, "wtn-mi-status-compact-label")[0];
+    assert.equal(compactLabel.children[0].textContent, "Matched on Civitai");
+
+    const forgetBtn = findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
+    assert.ok(forgetBtn, "found state must offer 'Clear cache' (renamed from 'Forget cached')");
+    assert.equal(
+      findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Re-fetch"),
+      undefined,
+      "'Re-fetch' must be GONE from the compact row -- the footer's own ↻ Civitai already does this",
+    );
     forgetBtn.click();
     await settle();
 
     assert.ok(forgetCalled);
     assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 0, "the link disappears once forgotten");
+    assert.equal(findAll(handle.overlay, "wtn-mi-status-compact").length, 0, "the compact row disappears once forgotten (state reverts to idle)");
 
     handle.close();
   } finally {

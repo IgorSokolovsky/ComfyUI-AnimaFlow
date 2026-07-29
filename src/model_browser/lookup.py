@@ -15,6 +15,72 @@ from . import civitai_client, civitai_parse, hashing, sidecar
 from .local import resolve_model_path
 
 
+def _augment_with_model_description(
+    parsed: Dict[str, Any],
+    raw: Dict[str, Any],
+    *,
+    cached_only: bool,
+) -> "tuple[Dict[str, Any], bool]":
+    """BUG 2 (2026-07-29 owner report): `parsed["description"]` prefers the
+    MODEL's own write-up (`civitai_parse.parse_model_version`'s own
+    priority), but the by-hash endpoint's embedded `model` object almost
+    never actually carries one (verified live, 2026-07-29: it's `{name,
+    type, nsfw, poi}` only) -- so a `parsed` with a `model_id` but no
+    `description` almost always means "we haven't fetched the model's own
+    page yet", not "this LoRA genuinely has no author write-up". One extra
+    call, `civitai_client.lookup_model_by_id` (public, no key -- §2b's same
+    rules), fetches it; a hit is folded BOTH into the returned `parsed` AND
+    into `raw` (the sidecar's own on-disk shape, under `model.description`,
+    matching the real Civitai response's own key) so the very next read --
+    cache hit or not -- already has it, per the task's "caching it into the
+    existing sidecar" instruction.
+
+    Returns `(parsed, raw_changed)` -- the caller re-writes the sidecar only
+    when `raw_changed` is true, so a call that changes nothing (already had
+    a description, no `model_id` to ask about, or `cached_only`) never
+    triggers a pointless disk write.
+
+    Never reached when `cached_only` (the same network-policy gate
+    `lookup_model_info` enforces everywhere else in this module) -- and
+    never raises, mirroring every other function in this module: a failed/
+    offline fetch here just leaves `parsed` without a description, exactly
+    like any other Civitai data that couldn't be fetched.
+
+    A "once-only" marker (`raw["_wtn_description_checked"]`) is set once
+    Civitai has given a DEFINITIVE answer (found, with or without a usable
+    description, or a definitive 404/notfound) -- so a model that genuinely
+    has no description is never re-asked on every panel open. A transient
+    failure (timeout/DNS/rate-limit) does NOT set it, so a later open tries
+    again instead of being stuck.
+    """
+    if parsed.get("description") or cached_only:
+        return parsed, False
+    if raw.get("_wtn_description_checked"):
+        return parsed, False
+    model_id = parsed.get("model_id")
+    if model_id is None:
+        return parsed, False
+
+    result = civitai_client.lookup_model_by_id(model_id)
+    if result.get("reason") == "offline":
+        # Transient -- retry on a later open rather than giving up for good.
+        return parsed, False
+
+    # "found" (with or without a usable description) or a definitive
+    # "notfound" -- either way we now genuinely know the answer.
+    raw["_wtn_description_checked"] = True
+    if result.get("reason") == "found" and isinstance(result.get("data"), dict):
+        description = civitai_parse.parse_model_description(result["data"])
+        if description:
+            parsed["description"] = description
+            model_obj = raw.get("model")
+            if not isinstance(model_obj, dict):
+                model_obj = {}
+                raw["model"] = model_obj
+            model_obj["description"] = description
+    return parsed, True
+
+
 def lookup_model_info(
     kind: object,
     name: Any,
@@ -69,6 +135,14 @@ def lookup_model_info(
         if cached is not None:
             parsed = civitai_parse.parse_model_version(cached)
             if parsed:
+                # BUG 2 -- top up a cached record that's missing a
+                # description (common: the by-hash sidecar's `model` object
+                # almost never carries one) with the one-time model-id
+                # fallback fetch, re-caching the raw sidecar only if it
+                # actually changed.
+                parsed, changed = _augment_with_model_description(parsed, cached, cached_only=cached_only)
+                if changed:
+                    sidecar.write_sidecar(path, cached)
                 return {
                     "reason": "found",
                     "offline_reason": None,
@@ -117,6 +191,11 @@ def lookup_model_info(
         # own "if not parsed: notfound" rule (this function's own docstring).
         return {"reason": "notfound", "offline_reason": None, "message": "", "data": None}
 
+    # BUG 2 -- same one-time description top-up as the cache-hit branch
+    # above, applied to the freshly-fetched raw response before it's cached.
+    # `cached_only` is always False on this branch (the function returns
+    # earlier when it's set), passed through for defensiveness only.
+    parsed, _ = _augment_with_model_description(parsed, result["data"], cached_only=cached_only)
     sidecar.write_sidecar(path, result["data"])
     return {"reason": "found", "offline_reason": None, "message": "", "data": parsed, "source": "civitai"}
 

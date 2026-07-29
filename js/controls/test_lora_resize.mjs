@@ -67,7 +67,33 @@ import assert from "node:assert/strict";
 
 import { defaultState, addRow as addStateRow, setSepStrengths as setStateSepStrengths } from "./lora_state.mjs";
 
-import { contentHeight, ROW_H, ROW_GAP, HEADER_H, BODY_PAD, MIN_W, DEFAULT_W, buildRoot, buildRowElement, buildSettingsPanel, paintRow, paintHeader, injectStyles } from "./lora_render.mjs";
+import {
+  contentHeight,
+  ROW_H,
+  ROW_GAP,
+  HEADER_H,
+  HEADER_GAP,
+  BODY_PAD,
+  CARD_PAD,
+  CARD_BORDER,
+  MIN_W,
+  MIN_W_SEP,
+  DEFAULT_W,
+  WIDGETS_START_Y,
+  NODE_SLOT_H,
+  INPUT_SLOT_COUNT,
+  OUTPUT_SLOT_COUNT,
+  SLOT_HEADER_H,
+  STEPPER_W,
+  CTRL_GAP,
+  ADD_MIN_W,
+  buildRoot,
+  buildRowElement,
+  buildSettingsPanel,
+  paintRow,
+  paintHeader,
+  injectStyles,
+} from "./lora_render.mjs";
 
 // `paintRow`'s missing-file mark (design doc §1a-iii) reads `hasFile("loras",
 // ...)` straight from `civitai_api.mjs`'s real module-singleton cache -- the
@@ -109,6 +135,7 @@ import {
   teardownLoraNode,
   captureRowTops,
   flipRows,
+  enforceWidthFloor,
 } from "./lora_interaction.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
@@ -388,10 +415,19 @@ test("injectStyles: idempotent -- a second call does not append a second <style>
   assert.equal(styles.length, 1);
 });
 
+// BUG 7 (2026-07-29 owner report): the rows-card wrapper adds its own
+// border + padding on top of whichever rows-block height applies, and the
+// between-ROWS gap is now `ROW_GAP` (4, was 7) while the header-to-card gap
+// is the SEPARATE `HEADER_GAP` (7, unchanged) -- see `lora_render.mjs`'s own
+// `contentHeight` doc comment for why these are two different constants now.
+function cardH(rowsBlockH) {
+  return rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
+}
+
 test("contentHeight: pure arithmetic, matches CSS constants, never needs the live DOM", () => {
-  assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + ROW_GAP + ROW_H); // empty state occupies one row's worth
-  assert.equal(contentHeight(1), BODY_PAD * 2 + HEADER_H + ROW_GAP + ROW_H);
-  assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + ROW_GAP + (3 * ROW_H + 2 * ROW_GAP));
+  assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(ROW_H)); // empty state occupies one row's worth
+  assert.equal(contentHeight(1), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(ROW_H));
+  assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(3 * ROW_H + 2 * ROW_GAP));
   assert.equal(contentHeight(-5), contentHeight(0), "negative row counts must not go negative/NaN");
 });
 
@@ -966,6 +1002,20 @@ function findAllByClass(root, className) {
   return out;
 }
 
+/** ALL text under `root`, recursively -- this suite's doc stub's own
+ * `.textContent` is a plain string property (never auto-aggregated from
+ * children, unlike a real DOM node), so reading it directly on a container
+ * element only ever sees whatever was explicitly assigned to THAT element,
+ * never its descendants'. Used wherever a test needs to search a whole
+ * subtree's rendered text rather than one specific leaf. */
+function collectText(el) {
+  let s = el && typeof el.textContent === "string" ? el.textContent : "";
+  for (const c of (el && el.children) || []) {
+    s += " " + collectText(c);
+  }
+  return s;
+}
+
 function flushMicrotasks() {
   return new Promise((resolve) => setTimeout(resolve, 0)).then(() => new Promise((resolve) => setTimeout(resolve, 0)));
 }
@@ -1333,8 +1383,13 @@ for (const SizeCtor of [Array, Float64Array]) {
     const dragged = mkSize(SizeCtor, MIN_W, 900);
     node.size = dragged;
     onResizeLora(node, ctx, dragged);
-    assert.equal(dragged[1], contentHeight(3));
-    assert.equal(node.size[1], contentHeight(3));
+    // +WIDGETS_START_Y: this bare `makeFakeNode` never gets a real
+    // `node.computeSize` (only `setupLoraNode` installs one), so `fitNodeH`
+    // takes its arithmetic FALLBACK -- which reserves the SAME fixed
+    // output-socket column (BUG 3) `computeLoraSize` does, for the exact
+    // reason `lora_interaction.mjs`'s own `fitNodeH` doc comment gives.
+    assert.equal(dragged[1], WIDGETS_START_Y + contentHeight(3));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(3));
   });
 
   test(`onResizeLora: a width drag works normally, floored at MIN_W (size ctor: ${SizeCtor.name})`, () => {
@@ -1367,9 +1422,9 @@ for (const SizeCtor of [Array, Float64Array]) {
     assert.notEqual(dragged, node.size, "sanity check: this test's whole point is size !== node.size");
     onResizeLora(node, ctx, dragged);
     assert.equal(dragged[0], MIN_W, "the passed-in size argument itself must be corrected");
-    assert.equal(dragged[1], contentHeight(2));
+    assert.equal(dragged[1], WIDGETS_START_Y + contentHeight(2));
     assert.equal(node.size[0], MIN_W, "node.size must be mirrored to match -- litegraph reads node.size afterward, not the local arg");
-    assert.equal(node.size[1], contentHeight(2));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
   });
 
   test(`onResizeLora: no-ops entirely under Nodes 2.0 (size ctor: ${SizeCtor.name})`, () => {
@@ -1394,7 +1449,7 @@ for (const SizeCtor of [Array, Float64Array]) {
     node.size = mkSize(SizeCtor, 10, 900); // simulates a stuck drag onResize never corrected
     onDrawForegroundLora(node, ctx);
     assert.equal(node.size[0], MIN_W);
-    assert.equal(node.size[1], contentHeight(2));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
   });
 
   test(`onDrawForegroundLora: bails during a load (isGraphLoading) -- must not stamp over a still-restoring size (size ctor: ${SizeCtor.name})`, () => {
@@ -1437,7 +1492,7 @@ for (const SizeCtor of [Array, Float64Array]) {
     wrapSetSizeLora(node, ctx);
     node.setSize([500, 5]); // simulates litegraph's drag handler calling setSize with a too-short/tall value
     assert.equal(node.size[0], 500);
-    assert.equal(node.size[1], contentHeight(2));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
   });
 
   test(`wrapSetSizeLora: floors width at MIN_W too (size ctor: ${SizeCtor.name})`, () => {
@@ -1465,7 +1520,7 @@ for (const SizeCtor of [Array, Float64Array]) {
     node.size = mkSize(SizeCtor, 555, 12); // a stale/hand-edited saved height
     applyContentHeightLora(node, ctx);
     assert.equal(node.size[0], 555, "width must be left EXACTLY as restored");
-    assert.equal(node.size[1], contentHeight(3));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(3));
   });
 
   test(`fitNode/scheduleFit: bail entirely while node._lrConfiguring or ctx.isGraphLoading() is true (size ctor: ${SizeCtor.name})`, () => {
@@ -1490,9 +1545,221 @@ for (const SizeCtor of [Array, Float64Array]) {
     node.size = mkSize(SizeCtor, 10, 10);
     fitNode(node, ctx);
     assert.equal(node.size[0], MIN_W);
-    assert.equal(node.size[1], contentHeight(2));
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
   });
 }
+
+// =========================================================================
+// G. Owner bug-fix pass (2026-07-29) -- BUG 3 (header/output-socket
+// collision), BUG 4 (Add button truncation), BUG 5 (settings label
+// wrapping), BUG 6 (inert-looking Browse button), BUG 7 (row floor +
+// sepStrengths-aware width, the rows-card).
+// =========================================================================
+
+// -- BUG 3: the fixed output-socket column ----------------------------------
+
+test("BUG 3: SLOT_HEADER_H/WIDGETS_START_Y reserve the REAL socket column -- model+clip in, MODEL/CLIP/triggers out", () => {
+  assert.equal(INPUT_SLOT_COUNT, 2, "model (required) + clip (optional)");
+  assert.equal(OUTPUT_SLOT_COUNT, 3, "MODEL, CLIP, triggers -- fixed, never per-row (design doc §5)");
+  assert.equal(SLOT_HEADER_H, Math.max(INPUT_SLOT_COUNT, OUTPUT_SLOT_COUNT) * NODE_SLOT_H);
+  assert.equal(WIDGETS_START_Y, SLOT_HEADER_H + 2, "the '+2' mirrors litegraph's own default gap");
+});
+
+test("BUG 3: setupLoraNode sets widgets_start_y to WIDGETS_START_Y, never the flat 2 Control Panel uses", () => {
+  const node = makeFakeNode(stateJSON([]));
+  const ctx = makeCtx(makeDocStub());
+  setupLoraNode(node, ctx);
+  assert.equal(node.widgets_start_y, WIDGETS_START_Y);
+  assert.notEqual(node.widgets_start_y, 2, "the OLD value put the DOM widget on top of the fixed output sockets");
+});
+
+test("BUG 3: restoreLoraNode ALSO sets widgets_start_y to WIDGETS_START_Y (the restore path, not just fresh-node)", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })]));
+  const ctx = makeCtx(makeDocStub());
+  setupLoraNode(node, ctx);
+  node.widgets_start_y = 2; // simulate a stale value from an older build's saved behaviour
+  restoreLoraNode(node, ctx);
+  assert.equal(node.widgets_start_y, WIDGETS_START_Y);
+});
+
+test("BUG 3: node.computeSize's height includes WIDGETS_START_Y -- the total node height, not just the widget's own box", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 }), mkStateRow({ id: 2 })]));
+  const ctx = makeCtx(makeDocStub());
+  setupLoraNode(node, ctx);
+  const [, h] = node.computeSize();
+  assert.equal(h, WIDGETS_START_Y + contentHeight(2));
+});
+
+// -- BUG 4: the '+ Add LoRA' button never truncates at any sane node width --
+
+test("BUG 4: '.wtn-lora-add' carries a min-width ALONGSIDE the 30% cap -- never squeezed unreadable", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, new RegExp(`\\.wtn-lora-add\\s*\\{[^}]*min-width:\\s*${ADD_MIN_W}px`));
+  assert.match(css, /\.wtn-lora-add\s*\{[^}]*max-width:\s*30%/, "the 30% cap must still be there too -- min-width is IN ADDITION, not a replacement");
+});
+
+// -- BUG 5: the settings dialog's 'LoRA memory use' row stacks instead of
+// squeezing its label against the segmented control -----------------------
+
+test("BUG 5: the 'LoRA memory use' field row carries the stacked layout modifier, and the hint explains all THREE modes", () => {
+  const doc = makeDocStub();
+  const refs = buildSettingsPanel(doc);
+  const rowMode = refs.cacheModeBtns[0].parentNode.parentNode; // btn -> seg -> row
+  assert.ok(rowMode.classList.contains("wtn-lora-set-fld-stack"), "the memory-use row must stack (BUG 5)");
+  const hintText = collectText(rowMode);
+  assert.match(hintText, /Standard/);
+  assert.match(hintText, /Fast/);
+  assert.match(hintText, /Lowest/);
+
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-set-fld\.wtn-lora-set-fld-stack\s*\{[^}]*flex-direction:\s*column/);
+});
+
+test("BUG 1 audit: the settings dialog no longer renders internal design-doc reasoning (the raw-key subhint, the 'dropped from upstream' paragraph)", () => {
+  const doc = makeDocStub();
+  const refs = buildSettingsPanel(doc);
+  const wholeText = collectText(refs.root);
+  assert.doesNotMatch(wholeText, /raw key in state/);
+  assert.doesNotMatch(wholeText, /Dropped from upstream/);
+});
+
+// -- BUG 6: the 🔍 Browse Civitai button is VISIBLY disabled, not silently
+// inert-looking -------------------------------------------------------------
+
+test("BUG 6: the header's search/browse button is rendered visibly disabled with an explanatory title", () => {
+  const doc = makeDocStub();
+  const refs = buildRoot(doc);
+  assert.ok(refs.searchBtn.classList.contains("wtn-lora-icon-disabled"), "must carry the disabled-look class");
+  assert.match(refs.searchBtn.title, /arrives with search/i);
+
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-icon\.wtn-lora-icon-disabled\s*\{[^}]*cursor:\s*default/);
+});
+
+// -- BUG 7: the row floor, sepStrengths' own higher floor, the rows-card,
+// and the M/C letters -> title tooltips --------------------------------------
+
+test("BUG 7: MIN_W_SEP is a REAL amount higher than MIN_W -- exactly one more stepper cell + its gap", () => {
+  assert.ok(MIN_W_SEP > MIN_W, "sepStrengths needs a materially higher floor, not the same one");
+  assert.equal(MIN_W_SEP - MIN_W, STEPPER_W + CTRL_GAP, "derived from the SAME control widths as the CSS, not guessed");
+});
+
+test("BUG 7: the 'M'/'C' letter tags are GONE -- the stepper cell's OWN title carries that naming, fixed order (model first)", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc);
+  const strGroup = refs.str;
+  const [modelCell, clipCell] = strGroup.children;
+  assert.equal(modelCell.title, "Model strength");
+  assert.equal(clipCell.title, "Clip strength");
+  assert.ok(!modelCell.children.some((c) => c.className.includes("wtn-lora-str-tag")), "no letter-tag element must exist any more");
+  assert.match(refs.up.title, /model strength/i);
+  assert.match(refs.upClip.title, /clip strength/i);
+});
+
+test("BUG 7: the rows sit inside a bordered card ('.wtn-lora-rows-card'), border is PLAIN --wtn-line-soft -- never an accent", () => {
+  const doc = makeDocStub();
+  const refs = buildRoot(doc);
+  assert.ok(refs.card.classList.contains("wtn-lora-rows-card"));
+  assert.equal(refs.card.children.includes(refs.rowsHost), true);
+  assert.equal(refs.card.children.includes(refs.empty), true);
+
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  const cardRuleMatch = css.match(/\.wtn-lora-rows-card\s*\{([^}]*)\}/);
+  assert.ok(cardRuleMatch, "the card rule must exist");
+  assert.match(cardRuleMatch[1], /border:\s*1px solid var\(--wtn-line-soft/);
+  assert.doesNotMatch(cardRuleMatch[1], /--wtn-accent/, "the card border must never carry the house accent (98d0fe5/a6478f0's own settled conclusion)");
+});
+
+test("BUG 7: the row gap between LoRAs is 4px now (was 7) -- the header-to-card gap is UNCHANGED at 7", () => {
+  assert.equal(ROW_GAP, 4);
+  assert.equal(HEADER_GAP, 7);
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-rows\s*\{[^}]*gap:\s*4px/);
+  assert.match(css, /\.wtn-lora-root\s*\{[^}]*gap:\s*7px/);
+});
+
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`BUG 7: the width floor is MIN_W_SEP (not MIN_W) once sepStrengths is on -- onResizeLora (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: true }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    const narrowed = mkSize(SizeCtor, 10, 900);
+    node.size = narrowed;
+    onResizeLora(node, ctx, narrowed);
+    assert.equal(narrowed[0], MIN_W_SEP);
+  });
+
+  test(`BUG 7: the width floor is MIN_W_SEP once sepStrengths is on -- onDrawForegroundLora (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: true }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    node.size = mkSize(SizeCtor, 10, 900);
+    onDrawForegroundLora(node, ctx);
+    assert.equal(node.size[0], MIN_W_SEP);
+  });
+
+  test(`BUG 7: the width floor is MIN_W_SEP once sepStrengths is on -- wrapSetSizeLora (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: true }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    wrapSetSizeLora(node, ctx);
+    node.setSize([10, 900]);
+    assert.equal(node.size[0], MIN_W_SEP);
+  });
+
+  test(`BUG 7: the width floor is MIN_W_SEP once sepStrengths is on -- fitNode (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: true }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    node.size = mkSize(SizeCtor, 10, 10);
+    fitNode(node, ctx);
+    assert.equal(node.size[0], MIN_W_SEP);
+  });
+
+  test(`BUG 7: enforceWidthFloor WIDENS a too-narrow node up to the CURRENT mode's floor (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: true }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    wrapSetSizeLora(node, ctx); // installed by setupLoraNode in real life -- enforceWidthFloor relies on it
+    node.size = mkSize(SizeCtor, MIN_W, 100); // narrower than MIN_W_SEP
+    enforceWidthFloor(node, ctx);
+    assert.equal(node.size[0], MIN_W_SEP);
+  });
+
+  test(`BUG 7: enforceWidthFloor NEVER shrinks a node the user has already widened (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })], { sepStrengths: false }), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    wrapSetSizeLora(node, ctx);
+    node.size = mkSize(SizeCtor, 900, 100); // user-widened, well past either floor
+    enforceWidthFloor(node, ctx);
+    assert.equal(node.size[0], 900, "must not shrink toward the single-strength floor");
+  });
+}
+
+await asyncTest("BUG 7: toggling 'Separate model / clip strength' ON widens a too-narrow node to MIN_W_SEP; toggling back OFF does not shrink it", async () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  setupLoraNode(node, ctx); // installs wrapSetSizeLora -- enforceWidthFloor depends on it
+  node.size[0] = MIN_W; // at the single-strength floor exactly
+
+  fire(node._lrRefs.settingsBtn, "click");
+  const sw = findAllByClass(doc.body, "wtn-lora-switch").find((e) => e.title && /Show a model AND a clip/.test(e.title));
+  fire(sw, "click"); // turn sepStrengths ON
+  assert.equal(node.size[0], MIN_W_SEP, "must widen to the NEW, higher floor immediately");
+
+  node.size[0] = 500; // simulate the user manually widening it further
+  fire(sw, "click"); // turn sepStrengths back OFF
+  assert.equal(node.size[0], 500, "must NOT shrink back down just because the setting turned off");
+});
 
 // =========================================================================
 // Lifecycle -- setupLoraNode / restoreLoraNode, idempotency, teardown
@@ -1513,7 +1780,7 @@ test("setupLoraNode: a fresh node gets floored to DEFAULT_W x content height", (
   const ctx = makeCtx(makeDocStub());
   setupLoraNode(node, ctx);
   assert.equal(node.size[0], DEFAULT_W);
-  assert.equal(node.size[1], contentHeight(2));
+  assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
 });
 
 test("setupLoraNode: skips the floor entirely while node._lrConfiguring is true (a restore in flight)", () => {
@@ -1533,7 +1800,7 @@ test("restoreLoraNode: force-reparses the widget and applies content height, lea
   node.size[1] = 1; // and a stale/inconsistent saved height
   restoreLoraNode(node, ctx);
   assert.equal(node.size[0], 777, "restore must never touch width");
-  assert.equal(node.size[1], contentHeight(1));
+  assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(1));
   assert.equal(ensureState(node, ctx).rows[0].name, "saved.safetensors");
 });
 
