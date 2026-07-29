@@ -438,9 +438,40 @@ and *outcome*:
 So exactly **one** filter behaves differently, and it is the one implied by the mount point: a LoRA
 Loader's picker cannot search checkpoints, because it could not do anything with the result.
 
-**Layout differs, feature set does not.** The modal has room for a filter **rail** (~196px). A node
+**Layout differs, feature set does not.** The modal has room for a filter **rail** (~216px). A node
 panel is ~340px wide, so the same filters render as a **compact row of dropdown pills** — a rail there
 would eat the results. Do not drop filters to fit; change their presentation.
+
+#### The modal's filter rail — select-adds-a-chip, NOT a chip grid (owner, 2026-07-29)
+
+Civitai's own rail is the reference for *structure* — collapsible sections, `Sort models by` /
+`Filter by Base Model` / `Filter by Model Type` — but **not for the model-type control**, which they
+render as a grid of ~19 always-visible chips (Aesthetic Gradient, Checkpoint, Controlnet, Detection,
+DoRA, Hypernetwork, LoRA, LyCORIS, Motion, Other, Poses, Text Encoder, Embedding, UNet, Upscaler, VAE,
+VLM, Wildcards, Workflows).
+
+**Ours: a `<select>` per multi-value filter, and choosing an option appends a removable chip directly
+under that section.** The reason to diverge is that a 19-chip grid *dominates the rail* and, worse,
+leaves no way to see what is actually **applied** at a glance — every chip is present whether or not it
+is active, so "on" is carried only by highlight. A select keeps the long list collapsed and the chips
+below it show **only the active filters**, so the rail reads as *what am I filtering by right now*.
+
+| filter | control | multi-value? |
+|---|---|---|
+| Sort models by | plain `<select>` | no — single choice, no chips |
+| Period | plain `<select>` | no |
+| Filter by Base Model | `<select>` → chips | **yes** |
+| Filter by Model Type | `<select>` → chips | **yes** |
+| Show NSFW | switch | no |
+
+Details worth fixing now: selecting resets the `<select>` to its "Add a …" placeholder so it reads as an
+*action* rather than a current value; a duplicate selection is a no-op; and an empty group shows a faint
+`any` so "no filter" is stated rather than blank.
+
+**Every filter chip carries an `✕`**, which is consistent with §1a-i rather than contradicting it: there,
+the `✕` marks a word *you* authored versus one the file supplied. In the rail **every** chip is user-put,
+so they all get one. The rule is the same — the `✕` means "you put this here" — it is just that the rail
+has no other kind of chip.
 
 **Filter choices are remembered user-wide, in Settings → AnimaFlow — not in the node's state blob.**
 They are a browsing preference, not node behaviour, and per §7b that is the boundary. It also means the

@@ -156,6 +156,21 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
 .stack{display:flex;flex-direction:column;gap:14px}
 /* section divider inside a panel -- separates identity / triggers / notes */
 hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
+
+/* ── modal filter rail: section label · select · chips-it-produced ── */
+.fsec{font-size:11.5px;color:var(--ink-dim);margin:13px 0 5px;padding-top:9px;
+  border-top:1px solid var(--line-soft)}
+.fsec:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.fsel{width:100%;background:var(--console);border:1px solid var(--line-soft);color:var(--ink);
+  font:11.5px var(--font);padding:5px 6px;border-radius:6px}
+.fsel:hover{border-color:var(--accent-deep)}
+.fchips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.fchip{display:inline-flex;align-items:center;gap:5px;font:10.5px var(--mono);padding:2px 6px;
+  border-radius:10px;background:rgba(45,212,191,.14);border:1px solid var(--accent-deep);
+  color:var(--accent-strong)}
+.fchip .x2{color:var(--accent-deep);cursor:pointer;font-size:10px}
+.fchip .x2:hover{color:var(--bad)}
+.fnone{font-size:10.5px;color:var(--ink-faint);font-style:italic}
 </style>
 
 <h1>AnimaFlow — LoRA Loader + shared Civitai browser</h1>
@@ -429,17 +444,40 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
 
     <div style="display:flex;flex:1 1 auto;min-height:0">
       <!-- filters -->
-      <div style="width:196px;flex:none;border-right:1px solid var(--line);padding:11px;overflow:auto">
-        <div style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent);margin-bottom:7px">FILTERS</div>
-        <div style="font-size:11px;color:var(--ink-dim);margin:9px 0 4px">Type</div>
-        <div class="seg" style="flex-wrap:wrap"><button class="on">LoRA</button><button>Checkpoint</button><button>All</button></div>
-        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Base model</div>
-        <div class="seg" style="flex-wrap:wrap"><button class="on">SDXL</button><button>Pony</button><button>Flux</button></div>
-        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Sort</div>
-        <div class="seg"><button class="on">Downloads</button><button>Newest</button></div>
-        <div style="font-size:11px;color:var(--ink-dim);margin:11px 0 4px">Period</div>
-        <div class="seg"><button>Week</button><button class="on">All time</button></div>
-        <div class="fld" style="margin-top:13px"><label style="font-size:11.5px">Show NSFW</label>
+      <div style="width:216px;flex:none;border-right:1px solid var(--line);padding:11px;overflow:auto">
+        <div style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent);margin-bottom:9px">FILTERS</div>
+
+        <!-- single-value: a plain select, no chips -->
+        <div class="fsec">Sort models by</div>
+        <select class="fsel"><option>Relevancy</option><option>Most downloaded</option>
+          <option>Highest rated</option><option>Newest</option><option>Most liked</option></select>
+
+        <div class="fsec">Period</div>
+        <select class="fsel"><option>All time</option><option>Day</option><option>Week</option>
+          <option>Month</option><option>Year</option></select>
+
+        <!-- multi-value: select ADDS a removable chip below -->
+        <div class="fsec">Filter by Base Model</div>
+        <select class="fsel" onchange="addFilter('base',this)">
+          <option value="">Add a base model…</option>
+          <option>SD 1.5</option><option>SDXL 1.0</option><option>Pony</option>
+          <option>Flux.1 D</option><option>Illustrious</option><option>SD 3.5</option>
+        </select>
+        <div class="fchips" id="f-base"></div>
+
+        <div class="fsec">Filter by Model Type</div>
+        <select class="fsel" onchange="addFilter('type',this)">
+          <option value="">Add a model type…</option>
+          <option>Aesthetic Gradient</option><option>Checkpoint</option><option>Controlnet</option>
+          <option>Detection</option><option>DoRA</option><option>Hypernetwork</option>
+          <option>LoRA</option><option>LyCORIS</option><option>Motion</option><option>Other</option>
+          <option>Poses</option><option>Text Encoder</option><option>Embedding</option>
+          <option>UNet</option><option>Upscaler</option><option>VAE</option><option>VLM</option>
+          <option>Wildcards</option><option>Workflows</option>
+        </select>
+        <div class="fchips" id="f-type"></div>
+
+        <div class="fld" style="margin-top:14px"><label style="font-size:11.5px">Show NSFW</label>
           <div class="sw" onclick="this.classList.toggle('on')"></div></div>
       </div>
 
@@ -587,6 +625,33 @@ function syncTrig(){
   document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
 }
 function delChip(ev,x){ ev.stopPropagation(); x.closest(".chip").remove(); syncTrig(); }
+
+/* ── modal filters: a select ADDS a removable chip under its own section ──
+   Chosen over Civitai's own chip-grid: 19 model types as always-visible chips
+   dominates the rail, and the rail then can't show what's actually applied at a
+   glance. A select keeps the long list collapsed; the chips below it show only
+   the ACTIVE filters. Every filter chip carries an ✕ because every one of them
+   is user-put -- unlike a trigger-word chip, where origin decides (§1a-i). */
+function addFilter(group, sel){
+  const v = sel.value; sel.selectedIndex = 0;
+  if (!v) return;
+  const host = document.getElementById("f-" + group);
+  if ([...host.querySelectorAll(".fchip")].some(c => c.dataset.v === v)) return;  // no duplicates
+  const c = document.createElement("span");
+  c.className = "fchip"; c.dataset.v = v;
+  c.innerHTML = '<span></span><span class="x2">✕</span>';
+  c.querySelector("span").textContent = v;
+  c.querySelector(".x2").onclick = () => { c.remove(); syncNone(group); };
+  host.appendChild(c); syncNone(group);
+}
+function syncNone(group){
+  const host = document.getElementById("f-" + group);
+  const has = host.querySelector(".fchip");
+  let n = host.querySelector(".fnone");
+  if (!has && !n){ n = document.createElement("span"); n.className = "fnone"; n.textContent = "any"; host.appendChild(n); }
+  if (has && n) n.remove();
+}
+["base","type"].forEach(syncNone);
 
 // ONE setting governs every network affordance: the 🔍 browse button and the
 // info panel's "↻ Civitai" lookup. Off => the node cannot reach the network at all.
