@@ -1006,6 +1006,37 @@ export let PANEL_MIN_H = 256; // was 220
 // floor than that.
 export const GENERATOR_MIN_W = 374; // was 320
 
+// The Generator NODE-height floor -- **owner-approved policy change,
+// 2026-07-29**. Until this dispatch the Generator had NO height clamp at
+// all (`clampGeneratorSize` was width-only) -- reasoned as safe because its
+// panel scrolls internally past `PANEL_MIN_H` rather than clipping, so a
+// short node never cut anything off. The owner reversed that from live use:
+// a floor stops the node being dragged absurdly SHORT regardless of whether
+// the panel can absorb it, matching the Class-B contract the Preview
+// already has (both axes, each with a minimum) rather than leaving the
+// Generator's height totally unclamped. Internal scrolling is UNCHANGED by
+// this -- `.wtn-an-panel`'s own `overflow-y: auto` still applies once the
+// node is taller than this floor and the content doesn't fit; this only
+// raises the floor itself, it does not add a "never scrolls" contract the
+// way the Preview's `PREVIEW_PANEL_MIN_H` does.
+//
+// Derived the same way `PREVIEW_MIN_H` turns `PREVIEW_PANEL_MIN_H` (a panel
+// floor) into a node floor: `PANEL_MIN_H` (256, above) plus the chrome the
+// DOM widget itself doesn't cover -- the title bar (LiteGraph's default
+// NODE_TITLE_HEIGHT, ~30px) + this node's own socket rows above the widget
+// area + ~10px of widget-area top margin before the DOM widget begins.
+// RE-DERIVED here rather than reusing the Preview's 80, because the
+// Generator's own socket count differs: ONE visible input (`context` --
+// `generation_settings` is a native STRING widget hidden via `hideWidget`,
+// not a socket, so it costs nothing) versus THREE outputs (`images`/
+// `latent`/`metadata_json`). Litegraph lays inputs and outputs out in
+// parallel columns, so the TALLER side sets the row count: max(1, 3) = 3
+// rows @ ~20px each = 60. 30 + 60 + 10 = 100.
+// VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
+// read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
+// widen `_GENERATOR_CHROME_ADDEND` (below) rather than `PANEL_MIN_H` itself.
+export let GENERATOR_MIN_H = PANEL_MIN_H + 100; // PANEL_MIN_H(256) + 100
+
 // Preview-only floor -- RE-DERIVED (2026-07-29, Compare-card dispatch),
 // and it dropped A LOT: 444 -> ~300, rounded up to 320 for headroom. The
 // old 444 was set by the compare row's TWO `base|mid|final` SEGMENTED
@@ -1110,6 +1141,12 @@ export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(
 // scaled by `applyPanelFontScale` (this constant's own doc comment).
 const _PREVIEW_CHROME_ADDEND = 80;
 
+// The Generator's own litegraph-native chrome addend (100) -- frozen, NEVER
+// scaled by `applyPanelFontScale`, same treatment as `_PREVIEW_CHROME_ADDEND`
+// just above but re-derived for the Generator's own (different) socket
+// count -- see `GENERATOR_MIN_H`'s own doc comment above for the arithmetic.
+const _GENERATOR_CHROME_ADDEND = 100;
+
 // Frozen at their 14px-baseline values (this file's own `PANEL_MIN_H`/
 // `PREVIEW_IMG_MIN_H`/`PREVIEW_PANEL_MIN_H` literals above) --
 // `applyPanelFontScale` below always multiplies FROM these, never from a
@@ -1131,13 +1168,17 @@ function roundTo4(x) {
 /**
  * Recompute `BASE_FONT`/`SHEAD_H`/`SHEAD_GLYPH_SIZE` and the `*_MIN_H`
  * floors (`PANEL_MIN_H`/`PREVIEW_IMG_MIN_H`/`PREVIEW_PANEL_MIN_H`/
- * `PREVIEW_MIN_H`) for a "Node panel type size (px)" setting value of `px` —
- * the task's own explicit scope ("row heights, SHEAD_H, the *_MIN_H
- * floors... in fields.mjs" — this is the render.mjs half; `applyFieldFontScale`
- * in `js/shared/fields.mjs` is the other). `SHEAD_GAP`/`DEFAULT_W`/
- * `DEFAULT_H`/`PREVIEW_DEFAULT_H`/`GENERATOR_MIN_W`/`PREVIEW_MIN_W` are
- * deliberately OUTSIDE this scope (spacing and fresh-node/width floors, not
- * named by the task) and stay fixed regardless of this setting.
+ * `PREVIEW_MIN_H`/`GENERATOR_MIN_H`) for a "Node panel type size (px)"
+ * setting value of `px` — the task's own explicit scope ("row heights,
+ * SHEAD_H, the *_MIN_H floors... in fields.mjs" — this is the render.mjs
+ * half; `applyFieldFontScale` in `js/shared/fields.mjs` is the other).
+ * `SHEAD_GAP`/`DEFAULT_W`/`DEFAULT_H`/`PREVIEW_DEFAULT_H`/`GENERATOR_MIN_W`/
+ * `PREVIEW_MIN_W` are deliberately OUTSIDE this scope (spacing and
+ * fresh-node/width floors, not named by the task) and stay fixed regardless
+ * of this setting. `GENERATOR_MIN_H` joined this scope 2026-07-29 (owner
+ * policy change, `GENERATOR_MIN_H`'s own doc comment above) -- it is a
+ * height floor derived from `PANEL_MIN_H`, exactly like the pre-existing
+ * `PREVIEW_MIN_H`/`PREVIEW_PANEL_MIN_H` pair, so it scales the same way.
  *
  * Same idempotent-by-construction contract as `applyFieldFontScale`: always
  * derives from the frozen `_PANEL_DEFAULTS`/`_PANEL_BASE_PX`, so calling
@@ -1145,7 +1186,9 @@ function roundTo4(x) {
  * constant at exactly its original literal. `PREVIEW_MIN_H` re-adds the
  * FIXED `_PREVIEW_CHROME_ADDEND` (80, litegraph's own native chrome — never
  * scaled, see that constant's own doc comment) to the freshly-scaled
- * `PREVIEW_PANEL_MIN_H`, never to a stale previous value.
+ * `PREVIEW_PANEL_MIN_H`, never to a stale previous value; `GENERATOR_MIN_H`
+ * does the identical thing with its own `_GENERATOR_CHROME_ADDEND` (100)
+ * added to the freshly-scaled `PANEL_MIN_H`.
  *
  * See `injectStyles`'s own doc comment for WHY this only ever runs once per
  * page, atomically with the actual CSS build, rather than being re-applied
@@ -1162,6 +1205,7 @@ export function applyPanelFontScale(px) {
   PREVIEW_IMG_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_IMG_MIN_H * ratio);
   PREVIEW_PANEL_MIN_H = roundTo4(_PANEL_DEFAULTS.PREVIEW_PANEL_MIN_H * ratio);
   PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + _PREVIEW_CHROME_ADDEND;
+  GENERATOR_MIN_H = PANEL_MIN_H + _GENERATOR_CHROME_ADDEND;
   return ratio;
 }
 
@@ -1176,10 +1220,13 @@ function clampMinWidth(size, minW) {
   return size;
 }
 
-/** The Preview-only counterpart to `clampMinWidth` -- see `clampPreviewSize`
- * below for why only the Preview needs this (the Generator's panel still
- * scrolls past its own floor, so its node height never needs a matching
- * clamp beyond what litegraph's own `getMinHeight` already enforces). */
+/** The height-clamp counterpart to `clampMinWidth`, shared by BOTH
+ * `clampGeneratorSize` and `clampPreviewSize` (owner policy change,
+ * 2026-07-29: every node on this track is now Class B, both axes clamped
+ * with a minimum -- see `GENERATOR_MIN_H`'s own doc comment for why the
+ * Generator joined the Preview here). Each caller passes its own floor
+ * (`GENERATOR_MIN_H`/`PREVIEW_MIN_H`) -- this function itself doesn't care
+ * which node it's clamping, same as `clampMinWidth` above. */
 function clampMinHeight(size, minH) {
   if (!Array.isArray(size) || size.length < 2) {
     return size;
@@ -1191,27 +1238,33 @@ function clampMinHeight(size, minH) {
   return size;
 }
 
-/** litegraph's `onResize(size)` contract: mutate `size` IN PLACE. Never
- * touches `size[1]` -- height has no clamp of its own beyond the floor
- * litegraph itself enforces from `getMinHeight`/`computeLayoutSize` (this
- * module's top "Resize" comment: there is no ceiling, and nothing here
- * rewrites height at all). Unlike `clampPreviewSize` below, this is
- * deliberately width-only -- the Generator's panel keeps scrolling past its
- * own floor (`PANEL_MIN_H`), so there is no "never scrolls" contract here
- * that would need a height floor to make safe. */
+/** litegraph's `onResize(size)` contract: mutate `size` IN PLACE. Clamps
+ * BOTH axes as of 2026-07-29 (owner policy change, `GENERATOR_MIN_H`'s own
+ * doc comment above): width up to `GENERATOR_MIN_W` same as always, height
+ * up to `GENERATOR_MIN_H` so the node can't be dragged absurdly short. This
+ * used to be width-only -- the Generator's panel keeps scrolling past its
+ * own floor (`PANEL_MIN_H`), and that reasoning is UNCHANGED, but "the panel
+ * can absorb it by scrolling" turned out not to be a reason the NODE itself
+ * should have no floor at all: the owner wants a floor on every node on
+ * this track regardless of whether its panel scrolls or not. Internal
+ * scrolling past `GENERATOR_MIN_H` is unaffected -- this only stops a
+ * resize-drag going shorter than that floor in the first place. */
 export function clampGeneratorSize(size) {
-  return clampMinWidth(size, GENERATOR_MIN_W);
+  clampMinWidth(size, GENERATOR_MIN_W);
+  return clampMinHeight(size, GENERATOR_MIN_H);
 }
 
-/** `onResize(size)` for the Preview -- clamps BOTH axes, unlike
- * `clampGeneratorSize`. The height half exists specifically so the floor
- * litegraph enforces on a resize-DRAG (`PREVIEW_MIN_H`, wired to
- * `getMinHeight`/`computeLayoutSize` via `measurePreviewMinHeight` in
- * `index.js`) agrees with the floor this function enforces here, rather
- * than the two contradicting each other -- see `PREVIEW_PANEL_MIN_H`'s own
- * doc comment above for why the Preview needs a real height floor at all
- * (its panel has `overflow: hidden`, never scrolls, so there is no shrink-
- * and-scroll fallback below that floor the way the Generator has). */
+/** `onResize(size)` for the Preview -- clamps BOTH axes, same shape as
+ * `clampGeneratorSize` above (both nodes on this track are Class B: both
+ * axes user-resizable, each with a minimum -- owner policy, 2026-07-29).
+ * The height half exists specifically so the floor litegraph enforces on a
+ * resize-DRAG (`PREVIEW_MIN_H`, wired to `getMinHeight`/`computeLayoutSize`
+ * via `measurePreviewMinHeight` in `index.js`) agrees with the floor this
+ * function enforces here, rather than the two contradicting each other --
+ * see `PREVIEW_PANEL_MIN_H`'s own doc comment above for why the Preview
+ * needs a real height floor at all (its panel has `overflow: hidden`, never
+ * scrolls, so there is no shrink-and-scroll fallback below that floor the
+ * way the Generator's still does). */
 export function clampPreviewSize(size) {
   clampMinWidth(size, PREVIEW_MIN_W);
   return clampMinHeight(size, PREVIEW_MIN_H);

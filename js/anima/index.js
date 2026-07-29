@@ -328,6 +328,20 @@ function logHealedSockets(node, nodeData, summary) {
 // litegraph that CONTRADICTS `clampPreviewSize`'s own height clamp
 // (render.mjs), so `measureFloor` below is picked once, per node type, and
 // used for both sizing hooks.
+//
+// Same "must agree" contract now applies to the Generator too (owner policy
+// change, 2026-07-29: `render.mjs`'s `GENERATOR_MIN_H` doc comment). Both
+// node types report the WIDGET's own floor here -- `PANEL_MIN_H` for the
+// Generator, `PREVIEW_PANEL_MIN_H` for the Preview -- and rely on litegraph
+// to add its own native chrome (title bar + socket rows) on top when it
+// computes the total node-height floor for a resize-drag; `GENERATOR_MIN_H`/
+// `PREVIEW_MIN_H` are exactly that sum (panel floor + this file's own
+// `_GENERATOR_CHROME_ADDEND`/`_PREVIEW_CHROME_ADDEND`), which is what
+// `clampGeneratorSize`/`clampPreviewSize` enforce as the NODE's total height
+// floor. Reporting the wrong half here (e.g. the already-summed
+// `GENERATOR_MIN_H` instead of the bare `PANEL_MIN_H`) would double-count
+// litegraph's own chrome and contradict the clamp the same way using the
+// wrong Preview floor would.
 // ---------------------------------------------------------------------------
 
 function mountNode(node, mods, isGenerator) {
@@ -344,15 +358,19 @@ function mountNode(node, mods, isGenerator) {
   const refs = isGenerator ? mods.interaction.mountGeneratorUI(node, ctx) : mods.interaction.mountPreviewUI(node, ctx);
   mods.interaction.installZoomPassthrough(node, ctx);
 
-  // Min-width (and, for the Preview, min-height too) clamp -- the user
-  // asked for a min-width explicitly on the Generator too (previously
-  // Preview-only), and later a min-HEIGHT on the Preview specifically. Each
-  // node type has its own floor (`render.mjs`'s `GENERATOR_MIN_W`/
-  // `PREVIEW_MIN_W`/`PREVIEW_MIN_H` doc comments; `clampGeneratorSize`
-  // stays width-only, `clampPreviewSize` clamps both axes). Installed here,
-  // right after `mods` resolves, so there is no lazy-load race with a user
-  // resize. CHAINS any pre-existing `node.onResize` rather than replacing
-  // it.
+  // Min-width AND min-height clamp on BOTH node types (owner policy,
+  // 2026-07-29: every node on this track is Class B -- both axes
+  // user-resizable, each with a minimum; `render.mjs`'s `GENERATOR_MIN_H`
+  // doc comment has the history -- the Generator used to be width-only,
+  // reasoned safe because its panel scrolls past its own floor rather than
+  // clipping, and the owner reversed that: a floor stops the node being
+  // dragged absurdly short regardless of whether the panel can absorb it).
+  // Each node type has its own floor pair (`render.mjs`'s `GENERATOR_MIN_W`/
+  // `GENERATOR_MIN_H`/`PREVIEW_MIN_W`/`PREVIEW_MIN_H` doc comments;
+  // `clampGeneratorSize`/`clampPreviewSize` both clamp both axes now).
+  // Installed here, right after `mods` resolves, so there is no lazy-load
+  // race with a user resize. CHAINS any pre-existing `node.onResize` rather
+  // than replacing it.
   const prevResize = node.onResize;
   const clampSize = isGenerator ? mods.render.clampGeneratorSize : mods.render.clampPreviewSize;
   node.onResize = function (size) {
@@ -362,7 +380,7 @@ function mountNode(node, mods, isGenerator) {
 
   // The floor-measuring function itself differs by node type -- see this
   // file's "Legacy litegraph sizing" comment above for why using the wrong
-  // one would contradict `clampSize`'s own height clamp on the Preview.
+  // one would contradict `clampSize`'s own height clamp.
   const measureFloor = isGenerator ? mods.render.measureMinHeight : mods.render.measurePreviewMinHeight;
 
   let widget;
@@ -466,9 +484,23 @@ function setupNode(node, mods, isGenerator) {
   // `PREVIEW_DEFAULT_H` (unchanged), and this node's panel is
   // `overflow: hidden` (no scroll fallback), so a fresh node MUST start at
   // or above its own floor or it opens already clipping its Save row.
-  // The Generator has no such gap (its panel still scrolls past its floor),
-  // so `DEFAULT_H` alone is untouched there.
-  const defaultH = isGenerator ? mods.render.DEFAULT_H : Math.max(mods.render.PREVIEW_DEFAULT_H, mods.render.PREVIEW_MIN_H);
+  //
+  // The Generator needs the SAME guard now (owner policy change, 2026-07-29:
+  // `render.mjs`'s `GENERATOR_MIN_H` doc comment) even though its panel still
+  // scrolls past its own floor rather than clipping -- the Class B contract
+  // is "both axes floored," full stop, and `GENERATOR_MIN_H` is no longer a
+  // fixed literal like `DEFAULT_H` (400) is: it derives from `PANEL_MIN_H`,
+  // which SCALES with the "Node panel type size (px)" setting
+  // (`applyPanelFontScale`). At the 14px base, `DEFAULT_H`(400) >
+  // `GENERATOR_MIN_H`(356) and this `Math.max` is inert -- which is exactly
+  // why omitting it looked harmless. At a large font-scale setting the
+  // inequality flips (e.g. at 2x, `GENERATOR_MIN_H` becomes 612), and WITHOUT
+  // this guard a freshly-created Generator would be born shorter than its
+  // own documented minimum, contradicting `clampGeneratorSize`'s own floor
+  // the very first time the node is sized.
+  const defaultH = isGenerator
+    ? Math.max(mods.render.DEFAULT_H, mods.render.GENERATOR_MIN_H)
+    : Math.max(mods.render.PREVIEW_DEFAULT_H, mods.render.PREVIEW_MIN_H);
   // Floor a freshly-created node's size UP (never down) to a comfortable
   // starting size -- mirrors `js/prompt_rules/node/index.js`'s
   // `ensureInitialFloor`. This is the ONLY sizing this module ever does for

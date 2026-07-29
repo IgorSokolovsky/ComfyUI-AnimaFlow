@@ -43,7 +43,10 @@
  *      (asserted absent, so nothing can silently reappear and start fighting
  *      a manual resize again); a manual `node.setSize` survives a repaint
  *      unchanged; `GENERATOR_MIN_W`/`PREVIEW_MIN_W` still clamp width on
- *      `onResize`, untouched by this reversal.
+ *      `onResize`, untouched by this reversal. `GENERATOR_MIN_H` (owner
+ *      policy change, 2026-07-29) now also clamps the Generator's height on
+ *      `onResize`, mirroring `PREVIEW_MIN_H` -- see `clampGeneratorSize`'s
+ *      own doc comment in `render.mjs`.
  *   C. Wheel scrolls-vs-zooms per direction, exercised against the REAL
  *      built panel DOM (not a bespoke check — `js/shared/canvas_zoom.mjs`'s
  *      own `scrollRegionWantsWheel`).
@@ -189,6 +192,7 @@ import {
   clampPreviewSize,
   DEFAULT_W,
   GENERATOR_MIN_W,
+  GENERATOR_MIN_H,
   PREVIEW_MIN_W,
   PANEL_MIN_H,
   PREVIEW_IMG_MIN_H,
@@ -1280,21 +1284,45 @@ test("the grow-biased auto-fit mechanism is gone from render.mjs entirely -- ref
   assert.equal(render.CHROME, undefined);
 });
 
-test("clampGeneratorSize raises size[0] up to GENERATOR_MIN_W, and NEVER touches size[1] -- the Generator's panel still scrolls past its own floor, so its node height has no clamp of its own", () => {
-  const size = [10, 999];
+test("clampGeneratorSize raises size[0] up to GENERATOR_MIN_W AND size[1] up to GENERATOR_MIN_H -- owner policy change, 2026-07-29: the Generator is now Class B (both axes clamped, each with a minimum), same as the Preview, even though its panel still scrolls internally past its own floor rather than clipping", () => {
+  // Below the floor on BOTH axes -- both get raised.
+  const size = [10, 10];
   clampGeneratorSize(size);
   assert.equal(size[0], GENERATOR_MIN_W);
-  assert.equal(size[1], 999, "clampGeneratorSize must leave height completely untouched, even far below any floor");
+  assert.equal(size[1], GENERATOR_MIN_H);
 
-  // A width already at/above the floor is left alone.
-  const size2 = [GENERATOR_MIN_W + 40, 100];
+  // Width below, height already above -- only width moves.
+  const size2 = [10, GENERATOR_MIN_H + 500];
   clampGeneratorSize(size2);
-  assert.equal(size2[0], GENERATOR_MIN_W + 40);
-  assert.equal(size2[1], 100);
+  assert.equal(size2[0], GENERATOR_MIN_W);
+  assert.equal(size2[1], GENERATOR_MIN_H + 500);
 
-  // Tolerant of a missing/non-numeric size.
+  // Height below, width already above -- only height moves.
+  const size3 = [GENERATOR_MIN_W + 40, 10];
+  clampGeneratorSize(size3);
+  assert.equal(size3[0], GENERATOR_MIN_W + 40);
+  assert.equal(size3[1], GENERATOR_MIN_H);
+
+  // Both already at/above the floor -- neither moves.
+  const size4 = [GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40];
+  clampGeneratorSize(size4);
+  assert.deepEqual(size4, [GENERATOR_MIN_W + 40, GENERATOR_MIN_H + 40]);
+
+  // Tolerant of a missing/non-numeric size, on either axis (hostile-input
+  // cases carried forward from the pre-2026-07-29 width-only test).
   assert.doesNotThrow(() => clampGeneratorSize(null));
   assert.doesNotThrow(() => clampGeneratorSize(["nope"]));
+  assert.doesNotThrow(() => clampGeneratorSize([100]));
+});
+
+test("GENERATOR_MIN_H >= PANEL_MIN_H -- the Generator's node floor must always be at least as tall as the panel floor it wraps, plus whatever node chrome (title bar + socket rows) sits above the DOM widget, mirroring PREVIEW_MIN_H's own equivalent invariant", () => {
+  assert.ok(GENERATOR_MIN_H >= PANEL_MIN_H);
+  assert.equal(GENERATOR_MIN_H - PANEL_MIN_H, 100, "the Generator's own litegraph-chrome addend (1 input row vs 3 output rows -- title(30) + max(1,3)*20(60) + margin(10) = 100)");
+});
+
+test("index.js wires the Generator's widget floor to PANEL_MIN_H (via measureMinHeight), agreeing with clampGeneratorSize's own height clamp rather than contradicting it -- same contract measurePreviewMinHeight already carries for the Preview", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(indexSource, /measureMinHeight/, "index.js must reference measureMinHeight for the Generator's own floor");
 });
 
 test("clampPreviewSize raises size[0] up to PREVIEW_MIN_W AND size[1] up to PREVIEW_MIN_H -- unlike the Generator, the Preview's panel never scrolls (overflow: hidden), so its node height needs a real floor too", () => {
@@ -5166,6 +5194,13 @@ test("font/height constants (task item 4) are internally consistent: every row/h
   // native pixel geometry, independent of this file's type scale -- it must
   // NOT have moved just because everything else did.
   assert.equal(PREVIEW_MIN_H - PREVIEW_PANEL_MIN_H, 80, "the node-chrome addend must stay 80 regardless of the type-scale pass");
+
+  // GENERATOR_MIN_H (owner policy change, 2026-07-29): same "panel floor +
+  // fixed litegraph chrome" shape as PREVIEW_MIN_H, just re-derived for the
+  // Generator's own (different) socket count -- 1 visible input vs 3
+  // outputs, so max(1,3) rows rather than the Preview's max(2,0).
+  assert.ok(GENERATOR_MIN_H > PANEL_MIN_H, "GENERATOR_MIN_H must be strictly taller than the bare panel floor it wraps");
+  assert.equal(GENERATOR_MIN_H - PANEL_MIN_H, 100, "the Generator's own node-chrome addend must stay 100 regardless of the type-scale pass");
 });
 
 // ===========================================================================
@@ -5316,12 +5351,13 @@ test("applyPanelFontScale(14) (the default/baseline) reproduces every original l
     assert.equal(render.PREVIEW_IMG_MIN_H, 188);
     assert.equal(render.PREVIEW_PANEL_MIN_H, 292);
     assert.equal(render.PREVIEW_MIN_H, 372);
+    assert.equal(render.GENERATOR_MIN_H, 356, "PANEL_MIN_H(256) + the Generator's own chrome addend(100)");
   } finally {
     render.applyPanelFontScale(14);
   }
 });
 
-test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, proportionally, and the litegraph chrome addend (80) stays fixed", () => {
+test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, proportionally, and the litegraph chrome addends (80 for the Preview, 100 for the Generator) stay fixed", () => {
   render.applyPanelFontScale(28); // exactly double the 14px baseline
   try {
     assert.equal(render.BASE_FONT, 28);
@@ -5329,11 +5365,46 @@ test("applyPanelFontScale scales BASE_FONT/SHEAD_H/the *_MIN_H floors together, 
     assert.equal(render.PANEL_MIN_H, 512);
     assert.equal(render.PREVIEW_IMG_MIN_H, 376);
     assert.equal(render.PREVIEW_PANEL_MIN_H, 584);
-    // The +80 chrome addend must NOT double along with everything else --
-    // this file's own PREVIEW_MIN_H doc comment ("litegraph's OWN native
-    // pixel geometry... deliberately NOT scaled").
+    // The +80/+100 chrome addends must NOT double along with everything
+    // else -- this file's own PREVIEW_MIN_H/GENERATOR_MIN_H doc comments
+    // ("litegraph's OWN native pixel geometry... deliberately NOT scaled").
     assert.equal(render.PREVIEW_MIN_H, 584 + 80);
     assert.equal(render.PREVIEW_MIN_H - render.PREVIEW_PANEL_MIN_H, 80);
+    assert.equal(render.GENERATOR_MIN_H, 512 + 100);
+    assert.equal(render.GENERATOR_MIN_H - render.PANEL_MIN_H, 100, "the Generator's own chrome addend must stay 100 regardless of the type-scale pass");
+  } finally {
+    render.applyPanelFontScale(14);
+  }
+});
+
+test("index.js: setupNode's Generator defaultH is guarded by Math.max(DEFAULT_H, GENERATOR_MIN_H) -- 2026-07-29 fix. At the 14px baseline the guard is inert (DEFAULT_H(400) > GENERATOR_MIN_H(356)) so a fresh Generator still opens at exactly DEFAULT_H; at a large panel-font-scale setting GENERATOR_MIN_H overtakes DEFAULT_H (it derives from PANEL_MIN_H, which scales -- DEFAULT_H doesn't), and WITHOUT this guard a freshly-created Generator would be born shorter than its own documented minimum, contradicting clampGeneratorSize's own floor", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /isGenerator\s*\n\s*\?\s*Math\.max\(mods\.render\.DEFAULT_H,\s*mods\.render\.GENERATOR_MIN_H\)/,
+    "the Generator branch of defaultH must be Math.max(DEFAULT_H, GENERATOR_MIN_H), mirroring the Preview's own Math.max(PREVIEW_DEFAULT_H, PREVIEW_MIN_H) guard rather than using DEFAULT_H bare",
+  );
+
+  // 14px baseline: GENERATOR_MIN_H(356) < DEFAULT_H(400) -- the guard must
+  // be a no-op, i.e. a fresh Generator still opens at exactly DEFAULT_H.
+  render.applyPanelFontScale(14);
+  try {
+    assert.ok(render.GENERATOR_MIN_H < render.DEFAULT_H, "sanity: at the 14px base the bug is invisible because the inequality hasn't flipped yet");
+    assert.equal(Math.max(render.DEFAULT_H, render.GENERATOR_MIN_H), render.DEFAULT_H);
+  } finally {
+    render.applyPanelFontScale(14);
+  }
+
+  // Large panel-font-scale setting (doubled, same mechanism the suite
+  // already exercises above): GENERATOR_MIN_H(612) now EXCEEDS the fixed
+  // DEFAULT_H(400) -- the guard must lift the fresh-node default up to
+  // GENERATOR_MIN_H, never leave it at the now-too-short DEFAULT_H.
+  render.applyPanelFontScale(28);
+  try {
+    assert.ok(render.GENERATOR_MIN_H > render.DEFAULT_H, "sanity: the inequality must actually flip at this scale, or this test would prove nothing");
+    const defaultH = Math.max(render.DEFAULT_H, render.GENERATOR_MIN_H);
+    assert.ok(defaultH >= render.GENERATOR_MIN_H, "a fresh Generator must never start below its own documented minimum");
+    assert.equal(defaultH, render.GENERATOR_MIN_H);
   } finally {
     render.applyPanelFontScale(14);
   }
