@@ -484,6 +484,38 @@ browser with three mounts, not three browsers.
 sort, period, NSFW), a result grid with **preview images**, per-result detail with the author's
 description, and download with progress.
 
+#### The detail view — master→detail swap, with a community gallery (owner, 2026-07-29)
+
+**Clicking a result card opens its detail**, and it does so by **swapping the results area** while the
+filter rail **stays put**. Not a nested modal, and not a hidden rail: your filters are the context you
+came from, and keeping them visible is what makes `← results` read as a step back rather than a new
+place. A nested modal over a 90% modal also has nowhere to go.
+
+Contents:
+
+- **A version selector.** A Civitai model has *many* versions and they differ in file size, base model
+  and trained words — and the by-hash lookup (§2b) is **per version**, so "download this model" is
+  meaningless without one. Downloads target the selected version explicitly.
+- Creator, type/base-model badges, stats, last-updated, and the author's description in full (this is
+  the same text §2 item 3 wants surfaced in the node's ⓘ panel — one parser, two presentations).
+- **A community-images gallery: the images users actually made with it, each showing its PROMPT on
+  hover**, plus the generation parameters (sampler, steps, cfg, size) and a **copy-prompt** action.
+
+**Why the gallery earns its place rather than being decoration:** a LoRA's own preview is the author's
+best shot. The community grid is what it looks like in other people's hands, and the *prompt* is the part
+you can actually reuse — that is the real reason someone browses Civitai instead of a filename list.
+Copy-prompt is therefore a first-class action, not a nicety.
+
+Three constraints:
+
+- **The rail's NSFW toggle governs the gallery too.** Community images are the most likely NSFW surface
+  in the whole feature. With it off they are blurred behind a click-to-reveal, not silently dropped —
+  hiding them entirely would misrepresent what the LoRA is used for.
+- **Prompts are untrusted text** — render with `textContent`, and remember a prompt legitimately contains
+  `<lora:name:0.8>` sequences that must not be interpreted as markup.
+- **Lazy-load thumbnails** and cap how many load at once; a gallery is the one place in this feature that
+  can pull a lot of bytes, and §9's "never block a run" applies to bandwidth as much as to the event loop.
+
 ⚠️ **It is deliberately NOT the Rule Builder's overlay geometry.** That one is
 `position: fixed; inset: 0; z-index: 10000` — genuinely full-bleed, because the Rule Builder is a work
 surface you *live in* while authoring. A browser is a "look something up, take it, come back" surface,

@@ -171,6 +171,25 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
 .fchip .x2{color:var(--accent-deep);cursor:pointer;font-size:10px}
 .fchip .x2:hover{color:var(--bad)}
 .fnone{font-size:10.5px;color:var(--ink-faint);font-style:italic}
+
+/* ── modal detail view: community gallery, prompt on hover ── */
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
+.gcell{position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line-soft);
+  background:var(--console);aspect-ratio:2/3;display:grid;place-items:center;color:var(--ink-faint);
+  font-size:10px;cursor:zoom-in}
+.gover{position:absolute;inset:0;background:linear-gradient(to top,rgba(6,8,11,.96) 62%,rgba(6,8,11,.25));
+  opacity:0;transition:opacity .14s;display:flex;flex-direction:column;justify-content:flex-end;
+  padding:8px;gap:6px}
+.gcell:hover .gover{opacity:1}
+@media (prefers-reduced-motion:reduce){ .gover{transition:none} }
+.gprompt{font:10px/1.35 var(--mono);color:var(--ink);max-height:104px;overflow:auto}
+.gmeta{font:9.5px var(--mono);color:var(--ink-faint)}
+.gcopy{align-self:flex-start;font:9.5px var(--mono);padding:2px 7px;border-radius:5px;cursor:pointer;
+  background:var(--accent);color:var(--on-accent);border:1px solid var(--accent)}
+.gnsfw{position:absolute;inset:0;backdrop-filter:blur(14px);background:rgba(10,13,18,.55);
+  display:grid;place-items:center;font:10px var(--mono);color:var(--warn);cursor:pointer}
+.back{font-size:11.5px;color:var(--ink-dim);cursor:pointer}
+.back:hover{color:var(--accent)}
 </style>
 
 <h1>AnimaFlow — LoRA Loader + shared Civitai browser</h1>
@@ -481,15 +500,57 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
           <div class="sw" onclick="this.classList.toggle('on')"></div></div>
       </div>
 
+      <!-- ── DETAIL view (hidden until a card is clicked) ── -->
+      <div id="detail" style="display:none;flex:1 1 auto;min-width:0;flex-direction:column">
+        <div style="padding:9px 12px;border-bottom:1px solid var(--line-soft);display:flex;
+          align-items:center;gap:10px">
+          <span class="back" onclick="closeDetail()">← results</span>
+          <span style="font-size:13px;font-weight:600" id="dtitle">Skin Detail XL</span>
+          <span class="badge">LoRA</span><span class="badge">SDXL</span>
+          <span class="badge" style="color:var(--ink-dim)">by <b>someartist</b></span>
+        </div>
+
+        <div style="flex:1 1 auto;overflow:auto;padding:12px">
+          <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:13px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:11px;color:var(--ink-dim);margin-bottom:4px">Version</div>
+              <select class="fsel" style="width:auto;min-width:150px">
+                <option>v3.0 — 144 MB (latest)</option><option>v2.1 — 142 MB</option>
+                <option>v1.0 — 138 MB</option>
+              </select>
+            </div>
+            <div>
+              <div style="font-size:11px;color:var(--ink-dim);margin-bottom:4px">&nbsp;</div>
+              <button class="btn" style="height:30px">↓ Download this version</button>
+            </div>
+            <div style="margin-left:auto;font:10.5px var(--mono);color:var(--ink-faint);text-align:right">
+              12.4k downloads · 890 likes<br>updated 2026-06-02
+            </div>
+          </div>
+
+          <div class="desc" style="max-height:none;margin-bottom:14px">
+            Adds fine skin texture without plastic highlights. Works best at <b>0.6–0.8</b> on SDXL.
+            Stack <i>under</i> a character LoRA. Trigger words are optional.
+          </div>
+
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+            <span style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent)">COMMUNITY IMAGES</span>
+            <span class="hint" style="margin:0">hover an image to see its prompt</span>
+          </div>
+          <div class="gal" id="gal"></div>
+        </div>
+      </div>
+
       <!-- results grid -->
-      <div style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column">
+      <div id="results" style="flex:1 1 auto;min-width:0;display:flex;flex-direction:column">
         <div style="padding:10px 12px;border-bottom:1px solid var(--line-soft)">
           <input type="text" style="width:100%;background:var(--console);border:1px solid var(--line-soft);
             color:var(--ink);padding:7px 9px;border-radius:6px;font-size:12.5px" placeholder="Search Civitai…" value="skin detail">
         </div>
         <div style="flex:1 1 auto;overflow:auto;padding:12px;display:grid;
           grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:11px;align-content:start">
-          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px">
+          <div class="sr" style="flex-direction:column;align-items:stretch;gap:6px;cursor:pointer"
+               onclick="openDetail('Skin Detail XL')">
             <div class="tn" style="width:100%;height:104px">preview</div>
             <div class="t">Skin Detail XL</div><div class="s">SDXL · 12.4k ↓</div>
             <div class="dl have" style="text-align:center">✓ have</div>
@@ -625,6 +686,36 @@ function syncTrig(){
   document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
 }
 function delChip(ev,x){ ev.stopPropagation(); x.closest(".chip").remove(); syncTrig(); }
+
+/* ── modal detail view: master -> detail SWAP, filter rail stays put ──
+   The rail is deliberately not hidden: your filters are the context you came
+   from, and keeping them visible is what makes "← results" feel like a step
+   back rather than a new place. */
+const SHOTS = [
+  { p:"1girl, freckles, detailed skin, soft rim light, upper body, looking at viewer, <lora:skin_detail_xl:0.75>", m:"euler_a · 28 steps · cfg 5.5 · 832×1216", nsfw:false },
+  { p:"portrait of an older fisherman, weathered skin, pores, harsh sunlight, 85mm, <lora:skin_detail_xl:0.8>", m:"dpmpp_2m · 30 steps · cfg 6 · 896×1152", nsfw:false },
+  { p:"close-up, dewy skin, subsurface scattering, studio softbox, <lora:skin_detail_xl:0.6> <lora:celica_v2:0.9>", m:"er_sde · 32 steps · cfg 5 · 1024×1024", nsfw:false },
+  { p:"(hidden — NSFW filter is off in the rail)", m:"—", nsfw:true },
+];
+function openDetail(title){
+  document.getElementById("dtitle").textContent = title;
+  document.getElementById("results").style.display = "none";
+  const d = document.getElementById("detail"); d.style.display = "flex";
+  const gal = document.getElementById("gal");
+  gal.innerHTML = SHOTS.map((s,i) => `
+    <div class="gcell">image ${i+1}
+      <div class="gover">
+        <div class="gprompt">${s.p.replace(/</g,"&lt;")}</div>
+        <div class="gmeta">${s.m}</div>
+        <div class="gcopy" onclick="event.stopPropagation();this.textContent='copied ✓'">copy prompt</div>
+      </div>
+      ${s.nsfw ? '<div class="gnsfw" onclick="this.remove()">NSFW — click to reveal</div>' : ""}
+    </div>`).join("");
+}
+function closeDetail(){
+  document.getElementById("detail").style.display = "none";
+  document.getElementById("results").style.display = "flex";
+}
 
 /* ── modal filters: a select ADDS a removable chip under its own section ──
    Chosen over Civitai's own chip-grid: 19 model types as always-visible chips
