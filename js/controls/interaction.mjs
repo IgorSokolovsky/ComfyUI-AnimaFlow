@@ -2025,14 +2025,79 @@ function parkVacantSlot(node, out, holeRank) {
 
 // ---------------------------------------------------------------------------
 // Resize -- USER ACTIONS ONLY, never on load (per the dynamic-node-frontend
-// skill). bodyHeight is pure arithmetic on row count (render.mjs), so this
-// never needs to measure the live DOM.
+// skill). Ported from ComfyUI-Pixaroma's `js/lora_loader/index.js` (MIT ©
+// pixaroma, see THIRD_PARTY_NOTICES.md) -- its `fitNodeH` (lines 57-63 there)
+// and `fitToContent` (lines 68-74 there, its `isGraphLoading()` bail on line
+// 69) fix the exact bug this track hit: TWO independent
+// sources of node height competing for the same number. `fitNode` used to
+// compute `bodyHeight(rows.length)` directly and never once asked
+// `node.computeSize` -- meanwhile every row is mounted as its OWN
+// `addDOMWidget` reporting its own `getMinHeight`/`computeSize`, plus the
+// title bar and slot rows, and LiteGraph sums THOSE into its own total by a
+// path that never goes through this module at all. When the two totals
+// disagreed, the bigger one visibly won and the node settled taller than
+// `bodyHeight` said it should be.
+//
+// The fix (`fitNodeH`, below): ask `node.computeSize()` FIRST and use
+// `bodyHeight` only as a FALLBACK for when `computeSize` is unavailable or
+// broken. In this pack `node.computeSize` is `index.js`'s own
+// `computeControlsSize` override (design doc §7's `bodyHeight`-only
+// arithmetic, kept specifically so legacy litegraph doesn't reserve an extra
+// 20px slot row per output above the body) -- so this makes `node.computeSize`
+// the ONE place the answer lives, and `fitNode` a caller of it rather than a
+// second implementation racing it. `bodyHeight` used directly is exercised
+// only when `node.computeSize` is missing (a node/stub that hasn't been
+// through `setupNode` yet -- this is also the path this file's own headless
+// test stub exercises, since it never installs `computeSize` at all).
 // ---------------------------------------------------------------------------
 
-export function fitNode(node, ctx) {
+/** The node height that shows every row with no scrollbar -- `node.
+ * computeSize()` if it reports a usable value, `bodyHeight(rows.length)`
+ * otherwise. See this section's own doc comment for why `computeSize` has to
+ * be asked FIRST, not used as a redundant second opinion. */
+function fitNodeH(node, ctx) {
+  try {
+    const cs = typeof node.computeSize === "function" ? node.computeSize() : null;
+    if (cs && Number.isFinite(cs[1]) && cs[1] > 0) {
+      return Math.round(cs[1]);
+    }
+  } catch (_e) {
+    // A broken/throwing computeSize must never take the fit down with it --
+    // just fall through to the arithmetic fallback below (mirrors the
+    // reference's own try/catch around `node.computeSize?.()`).
+  }
   const state = ensureState(node, ctx);
+  return bodyHeight(state.rows.length);
+}
+
+/**
+ * Auto-fit the node to its content. Per ComfyUI-Pixaroma's `js/lora_loader/
+ * index.js` decision this was ported alongside: height is NEVER user-owned
+ * -- there is no such thing as "the row count shrank but the node should stay
+ * tall", it always resizes to exactly what `fitNodeH` reports. Width is the
+ * ONE user-controlled dimension: floored at `MIN_W`, otherwise left exactly
+ * as the caller's current `node.size[0]` already is.
+ *
+ * Bails on the load path via BOTH `node._ctrlConfiguring` and
+ * `ctx.isGraphLoading()` -- the guard lives HERE now (it used to live only
+ * inside `scheduleFit`'s queued rAF callback), so that every caller of
+ * `fitNode`, not only the ones that go through `scheduleFit`, is covered: "no
+ * call site can ever re-fit during a load." Mirrors the reference's own
+ * `fitToContent`, whose first line is exactly this bail (`js/lora_loader/
+ * index.js:69`, comment: "USER ACTIONS ONLY (never on the load path, or a
+ * saved size gets rewritten and a clean workflow opens 'modified')").
+ * `node._ctrlConfiguring` stays as the second, belt-and-braces guard for the
+ * same reason `scheduleFit`'s own doc comment (below) has always given: it
+ * covers a DIFFERENT window than `ctx.isGraphLoading()` does (before that
+ * flag even starts vs. after a per-node flag's own async import can leak
+ * past it) -- both are needed, neither replaces the other.
+ */
+export function fitNode(node, ctx) {
+  if (node._ctrlConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
+    return; // a workflow load is in flight -- trust the saved node.size
+  }
   const w = Math.max((node.size && node.size[0]) || DEFAULT_W, MIN_W);
-  const h = bodyHeight(state.rows.length);
+  const h = fitNodeH(node, ctx);
   if (typeof node.setSize === "function") {
     node.setSize([w, h]);
   } else if (node.size) {
@@ -2044,35 +2109,31 @@ export function fitNode(node, ctx) {
   }
 }
 
+/**
+ * Queue a `fitNode` call for the next animation frame, never synchronously.
+ *
+ * `node._ctrlConfiguring` ALONE is not a reliable guard at the moment this
+ * rAF actually FIRES, even though it reads as one: `index.js`'s
+ * `onConfigure` wrapper sets it SYNCHRONOUSLY at the top and clears it in a
+ * `.finally()` chained off the same `loadMods()` promise `setupNode`'s own
+ * call site rides -- and since ALL of that (the `.then`/`.catch`/`.finally`
+ * callbacks) runs as plain microtasks, it fully drains and the flag is very
+ * likely already back to `false` well before the browser gets around to
+ * firing THIS rAF callback (a real animation frame, not a microtask, is the
+ * next thing after the microtask queue empties). So a node genuinely still
+ * being restored can reach this callback with `node._ctrlConfiguring`
+ * already cleared. `fitNode`'s own guard (above) re-checks BOTH flags at the
+ * moment it actually runs -- i.e. at rAF-fire-time, not at schedule-time --
+ * which is what closes this exact race; nothing extra is needed here, and
+ * that's precisely why the check moved off this function and onto `fitNode`
+ * itself: putting it here only, as before, protected calls that go through
+ * `scheduleFit` but not a hypothetical direct `fitNode` call anywhere else.
+ */
 export function scheduleFit(node, ctx) {
   if (typeof requestAnimationFrame !== "function") {
     return;
   }
-  requestAnimationFrame(() => {
-    // `node._ctrlConfiguring` ALONE is not a reliable guard here, even
-    // though it reads as one: `index.js`'s `onConfigure` wrapper sets it
-    // SYNCHRONOUSLY at the top and clears it in a `.finally()` chained off
-    // the same `loadMods()` promise `setupNode`'s own call site rides --
-    // and since ALL of that (the `.then`/`.catch`/`.finally` callbacks) runs
-    // as plain microtasks, it fully drains and the flag is very likely
-    // already back to `false` well before the browser gets around to firing
-    // THIS rAF callback (a real animation frame, not a microtask, is the
-    // next thing after the microtask queue empties). So a node genuinely
-    // still being restored can reach this callback with
-    // `node._ctrlConfiguring` already cleared, and get fitted anyway --
-    // clobbering the saved size `fitNode` was supposed to leave alone.
-    // `ctx.isGraphLoading` (injected by `index.js`'s `buildCtx` -- see its
-    // own doc comment for why it rides `ctx` instead of a static import
-    // here) stays true for the WHOLE load plus a trailing window,
-    // independent of this microtask-vs-rAF race, so it's kept as a second,
-    // belt-and-braces check alongside `_ctrlConfiguring` rather than
-    // replacing it -- same two-guards shape as `index.js`'s `setupNode`
-    // sizing gate, and the same fix already landed for `js/anima/index.js`.
-    if (node._ctrlConfiguring || (typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
-      return; // a workflow load is in flight -- trust the saved node.size
-    }
-    fitNode(node, ctx);
-  });
+  requestAnimationFrame(() => fitNode(node, ctx));
 }
 
 // ---------------------------------------------------------------------------

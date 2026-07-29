@@ -2786,6 +2786,176 @@ test("fitNode sizes the node from bodyHeight(rows.length), width floored at MIN_
   assert.equal(node.size[1], bodyHeight(3));
 });
 
+// ---------------------------------------------------------------------------
+// F1. `node.computeSize()` is the ONE authority for height (ported from
+// ComfyUI-Pixaroma's `js/lora_loader/index.js` `fitNodeH` -- see
+// interaction.mjs's own "Resize" section doc comment for the full bug this
+// fixes: `bodyHeight` used to be a second, independent formula racing
+// LiteGraph's own widget-summing total). This file's own `makeFakeNode` stub
+// never installs `computeSize` (that only happens in `index.js`'s
+// `setupNode`, which this headless suite never runs -- its own top doc
+// comment: "never imports index.js directly, it needs a real app/
+// window.LiteGraph") -- so EVERY OTHER test in this file exercises the
+// FALLBACK arithmetic path only. These tests attach a `computeSize` by hand
+// to exercise the PRIMARY path explicitly, and confirm the fallback engages
+// only when computeSize is genuinely unusable.
+// ---------------------------------------------------------------------------
+
+test("fitNode: node.computeSize() is used verbatim when it reports a usable height, NOT recomputed from bodyHeight", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows -- bodyHeight(3) would give a smaller number than this
+  const distinctHeight = bodyHeight(3) + 123; // deliberately NOT what bodyHeight(3) would return
+  node.computeSize = () => [MIN_W, distinctHeight];
+  fitNode(node, ctx);
+  assert.equal(node.size[1], distinctHeight, "fitNode must take its height from computeSize(), not bodyHeight(rows.length)");
+});
+
+test("fitNode: falls back to bodyHeight(rows.length) when node.computeSize is not a function at all (this file's own stub shape -- every other test in this suite exercises exactly this path)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  assert.equal(typeof node.computeSize, "undefined", "sanity check: this stub really has no computeSize");
+  fitNode(node, ctx);
+  assert.equal(node.size[1], bodyHeight(3));
+});
+
+test("fitNode: falls back to bodyHeight(rows.length) when computeSize() throws", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.computeSize = () => {
+    throw new Error("boom");
+  };
+  fitNode(node, ctx);
+  assert.equal(node.size[1], bodyHeight(3), "a throwing computeSize must demote to the fallback, not blow up the fit");
+});
+
+test("fitNode: falls back to bodyHeight(rows.length) when computeSize() reports a non-finite/zero/negative height", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  for (const bogus of [0, -5, NaN, undefined, null]) {
+    node.computeSize = () => [MIN_W, bogus];
+    node.size = [MIN_W, 10];
+    fitNode(node, ctx);
+    assert.equal(node.size[1], bodyHeight(3), `computeSize()[1] = ${bogus} must fall back to bodyHeight`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F2. Grow AND shrink to content -- ComfyUI-Pixaroma's `js/lora_loader/
+// index.js` decision 1: height is never user-owned, so "remove a row =>
+// smaller node" is not a special case, it's the only behaviour. Direct
+// `fitNode` calls (not `scheduleFit`, which only fires through a real/
+// stubbed `requestAnimationFrame`) so this is unconditional regardless of
+// whether an earlier test in this file leaked a stale rAF stub onto
+// `globalThis` (see this file's own "requestAnimationFrame" tests above).
+// ---------------------------------------------------------------------------
+
+test("fitNode: adding rows grows the node, removing rows shrinks it back down to content -- never stuck at the taller size", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx); // 0 rows to start (Control Panel has no default rows)
+  fitNode(node, ctx);
+  const height0 = node.size[1];
+  assert.equal(height0, bodyHeight(0));
+
+  const a = addRowAndSync(node, ctx, "int");
+  const b = addRowAndSync(node, ctx, "float");
+  const c = addRowAndSync(node, ctx, "seed");
+  fitNode(node, ctx);
+  const height3 = node.size[1];
+  assert.equal(height3, bodyHeight(3));
+  assert.ok(height3 > height0, "adding rows must grow the node");
+
+  removeRowAndSync(node, ctx, b.id);
+  fitNode(node, ctx);
+  const height2 = node.size[1];
+  assert.equal(height2, bodyHeight(2));
+  assert.ok(height2 < height3, "removing a row must shrink the node back down, not leave it at the taller size");
+
+  removeRowAndSync(node, ctx, a.id);
+  removeRowAndSync(node, ctx, c.id);
+  fitNode(node, ctx);
+  assert.equal(node.size[1], bodyHeight(0), "removing every row returns the node to the empty-panel height, not the tallest size it ever reached");
+});
+
+// ---------------------------------------------------------------------------
+// F3. `fitNode` itself is a no-op on the load path -- the guard now lives
+// INSIDE `fitNode` (moved off `scheduleFit`'s rAF callback, this section's
+// own doc comment) precisely so a DIRECT call, bypassing `scheduleFit`
+// entirely, is covered too. These two tests call `fitNode` directly, never
+// `scheduleFit` -- the pre-existing "scheduleFit's rAF early-returns..."
+// tests below already cover the scheduleFit-mediated path.
+// ---------------------------------------------------------------------------
+
+test("fitNode is a no-op while node._ctrlConfiguring is true, called DIRECTLY (not through scheduleFit)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.size = [900, 900]; // deliberately far from bodyHeight(3)/MIN_W
+  const before = node.size.slice();
+  node._ctrlConfiguring = true;
+  fitNode(node, ctx);
+  assert.deepEqual(node.size, before, "fitNode must not touch node.size while node._ctrlConfiguring is true");
+});
+
+test("fitNode is a no-op while ctx.isGraphLoading() is true, called DIRECTLY (not through scheduleFit)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+  syncRows(node, ctx); // 3 rows
+  node.size = [900, 900]; // deliberately far from bodyHeight(3)/MIN_W
+  const before = node.size.slice();
+  fitNode(node, ctx);
+  assert.deepEqual(node.size, before, "fitNode must not touch node.size while ctx.isGraphLoading() reports true");
+});
+
+// ---------------------------------------------------------------------------
+// F4. Row socket Y geometry must not shift because of THIS fix -- fitNode
+// only ever writes `node.size`, never a row widget's own `.y` (which
+// `alignOutputsLegacy` derives from, independent of node.size entirely) --
+// see the task's own "hole compaction ... Row Y geometry must not shift"
+// warning. Exercises BOTH the computeSize-primary path and the
+// bodyHeight-fallback path to prove neither one disturbs socket geometry.
+// ---------------------------------------------------------------------------
+
+test("fitNode never moves a row's output dot position, regardless of which height source (computeSize vs. bodyHeight fallback) it used", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  fakeArrange(node);
+  alignOutputsLegacy(node);
+  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+  // Fallback path (no computeSize).
+  fitNode(node, ctx);
+  alignOutputsLegacy(node);
+  assert.deepEqual(
+    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+    before,
+    "the bodyHeight-fallback fit must not move any row's socket Y",
+  );
+
+  // Primary path (computeSize reports something else entirely).
+  node.computeSize = () => [MIN_W, bodyHeight(3) + 500];
+  fitNode(node, ctx);
+  alignOutputsLegacy(node);
+  assert.deepEqual(
+    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+    before,
+    "the computeSize-primary fit must not move any row's socket Y either -- only node.size[1] changes, never widget.y",
+  );
+});
+
 test("scheduleFit skips fitting while _ctrlConfiguring is set (never resize during a workflow load)", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
