@@ -47,6 +47,7 @@ off, open the modal and click a result card.
 | 22 | **EVERY per-model info surface carries `View on Civitai ↗`** — the ⓘ panel, the modal detail, and the Loader Panel's model info | §7d |
 | 23 | Row menu keeps **four of six**: `More info` · `Duplicate` · `Disable/Enable` · `Remove` (only the arrows go) | §1a-iii |
 | 24 | The four lookup states each get **icon + cause + the one useful action**; `notfound` offers **search by name** and explains the hash | §7e |
+| 25 | Picker: root group labelled **`All`**, subfolders their own; **current LoRA accent-coloured**; names **ellipsis-truncated**, never wrapped | §1a-v |
 
 ### 0b. The ONE thing still open
 
@@ -110,6 +111,22 @@ node plus 445 lines of pure helpers.
 
 - **Per row:** searchable name picker (grouped by subfolder; typing searches *flat* across every
   LoRA), on/off, model + clip strength with ▲▼ steppers, an ⓘ button, and a right-click menu.
+
+### 1a-v. The picker dropdown — corrected from a reference shot (2026-07-29)
+
+Four details a source read did not give me:
+
+- **Group headers, and the root group is labelled `All`.** Subfolders get their own header
+  (`detail/`); files sitting at the top of `models/loras` are grouped under `All` rather than left
+  header-less.
+- **The row's CURRENT LoRA is accent-coloured** in the list, so you can see where you are in a long
+  list of near-identical filenames — which is what a real `models/loras` looks like.
+- **Long names truncate with an ellipsis, never wrap.** Every row stays one line, so the list scans
+  vertically; the full name goes in a `title`.
+- **Extensions are shown** (`.safetensors`) — subject to the ⚙'s *Hide file extension* setting (§7b).
+- The search field lives **inside** the panel at the top, with a magnifier glyph, and takes focus on
+  open. Typing searches **flat across every LoRA**, so the group headers collapse away while filtering
+  (they only mean anything in the unfiltered tree).
 
 ### 1a-iii. Reordering is DRAG; the menu keeps four of its six items (owner, 2026-07-29)
 
