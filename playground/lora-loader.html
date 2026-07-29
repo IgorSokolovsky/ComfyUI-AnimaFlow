@@ -149,6 +149,8 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
   color:var(--ink-faint)}
 .badge.key{color:var(--warn);border-color:rgba(251,191,36,.35)}
 .stack{display:flex;flex-direction:column;gap:14px}
+/* section divider inside a panel -- separates identity / triggers / notes */
+hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
 </style>
 
 <h1>AnimaFlow — LoRA Loader + shared Civitai browser</h1>
@@ -243,9 +245,11 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
           </div>
           <span class="x" onclick="hide('info')" style="flex:none">✕</span>
         </div>
-        <div style="margin-bottom:11px">
+        <div>
           <a href="#" onclick="return false" style="color:var(--info);font-size:12px;text-decoration:none">View on Civitai ↗</a>
         </div>
+
+        <hr class="sep">
 
         <!-- trigger words -->
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
@@ -274,6 +278,8 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
           <input type="text" id="ownword" placeholder="add your own trigger word…" style="flex:1 1 auto;width:auto">
           <button class="btn ghost" style="height:26px" onclick="addOwn()">Add</button>
         </div>
+
+        <hr class="sep">
 
         <!-- NEW: author's notes -->
         <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;cursor:pointer"

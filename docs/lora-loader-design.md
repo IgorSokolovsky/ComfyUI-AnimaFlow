@@ -125,6 +125,14 @@ Top to bottom: a **small inline thumbnail** (~58px) beside the **title**, with t
 and the **full filename** stacked under it, then a **"View on Civitai ↗"** link, then the trigger-words
 block, then the add-your-own field, then a **`Done` / `↻ Civitai`** footer.
 
+**Three sections, separated by rules** (owner, 2026-07-29): a `<hr>` after the identity header and
+another before `AUTHOR'S NOTES`. They are doing real work rather than decorating — the panel stacks
+three things with genuinely different jobs (*what this LoRA is* · *what you're sending to the prompt* ·
+*what the author says about it*), and the middle one is the only interactive one. Without the rules the
+`from file` pill and the notes' `from Civitai` pill read as belonging to the same group, which is exactly
+the confusion to avoid given they describe different sources. Style them `--wtn-line-soft`, matching the
+card borders, so they separate without drawing attention.
+
 The four features a source read did not surface, all worth keeping:
 
 1. **The user can ADD their own trigger words** — a text field plus `Add`. This is the important one:
