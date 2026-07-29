@@ -65,6 +65,15 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
 .name.missing .nm{color:var(--bad)}
 /* an OFF row recedes: you can still read it, but it plainly isn't contributing */
 .row.rowoff .name,.row.rowoff .str,.row.rowoff .iinfo{opacity:.45}
+
+/* ── drag-to-reorder, animated (FLIP). transform only -- never layout ── */
+.grip{flex:none;width:12px;color:var(--ink-faint);cursor:grab;font-size:11px;line-height:1;
+  text-align:center;user-select:none}
+.grip:active{cursor:grabbing}
+.row.dragging{opacity:.9;transform:scale(1.015);box-shadow:0 8px 20px rgba(0,0,0,.5);
+  border-color:var(--accent-deep);position:relative;z-index:5}
+.row.flip{transition:transform .18s cubic-bezier(.2,.7,.3,1)}
+@media (prefers-reduced-motion:reduce){ .row.flip{transition:none} }
 .str{display:flex;align-items:center;gap:0;flex:none}
 .str input{width:46px;background:var(--console);border:1px solid var(--line-soft);color:var(--ink);
   font:11.5px var(--mono);text-align:right;padding:3px 5px;border-radius:5px 0 0 5px;border-right:0}
@@ -181,8 +190,10 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
     <div class="body">
       <!-- ONE header row: Add (flexes) · master switch · N/M · ⚙ -->
       <div class="hdr" style="margin-bottom:7px">
-        <button class="btn" style="flex:1 1 auto;height:30px" onclick="addRow()">＋ Add LoRA</button>
-        <div class="sw" id="master" onclick="toggleAll()" title="turn all on / all off" style="flex:none"></div>
+        <!-- sized to its own content + padding, capped at 30% of the node -->
+        <button class="btn" style="flex:0 0 auto;height:30px;max-width:30%;white-space:nowrap;
+          overflow:hidden;text-overflow:ellipsis" onclick="addRow()">＋ Add LoRA</button>
+        <div class="sw" id="master" onclick="toggleAll()" title="turn all on / all off" style="flex:none;margin-left:auto"></div>
         <span id="count" style="font:11.5px var(--mono);color:var(--ink-dim);flex:none;min-width:26px;text-align:center"></span>
         <div class="gear" onclick="show('gear')" style="margin-left:0;flex:none">⚙</div>
       </div>
@@ -463,7 +474,8 @@ function render(){
   const host = document.getElementById("rows");
   // row order per the reference shot: name ▾ · strength ▲▼ · i · ON/OFF SWITCH (right)
   host.innerHTML = LORAS.length ? LORAS.map((e,i)=>`
-    <div class="row ${e.on?'':'rowoff'}" oncontextmenu="menu(event,${i})">
+    <div class="row ${e.on?'':'rowoff'}" data-i="${i}" oncontextmenu="menu(event,${i})">
+      <div class="grip" onpointerdown="startDrag(event,${i})" title="drag to reorder">⠿</div>
       <div class="name ${e.missing?'missing':''}" onclick="show('pick')" title="${e.missing?'file not found in models/loras':e.name}">
         <span class="nm">${e.name.split("/").pop().replace(".safetensors","")}</span><span class="car">▾</span>
       </div>
@@ -490,7 +502,65 @@ function toggleAll(){
 function bump(i,d){ LORAS[i].sm = Math.max(0, Math.min(2, LORAS[i].sm + d)); render(); }
 function addRow(){ LORAS.push({name:"(pick a LoRA)",on:true,sm:0.8,sc:0.8,missing:false}); render(); }
 function pickName(n){ const r=LORAS.find(x=>x.name==="(pick a LoRA)")||LORAS[1]; r.name=n; r.missing=false; render(); hide('pick'); }
-function menu(ev,i){ ev.preventDefault(); alert("Row menu: ↑  ↓  ⧉ Duplicate  ⌫ Remove"); }
+// Menu is TWO items now: reordering is drag, so the ↑/↓ arrows are gone.
+function menu(ev,i){ ev.preventDefault(); alert("Row menu:  ⧉ Duplicate   ⌫ Remove"); }
+
+/* ── FLIP drag-reorder ──────────────────────────────────────────────
+   measure -> mutate the array -> re-render -> transition transform from the
+   OLD box to the new one. Only `transform` is animated. `stopPropagation` on
+   pointerdown is load-bearing: without it litegraph steals the gesture (same
+   lesson as the Preview's hover-wipe). Honours prefers-reduced-motion via CSS. */
+let drag = null;
+function boxes(){
+  const m = new Map();
+  document.querySelectorAll("#rows .row").forEach(r => m.set(r.dataset.i, r.getBoundingClientRect().top));
+  return m;
+}
+function startDrag(ev, i){
+  ev.preventDefault(); ev.stopPropagation();          // <- litegraph must not see this
+  drag = { from: i, y0: ev.clientY };
+  const row = ev.target.closest(".row");
+  row.classList.add("dragging");
+  row.setPointerCapture?.(ev.pointerId);
+  const onMove = (e) => {
+    if (!drag) return;
+    const rows = [...document.querySelectorAll("#rows .row")];
+    const h = rows[0]?.getBoundingClientRect().height || 34;
+    const shift = Math.round((e.clientY - drag.y0) / (h + 5));
+    const to = Math.max(0, Math.min(LORAS.length - 1, drag.from + shift));
+    if (to !== drag.from) {
+      const before = boxes();
+      LORAS.splice(to, 0, LORAS.splice(drag.from, 1)[0]);
+      drag.from = to; drag.y0 = e.clientY;
+      render();
+      flip(before, to);
+    }
+  };
+  const onUp = () => {
+    drag = null;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    render();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+function flip(before, activeIdx){
+  document.querySelectorAll("#rows .row").forEach(r => {
+    const was = before.get(r.dataset.i);
+    if (was == null) return;
+    const dy = was - r.getBoundingClientRect().top;
+    if (!dy) return;
+    r.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() => {                       // next frame: release to 0 with a transition
+      r.classList.add("flip");
+      r.style.transform = "";
+      setTimeout(() => { r.classList.remove("flip"); }, 200);
+    });
+  });
+  const act = document.querySelector(`#rows .row[data-i="${activeIdx}"]`);
+  if (act && drag) act.classList.add("dragging");
+}
 function tog(el){ el.classList.toggle("on"); syncTrig(); }
 function wordOf(chip){ return chip.querySelectorAll("span")[1]?.textContent.trim() || ""; }
 function syncTrig(){

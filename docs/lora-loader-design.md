@@ -36,8 +36,45 @@ node plus 445 lines of pure helpers.
 ### 1a. What it already does — the baseline, so we don't rediscover it
 
 - **Per row:** searchable name picker (grouped by subfolder; typing searches *flat* across every
-  LoRA), on/off, model + clip strength with ▲▼ steppers, an ⓘ button, and a right-click menu —
-  **↑ / ↓ / Duplicate / Remove**.
+  LoRA), on/off, model + clip strength with ▲▼ steppers, an ⓘ button, and a right-click menu.
+
+### 1a-iii. Reordering is DRAG, and the menu shrinks to two items (owner, 2026-07-29)
+
+Upstream's row menu is **↑ / ↓ / Duplicate / Remove**. **Drop the two arrows.** Rows reorder by
+**drag-and-drop**, so the menu is just **Duplicate / Remove** — the arrows were a workaround for not
+having a drag, and keeping both gives two ways to do one thing with the slower one taking two slots.
+
+**Drag needs a real animation, which this pack does not have yet.** The Control/Loader panels already
+drag-reorder, with no motion at all — the row simply appears somewhere else. So this is a **cross-track
+improvement**, not a LoRA-loader feature: build it here, then port it to `js/controls/rows.mjs` so all
+three row-based nodes share it.
+
+What "animated" means concretely:
+
+- the dragged row **lifts** — shadow, slight scale, reduced opacity — so it reads as detached;
+- the other rows **slide** to open a gap, rather than teleporting (FLIP: measure, reorder, then
+  transition `transform` from the old position to the new);
+- on release the row **settles** into place instead of snapping;
+- **animate `transform` only**, never layout properties — this is a DOM widget composited over a
+  canvas, and layout thrash there is visible.
+
+Three constraints, each already learned the hard way elsewhere in this pack:
+
+1. **`stopPropagation` on the pointer handlers is load-bearing.** Without it litegraph steals the
+   gesture and the drag never starts — exactly the lesson `generator-design.md` §7 records for the
+   Preview's hover-wipe.
+2. **Respect `prefers-reduced-motion`** ([`THEME.md`](THEME.md)) — reorder instantly, no transition,
+   when it is set.
+3. **The per-frame size correction must not fight the animation.** Class A rewrites `node.size[1]`
+   every frame (`control-panel-design.md` §7a); a drag that changes row count mid-gesture, or a
+   transition that briefly overlaps rows, must not cause a size oscillation. Row count does not change
+   during a reorder, so the floor should be stable — but verify rather than assume.
+
+> **Build the animation HERE first, and this is the reason:** the Control/Loader panels park each row's
+> **output socket** at that row's Y (`vacantSlotY`/`alignOutputsLegacy`), so an animated reorder there
+> must either move the sockets in step or freeze them until drop — sockets live on the node canvas, not
+> inside the animating DOM. **This node has no per-row sockets (§5)**, so it can prove the animation
+> with none of that risk, and the socket question becomes a separate, well-scoped port.
 - **Missing files** turn the **whole name field red**, border included — re-checked on `R` (Refresh
   Node Definitions) **and on WebSocket reconnect** — the same moments native combos refresh —
   repainting every LoRA node, including ones inside subgraphs.
@@ -46,10 +83,16 @@ node plus 445 lines of pure helpers.
 
 Another case where reading the source under-described the UI. The corrected target is in the mockup:
 
-- **ONE header row** (owner, 2026-07-29): `＋ Add LoRA` · master switch · `N/M` · ⚙. Add **flexes** to
-  fill; the switch, counter and gear are fixed-width at the right. An earlier draft split this across
-  two rows (full-width Add above, a switch strip below) — collapsed to one, because two rows of chrome
-  above the first LoRA is a lot of vertical cost in a node whose height is content-driven (§6).
+- **ONE header row** (owner, 2026-07-29): `＋ Add LoRA` · master switch · `N/M` · ⚙. An earlier draft
+  split this across two rows (full-width Add above, a switch strip below) — collapsed to one, because
+  two rows of chrome above the first LoRA is a lot of vertical cost in a node whose height is
+  content-driven (§6).
+- **`＋ Add LoRA` is sized to its content plus padding, capped at 30% of the node width** — it does
+  **not** flex to fill. The switch, counter and gear sit at the right, with the slack between them
+  deliberately empty. Two reasons this matters more than it looks: a full-width primary button reads as
+  the node's main action when the main action is actually *using* the LoRAs below it, and the node is
+  **width-resizable** (§6), so a flexing button would grow without limit while the controls it shares a
+  row with stay fixed. Cap it, and the row keeps its proportions at any width.
 - **The counter is `2/3`, with no "on" word.** The switch beside it already says what the number is
   about; the label was redundant. It is also the only text in that row, so it stays compact.
 - The switch reads **on only when EVERY row is on**; a mixed state shows it **off** with the counter
