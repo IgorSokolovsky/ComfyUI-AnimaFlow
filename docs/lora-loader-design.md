@@ -281,6 +281,58 @@ expose no policy).
 
 ---
 
+## 7b. The ⚙ dialog — what we take, and the two things we drop
+
+Upstream's dialog, read off a live screenshot (owner, 2026-07-29) — richer than its source grep
+suggested:
+
+| setting | ours? | notes |
+|---|---|---|
+| Default strength (new LoRAs) | ✅ | |
+| **Strength step (arrows)** | ✅ | missed on the first read; a real convenience |
+| Separate model / clip strength | ✅ | "Show two strengths per row" |
+| Trigger words separator | ✅ | |
+| LoRA memory use | ✅ | **labels `Standard` / `Fast` / `Lowest`, stored as `last` / `all` / `none`** |
+| **Hide file extension** | ✅ | "Show the name without `.safetensors`" |
+| **Civitai lookup button** | ✅ | see below — this is our offline-only switch |
+| Show preview thumbnails | ✅ | bandwidth + clutter control |
+| Highlight colour | ❌ | **dropped** |
+| Set as default · Every Pixaroma node · Done | ❌ | **dropped** |
+
+**The memory-mode labels confirm a decision we already made.** Human labels over raw keys is exactly
+`cec90cd`'s display-name map (`Mode`, not `mode_type`), with the settings *path* untouched. Same rule
+here: the UI says `Standard`, the state stores `last`.
+
+**"Civitai lookup button" is more important for us than for them.** Turning it off means the node
+*never makes a network call* — so §9's "degrade silently offline" becomes a **user-selectable posture**
+rather than only a failure path. That is worth having on day one even though search/download land in
+milestone 2, and it is cheap: the button either renders or it doesn't.
+
+### Why the two drops
+
+- **Highlight colour** — the pack has exactly one house accent ([`THEME.md`](THEME.md)), and today's
+  three-round border saga was about *removing* accent from places it didn't belong. A per-node colour
+  override would reintroduce that inconsistency deliberately. If a user wants a different accent it
+  belongs in the theme, once, for the whole pack.
+- **The three footer buttons** — they exist to paper over a dialog that mixes *per-node* and *global*
+  state: "Set as default" persists your choices, "Every Pixaroma node" pushes them across nodes.
+  **We already solved that split**: user-wide preferences live in **Settings → AnimaFlow**
+  (`comfy.settings.json`, [`settings.md`](settings.md)), which survives a restart and works for
+  API-only runs with no browser. So cross-node defaults go there and this dialog stays strictly
+  per-node, edits applying immediately with ✕ to close. Fewer buttons *and* a cleaner boundary.
+
+**Which layer owns what** — keep this split when implementing:
+
+| lives in | what |
+|---|---|
+| the node's ⚙ (state blob) | anything that changes *this node's* behaviour: memory mode, separator, separate-strengths, per-node strength defaults |
+| **Settings → AnimaFlow** | user-wide display/posture prefs: hide file extension, show the Civitai button, show thumbnails |
+
+Remember the settings-id namespace is **append-only** (`settings.md`) — renaming an id silently
+abandons whatever the user had set.
+
+---
+
 ## 8. API key handling — resolution order, and the one place it must never go
 
 1. our own ComfyUI setting (`AnimaFlow.*`, stored server-side in `comfy.settings.json`), then

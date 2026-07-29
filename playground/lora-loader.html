@@ -268,14 +268,36 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
     <div class="panel" id="gear">
       <div class="ph">LoRA Loader settings <span class="x" onclick="hide('gear')">✕</span></div>
       <div class="pb">
-        <div class="fld"><label>Default strength</label><input type="number" value="0.80" step="0.05"></div>
-        <div class="fld"><label>Show two strengths per row</label><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+        <div class="fld"><label>Default strength <span style="color:var(--ink-faint)">(new LoRAs)</span></label><input type="number" value="0.80" step="0.05"></div>
+        <div class="fld"><label>Strength step <span style="color:var(--ink-faint)">(arrows)</span></label><input type="number" value="0.05" step="0.01"></div>
+
+        <div class="fld"><label>Separate model / clip strength<div class="hint" style="margin:0">Show two strengths per row</div></label>
+          <div class="sw" onclick="this.classList.toggle('on')"></div></div>
+
         <div class="fld"><label>Trigger words separator</label><input type="text" value=", "></div>
-        <div class="fld"><label>LoRA memory use</label>
-          <span class="seg"><button class="on">last</button><button>all</button><button>none</button></span>
+
+        <div class="fld"><label>LoRA memory use<div class="hint" style="margin:0">Keeps the last used LoRA in memory, like ComfyUI</div></label>
+          <span class="seg"><button class="on">Standard</button><button>Fast</button><button>Lowest</button></span></div>
+        <div class="hint">stored as <code>last</code> / <code>all</code> / <code>none</code> — human label, raw key in state</div>
+
+        <div class="fld"><label>Hide file extension<div class="hint" style="margin:0">Show the name without .safetensors</div></label>
+          <div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+
+        <div class="fld"><label>Civitai lookup button<div class="hint" style="margin:0">Show the optional online lookup in the info panel</div></label>
+          <div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+        <div class="hint" style="color:var(--warn)">↑ off = the node never makes a network call. Our offline-only mode (§9).</div>
+
+        <div class="fld"><label>Show preview thumbnails<div class="hint" style="margin:0">In the info panel</div></label>
+          <div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+
+        <div class="hint" style="border-top:1px solid var(--line-soft);padding-top:8px;margin-top:9px">
+          <b style="color:var(--ink-dim)">Dropped from upstream's dialog:</b> <b>Highlight colour</b> — the pack has one
+          house accent (<code>THEME.md</code>); a per-node override would break that on purpose.
+          <b>Set as default / Every Pixaroma node / Done</b> — those three exist to paper over mixing
+          per-node and global state. We already have <b>Settings → AnimaFlow</b> for user-wide prefs
+          (<code>docs/settings.md</code>), so cross-node defaults live there and this dialog stays
+          per-node. No footer buttons: edits apply immediately, ✕ closes.
         </div>
-        <div class="hint"><code>last</code> = ComfyUI parity · <code>all</code> = fast re-runs, GBs · <code>none</code> = re-read every run</div>
-        <div class="fld"><button class="btn ghost" style="height:26px">Set as default</button></div>
       </div>
     </div>
   </div>
