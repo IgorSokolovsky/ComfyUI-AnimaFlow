@@ -124,6 +124,12 @@ Four details a source read did not give me:
 - **Long names truncate with an ellipsis, never wrap.** Every row stays one line, so the list scans
   vertically; the full name goes in a `title`.
 - **Extensions are shown** (`.safetensors`) — subject to the ⚙'s *Hide file extension* setting (§7b).
+- **Each entry carries a small thumbnail on the left** (~30px) plus a second line with file size and
+  base model (owner, 2026-07-29 — richer than upstream's plain text list). The thumbnail comes from the
+  **preview file sitting next to the LoRA** (upstream's `find_preview_path` / `/lora/thumb`), so the
+  picker stays **fully offline** — no Civitai involved. A LoRA with no preview gets a neutral placeholder
+  rather than a broken frame, and the second line says `no preview`. This is the fastest way to identify a
+  LoRA: filenames in a real `models/loras` are near-identical, and a picture is not.
 - The search field lives **inside** the panel at the top, with a magnifier glyph, and takes focus on
   open. Typing searches **flat across every LoRA**, so the group headers collapse away while filtering
   (they only mean anything in the unfiltered tree).
