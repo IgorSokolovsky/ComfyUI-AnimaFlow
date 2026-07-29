@@ -45,6 +45,7 @@ export const TOKENS = {
   surface: "#151a21",
   surface2: "#1b212a",
   line: "#28303b",
+  lineSoft: "#1f2731",
   ink: "#e7ecf3",
   inkDim: "#93a0b1",
   inkFaint: "#5f6c7d",
