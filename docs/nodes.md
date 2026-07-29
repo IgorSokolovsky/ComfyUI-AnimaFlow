@@ -62,6 +62,56 @@ after our slot, so this can't be automated from our end.
 
 ---
 
+## `AnimaFlow/Anima`
+
+The generation pipeline: a **Context Bridge** that bundles resources + sampler scalars into one
+wire, a **Generator** that runs the whole txt2img pipeline behind that one input, and a
+**Preview** that compares stage images with a hover wipe and owns saving. → design + rationale:
+[generator-design.md](generator-design.md)
+
+### Anima Context Bridge
+Bundles real `MODEL`/`CLIP`/`VAE`/`CONDITIONING`/`LATENT` objects plus the five sampler scalars
+into one `ANIMA_CONTEXT` socket for the Generator. Composes with `AnimaLoaderPanel`'s real
+`MODEL`/`VAE`/`CLIP` outputs and with Pixaroma's LoRA loader (LoRAs arrive already baked into
+`MODEL`/`CLIP`, upstream of this node).
+- **In (all *optional* — nothing is required):** `model` (MODEL), `clip` (CLIP), `vae` (VAE),
+  `positive`/`negative` (CONDITIONING, already encoded upstream), `latent` (starting latent —
+  falls back to a fixed 1024×1024 default if unwired), `seed`/`steps`/`cfg` (INT/INT/FLOAT,
+  `forceInput`), `sampler_name`/`scheduler` (COMBO, `forceInput`)
+- **Out:** `context` (`ANIMA_CONTEXT`) — records which fields were actually wired, distinctly
+  from a wired field that legitimately produced `None`, so the Generator can report exactly
+  what's missing
+
+### Anima Generator
+Runs the whole pipeline — first pass → highres → detailer → upscale → postprocess — behind one
+node, driven by one `generation_settings` JSON blob edited via expand-in-place sections (Sampler,
+Mod Guidance, Highres, Detailer, Upscale, Postprocess — see generator-design.md §12). **Not an
+`OUTPUT_NODE`** — a graph with no Preview wired runs nothing at all, since there's no output to
+produce without a consumer.
+- **In:** `context` (`ANIMA_CONTEXT`, from an Anima Context Bridge), `generation_settings`
+  (STRING, hidden-for-rendering, default `"{}"`)
+- **Out:** `images` — this run's produced images as a **LIST** (`OUTPUT_IS_LIST`), ordered
+  `base, mid, final`, omitting any stage that didn't produce a genuinely different image (so
+  length 1–3 depending on which stages ran) · `latent` — the final diffusion latent · `metadata_json`
+  — per-stage metadata (resolved sampler values, postprocess fit result, and `stage_labels`,
+  the position → stage-name map `AnimaPreview` reads back)
+
+### Anima Preview
+Terminal node (`OUTPUT_NODE = True`) — compares two stage images with a hover wipe and **owns
+saving**; a graph with no Preview wired therefore runs nothing at all. The hidden `PROMPT` /
+`EXTRA_PNGINFO` inputs live here (not on the Generator) so saved images embed workflow + prompt
+metadata.
+- **In:** `preview_state` (STRING, hidden-for-rendering, default `"{}"` — the compare picker and
+  save settings), *`images`* (the Generator's `images` list, wired directly), *`metadata_json`*
+  (the Generator's `metadata_json`, so this node can tell which list position is which stage —
+  without it, positions fall back to `base`/`mid`/`final` order)
+- **Out:** none
+- Compare picker defaults to `base` vs `final`; degrades to a plain single-image view if only one
+  stage is present this run. Save `which`: the shown image / both compared / every wired input,
+  with a `%stage%` filename token so `base`/`mid`/`final` can be saved under different names.
+
+---
+
 ## Tag autocomplete (service, not a node)
 
 A booru **tag autocomplete** popup that attaches automatically to prompt-style text widgets

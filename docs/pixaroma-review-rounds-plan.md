@@ -1,8 +1,11 @@
 # Plan — mine Pixaroma's seven Control Panel review rounds
 
-**Status: not started.** A backlog of concrete, already-found bugs to check our `js/controls/`
+**Status: in progress.** A backlog of concrete, already-found bugs to check our `js/controls/`
 against. Nothing here is speculative — every item is a bug someone else already hit, diagnosed, and
-fixed in a node that works the same way ours does.
+fixed in a node that works the same way ours does. Tier 2 items **8** and **9** below are fixed
+(2026-07-28), and item **10**'s base wheel-zoom passthrough predates this file (`6ccbf9c`) — its
+own "do the audit" follow-up is still open. Tier 1 items **1–5** are still open: reproduced-against
+or written-off findings, not yet fixes.
 
 ## Why this exists
 
@@ -42,7 +45,7 @@ git show <sha>                    # the reasoning is in the commit bodies, and i
 > paths (only `disconnectOutput` reports it right); the fix trusts `link.origin_slot`."
 
 **This is a litegraph fact, not a Pixaroma bug** — it will bite anything reading `slotIndex` on
-disconnect. Ours: `js/controls/index.js:479` `onConnectionsChange(type, slotIndex, isConnected, link)`
+disconnect. Ours: `js/controls/index.js`'s `onConnectionsChange(type, slotIndex, isConnected, link)`
 currently acts **only on `isConnected`**, so we may be immune by omission. **Check:** do we ever key
 anything off `slotIndex` for a disconnect? If we add disconnect handling later, trust
 `link.origin_slot`, never `slotIndex`. Worth a comment at that call site either way so it is never

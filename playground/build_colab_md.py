@@ -29,7 +29,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-CELL_RE = re.compile(r"^#\s*=+\s*CELL\s+(\d+)\s*[-—–]\s*(.+?)\s*=+\s*$")
+# Cell ids are alphanumeric, not numeric: the launcher uses `CELL 1..3` and the
+# recovery file uses `CELL A`/`CELL B`. Requiring a digit here silently skipped
+# the whole recovery file.
+CELL_RE = re.compile(r"^#\s*=+\s*CELL\s+([A-Za-z0-9]+)\s*[-—–]\s*(.+?)\s*=+\s*$")
 SECTION_RE = re.compile(r"^#\s*-{4,}\s*(.+?)\s*-{4,}\s*$")
 
 SOURCES = [

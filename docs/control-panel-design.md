@@ -243,8 +243,53 @@ parsing it back in `onConfigure` *after* the original runs.
 - **Deletion is still the disturbing case.** Dropping a row frees its slot; Pixaroma just calls
   `removeOutput(index)`. Do the same, but **confirm first when the deleted row has a link**, and
   prefer reusing the freed slot number for the next added row over renumbering anything.
+- **A freed slot below the highest used one is an interior "hole", and it gets a stray output
+  dot** (diagnosed live, fixed 2026-07-28) — `assignSlot` always hands out the *lowest* free slot
+  to a new/duplicated row, but a later removal can free a slot *below* one still in use, and
+  nothing before this fix ever closed that gap back up. `js/controls/rows.mjs`'s
+  `planHoleCompaction` is the pure planner: repeatedly find the highest interior hole under the
+  current highest **used** slot, and if the row currently occupying that highest slot is
+  **unwired**, move it down into the hole (cascades collapse to one `{from, to}` move per row);
+  stop the moment that row is wired, since it's the only candidate for every remaining hole too.
+  **Never renumbers a wired row** — that's the whole reason it's safe to run automatically,
+  since renumbering a wired row's slot would retarget someone's link out from under them (this
+  section's own "display order and slot order are separate" invariant). `interaction.mjs`'s
+  `compactHoles` is the only caller, applying the plan on a genuine **user action**
+  (add/remove/edit a row) and never while `node._ctrlConfiguring` — a saved workflow's own
+  interior hole is part of its last-saved shape and must be reproduced exactly on load, not
+  "fixed" on the way in.
 - `Number.isFinite` + range clamp on every read, on both sides. A hand-edited `1e308` must not reach
   a downstream node.
+
+---
+
+## 4a. `js/shared/graph_loading.mjs` — the load-race sizing guard
+
+**Landed 2026-07-28**, ported from `../ComfyUI-Pixaroma/js/shared/graph_loading.mjs` (MIT ©
+pixaroma, credited in `THIRD_PARTY_NOTICES.md`) after this pack's own `js/anima/index.js` hit the
+exact bug it exists to fix: a fresh page load or workflow re-open snapped `AnimaGenerator` back to
+its hardcoded default size instead of the saved one.
+
+**Why the per-node `_ctrlConfiguring`/`_anConfiguring` flag above isn't enough by itself.** That
+flag is set synchronously inside `onConfigure`, which correctly marks "a restore is in progress"
+for anything running synchronously inside that same call — but this pack's actual sizing logic
+runs from `onNodeCreated`'s own deferred `loadMods().then(setupNode)`, and `onNodeCreated` fires
+for a *restored* node too (litegraph's construct-then-configure order calls it before
+`onConfigure`, not instead of it). Because `app.loadGraphData` is itself async, there's a real
+window where `onNodeCreated`'s microtask resolves and runs *before* `onConfigure` has had any
+chance to set its own flag — during that window `node.size` still holds litegraph's tiny
+freshly-constructed default, and any code that floors the size up from THAT stamps the fresh-node
+floor over whatever the saved workflow was about to restore.
+
+**The fix**: wrap `app.loadGraphData` once (idempotent via `app._wtnGraphLoadWrapped`, so a
+hot-reload doesn't re-wrap it) and hold a flag true for the whole call plus a short (300ms)
+trailing window — the graph-level link/state restore settles a tick after the promise itself
+does. `isGraphLoading()` is the resulting single, load-order-independent signal, gating alongside
+whichever per-node flag a module already has (the two cover different windows — one covers
+*before* `onConfigure` even runs, the other covers *during/after* it — and both are needed for
+belt-and-braces coverage). Shared by `js/controls/` (§1's "Load-path gating" bullet, §6's Auto-row
+gate) and `js/anima/` alike; no `node`/`LiteGraph` reference beyond `app` itself, so it's a plain
+lazily-imported library, not one of the pack's 5 auto-loaded `.js` entry points.
 
 ---
 
@@ -327,6 +372,33 @@ range/name when the row is still untouched — adopting over a user's own edit i
 Gate on `!isGraphLoading() && !configuring`, or loading a workflow rewrites saved kinds.
 
 ---
+
+## 6a. The row mechanism is capability-scoped, not this track's property (contract, 2026-07-29)
+
+The pack's node UIs are layered by **what a thing knows about**, not by which track wrote it:
+
+1. **field logic** — pure maths/normalizers, no DOM, no litegraph (`rangeOf`, `clampNumeric`,
+   `formatNumericValue`, `numericPercent`, `clampSeedString`, `randomSeedString`,
+   `applyAfterGenerate`, `getComboOptions`). Belongs in `js/shared/`; several of these still sit in
+   this track's `rows.mjs`, which is why `js/shared/fields.mjs` currently imports *downward* from
+   `js/controls/` — an inversion being corrected.
+2. **fields** (`js/shared/fields.mjs`) — the controls themselves. DOM + layer 1, never litegraph.
+   Every node UI composes from here; see `.claude/skills/animaflow-shared-fields/`.
+3. **socket rows** — *this* mechanism: one litegraph output socket per row, `alignOutputsLegacy`
+   parking each dot on its own Y, slot assignment (`assignSlot`, positional and append-only), hole
+   compaction, `syncOutputs`. Needed only by nodes that expose a socket per row — today
+   `AnimaControlPanel` and `AnimaLoaderPanel`, which already share it.
+
+**The contract:** layer 3 may depend on layers 1–2 and on litegraph, and must **never** depend on
+Control-Panel-specific state — not `KIND_META`, not the row catalogue, not this node's settings blob.
+Hold that and moving it to `js/shared/socket_rows.mjs` for a third consumer is a file rename; break it
+and the move becomes an untangling of the most fragile code in the pack.
+
+It stays in `js/controls/` for now **deliberately**: no third socket-per-row node exists, and the two
+that do already share it by sitting here. That is a deferral, not an accident — don't relocate it
+speculatively, and don't read its location as licence to couple it to this track. The Generator
+composes layer 2 only and has no rows at all, which is the point: the Anima panel has no per-row
+sockets to park.
 
 ## 7. Layout, sizing, theming
 

@@ -36,13 +36,16 @@ pip install -r requirements.txt
 > [!IMPORTANT]
 > The custom-node folder **must be named `ComfyUI-AnimaFlow`** — the frontend loads its assets from `/extensions/ComfyUI-AnimaFlow/…`. If you rename it, the Rule Builder overlay and pickers won't load. (Cloning as above gives the right name automatically.)
 
-Nodes appear in the node picker under a single **`AnimaFlow`** category:
+Nodes appear in the node picker under **`AnimaFlow/…`**, one sub-category per track:
 
 | Group | Nodes |
 |---|---|
-| `AnimaFlow/anima_prompt` | Prompt Rules, Prompt Rules (CLIP) |
+| `AnimaFlow/Prompt` | Prompt Rules, Prompt Rules (CLIP) |
+| `AnimaFlow/Controls` | Anima Control Panel, Anima Loader Panel |
+| `AnimaFlow/Anima` | Anima Context Bridge, Anima Generator, Anima Preview |
 
-Two nodes in total; both are catalogued with their inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
+Seven nodes in total (registered in [`__init__.py`](__init__.py)); all are catalogued with their
+inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
 
 ---
 

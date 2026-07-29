@@ -9,7 +9,10 @@
 
 
 # ============================== CELL 1 — Drive mount =========================
-# (Plain run-once cell. Needs Google auth, so it stays outside the panel.)
+#@title 🔧 Drive Mount (run once) { display-mode: "form" }
+# (Run-once cell. Needs Google auth, so it stays outside the panel.)
+# `#@title` must be the cell's FIRST line for Colab to render it as a form —
+# keep it directly under the CELL marker, above every other comment.
 
 from google.colab import drive
 import os

@@ -164,7 +164,7 @@ Both fallbacks stay implemented; don't flip the constant while combos work.
 
 ---
 
-## 3b. Pixaroma's seven Control Panel review rounds — unmined
+## 3b. Pixaroma's seven Control Panel review rounds — partially mined
 
 The clone was pulled `afd0d05` (v1.4.44) → `5036814` (v1.4.62) on 2026-07-27. Their Control Panel
 gained **+1360 lines** in between, including seven numbered review rounds of real bug fixes on the
@@ -175,6 +175,10 @@ Concrete plan with per-item reproduction notes: **[`pixaroma-review-rounds-plan.
 The highest-value item is a **litegraph fact, not their bug**: on disconnect, the event reports the
 origin output slot as `0` for the input-side and `removeLink` paths — only `disconnectOutput` reports
 it correctly. Trust `link.origin_slot`, never `slotIndex`.
+
+Tier 2 items **8** (row overflow at minimum node width) and **9** (`-0.00` float drift) are fixed
+(2026-07-28); item **10**'s base wheel-zoom passthrough fix predates this file. Tier 1's five items
+are still open — reproduced-against or written-off findings, not fixes.
 
 ---
 

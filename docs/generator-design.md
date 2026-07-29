@@ -1,11 +1,14 @@
 # Generator + Preview — design
 
-**Status: mockup signed off; Python side built** (design decisions 2026-07-27, mockup approved and
-Python landed 2026-07-28). `src/anima/` + `nodes/anima/` exist and are registered; **`js/anima/` does
-not** — until it does, both nodes are usable but ugly, driven by ComfyUI's raw widgets over the
-settings JSON. Interactive mockup: [`playground/generator.html`](../playground/generator.html) — still
-the behavioural reference for the frontend slice. Opens the third track, after the Rule Builder
-line and the Controls line. Read alongside
+**Status: mockup signed off; Python AND frontend both built** (design decisions 2026-07-27, mockup
+approved and Python landed 2026-07-28; `js/anima/` landed the same day — see `.claude/CLAUDE.md`'s
+per-track table). `src/anima/` + `nodes/anima/` + `js/anima/` all exist and are registered; the
+one `.js` entry point (`js/anima/index.js`) registers both node classes and lazily imports
+`render.mjs`/`interaction.mjs`/`state.mjs`, same trick `js/controls/index.js` already uses.
+Interactive mockup: [`playground/generator.html`](../playground/generator.html) — still
+the behavioural reference for the frontend slice, though several sections below (§7's body order,
+§12's inline-sections dispatch) already record where the shipped frontend diverged from it. Opens
+the third track, after the Rule Builder line and the Controls line. Read alongside
 [`control-panel-design.md`](control-panel-design.md) — this doc reuses its conventions
 (house theme, DOM-widget sizing, hidden-serialized-STRING state) rather than restating them.
 
@@ -677,6 +680,31 @@ Sizing follows the DOM-widget mechanism the pack already uses (rAF-timed
 
 ## 8. State shape
 
+**`sampler.seed` is a STRING (2026-07-29).** Same decision, and the same reason, as
+[`control-panel-design.md`](control-panel-design.md) §4's own "seed is a STRING in state" note — and
+the Generator shipped without it. A seed can reach 2^64-1; JS numbers lose precision past
+`Number.MAX_SAFE_INTEGER` (9007199254740991), and the frontend re-serialises the whole settings blob
+on **every edit**, so a real 20-digit seed (`16963467365598029952`, from an actual run) was being
+silently corrupted on a round trip. Canonical form is a decimal string clamped to `[0, 2^64-1]`, with
+**`-1` preserved as the "random" sentinel** (resolving it stays `pipeline.py`'s job, per its own
+long-standing note). Existing saved workflows hold ints and migrate on load —
+`src/anima/settings.py`'s `normalize_seed` and `js/anima/state.mjs`'s `normalizeSeed` are twins and
+must stay in exact agreement (there is a parity test over a shared table; they diverged once on
+negative-but-not-`-1` input and that was treated as a bug, not a quirk). `pipeline.py` converts to
+`int` **once**, at the KSampler boundary, where Python's arbitrary precision loses nothing.
+
+**`seed_after_generate` is implemented (2026-07-29).** It had been declared in three places
+(`settings.py`, `state.mjs`, the fixture) and implemented nowhere — a control offering "fixed" that
+could do nothing else. It now advances once per queued prompt via an `app.queuePrompt` wrap that
+*composes with* `js/shared/submit_guard.mjs`'s rather than replacing it, reusing
+`js/controls/rows.mjs`'s already-tested `applyAfterGenerate` and its own mode list. Stock ComfyUI
+semantics: the value present **at queue time** is the one that ran, then it advances.
+
+The seed's UI is one row — value + roll, with the mode behind that row's ⚙ — matching the Control
+Panel's shape rather than stacking a second row. See `.claude/skills/animaflow-shared-fields/` for
+the general rule that produced that correction: fields are shared and composed, never rebuilt per
+track.
+
 `generation_settings`, one versioned JSON object in a declared STRING widget, hidden for
 rendering only. Trimmed from upstream's tree (`aio/generation_defaults.py:39-455`) to the stages
 we ship:
@@ -805,14 +833,14 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
   back to positional `base, mid, final` on anything hostile; a one-entry `images` list degrades to
   a single-image view, not a broken compare.
 - Frontend: `node js/anima/test_*.mjs` for the wipe geometry and settings round-trip. Mark
-  what only a browser can confirm with `VERIFY-IN-COMFYUI:`. **As of this task, the JS suite tests
-  the surface this doc's §3/§5/§6/§7 reversals just removed** (`use_internal_loaders`, the inline
-  LoRA/latent rows, `image_a`/`image_b`/`image_c`, `resolveOutputs`'s pass-through rule) — it still
-  reports green because it's fixture/mock-driven and nothing in it currently cross-checks against
-  live Python at test time, but the checked-in `fixture_default_generation_settings.json` already
-  disagrees with `src/anima/settings.DEFAULT_GENERATION_SETTINGS` (`latent`/`loras` no longer
-  exist there). Bringing the JS side current with this reversal is the next dispatch's job, not
-  done here.
+  what only a browser can confirm with `VERIFY-IN-COMFYUI:`. **The stale-suite gap this section
+  used to flag is closed**: `js/anima/test_resize.mjs` now tests `resolveStageLabels` (the
+  replacement for the deleted `resolveOutputs`'s pass-through rule) rather than the removed
+  `image_a`/`image_b`/`image_c`/`use_internal_loaders` surface, and the checked-in
+  `fixture_default_generation_settings.json` carries no `latent`/`loras` keys, agreeing with
+  `src/anima/settings.DEFAULT_GENERATION_SETTINGS`. Nothing in the JS suite cross-checks against
+  live Python at test time, though — that gap (fixture/mock-driven only) is a standing property
+  of this suite, not specific to this reversal.
 
 ---
 
@@ -898,6 +926,9 @@ Plain-script, no pytest (`python tests/test_x.py` from repo root, each file carr
 - Generation profiles (upstream's Normal/Turbo/Optimized snapshots). Useful, but they only earn
   their keep once the settings tree is stable.
 
-**Next step:** `js/anima/` — one auto-loaded `index.js` registering both nodes and lazily importing
-their per-node `.mjs`, built against the mockup. The Python side is done and tested; what's missing is
-the row/popover UI, which is the whole reason the mockup exists.
+**`js/anima/` has since shipped** — one auto-loaded `index.js` registering both nodes and lazily
+importing `render.mjs`/`interaction.mjs`/`state.mjs`, built against the mockup with §7's body-order
+reversal and §12's inline-sections dispatch (the "row/popover UI" this note used to call the
+missing piece is superseded by that dispatch — there is no popover on this track). Current work on
+the frontend is narrower and dated at the point it lands: see §8's `seed_after_generate` /
+seed-row-shape note for the one in-flight item as of 2026-07-29.
