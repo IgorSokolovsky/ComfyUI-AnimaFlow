@@ -2200,6 +2200,78 @@ export function onResizeControls(node, ctx, size) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Draw-time correction -- the SECOND half of the Class A sizing lock, and (per
+// a live ComfyUI measurement) the one that actually does the enforcing.
+//
+// A live `AnimaControlPanel` (3 rows) was height-dragged and re-measured:
+// `onResizeCalls: 0` -- `onResize` never fired at all on that drag path, even
+// though it was correctly wired (`onResizeInstalled: true`) and Nodes 2.0 was
+// off (`vueNodesMode: false`). Every correction hanging off `onResizeControls`
+// alone is dead code on that path -- exactly the caveat the reference already
+// carries for the SAME reason (`../ComfyUI-Pixaroma/js/lora_loader/index.js`'s
+// own comment on its `onDrawForeground` clamp: "onResize does not fire on
+// every legacy resize path" -- `pixaroma-review-rounds-plan.md` item 11).
+// `onDrawForeground` is litegraph's PER-FRAME draw hook, so it survives both
+// "onResize never fired" and "litegraph re-applied the dragged size
+// afterwards" -- there is no resize PATH to miss, because this doesn't hook a
+// path at all, it re-asserts the invariant on every paint regardless of how
+// the wrong size got there.
+//
+// `onResizeControls` stays wired for the paths where it DOES fire (other
+// frontends/renderer builds) -- this is belt-and-braces alongside it, matching
+// the reference having both, not a replacement for it.
+// ---------------------------------------------------------------------------
+
+/**
+ * `onDrawForeground(ctx)` -- called every time litegraph paints the node.
+ * Enforces Class A unconditionally: `size[1]` is always `fitNodeH`'s answer
+ * (the SAME single authority `fitNode`/`onResizeControls` already use, never
+ * a second formula), `size[0]` is floored at `MIN_W`, never anything else.
+ *
+ * MUST be cheap -- this runs every frame, for every Class A node on the
+ * canvas. It writes `node.size` directly (never `setSize`) and ONLY the
+ * entries that are actually wrong -- comparing before assigning, exactly like
+ * `onResizeControls`'s own width floor already does. It never calls
+ * `setDirtyCanvas`: this hook fires FROM a draw that's already happening, so
+ * marking dirty here would just schedule ANOTHER draw, which would call this
+ * hook again, which would dirty again -- a per-frame `setDirtyCanvas` here is
+ * an infinite repaint loop, not a fix.
+ *
+ * Bails on the load path exactly like `fitNode` (`node._ctrlConfiguring` OR
+ * `ctx.isGraphLoading()`) -- unlike `onResize` (which only ever fires from a
+ * live resize-drag, never during a load), `onDrawForeground` genuinely CAN
+ * run while a load is still settling (e.g. a background tab's canvas
+ * repainting while `isGraphLoading()`'s trailing window is still open), so
+ * this is the one Class A hook that has to carry that guard itself rather
+ * than relying on "this path never fires on load" the way `onResizeControls`
+ * can. Skipping the guard here would risk rewriting a freshly-opened, clean
+ * workflow's saved size mid-load and flagging it "modified" -- the exact
+ * failure mode every other load-path guard in this file exists to prevent.
+ *
+ * LEGACY ONLY (`isVueNodes()` bails): Nodes 2.0 owns sizing through
+ * `computeLayoutSize`, same reasoning as `onResizeControls`'s own doc
+ * comment.
+ */
+export function onDrawForegroundControls(node, ctx) {
+  if (isVueNodes()) {
+    return; // Nodes 2.0 owns sizing via computeLayoutSize -- don't fight it
+  }
+  if (node._ctrlConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
+    return; // a workflow load may still be settling -- trust node.size
+  }
+  if (!Array.isArray(node.size) || node.size.length < 2) {
+    return;
+  }
+  if (node.size[0] < MIN_W) {
+    node.size[0] = MIN_W;
+  }
+  const h = fitNodeH(node, ctx);
+  if (node.size[1] !== h) {
+    node.size[1] = h;
+  }
+}
+
 /**
  * The load-path counterpart to `onResizeControls`: `onResize` only ever
  * fires from a LIVE resize-drag, so it can never correct a workflow saved by

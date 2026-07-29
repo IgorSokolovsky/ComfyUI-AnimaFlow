@@ -647,6 +647,27 @@ app.registerExtension({
       return _resize ? _resize.apply(this, arguments) : undefined;
     };
 
+    // Belt-and-braces alongside onResize above -- a live measurement in a real
+    // ComfyUI session found `onResize` never fires at all on a legacy
+    // height-resize-drag (`onResizeCalls: 0` after actually dragging the
+    // node's height), even though it was correctly wired and Nodes 2.0 was
+    // off. `onDrawForeground` fires on EVERY paint, regardless of which
+    // resize mechanism did or didn't run, so it's the enforcement point that
+    // actually survives that gap -- see interaction.mjs's own
+    // `onDrawForegroundControls` doc comment (and
+    // `../ComfyUI-Pixaroma/js/lora_loader/index.js`'s matching
+    // `onDrawForeground` clamp / `pixaroma-review-rounds-plan.md` item 11) for
+    // the full derivation. Same no-op-until-loaded convention as every other
+    // hook here; `onDrawForegroundControls` itself also no-ops under Nodes 2.0
+    // and on the load path.
+    const _drawFg = nodeType.prototype.onDrawForeground;
+    nodeType.prototype.onDrawForeground = function (canvasCtx) {
+      if (this._ctrlMods) {
+        this._ctrlMods.interaction.onDrawForegroundControls(this, this._ctrlCtx);
+      }
+      return _drawFg ? _drawFg.apply(this, arguments) : undefined;
+    };
+
     // Strip render-time slot geometry before it lands in the saved
     // workflow -- meaningless in a different renderer, and rebuilt on
     // every arrange anyway (ComfyUI-Pixaroma's identical `serialize` patch).

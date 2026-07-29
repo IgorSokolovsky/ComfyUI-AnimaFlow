@@ -114,6 +114,7 @@ import {
   fitNode,
   scheduleFit,
   onResizeControls,
+  onDrawForegroundControls,
   applyContentHeight,
   addRowAndSync,
   duplicateRowAndSync,
@@ -3067,6 +3068,127 @@ test("onResizeControls never moves a row's output dot position -- it only ever w
   );
 });
 
+// ---------------------------------------------------------------------------
+// F5a. Draw-time correction -- `onDrawForegroundControls`, wired as
+// `nodeType.prototype.onDrawForeground` in `index.js`. Ported alongside
+// `onResizeControls` for the reason a LIVE ComfyUI measurement forced: a
+// height-resize-drag on a real `AnimaControlPanel` (3 rows) never called
+// `onResize` at all (`onResizeCalls: 0`), so `onDrawForeground` -- which
+// fires on every paint regardless of which resize mechanism did or didn't
+// run -- is the hook that actually enforces Class A in practice.
+// ---------------------------------------------------------------------------
+
+test("onDrawForegroundControls: forces node.size[1] to content height and floors node.size[0] at MIN_W, exactly like a drag-corrected size would be", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  // Simulate a drag that stuck (onResize never fired to correct it -- the
+  // exact live symptom this hook exists to catch every frame regardless).
+  node.size = [10, 198];
+  onDrawForegroundControls(node, ctx);
+  assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
+  assert.equal(node.size[1], bodyHeight(3), "height must be forced back to content height");
+});
+
+test("onDrawForegroundControls: node.computeSize() is the authority for the locked height, same as fitNode/onResizeControls -- never a second bodyHeight formula", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  const distinctHeight = bodyHeight(3) + 41; // deliberately NOT what bodyHeight(3) alone would give
+  node.computeSize = () => [MIN_W, distinctHeight];
+  node.size = [MIN_W, 5];
+  onDrawForegroundControls(node, ctx);
+  assert.equal(node.size[1], distinctHeight, "onDrawForegroundControls must take its height from computeSize(), not bodyHeight(rows.length)");
+});
+
+test("onDrawForegroundControls is a genuine no-op when the node is already the right size -- no write to node.size at all, and setDirtyCanvas is never called", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  const target = [DEFAULT_W, bodyHeight(3)];
+  let writes = 0;
+  node.size = new Proxy(target, {
+    set(t, prop, value) {
+      writes += 1;
+      t[prop] = value;
+      return true;
+    },
+  });
+  const dirtyBefore = node._dirty;
+  onDrawForegroundControls(node, ctx);
+  assert.equal(writes, 0, "an already-correct node.size must not be written to at all");
+  assert.equal(
+    node._dirty,
+    dirtyBefore,
+    "must never call setDirtyCanvas -- doing so from a draw hook is an infinite repaint loop",
+  );
+});
+
+test("onDrawForegroundControls no-ops while node._ctrlConfiguring is true (a load may still be settling)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.size = [900, 900]; // deliberately far from bodyHeight(3)/MIN_W
+  const before = node.size.slice();
+  const dirtyBefore = node._dirty;
+  node._ctrlConfiguring = true;
+  onDrawForegroundControls(node, ctx);
+  assert.deepEqual(node.size, before, "must not touch node.size while node._ctrlConfiguring is true");
+  assert.equal(node._dirty, dirtyBefore);
+});
+
+test("onDrawForegroundControls no-ops while ctx.isGraphLoading() reports true", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+  syncRows(node, ctx); // 3 rows
+  node.size = [900, 900];
+  const before = node.size.slice();
+  const dirtyBefore = node._dirty;
+  onDrawForegroundControls(node, ctx);
+  assert.deepEqual(node.size, before, "must not touch node.size while ctx.isGraphLoading() is true");
+  assert.equal(node._dirty, dirtyBefore);
+});
+
+test("onDrawForegroundControls no-ops entirely under Nodes 2.0 (isVueNodes() true) -- neither axis is touched", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.size = [10, 900]; // both axes deliberately "wrong" by legacy's own rules
+  const before = node.size.slice();
+  globalThis.window = { LiteGraph: { vueNodesMode: true } };
+  try {
+    onDrawForegroundControls(node, ctx);
+  } finally {
+    delete globalThis.window;
+  }
+  assert.deepEqual(node.size, before, "under Nodes 2.0, onDrawForegroundControls must leave size completely untouched");
+});
+
+test("onDrawForegroundControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  fakeArrange(node);
+  alignOutputsLegacy(node);
+  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+  node.size = [node.size[0], 900]; // height-only drift, width untouched (same isolation F5's dot test uses)
+  onDrawForegroundControls(node, ctx);
+  alignOutputsLegacy(node);
+  assert.deepEqual(
+    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+    before,
+    "onDrawForegroundControls must not move any row's socket Y",
+  );
+});
+
 test("applyContentHeight: after a simulated load, node.size[1] is content height regardless of the saved value, and node.size[0] (width) is left completely untouched", () => {
   const savedStateJSON = JSON.stringify({
     version: 1,
@@ -3116,6 +3238,28 @@ test("index.js: nodeType.prototype.onResize is wired to call mods.interaction.on
     "onResize must delegate to mods.interaction.onResizeControls, gated on this._ctrlMods like every other hook",
   );
   assert.match(hookBody, /return _resize \? _resize\.apply\(this, arguments\) : undefined;/, "must chain the pre-existing handler, never silently replace it");
+});
+
+test("index.js: nodeType.prototype.onDrawForeground is wired to call mods.interaction.onDrawForegroundControls, chaining any pre-existing handler", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /const _drawFg = nodeType\.prototype\.onDrawForeground;/,
+    "must capture any pre-existing onDrawForeground before overwriting it",
+  );
+  const hookIdx = indexSource.indexOf("nodeType.prototype.onDrawForeground = function (canvasCtx) {");
+  assert.ok(hookIdx >= 0, "onDrawForeground must be installed on the prototype");
+  const hookBody = indexSource.slice(hookIdx, indexSource.indexOf("};", hookIdx));
+  assert.match(
+    hookBody,
+    /this\._ctrlMods\.interaction\.onDrawForegroundControls\(this, this\._ctrlCtx\)/,
+    "onDrawForeground must delegate to mods.interaction.onDrawForegroundControls, gated on this._ctrlMods like every other hook",
+  );
+  assert.match(
+    hookBody,
+    /return _drawFg \? _drawFg\.apply\(this, arguments\) : undefined;/,
+    "must chain the pre-existing handler, never silently replace it",
+  );
 });
 
 test("index.js: restoreNode calls mods.interaction.applyContentHeight AFTER syncRows, so height reflects the just-restored row count", () => {
