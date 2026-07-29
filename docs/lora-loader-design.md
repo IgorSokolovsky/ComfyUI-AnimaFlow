@@ -50,6 +50,40 @@ node plus 445 lines of pure helpers.
   family; delete the cached Civitai data to revert to the file's own words.
 - **Outputs `triggers`** as plain text — the thing that makes it more than a stack.
 
+### 1a-i. The ⓘ panel's real layout — four things a source read missed
+
+Corrected from a live reference shot (owner, 2026-07-29). The first pass of this doc under-described
+this panel; the layout is the approved target, in [`playground/lora-loader.html`](../playground/lora-loader.html).
+
+Top to bottom: a **small inline thumbnail** (~58px) beside the **title**, with the **base-model family**
+and the **full filename** stacked under it, then a **"View on Civitai ↗"** link, then the trigger-words
+block, then the add-your-own field, then a **`Done` / `↻ Civitai`** footer.
+
+The four features a source read did not surface, all worth keeping:
+
+1. **The user can ADD their own trigger words** — a text field plus `Add`. This is the important one:
+   the `triggers` output is **not** limited to what the file or Civitai provide. Custom words are part
+   of the row's `triggers[]` like any other, so they persist with the workflow.
+2. **`all` / `none` quick-select** beside the section label.
+3. **A source pill** (`from file` / `from Civitai`) rather than a segmented toggle — it states where the
+   candidate words came from and switches the view, while *selections* survive the switch.
+4. **The provenance rule is stated in the UI**: *"Tap the ones you want. Only these, and only if the
+   LoRA is on, reach the triggers output."* That is §1b's rule surfaced where it matters instead of
+   left as a surprise. Keep the wording close.
+
+Empty state carries its own honest line — *"No trigger words in this file — add your own below, or try
+Civitai"* — which names both remedies instead of just reporting nothing.
+
+**Our addition: an `AUTHOR'S NOTES` section**, the §2 item 3 ask. Placed **after** the trigger-words
+block and **collapsible**, for a specific reason: notes are reference material and can run long, so
+putting them above the controls would push the actionable part off-panel, while a scrollable collapsed
+block keeps the panel compact. It carries its own `from Civitai` pill, because unlike file-derived
+trigger words the notes have exactly one source and the panel should not imply otherwise.
+
+**The `↻ Civitai` footer button is the thing §7b's "Civitai lookup button" setting hides.** With that
+setting off, this button does not render and the panel is fully offline — which is what makes offline a
+posture rather than a failure.
+
 ### 1b. Two pieces of its Python worth copying for the reasoning, not just the code
 
 - **Trigger words come only from rows that ACTUALLY APPLIED.** A missing, renamed, or corrupt file

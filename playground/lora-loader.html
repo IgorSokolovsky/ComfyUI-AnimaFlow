@@ -190,33 +190,70 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
       </div>
     </div>
 
-    <!-- ────────── info panel (ⓘ) ────────── -->
-    <div class="panel" id="info">
-      <div class="ph">skin_detail_xl <span class="x" onclick="hide('info')">✕</span></div>
-      <div class="pb">
-        <div class="thumb">preview (from sidecar cache)</div>
-        <div class="status found">✓ found on Civitai · cached offline</div>
-        <div style="font:10px var(--mono);color:var(--ink-faint);margin-bottom:4px">
-          WORDS FROM
-          <span class="seg" style="display:inline-flex;margin-left:6px;vertical-align:middle">
-            <button>file</button><button class="on">civitai</button>
-          </span>
+    <!-- ────────── info panel (ⓘ) — layout per owner's reference shot ────────── -->
+    <div class="panel" id="info" style="width:340px">
+      <div class="pb" style="padding:11px 12px 12px">
+        <!-- header: small inline thumb + identity + close -->
+        <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:9px">
+          <div style="width:58px;height:58px;border-radius:7px;background:var(--console);
+            border:1px solid var(--line-soft);flex:none;display:grid;place-items:center;
+            color:var(--ink-faint);font-size:9px">img</div>
+          <div style="flex:1 1 auto;min-width:0">
+            <div style="font-size:14px;font-weight:600;line-height:1.25">Anima Highres/Aesthetic Boost</div>
+            <div style="font-size:11.5px;color:var(--ink-dim);margin-top:2px">Anima</div>
+            <div style="font:10.5px var(--mono);color:var(--ink-faint);word-break:break-all;margin-top:1px">
+              anima-highres-aesthetic-boost.safetensors</div>
+          </div>
+          <span class="x" onclick="hide('info')" style="flex:none">✕</span>
         </div>
-        <div class="chips">
+        <div style="margin-bottom:11px">
+          <a href="#" onclick="return false" style="color:var(--info);font-size:12px;text-decoration:none">View on Civitai ↗</a>
+        </div>
+
+        <!-- trigger words -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+          <span style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent)">TRIGGER WORDS</span>
+          <a href="#" onclick="allNone(1);return false" style="font-size:11px;color:var(--ink-dim);text-decoration:none">all</a>
+          <a href="#" onclick="allNone(0);return false" style="font-size:11px;color:var(--ink-dim);text-decoration:none">none</a>
+          <span class="badge" style="margin-left:auto;cursor:pointer" onclick="this.textContent = this.textContent.trim()==='from file' ? 'from Civitai' : 'from file'">from file</span>
+        </div>
+        <div class="hint" style="margin-bottom:7px">
+          Tap the ones you want. Only these, and only if the LoRA is <b style="color:var(--ink-dim)">on</b>,
+          reach the <code>triggers</code> output.
+        </div>
+
+        <div class="chips" id="chipbox">
           <div class="chip on" onclick="tog(this)">detailed skin</div>
           <div class="chip on" onclick="tog(this)">freckles</div>
           <div class="chip" onclick="tog(this)">pores</div>
           <div class="chip" onclick="tog(this)">realistic skin texture</div>
-          <div class="chip" onclick="tog(this)">subsurface scattering</div>
         </div>
-        <div style="font:10px var(--mono);color:var(--ink-faint);margin:6px 0 4px">AUTHOR'S NOTES <span class="badge">new</span></div>
-        <div class="desc">
-          Works best at 0.6–0.8 on SDXL. Stack under a character LoRA, not over it. Avoid combining
-          with other skin LoRAs — they fight and produce plastic highlights.
+
+        <!-- add your own -->
+        <div class="fld" style="margin:2px 0 10px">
+          <input type="text" id="ownword" placeholder="add your own trigger word…" style="flex:1 1 auto;width:auto">
+          <button class="btn ghost" style="height:26px" onclick="addOwn()">Add</button>
         </div>
-        <div class="fld" style="margin-top:2px">
-          <button class="btn ghost" style="height:26px">Re-fetch</button>
-          <button class="btn ghost" style="height:26px;margin-left:auto">Forget cached</button>
+
+        <!-- NEW: author's notes -->
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;cursor:pointer"
+             onclick="const d=document.getElementById('notes');const o=d.style.display==='none';
+                      d.style.display=o?'block':'none';this.querySelector('.cv').textContent=o?'▾':'▸'">
+          <span class="cv" style="color:var(--ink-faint);font-size:9px">▾</span>
+          <span style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent)">AUTHOR'S NOTES</span>
+          <span class="badge" style="color:var(--accent-deep)">new</span>
+          <span class="badge" style="margin-left:auto">from Civitai</span>
+        </div>
+        <div class="desc" id="notes">
+          Works best at <b>0.6–0.8</b> on SDXL. Stack <i>under</i> a character LoRA, not over it.
+          Avoid combining with other skin LoRAs — they fight and produce plastic highlights.
+          Trained on 42 images, 12 epochs.
+        </div>
+
+        <!-- footer -->
+        <div style="display:flex;gap:8px;margin-top:11px">
+          <button class="btn" style="flex:1 1 auto" onclick="hide('info')">Done</button>
+          <button class="btn ghost" style="height:30px">↻ Civitai</button>
         </div>
       </div>
     </div>
@@ -337,10 +374,25 @@ function bump(i,d){ LORAS[i].sm = Math.max(0, Math.min(2, LORAS[i].sm + d)); ren
 function addRow(){ LORAS.push({name:"(pick a LoRA)",on:true,sm:0.8,sc:0.8,missing:false}); render(); }
 function pickName(n){ const r=LORAS.find(x=>x.name==="(pick a LoRA)")||LORAS[1]; r.name=n; r.missing=false; render(); hide('pick'); }
 function menu(ev,i){ ev.preventDefault(); alert("Row menu: ↑  ↓  ⧉ Duplicate  ⌫ Remove"); }
-function tog(el){
-  el.classList.toggle("on");
-  const on=[...document.querySelectorAll("#info .chip.on")].map(c=>c.textContent.trim());
+function tog(el){ el.classList.toggle("on"); syncTrig(); }
+function syncTrig(){
+  const on=[...document.querySelectorAll("#chipbox .chip.on")].map(c=>c.textContent.trim());
   document.getElementById("trig").textContent = on.join(", ") || "(none picked)";
+}
+function allNone(on){
+  document.querySelectorAll("#chipbox .chip").forEach(c=>c.classList.toggle("on", !!on));
+  syncTrig();
+}
+function addOwn(){
+  const i=document.getElementById("ownword"), w=i.value.trim();
+  if(!w) return;
+  const c=document.createElement("div");
+  c.className="chip on"; c.textContent=w;
+  c.title="your own word — not from the file or Civitai";
+  c.style.borderStyle="dashed";
+  c.onclick=()=>tog(c);
+  document.getElementById("chipbox").appendChild(c);
+  i.value=""; syncTrig();
 }
 function show(id){ document.getElementById(id).style.outline="1px solid var(--accent-deep)";
   document.getElementById(id).scrollIntoView({block:"nearest",behavior:"smooth"});
