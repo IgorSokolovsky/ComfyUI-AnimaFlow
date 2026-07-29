@@ -33,7 +33,7 @@ off, open the modal and click a result card.
 | 8 | **Three surfaces**: two kind-locked pickers + one unscoped toolbar modal | §7c |
 | 9 | **All three get the full filter set**; only `type` is locked. Filters remembered user-wide | §7c-i |
 | 10 | Modal rail: **`<select>` adds a removable chip**, not Civitai's 19-chip grid | §7c-i |
-| 11 | Card click → **detail swap** (rail stays): version selector, description, **community gallery with prompt on hover + copy** | "The detail view" |
+| 11 | In the modal, card click → **detail swap** (filter rail stays): version selector, description, **community gallery with prompt on hover + copy** | "The detail view" |
 | 12 | **One header row**: `＋ Add LoRA` (content+padding, **max 30%**) · master switch · `N/M` · 🔍 · ⚙ | §1a-ii |
 | 13 | Master switch **on only when all on**; mixed shows off, counter carries it; click = all on | §1a-ii |
 | 14 | Row order: **name · strength · ⓘ · switch(right)**; off row dimmed; missing = whole field red | §1a-ii |
@@ -43,7 +43,7 @@ off, open the modal and click a result card.
 | 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
 | 19 | ⚙: **8 settings**; dropped Highlight colour + the three footer buttons | §7b |
 | 20 | The **Civitai** setting hides **every** network affordance (🔍 + ⓘ lookup) ⇒ provably offline | §7b |
-| 21 | **The node's 🔍 browse picker gets the detail view too** — clicking a result opens version/description/community gallery, same component as the modal | §7c-ii |
+| 21 | **The node's picker ESCALATES to the 90% modal** on card click (query + filters + originating row carry over); no in-panel detail | §7c-ii |
 
 ### 0b. The ONE thing still open
 
@@ -63,7 +63,7 @@ Tests per §10 — **including `Float64Array` size tests**.
 filter set (pills in the node picker, `type` locked), server-side streamed download with progress and a
 destination derived from `kind`, the key ladder and public-only mode (§8).
 
-**M2b — the toolbar modal.** Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
+**M2b — the toolbar modal.** ⚠️ Now a *dependency* of M2's picker detail (§7c-ii) — either merge it into M2 or ship the picker results-only first. Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
 modal; filter rail; result grid; detail view with version selector and community gallery.
 
 **M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only**.
@@ -548,24 +548,34 @@ They are a browsing preference, not node behaviour, and per §7b that is the bou
 picker and the modal open with the same remembered filters, which is the behaviour you want: it is one
 browser with three mounts, not three browsers.
 
-### 7c-ii. The node's 🔍 picker ALSO gets the detail view (owner, 2026-07-29)
+### 7c-ii. The node's picker ESCALATES to the modal for detail (owner, 2026-07-29)
 
-Clicking a result in the **node's** browse picker opens the **same detail** the modal shows: version
-selector, author's description, and the **community gallery with the prompt on hover**. It is the same
-component, not a reduced sibling — a search result is nearly useless without being able to see what the
-thing actually produces before committing a download.
+The node's 🔍 panel owns **search, filters and results**. **Clicking a result opens the 90% modal at that
+model's detail** — it does *not* render a detail inside the node panel.
 
-Two differences, both following from the picker/browser split (§7c):
+Why escalate rather than swap in place (an in-panel swap was drafted and rejected): the detail's centre
+of gravity is the **community gallery**, and at ~340px that is 1–2 thumbnails a row with the prompt
+overlay covering most of the image. The modal already exists and is 90% of the viewport. Squeezing a
+second, worse copy of the same view into the panel would mean maintaining two layouts of one component
+so that the cramped one could avoid opening the good one.
 
-- **Layout is a swap, not a side-by-side.** The panel is ~340px, so the detail replaces the picker's
-  contents with a `←` back to results, and the gallery drops to 1–2 columns. The modal has room to keep
-  its filter rail visible; the picker does not, and forcing a rail in would leave nothing for the images.
-- **The primary action is "download AND use in this row"**, not just download. The picker was opened *by*
-  a row, so its whole purpose is returning a value — a detail that only downloaded would dump the user
-  back to the results to select the thing they had just fetched.
+**What carries across the escalation** — get this right or it feels like losing your place:
 
-Everything else — version selection, NSFW blur-with-reveal, `textContent` for prompts, lazy thumbnails —
-is identical, and so is the code path. **One detail component, parameterised by its primary action.**
+| carries | why |
+|---|---|
+| the **search query** | you land in the big browser already showing what you were looking at |
+| the **filters** (incl. the locked `type`) | they are remembered user-wide anyway (§7c-i), so this is free |
+| the **originating row** | the modal's download button reads **"use in this row"** and returns the value there, exactly as the in-panel picker would have |
+
+`← results` inside the modal returns to the **modal's own results grid** for that same query — not to the
+node panel. The escalation is one-way and deliberate: you have moved into the browser, and it now has
+everything the panel had plus room.
+
+**Consequence for the milestones (§0c):** the modal stops being purely additive — it is now a
+*dependency* of the picker's detail. So either **M2b merges into M2**, or the picker ships in M2 with
+results only and gains card-click in M2b. Either is fine; decide before starting M2, and do not let the
+picker grow its own detail as a stopgap, because that is the duplicate layout this decision exists to
+avoid.
 
 ### The modal
 

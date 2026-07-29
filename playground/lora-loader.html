@@ -368,7 +368,7 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
         </div>
         <div class="hint" style="color:var(--warn)">No API key set — public results only.</div>
 
-        <div class="sr" style="cursor:pointer" onclick="pickerDetail('Skin Detail XL')">
+        <div class="sr" style="cursor:pointer" onclick="escalate('Skin Detail XL')">
           <div class="tn">img</div>
           <div class="meta"><div class="t">Skin Detail XL</div><div class="s">SDXL · 12.4k ↓</div></div>
           <div class="dl have">✓ have</div>
@@ -508,6 +508,8 @@ hr.sep{border:0;border-top:1px solid var(--line-soft);margin:11px 0}
           <span style="font-size:13px;font-weight:600" id="dtitle">Skin Detail XL</span>
           <span class="badge">LoRA</span><span class="badge">SDXL</span>
           <span class="badge" style="color:var(--ink-dim)">by <b>someartist</b></span>
+          <span class="badge" id="rowbadge" style="display:none;color:var(--accent-deep);
+            border-color:var(--accent-deep)">for the row that opened this</span>
         </div>
 
         <div style="flex:1 1 auto;overflow:auto;padding:12px">
@@ -687,41 +689,6 @@ function syncTrig(){
 }
 function delChip(ev,x){ ev.stopPropagation(); x.closest(".chip").remove(); syncTrig(); }
 
-/* The NODE's picker gets the SAME detail component -- laid out as a swap (a
-   ~340px panel has no room for a rail) and with a different primary action:
-   "download AND use in this row", because a picker exists to return a value. */
-function pickerDetail(title){
-  const p = document.getElementById("browse");
-  p.dataset.saved = p.dataset.saved || p.querySelector(".pb").innerHTML;
-  p.querySelector(".pb").innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">
-      <span class="back" onclick="pickerBack()">← results</span>
-      <span style="font-size:12.5px;font-weight:600">${title}</span>
-    </div>
-    <hr class="sep" style="margin:8px 0">
-    <div class="fld"><label style="font-size:11px">Version</label>
-      <select class="fsel" style="width:auto;flex:1 1 auto"><option>v3.0 — 144 MB (latest)</option>
-      <option>v2.1 — 142 MB</option></select></div>
-    <button class="btn" style="width:100%;margin:4px 0 9px">↓ Download &amp; use in this row</button>
-    <div class="desc">Adds fine skin texture without plastic highlights. Best at 0.6–0.8 on SDXL.</div>
-    <div style="font:10px var(--mono);letter-spacing:.1em;color:var(--accent);margin:10px 0 5px">
-      COMMUNITY IMAGES <span class="hint" style="margin:0;letter-spacing:0">hover for the prompt</span></div>
-    <div class="gal" style="grid-template-columns:repeat(2,1fr)">
-      ${SHOTS.slice(0,2).map((s,i)=>`
-        <div class="gcell" style="aspect-ratio:3/4">image ${i+1}
-          <div class="gover">
-            <div class="gprompt">${s.p.replace(/</g,"&lt;")}</div>
-            <div class="gmeta">${s.m}</div>
-            <div class="gcopy" onclick="event.stopPropagation();this.textContent='copied ✓'">copy prompt</div>
-          </div>
-        </div>`).join("")}
-    </div>`;
-}
-function pickerBack(){
-  const p = document.getElementById("browse");
-  if (p.dataset.saved) p.querySelector(".pb").innerHTML = p.dataset.saved;
-}
-
 /* ── modal detail view: master -> detail SWAP, filter rail stays put ──
    The rail is deliberately not hidden: your filters are the context you came
    from, and keeping them visible is what makes "← results" feel like a step
@@ -732,8 +699,19 @@ const SHOTS = [
   { p:"close-up, dewy skin, subsurface scattering, studio softbox, <lora:skin_detail_xl:0.6> <lora:celica_v2:0.9>", m:"er_sde · 32 steps · cfg 5 · 1024×1024", nsfw:false },
   { p:"(hidden — NSFW filter is off in the rail)", m:"—", nsfw:true },
 ];
-function openDetail(title){
+// The node picker ESCALATES into the modal's detail: query + filters + the
+// originating row carry across, so the download reads "use in this row".
+function escalate(title){
+  document.getElementById("modal").style.display = "block";
+  openDetail(title, true);
+}
+function openDetail(title, fromRow){
   document.getElementById("dtitle").textContent = title;
+  const rb = document.getElementById("rowbadge");
+  if (rb) rb.style.display = fromRow ? "" : "none";
+  document.querySelectorAll("#detail .btn").forEach(b => {
+    if (b.textContent.includes("Download")) b.textContent = fromRow ? "↓ Download & use in this row" : "↓ Download this version";
+  });
   document.getElementById("results").style.display = "none";
   const d = document.getElementById("detail"); d.style.display = "flex";
   const gal = document.getElementById("gal");
