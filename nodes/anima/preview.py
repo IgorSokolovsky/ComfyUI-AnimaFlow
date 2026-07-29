@@ -234,7 +234,44 @@ class AnimaPreview:
         # was only ever a `temp` file to begin with, and a SAVED stage still
         # lands on disk under its own `%stage%`-templated filename; nothing
         # is actually lost, just not double-surfaced in that one UI.
-        return {"ui": {"anima_stages": ui_images}}
+        #
+        # `anima_seed` -- fixes the "Save now" `%seed%` token always
+        # resolving to `0` (§7a's own documented gap, `TODO.md`'s last Now
+        # item): `seed` above is computed on every run but was previously
+        # never sent anywhere, so a later "Save now" click had nothing but
+        # `src/anima/api.py`'s hardcoded fallback to go on. Two landmines
+        # already bitten by this repo, both load-bearing here:
+        #   1. A `ui` payload value MUST be a LIST -- a bare scalar gets
+        #      FLATTENED to its own keys by ComfyUI's executor's accumulator
+        #      (the exact bug `f22b3c0`/`885410b` fixed for a different key
+        #      on this same node -- see `handleGeneratorExecuted`'s own doc
+        #      comment in `js/anima/interaction.mjs`). So this is
+        #      `[str(seed)]`, a one-element list, never a bare string.
+        #   2. The seed MUST travel as a decimal STRING, never a JSON number
+        #      -- a seed can reach 2**64-1, past JS's `Number.MAX_SAFE_INTEGER`
+        #      (2**53-1), so a real 20-digit seed would silently corrupt on
+        #      the JSON round trip through the browser (the same class of bug
+        #      `717feaa` fixed for `generation_settings.sampler.seed` --
+        #      design doc §8). `str(seed)` here is what keeps it a string for
+        #      the entire wire/JS trip; `js/anima/interaction.mjs` must never
+        #      `Number(...)`/`parseInt` it back, and it becomes an `int`
+        #      again exactly ONCE, at `_preview_helpers.save_now`'s
+        #      `format_filename` call site, via `settings.resolve_seed_int`
+        #      -- the same "convert once at the boundary" discipline
+        #      `pipeline.py` already uses for the settings-tree seed.
+        #
+        # **Known gap, not papered over**: a CACHED run (this node not
+        # re-executed this queue) emits no `ui` payload at all, so
+        # `handleExecuted` is never called and `node._anSeed` is never
+        # populated for that queue -- `%seed%` then correctly falls back to
+        # `src/anima/api.py`'s documented default (`0`) on the very next
+        # "Save now" click, the same "no report this run" degradation design
+        # doc §5a-0 already documents for the Generator's own context report.
+        # There is no workaround for this: the RESOLVED seed only exists on
+        # a real execution, and reaching into the settings blob's own
+        # `sampler.seed` instead would frequently read back the `-1` "random"
+        # sentinel, not the seed that actually ran.
+        return {"ui": {"anima_stages": ui_images, "anima_seed": [str(seed)]}}
 
 
 NODE_CLASS_MAPPINGS = {"AnimaPreview": AnimaPreview}

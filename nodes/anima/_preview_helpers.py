@@ -41,6 +41,7 @@ try:
         resolve_run_stage_labels,
         resolve_save_now_stage,
         resolve_save_stages,
+        resolve_seed_int,
         resolve_wired_stages,
         split_preview_stages,
     )
@@ -52,6 +53,7 @@ except ImportError:
         resolve_run_stage_labels,
         resolve_save_now_stage,
         resolve_save_stages,
+        resolve_seed_int,
         resolve_wired_stages,
         split_preview_stages,
     )
@@ -70,6 +72,7 @@ __all__ = [
     "resolve_run_stage_labels",
     "resolve_save_now_stage",
     "resolve_save_stages",
+    "resolve_seed_int",
     "resolve_wired_stages",
     "save_images",
     "save_now",
@@ -428,6 +431,20 @@ def save_now(
     `temp_fn`) so a test can drive this with real temp directories but fake
     image probing/writing, never needing PIL or a live `folder_paths`.
 
+    **`seed` fixes the `%seed%` -> `0` bug** (`docs/TODO.md`'s last Now item):
+    `src/anima/api.py`'s route now forwards whatever the frontend posted
+    (`node._anSeed`, stashed from `nodes/anima/preview.py`'s own `anima_seed`
+    `ui` payload) straight through, UNCONVERTED -- this is attacker-shaped
+    data from the browser's point of view (absent, `None`, `""`, a
+    non-numeric string, a negative number, a float, a 40-digit number, a
+    dict), so it is converted to a real `int` in exactly ONE place, HERE, at
+    the `format_filename` call site below, via `resolve_seed_int` (the same
+    pure "convert once at the boundary" function `pipeline.py` already uses
+    for the settings-tree seed, reused rather than re-invented) -- never
+    raises on any of the hostile shapes above, degrading to `0` for anything
+    it can't make sense of. `format_filename` itself is never handed the raw
+    posted value.
+
     **Cannot embed workflow metadata** (unlike `save_images`): this runs
     from a button click, outside a graph run, so there is no fresh
     `PROMPT`/`EXTRA_PNGINFO` to write into the PNG the way an enabled save
@@ -470,7 +487,15 @@ def save_now(
     os.makedirs(output_dir, exist_ok=True)
     static_prefix = template.split("%", 1)[0]
     counter = _next_counter(output_dir, static_prefix)
-    filename_stem = format_filename(template, stage=stage, seed=seed, width=width, height=height, counter=counter)
+    # `resolve_seed_int` -- the ONE conversion point (this function's own doc
+    # comment above): the posted `seed` is hostile-shaped data (a decimal
+    # STRING on the happy path, per design doc §8's "never a JSON number"
+    # rule, but possibly `None`/garbage/a dict from a hand-crafted request),
+    # and this never raises regardless -- anything it can't parse degrades to
+    # `0`, matching `src/anima/api.py`'s own documented fallback.
+    filename_stem = format_filename(
+        template, stage=stage, seed=resolve_seed_int(seed), width=width, height=height, counter=counter,
+    )
     out_filename = f"{filename_stem}.{extension}"
     write(source_path, os.path.join(output_dir, out_filename))
 

@@ -221,6 +221,7 @@ import {
   handleGeneratorExecuted,
   normalizeAnimaContextPayload,
   normalizeAnimaStagesPayload,
+  normalizeAnimaSeedPayload,
   installZoomPassthrough,
   teardownNode,
   computeNodeDefinition,
@@ -3660,6 +3661,126 @@ test("Preview: a ONE-entry run degrades to a single-image view, never a broken d
   assert.ok(hasClass(wipe, "wtn-an-single"));
   const label = queryAll(wipe, (n) => hasClass(n, "wtn-an-plab")).find((l) => l.textContent === "base");
   assert.ok(label, "the single present stage must be shown regardless of what compare.a/compare.b name");
+});
+
+// ---------------------------------------------------------------------------
+// normalizeAnimaSeedPayload / handleExecuted's seed stashing (task: `%seed%`
+// always resolving to 0, `docs/TODO.md`'s last Now item) -- the frontend
+// half of `nodes/anima/preview.py`'s new `anima_seed` `ui` channel.
+// ---------------------------------------------------------------------------
+
+test("normalizeAnimaSeedPayload: the real shape (a one-element string list) unwraps to the string, kept as a string", () => {
+  const got = normalizeAnimaSeedPayload(["16963467365598029952"]);
+  assert.equal(got, "16963467365598029952");
+  assert.equal(typeof got, "string");
+});
+
+test("normalizeAnimaSeedPayload: a multi-entry accumulator (a node executed more than once this queue) takes the LAST entry", () => {
+  assert.equal(normalizeAnimaSeedPayload(["1", "2", "3"]), "3");
+});
+
+test("normalizeAnimaSeedPayload: an empty array, null, undefined, a bare number, and a bare object all return null -- never coerced, never guessed at", () => {
+  assert.equal(normalizeAnimaSeedPayload([]), null);
+  assert.equal(normalizeAnimaSeedPayload(null), null);
+  assert.equal(normalizeAnimaSeedPayload(undefined), null);
+  assert.equal(normalizeAnimaSeedPayload(42), null, "a bare NUMBER must never be accepted -- this is the precision rule the whole payload shape exists to protect");
+  assert.equal(normalizeAnimaSeedPayload({ seed: "42" }), null);
+});
+
+test("normalizeAnimaSeedPayload: a bare string is tolerated (cheap extra tolerance, not the shape Python sends)", () => {
+  assert.equal(normalizeAnimaSeedPayload("42"), "42");
+});
+
+test("Preview: handleExecuted stashes anima_seed onto node._anSeed, as a STRING, and a big seed survives untouched", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+
+  const bigSeed = "16963467365598029952"; // > 2**53-1 -- design doc §8
+  handleExecuted(node, ctx, {
+    anima_stages: [{ filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" }],
+    anima_seed: [bigSeed],
+  });
+
+  assert.equal(node._anSeed, bigSeed);
+  assert.equal(typeof node._anSeed, "string", "must never be Number(...)'d anywhere on this path");
+});
+
+test("Preview: handleExecuted with no anima_seed at all leaves a previously-stashed node._anSeed untouched (defensive, not load-bearing -- both keys are always written together by preview.py)", () => {
+  const node = makePreviewNode({ imagesLink: 1, metadataLink: 1 });
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountPreviewUI(node, ctx);
+
+  handleExecuted(node, ctx, {
+    anima_stages: [{ filename: "base.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
+    anima_seed: ["7"],
+  });
+  assert.equal(node._anSeed, "7");
+
+  handleExecuted(node, ctx, {
+    anima_stages: [{ filename: "base2.png", subfolder: "AnimaFlow", type: "output", stage: "base" }],
+    // no anima_seed key this time
+  });
+  assert.equal(node._anSeed, "7", "a run reporting stages with no seed must not clobber the previous seed with null");
+});
+
+// ---------------------------------------------------------------------------
+// "Save now" carries the run's resolved seed (task: %seed% -> 0 bug fix).
+// ---------------------------------------------------------------------------
+
+test("\"Save now\" posts the run's resolved seed verbatim, as a STRING, never Number(...)'d -- the fix for %seed% always resolving to 0", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const calls = [];
+  const ctx = makeCtx(doc, {
+    fetchImpl: (url, opts) => {
+      calls.push({ url, opts });
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, stage: "final", filename: "final_16963467365598029952.png", subfolder: "AnimaFlow", type: "output" }),
+      });
+    },
+  });
+  mountPreviewUI(node, ctx);
+
+  const bigSeed = "16963467365598029952"; // > 2**53-1 -- design doc §8
+  handleExecuted(node, ctx, {
+    anima_stages: [{ filename: "final.png", subfolder: "AnimaFlow", type: "output", stage: "final" }],
+    anima_seed: [bigSeed],
+  });
+
+  const btn = findSaveNowButton(node._anRefs.body);
+  assert.ok(btn, "expected a Save now button");
+  fire(btn, "click");
+
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0].opts.body);
+  assert.equal(payload.seed, bigSeed, "the posted seed must be the exact string, not a rounded/parsed Number");
+  assert.equal(typeof payload.seed, "string");
+});
+
+test("\"Save now\" with no run reported yet posts NO seed key at all (never a guessed 0, never null coerced from Number(undefined)) -- the route's own documented fallback covers this", () => {
+  const node = makePreviewNode();
+  node._anPreviewImages = { base: { filename: "base_temp.png", subfolder: "", type: "temp" } };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const calls = [];
+  const ctx = makeCtx(doc, {
+    fetchImpl: (url, opts) => {
+      calls.push({ url, opts });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, stage: "base", filename: "base_0.png", subfolder: "AnimaFlow", type: "output" }) });
+    },
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const btn = findSaveNowButton(refs.body);
+  fire(btn, "click");
+
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0].opts.body);
+  assert.equal("seed" in payload, false, "JSON.stringify must drop the undefined seed key entirely, not send a null/0 the frontend invented");
 });
 
 test("Preview: buildPreviewImageUrl builds ComfyUI's /view URL and cache-busts with the provided token; null for a malformed entry", () => {

@@ -20,8 +20,18 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from .settings import _deep_merge_defaults, migrate_version
+from .settings import _deep_merge_defaults, migrate_version, resolve_seed_int
 from .stages import STAGE_ORDER
+
+# `resolve_seed_int` is re-exported here (not used directly in this module)
+# purely so `nodes/anima/_preview_helpers.py`'s `save_now` can reach it
+# through this module's own single import line, matching how it already
+# reaches every other pure decision here rather than importing
+# `src.anima.settings` separately. It's the "Save now" seed's ONE
+# int-conversion point (the same "convert once at the boundary" pure
+# function `pipeline.py` already uses for the settings-tree seed) -- see
+# `_preview_helpers.save_now`'s own doc comment for why it belongs there and
+# not in `format_filename` itself.
 
 PREVIEW_SETTINGS_SCHEMA = "animaflow.anima_preview.preview_state"
 PREVIEW_SETTINGS_VERSION = 1

@@ -203,6 +203,71 @@ def test_one_entry_list_with_no_metadata_falls_back_to_base_label():
 
 
 # ---------------------------------------------------------------------------
+# `anima_seed` -- the bug this build fixes: "Save now"'s `%seed%` token
+# always resolving to `0` (`docs/TODO.md`'s last Now item), because
+# `nodes/anima/preview.py`'s `ui` payload never carried the seed it had
+# already computed on every run (`extract_seed_from_prompt`, `preview.py:201`,
+# before this fix). This exercises `AnimaPreview.preview()` directly (not
+# through `_images_from`, since that helper only hands back
+# `result["ui"]["anima_stages"]`) so it can read `result["ui"]["anima_seed"]`
+# too -- the actual channel `js/anima/interaction.mjs`'s `handleExecuted`
+# reads from.
+# ---------------------------------------------------------------------------
+
+
+def _run_preview_with_prompt(prompt, images=None):
+    """Same shape as `_images_from` (fake writers installed, every
+    `INPUT_IS_LIST`-wrapped kwarg wrapped the way ComfyUI's own execution
+    engine would) but returns the WHOLE `result["ui"]` dict, since this
+    section needs `anima_seed` alongside `anima_stages`."""
+    calls, restore = _install_fake_writers()
+    try:
+        node = AnimaPreview()
+        result = node.preview(
+            preview_state=[json.dumps({})],
+            images=list(images) if images else [],
+            metadata_json=[""],
+            prompt=[prompt],
+            extra_pnginfo=[None],
+        )
+        return result["ui"], calls
+    finally:
+        restore()
+
+
+def test_preview_ui_payload_carries_the_resolved_seed_as_a_one_element_string_list():
+    # The two landmines this shape avoids (both already bitten by this repo
+    # once, `preview.py`'s own doc comment): (1) a `ui` value must be a LIST,
+    # never a bare scalar -- `f22b3c0`/`885410b`; (2) the seed must be a
+    # decimal STRING, never a JSON number -- `717feaa`/design doc §8.
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": 42}}}
+    ui, _ = _run_preview_with_prompt(prompt, images=["A"])
+    assert ui["anima_seed"] == ["42"], "must be a ONE-ELEMENT LIST of a decimal STRING, not a bare int/str"
+    assert isinstance(ui["anima_seed"], list)
+    assert isinstance(ui["anima_seed"][0], str)
+
+
+def test_preview_ui_payload_seed_survives_a_20_digit_value_byte_for_byte():
+    # The precision case design doc §8 exists for: a real seed can reach
+    # 2**64-1, past JS's Number.MAX_SAFE_INTEGER (2**53-1) -- this asserts
+    # the STRING form is exact, not merely "close" (a float round-trip would
+    # silently corrupt the tail digits).
+    big_seed = 16963467365598029952  # from an actual run, design doc §8
+    assert big_seed > 2 ** 53 - 1
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": big_seed}}}
+    ui, _ = _run_preview_with_prompt(prompt, images=["A"])
+    assert ui["anima_seed"] == [str(big_seed)]
+
+
+def test_preview_ui_payload_falls_back_to_zero_with_no_prompt_seed_available():
+    # `extract_seed_from_prompt`'s own pre-existing gap (unchanged by this
+    # task, see its own docstring): no prompt at all still must not crash,
+    # and still emits a real, well-shaped `anima_seed` entry.
+    ui, _ = _run_preview_with_prompt(None, images=["A"])
+    assert ui["anima_seed"] == ["0"]
+
+
+# ---------------------------------------------------------------------------
 # "Save now" (task item 6) -- `nodes/anima/_preview_helpers.py`'s `save_now`.
 # Every touchpoint that would otherwise need PIL/folder_paths is injected
 # (`output_dir_fn`/`temp_dir_fn`/`exists_fn`/`probe_fn`/`write_fn`), matching
@@ -255,6 +320,70 @@ def test_save_now_prefers_final_then_mid_then_base():
         assert result["type"] == "output"
         assert result["filename"] == "final_42.png"
         assert len(calls["write"]) == 1
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_accepts_the_posted_seed_as_a_string_and_survives_a_20_digit_value():
+    # `js/anima/interaction.mjs` posts the seed as a decimal STRING (never a
+    # JSON number -- design doc §8), and `resolve_seed_int` is the ONE point
+    # it becomes an `int` again, right at this `format_filename` call --
+    # asserts a >2**53 seed survives that round trip BYTE FOR BYTE, not
+    # merely "close" (the whole point of keeping it a string end-to-end).
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        big_seed = "16963467365598029952"  # from an actual run, design doc §8
+        result = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
+            seed=big_seed,
+            **fakes,
+        )
+        assert result["filename"] == f"final_{big_seed}.png"
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file():
+    # The posted seed is attacker-shaped data from the browser's point of
+    # view (absent/None/""/non-numeric/negative/float/a 40-digit
+    # number/a dict) -- none of these may raise out of `save_now`, and every
+    # one must still produce a file (`resolve_seed_int`'s own hostile-input
+    # contract, reused rather than re-invented here).
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, _ = _save_now_fakes(tmp_root)
+        hostile_seeds_expect_zero = [None, "", "not-a-seed", -5, {"a": 1}, [1, 2], "-1", -1]
+        for bad in hostile_seeds_expect_zero:
+            result = ph.save_now(
+                stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+                preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
+                seed=bad,
+                **fakes,
+            )
+            assert result["filename"] == "final_0.png", f"seed={bad!r} produced {result['filename']!r}"
+
+        # A 40-digit number: no clamping, no crash, no corruption -- Python's
+        # arbitrary precision carries it through exactly (unlike the JS
+        # side, which is exactly why the seed must never touch a JS Number).
+        forty_digit = "1" * 40
+        result = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
+            seed=forty_digit,
+            **fakes,
+        )
+        assert result["filename"] == f"final_{forty_digit}.png"
+
+        # Absent entirely -- `seed` not passed at all -- must fall back to
+        # the function's own default (`0`) exactly like an explicit `None`.
+        result = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
+            **fakes,
+        )
+        assert result["filename"] == "final_0.png"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -341,7 +470,12 @@ ALL_TESTS = [
     test_only_mid_present_yields_exactly_one_mid_entry,
     test_nothing_wired_yields_an_empty_list_no_exception,
     test_one_entry_list_with_no_metadata_falls_back_to_base_label,
+    test_preview_ui_payload_carries_the_resolved_seed_as_a_one_element_string_list,
+    test_preview_ui_payload_seed_survives_a_20_digit_value_byte_for_byte,
+    test_preview_ui_payload_falls_back_to_zero_with_no_prompt_seed_available,
     test_save_now_prefers_final_then_mid_then_base,
+    test_save_now_accepts_the_posted_seed_as_a_string_and_survives_a_20_digit_value,
+    test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file,
     test_save_now_falls_back_when_the_better_stages_are_absent,
     test_save_now_raises_a_readable_error_when_nothing_is_available,
     test_save_now_raises_when_the_source_file_is_no_longer_on_disk,

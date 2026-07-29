@@ -2593,7 +2593,13 @@ export function buildPreviewBody(doc, node, ctx) {
   // is on, an enabled run already writes every stage on its own -- a second,
   // redundant on-demand save button would just confuse which copy is which.
   if (!state.save.enabled) {
-    body.appendChild(buildSaveNowRow(doc, ctx, state, previewImages));
+    // `node._anSeed` (fixes `%seed%` always resolving to 0 -- `docs/TODO.md`'s
+    // last Now item) -- the real seed `handleExecuted` stashed from the last
+    // run's own `anima_seed` `ui` payload, a decimal STRING or `undefined`
+    // if no run has reported one yet (see `handleExecuted`'s own doc
+    // comment for exactly when that is). Threaded through so the click
+    // handler can echo it back verbatim -- never read/derived here.
+    body.appendChild(buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed));
   }
 
   const compare = state.compare;
@@ -2767,7 +2773,7 @@ function buildSaveRow(doc, node, ctx, state) {
  * `previewImages` (`node._anPreviewImages`, `{stage: {filename, subfolder,
  * type, ...}}` -- every stage the last run's `anima_stages` payload
  * reported, whether or not it happened to be saved that run) plus the
- * serialized `preview_state` to `src/anima/api.py`'s
+ * serialized `preview_state` AND `seed` to `src/anima/api.py`'s
  * `POST /wtn/anima/preview/save_now` -- the SAME filename template + save
  * path an enabled save would use. Every DECISION (which stage wins:
  * `final` -> `mid` -> `base`; what the filename resolves to) is server-
@@ -2775,6 +2781,20 @@ function buildSaveRow(doc, node, ctx, state) {
  * `format_filename` (pure, unit-tested with no ComfyUI) -- this function is
  * JUST the fetch call + a one-line status readout, never a second copy of
  * that logic.
+ *
+ * `seed` (fixes `%seed%` always resolving to `0` -- `docs/TODO.md`'s last
+ * Now item) is `node._anSeed`, whatever `handleExecuted` last stashed off
+ * `anima_seed` -- a decimal STRING, or `undefined` if no run has reported
+ * one yet (this function does not tell those two cases apart; it posts
+ * exactly what it was handed). **Never coerced through `Number(...)`/
+ * `parseInt` anywhere in this function** -- a seed can reach 2**64-1, past
+ * JS's `Number.MAX_SAFE_INTEGER` (design doc §8), so it stays a string all
+ * the way into `JSON.stringify`'s own body, and becomes an `int` again only
+ * once, server-side, at `_preview_helpers.save_now`'s `format_filename`
+ * call site. `JSON.stringify` drops an `undefined` value's key entirely
+ * (never sends a bare `null`/`undefined` literal), so "no run yet" simply
+ * means the posted body carries no `seed` key at all -- `src/anima/api.py`'s
+ * own `payload.get("seed", 0)` fallback is exactly what that degrades to.
  *
  * `ctx.fetchImpl` (optional) lets a test inject a fake instead of the real
  * global `fetch` -- same injection convention this module's top doc comment
@@ -2784,7 +2804,7 @@ function buildSaveRow(doc, node, ctx, state) {
  * `null` (no override, no global) renders the button but fails loudly and
  * readably on click rather than throwing.
  */
-function buildSaveNowRow(doc, ctx, state, previewImages) {
+function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
   const row = el(doc, "div", "wtn-an-savenow");
   const btn = el(doc, "button");
   btn.type = "button";
@@ -2825,10 +2845,16 @@ function buildSaveNowRow(doc, ctx, state, previewImages) {
     }
     btn.disabled = true;
     setStatus("Saving…", false);
+    // `seed` -- whatever `handleExecuted` last stashed on `node._anSeed`
+    // (this function's own doc comment) -- posted VERBATIM, still a STRING,
+    // never `Number(...)`'d. `undefined` here (no run reported one yet)
+    // simply drops the key from the JSON body (`JSON.stringify`'s own
+    // behaviour), which is exactly what `src/anima/api.py`'s documented
+    // fallback is for.
     Promise.resolve(doFetch("/wtn/anima/preview/save_now", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stages, preview_state: JSON.stringify(state) }),
+      body: JSON.stringify({ stages, preview_state: JSON.stringify(state), seed }),
     }))
       .then((res) => Promise.resolve(res.json()).then((data) => ({ ok: !!(res && res.ok), data })))
       .then(({ data }) => {
@@ -2948,6 +2974,48 @@ export function normalizeAnimaStagesPayload(animaStages) {
   return null;
 }
 
+/**
+ * `message.anima_seed` -> the resolved seed for THIS run, as a decimal
+ * STRING, or `null` for anything not usable -- `nodes/anima/preview.py`'s
+ * own `"ui": {"anima_seed": [seed_str]}}` payload (fixes `%seed%` always
+ * resolving to `0`, `docs/TODO.md`'s last Now item). ALWAYS a one-element
+ * list of a STRING on the happy path -- the same two landmines
+ * `normalizeAnimaContextPayload`'s own doc comment and `preview.py`'s doc
+ * comment both already name: (1) a `ui` value must be a LIST, so this is
+ * never a bare scalar; (2) the value itself must stay a decimal STRING,
+ * never a JSON number (a seed can reach 2**64-1, past JS's
+ * `Number.MAX_SAFE_INTEGER` -- design doc §8).
+ *
+ * ComfyUI's executor EXTENDS a node's own `ui` accumulator with an
+ * already-list value (the same mechanism `normalizeAnimaStagesPayload`'s own
+ * doc comment describes for `anima_stages`), so a node that executes more
+ * than once in a single queue (inside a loop) would arrive here with
+ * MULTIPLE entries -- the LAST one supersedes, the same "a later report
+ * supersedes an earlier one" rule `normalizeAnimaContextPayload` already
+ * uses.
+ *
+ * **Never coerced to a `Number` anywhere in this function, or by any
+ * caller** -- kept a STRING end-to-end, per the same precision rule the
+ * payload's own shape exists to protect. A bare string is tolerated too
+ * (cheap extra tolerance, mirroring `normalizeAnimaStagesPayload`'s own
+ * bare-object case) -- not the shape Python actually sends, but harmless to
+ * accept. Anything else (a number, a bare object, `null`/`undefined`, an
+ * empty array) returns `null`.
+ */
+export function normalizeAnimaSeedPayload(animaSeed) {
+  if (Array.isArray(animaSeed)) {
+    if (animaSeed.length === 0) {
+      return null;
+    }
+    const last = animaSeed[animaSeed.length - 1];
+    return typeof last === "string" ? last : null;
+  }
+  if (typeof animaSeed === "string") {
+    return animaSeed;
+  }
+  return null;
+}
+
 export function handleExecuted(node, ctx, message) {
   const entries = normalizeAnimaStagesPayload(message && message.anima_stages);
   if (!entries) {
@@ -2961,6 +3029,16 @@ export function handleExecuted(node, ctx, message) {
     }
   }
   node._anPreviewImages = byStage;
+  // `node._anSeed` -- only overwritten when THIS run actually reported one
+  // (both `anima_stages` and `anima_seed` are written by the same Python
+  // return statement, so in practice they always arrive together; this
+  // guard is defensive, not load-bearing, and means a run that somehow
+  // reported stages with no seed leaves whatever the PREVIOUS run stashed
+  // in place rather than clobbering it with a stale-looking blank).
+  const seed = normalizeAnimaSeedPayload(message && message.anima_seed);
+  if (seed !== null) {
+    node._anSeed = seed;
+  }
   repaintPreview(node, ctx);
 }
 
