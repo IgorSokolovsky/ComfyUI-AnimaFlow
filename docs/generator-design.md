@@ -671,6 +671,15 @@ is left (`aspect-ratio: auto`, floored at `PREVIEW_IMG_MIN_H`). The layers' `obj
 already letterboxes each image into whatever box it's given, so a non-square node distorts nothing.
 **The Generator's panel is untouched — it still scrolls.**
 
+> **Both nodes on this track are sizing Class B** — freely resizable on *both* axes, each floored at a
+> real minimum. That is the pack-wide contract in
+> [`control-panel-design.md`](control-panel-design.md) §7a, which also covers Class A (the Control/Loader
+> panels and the future LoRA loader, whose height is content-fixed and not draggable at all). The
+> distinction is not stylistic: a Class B body scrolls (Generator) or flex-fills (Preview), so a taller
+> node genuinely shows more, whereas a Class A body is a list of rows whose sockets are parked per row.
+> **The Generator gained its height floor on 2026-07-29** (owner policy) — it previously had none, since
+> its panel scrolls; internal scrolling is unchanged, the floor only stops an absurdly short drag.
+
 Removing the scroll means the floor has to be honest, which is where the **min height** comes from:
 `PREVIEW_PANEL_MIN_H` is sized so the Save row + the Compare card + `PREVIEW_IMG_MIN_H` all fit with no
 scrollbar, and `PREVIEW_MIN_H` adds the title bar and the two socket rows on top

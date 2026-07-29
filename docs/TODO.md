@@ -124,6 +124,12 @@ searchable picker, missing-file marks, the Civitai description/metadata panel, t
 the memory-mode idea (our loader helpers already cache per `(kind, name, dtype)` —
 `control-panel-design.md` §2 — but expose no policy).
 
+**Sizing class is already decided for it: Class A** (owner, 2026-07-29) — content-fixed height, width
+resizable with a min, exactly like the two existing panels and like Pixaroma's own LoRA loader. The
+contract is [`control-panel-design.md`](control-panel-design.md) §7a; **read it before building this
+node's frontend**, because retrofitting a sizing class means touching resize, the drag floor and the
+load-race guard together.
+
 **Fits our layering:** a row-with-sockets node ⇒ it's a **layer 3** consumer, which would make it
 the *third* one and trigger the deferred `js/shared/socket_rows.mjs` move (see Deferred below).
 Worth deciding that up front rather than after.

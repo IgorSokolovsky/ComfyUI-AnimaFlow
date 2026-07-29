@@ -402,6 +402,41 @@ sockets to park.
 
 ## 7. Layout, sizing, theming
 
+### 7a. The pack's two sizing classes — CONTRACT (owner, 2026-07-29)
+
+Every AnimaFlow node belongs to exactly one of two sizing classes. This is a **pack-wide contract**,
+stated here because this doc owns the first class; `generator-design.md` §7 owns the second. **Decide a
+new node's class before building its frontend** — retrofitting means touching resize, the drag floor and
+the load-race guard all at once.
+
+| | **Class A — content-fixed height** | **Class B — freely resizable** |
+|---|---|---|
+| nodes | `AnimaControlPanel`, `AnimaLoaderPanel`, **the future AnimaFlow LoRA loader** | `AnimaGenerator`, `AnimaPreview` |
+| height | **content, always. Not user-draggable at all.** Re-fits on row add/remove | user-resizable, floored at a real minimum |
+| width | user-resizable, floored at `MIN_W` | user-resizable, floored at its own min |
+| why | the body is a **list of rows**, and each row parks its output socket at that row's Y — so the node's height *is* its content, and there is nothing meaningful to drag | the body is one panel that **scrolls** (Generator) or **flex-fills** (Preview), so a taller node genuinely shows more |
+| reference | `../ComfyUI-Pixaroma/js/lora_loader/index.js` — owner: *"they don't give option to change height"*. Full model in [`pixaroma-review-rounds-plan.md`](pixaroma-review-rounds-plan.md) §11 | `clampPreviewSize` (both axes) is the worked example |
+
+**Class A cannot simply scroll instead of growing.** Sockets live on the node canvas, not inside the
+DOM widget, and `vacantSlotY`/`alignOutputsLegacy` derive each dot's Y from its row index — a scrolling
+body would slide rows away from their own sockets. That constraint is *why* these two classes exist
+rather than one policy for the whole pack.
+
+**Class A consequences worth stating, because they look like bugs otherwise:**
+
+- A height drag does nothing. That is correct, not a broken handle.
+- "Height survives a refresh" is true **by construction**, not by persistence: content height is
+  deterministic for a given row count, so there is no user height to lose. Only width is persisted.
+- A content-height *floor* is **not** sufficient on its own — a floor stops shrinking and permits
+  growing, which is how a panel ends up taller than its content and then appears to "snap back" at the
+  next row change. The height must be actively fixed, not merely floored.
+
+**One authority for the height, always.** It comes from `node.computeSize()` (→ `computeControlsSize`
+→ `bodyHeight`), with `bodyHeight` as the direct fallback. Two independent derivations that merely
+happen to agree is the defect this contract replaced — see §4a and the `fitNodeH` helper.
+
+### 7b. Renderer notes
+
 Legacy litegraph is the target; the legacy path must work standalone, with `computeLayoutSize` +
 `minWidth: 1` kept only for Nodes 2.0 forward-compat. Both from
 `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md`:
