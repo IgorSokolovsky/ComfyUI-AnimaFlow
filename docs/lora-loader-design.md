@@ -354,10 +354,36 @@ parameter, never a fork — §7a's `kind` plumbing is what makes this cheap.
 | **Loader Panel** | **models only** (checkpoint / UNET) | "fill this loader" | download **and select into that slot** |
 | **Toolbar modal** — NEW | **unscoped** | "browse Civitai" | download to the correct folder, derived from the result's own type |
 
-The distinction that matters: the two **node-embedded** surfaces are *pickers* — narrow, kind-locked,
-and they return a value to the caller. The **modal** is a *browser* — it answers to nobody and its
-result lands on disk, with the destination folder taken from the result's type rather than from whoever
-opened it. Build the picker path first (it is what milestone 2 needs); the modal is milestone 2b.
+The distinction that matters: the two **node-embedded** surfaces are *pickers* — kind-locked, and they
+return a value to the caller. The **modal** is a *browser* — it answers to nobody and its result lands
+on disk, with the destination folder taken from the result's type rather than from whoever opened it.
+Build the picker path first (it is what milestone 2 needs); the modal is milestone 2b.
+
+### 7c-i. All three get the FULL filter set (owner, 2026-07-29)
+
+An earlier draft of this section called the pickers "narrow", which wrongly implied fewer features.
+**It does not.** Search, filters and results are the same everywhere — the differences are only *scope*
+and *outcome*:
+
+| filter | picker (node) | modal |
+|---|---|---|
+| **type** | **locked** to the caller's kind, shown but not changeable | free |
+| base model (SD1.5 / SDXL / Pony / Flux / Illustrious …) | ✅ | ✅ |
+| sort (Relevancy / Most downloaded / Highest rated / Newest) | ✅ | ✅ |
+| period (Day / Week / Month / Year / All time) | ✅ | ✅ |
+| NSFW | ✅ | ✅ |
+
+So exactly **one** filter behaves differently, and it is the one implied by the mount point: a LoRA
+Loader's picker cannot search checkpoints, because it could not do anything with the result.
+
+**Layout differs, feature set does not.** The modal has room for a filter **rail** (~196px). A node
+panel is ~340px wide, so the same filters render as a **compact row of dropdown pills** — a rail there
+would eat the results. Do not drop filters to fit; change their presentation.
+
+**Filter choices are remembered user-wide, in Settings → AnimaFlow — not in the node's state blob.**
+They are a browsing preference, not node behaviour, and per §7b that is the boundary. It also means the
+picker and the modal open with the same remembered filters, which is the behaviour you want: it is one
+browser with three mounts, not three browsers.
 
 ### The modal
 

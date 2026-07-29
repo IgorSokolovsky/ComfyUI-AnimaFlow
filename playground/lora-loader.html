@@ -296,11 +296,21 @@ code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
       <div class="ph">Browse Civitai <span class="badge">new</span> <span class="x" onclick="hide('browse')">✕</span></div>
       <div class="pb">
         <div class="fld"><input type="text" style="width:100%" placeholder="Search Civitai…" value="skin detail"></div>
-        <div class="fld">
-          <span class="seg"><button class="on">LoRA</button><button>Checkpoint</button></span>
-          <span class="badge key" style="margin-left:auto" title="search may need a key">public mode</span>
+
+        <!-- SAME filter set as the modal, laid out as compact pills for a ~340px node panel.
+             The TYPE filter is the only one that differs: locked to this node's kind. -->
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px">
+          <span class="badge" style="color:var(--ink-faint);border-style:dashed" title="locked — this node only loads LoRAs">type: LoRA 🔒</span>
+          <span class="badge" style="cursor:pointer;color:var(--ink-dim)">base: SDXL ▾</span>
+          <span class="badge" style="cursor:pointer;color:var(--ink-dim)">sort: Relevancy ▾</span>
+          <span class="badge" style="cursor:pointer;color:var(--ink-dim)">period: All time ▾</span>
+          <span class="badge" style="cursor:pointer;color:var(--ink-dim)">NSFW: off ▾</span>
         </div>
-        <div class="hint">No API key set — public results only. Add one in Settings → AnimaFlow for gated files.</div>
+        <div class="hint">
+          Same filters as the toolbar modal — only <b>type</b> is locked, because this node loads LoRAs.
+          Filter choices are remembered user-wide (Settings → AnimaFlow), not per node.
+        </div>
+        <div class="hint" style="color:var(--warn)">No API key set — public results only.</div>
 
         <div class="sr">
           <div class="tn">img</div>
