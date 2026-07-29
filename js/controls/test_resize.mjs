@@ -115,6 +115,7 @@ import {
   scheduleFit,
   onResizeControls,
   onDrawForegroundControls,
+  wrapSetSizeControls,
   applyContentHeight,
   addRowAndSync,
   duplicateRowAndSync,
@@ -363,13 +364,20 @@ function makeFakeNode(initialStateJSON, opts = {}) {
     // shrink `_domHost` by itself -- exactly the gap that shipped the
     // "orphaned row widget" bug this stub exists to catch.
     _domHost: [],
-    addDOMWidget(name, type, element) {
+    addDOMWidget(name, type, element, options) {
       node._domHost.push(element);
       const w = {
         name,
         type,
         element,
-        options: {},
+        // Mirrors the real `addDOMWidget(name, type, element, options)`
+        // contract -- the 4th argument (`getMinHeight`/`getMaxHeight`/
+        // `serialize`/`margin`/...) lands on `w.options`, not just gets
+        // dropped. Needed so a test can assert `getMinHeight`/`getMaxHeight`
+        // were actually passed (the min==max height-pin fix) rather than
+        // only ever seeing an empty `{}` regardless of what the real code
+        // called `addDOMWidget` with.
+        options: { ...(options || {}) },
         serialize: true,
         y: undefined,
         margin: 10,
@@ -3186,6 +3194,231 @@ test("onDrawForegroundControls never moves a row's output dot position -- it onl
     node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
     before,
     "onDrawForegroundControls must not move any row's socket Y",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F5b. DOM widget height cap -- `getMaxHeight === getMinHeight` pins every
+// row/add-strip widget's own height so litegraph's DOM-widget
+// `computeLayoutSize` can never grow it past ROW_H/28 in the first place.
+// Ported from ComfyUI-Pixaroma's `js/lora_loader/index.js:93-101` (MIT, see
+// THIRD_PARTY_NOTICES.md) -- the min==max pin the reference node actually
+// uses, confirmed live (the owner reports that node genuinely cannot be
+// stretched taller). This is the NATIVE mechanism, ahead of (not instead of)
+// the `setSize` wrap (F5c, below) and the per-frame draw hook (F5a, above).
+//
+// Driven off `node.widgets` itself, not a single named widget -- so a
+// FUTURE DOM widget this track mounts without the cap fails this test too.
+// ---------------------------------------------------------------------------
+
+test("every DOM widget this track mounts (row widgets + the add-strip) declares getMaxHeight === getMinHeight -- driven off the widget list, not a named widget", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  // LOADER_PANEL_CONFIG (not CONTROL_PANEL_CONFIG) -- same choice every other
+  // F5 test in this file makes: the Loader Panel's default 3 rows (unet/vae/
+  // clip) build without needing a `getKnownLists` override, unlike the
+  // Control Panel's default sampler/scheduler rows (see line ~997's own
+  // override for that case).
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows + the add-strip
+
+  const domWidgets = node.widgets.filter((w) => w.options && typeof w.options.getMinHeight === "function");
+  assert.ok(domWidgets.length >= 4, "sanity check: at least the 3 row widgets + the add-strip must be in this list");
+  for (const w of domWidgets) {
+    assert.equal(typeof w.options.getMaxHeight, "function", `${w.name} must declare getMaxHeight alongside getMinHeight`);
+    assert.equal(
+      w.options.getMaxHeight(),
+      w.options.getMinHeight(),
+      `${w.name}'s getMaxHeight() must equal its getMinHeight() -- that's the pin`,
+    );
+  }
+});
+
+test("every DOM widget's computeLayoutSize also carries a matching maxHeight -- an explicit computeLayoutSize override never bypasses the option", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx);
+
+  const domWidgets = node.widgets.filter((w) => typeof w.computeLayoutSize === "function");
+  assert.ok(domWidgets.length >= 4);
+  for (const w of domWidgets) {
+    const layout = w.computeLayoutSize();
+    assert.equal(layout.maxHeight, layout.minHeight, `${w.name}'s computeLayoutSize must carry maxHeight === minHeight`);
+  }
+});
+
+test("the per-widget height cap does not fight SHRINKING -- removing rows still shrinks the node via fitNode/fitNodeH, and surviving rows' own cap stays exactly ROW_H (unaffected by row count)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  node.size = [DEFAULT_W, bodyHeight(3)];
+  const [a, b] = node._ctrlRows.map((e) => e.refs.row);
+
+  removeRowAndSync(node, ctx, a.id);
+  fitNode(node, ctx);
+  assert.equal(node.size[1], bodyHeight(2), "the node must still shrink to content height after a row is removed");
+
+  const surviving = node._ctrlRows.find((e) => e.refs.row.id === b.id);
+  assert.equal(surviving.widget.options.getMinHeight(), ROW_H, "a surviving row's own min height is unaffected by total row count");
+  assert.equal(surviving.widget.options.getMaxHeight(), ROW_H, "...and neither is its max -- the cap is per-widget, the shrink is per-COUNT (fewer widgets), not a per-widget height change");
+});
+
+// ---------------------------------------------------------------------------
+// F5c. setSize wrap -- the THIRD Class A hook, closing the pre-paint gap
+// `onResizeControls`/`onDrawForegroundControls` cannot: litegraph calls
+// `node.setSize(c.size)` on every drag frame BEFORE `this._dirty()`, so
+// correcting height right there stops the visible mid-drag stretch instead
+// of merely snapping it back a frame late. See `wrapSetSizeControls`'s own
+// doc comment in interaction.mjs for the full derivation (decompiled
+// `comfyui_frontend_package` 1.47.10 drag handler).
+// ---------------------------------------------------------------------------
+
+test("wrapSetSizeControls: a too-tall height is clamped to content height, and the ORIGINAL (spied) setSize is still invoked with the corrected size", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+
+  let spyCalls = 0;
+  let spiedArg = null;
+  const realSetSize = node.setSize.bind(node);
+  node.setSize = function (size) {
+    spyCalls += 1;
+    spiedArg = size.slice();
+    return realSetSize(size);
+  };
+  wrapSetSizeControls(node, ctx);
+
+  node.setSize([MIN_W, 900]); // a drag that stretched the node way past content
+  assert.equal(spyCalls, 1, "the original (spied) setSize must still run exactly once");
+  assert.deepEqual(spiedArg, [MIN_W, bodyHeight(3)], "the original must receive the CORRECTED size, not the raw dragged one");
+  assert.equal(node.size[1], bodyHeight(3), "node.size must end at content height, never the dragged height");
+});
+
+test("wrapSetSizeControls: a too-narrow width is floored at MIN_W", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  wrapSetSizeControls(node, ctx);
+
+  node.setSize([10, 900]);
+  assert.equal(node.size[0], MIN_W, "width below MIN_W must be floored");
+  assert.equal(node.size[1], bodyHeight(3));
+});
+
+test("wrapSetSizeControls: a legitimate width ABOVE MIN_W is preserved exactly", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  wrapSetSizeControls(node, ctx);
+
+  node.setSize([500, 900]);
+  assert.equal(node.size[0], 500, "a width above MIN_W must pass through untouched");
+  assert.equal(node.size[1], bodyHeight(3));
+});
+
+test("wrapSetSizeControls: passes straight through, UNCLAMPED, under isVueNodes()", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  wrapSetSizeControls(node, ctx);
+
+  globalThis.window = { LiteGraph: { vueNodesMode: true } };
+  try {
+    node.setSize([10, 900]);
+  } finally {
+    delete globalThis.window;
+  }
+  assert.deepEqual(node.size, [10, 900], "under Nodes 2.0, setSize must be left completely unclamped -- v2 owns sizing via computeLayoutSize");
+});
+
+test("wrapSetSizeControls: passes straight through, UNCLAMPED, while node._ctrlConfiguring is true", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  wrapSetSizeControls(node, ctx);
+
+  node._ctrlConfiguring = true;
+  node.setSize([10, 900]);
+  assert.deepEqual(node.size, [10, 900], "a workflow load in flight must never be fought");
+});
+
+test("wrapSetSizeControls: passes straight through, UNCLAMPED, while ctx.isGraphLoading() reports true", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { isGraphLoading: () => true });
+  syncRows(node, ctx); // 3 rows
+  wrapSetSizeControls(node, ctx);
+
+  node.setSize([10, 900]);
+  assert.deepEqual(node.size, [10, 900], "a workflow load in flight (via ctx.isGraphLoading()) must never be fought");
+});
+
+test("wrapSetSizeControls: fitNode's own node.setSize([w, h]) call is a genuine no-op through the wrapped path -- no double correction, no recursion", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  let spyCalls = 0;
+  const realSetSize = node.setSize.bind(node);
+  node.setSize = function (size) {
+    spyCalls += 1;
+    return realSetSize(size);
+  };
+  wrapSetSizeControls(node, ctx);
+
+  node.size = [10, 5]; // deliberately wrong on both axes
+  fitNode(node, ctx);
+  assert.equal(spyCalls, 1, "fitNode must still call setSize exactly once through the wrap -- no recursive re-entry");
+  assert.equal(node.size[0], MIN_W, "fitNode's own width floor and the wrap's clamp must agree exactly (10 -> MIN_W either way)");
+  assert.equal(node.size[1], bodyHeight(3), "fitNode's own answer and the wrap's clamp must agree exactly -- no double correction");
+});
+
+test("wrapSetSizeControls never moves a row's output dot position -- it only ever writes node.size, never a row widget's own .y", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // 3 rows
+  fakeArrange(node);
+  alignOutputsLegacy(node);
+  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+  wrapSetSizeControls(node, ctx);
+  node.setSize([node.size[0], 900]); // height-only drift, width untouched (F5's own isolation)
+  alignOutputsLegacy(node);
+  assert.deepEqual(
+    node.outputs.map((o) => (o.pos ? o.pos.slice() : null)),
+    before,
+    "wrapSetSizeControls must not move any row's socket Y",
+  );
+});
+
+test("wrapSetSizeControls is a no-op install when node.setSize is not a function at all -- must not fabricate one", () => {
+  const node = makeFakeNode();
+  delete node.setSize;
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx);
+  wrapSetSizeControls(node, ctx); // must not throw
+  assert.equal(typeof node.setSize, "undefined", "must not fabricate a setSize where none existed");
+});
+
+test("index.js: setupNode wraps setSize via mods.interaction.wrapSetSizeControls, installed once per node alongside computeSize", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const setupIdx = indexSource.indexOf("function setupNode(node, panelConfig, mods)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  assert.ok(setupIdx >= 0 && restoreIdx > setupIdx);
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+  assert.match(
+    setupBody,
+    /mods\.interaction\.wrapSetSizeControls\(node, ctx\);/,
+    "setupNode must call mods.interaction.wrapSetSizeControls(node, ctx)",
   );
 });
 

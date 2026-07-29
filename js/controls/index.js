@@ -315,6 +315,16 @@ function setupNode(node, panelConfig, mods) {
     return [mods.render.MIN_W, mods.render.bodyHeight(mods.interaction.rowCountOf(this, ctx))];
   };
 
+  // THIRD Class A hook, alongside `onResize`/`onDrawForeground` below --
+  // wraps `node.setSize` itself so the height lock lands BEFORE litegraph's
+  // own resize-drag paint, not just after it (`interaction.mjs`'s own
+  // `wrapSetSizeControls` doc comment has the full derivation, including the
+  // decompiled `comfyui_frontend_package` 1.47.10 drag handler this closes
+  // against). Installed once per node, same as `computeSize` just above --
+  // `setupNode`'s own `node._ctrlSetup` guard at the top of this function
+  // already prevents a double-wrap.
+  mods.interaction.wrapSetSizeControls(node, ctx);
+
   // ---------------------------------------------------------------------
   // Sizing -- GATED on `!isGraphLoading() && !node._ctrlConfiguring` (the
   // exact same fix `js/anima/index.js`'s `setupNode` already carries for

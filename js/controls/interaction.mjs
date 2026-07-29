@@ -1335,13 +1335,23 @@ function rebuildRowWidgets(node, ctx) {
       const widget = node.addDOMWidget(`ctrl_row_${row.id}`, "ctrl_row", refs.root, {
         serialize: false,
         getMinHeight: () => ROW_H,
+        // `getMaxHeight === getMinHeight` pins the widget's own height --
+        // ComfyUI-Pixaroma's `js/lora_loader/index.js:93-101` (MIT, see
+        // THIRD_PARTY_NOTICES.md) does the identical min==max pin, and the
+        // installed `comfyui_frontend_package` 1.47.10's own DOM-widget
+        // `computeLayoutSize` (`static/assets/promotionUtils-DzZo8o5W.js`)
+        // reads both bounds together -- this is the NATIVE mechanism that
+        // stops litegraph from ever growing a row past ROW_H in the first
+        // place, ahead of (not instead of) the `setSize` clamp and the
+        // per-frame draw hook below, both of which stay as defence in depth.
+        getMaxHeight: () => ROW_H,
       });
       widget.serialize = false;
       if (widget.options) {
         widget.options.serialize = false;
       }
       widget.computeSize = () => [node.size[0], ROW_H];
-      widget.computeLayoutSize = () => ({ minHeight: ROW_H, minWidth: 1 });
+      widget.computeLayoutSize = () => ({ minHeight: ROW_H, maxHeight: ROW_H, minWidth: 1 });
       wireRow(node, ctx, row, refs);
       // Wheel-zooms-the-canvas fix (js/shared/canvas_zoom.mjs) -- installed
       // on EVERY row's own root, since this node has no single wrapping body
@@ -1361,13 +1371,17 @@ function rebuildRowWidgets(node, ctx) {
   const addWidget = node.addDOMWidget("ctrl_add_row", "ctrl_add", addRefs.root, {
     serialize: false,
     getMinHeight: () => 28,
+    // Same min==max pin as the row widgets just above -- see that call's own
+    // comment for the full derivation (ComfyUI-Pixaroma `js/lora_loader/
+    // index.js:93-101`, MIT).
+    getMaxHeight: () => 28,
   });
   addWidget.serialize = false;
   if (addWidget.options) {
     addWidget.options.serialize = false;
   }
   addWidget.computeSize = () => [node.size[0], 28];
-  addWidget.computeLayoutSize = () => ({ minHeight: 28, minWidth: 1 });
+  addWidget.computeLayoutSize = () => ({ minHeight: 28, maxHeight: 28, minWidth: 1 });
   addRefs.root.disabled = state.rows.length >= maxRows;
   wireAddRow(node, ctx, addRefs);
   node._ctrlAddWidget = addWidget;
@@ -2270,6 +2284,100 @@ export function onDrawForegroundControls(node, ctx) {
   if (node.size[1] !== h) {
     node.size[1] = h;
   }
+}
+
+// ---------------------------------------------------------------------------
+// setSize wrap -- the THIRD hook Class A needs, and the one that stops the
+// visible mid-drag stretch `onResizeControls`/`onDrawForegroundControls`
+// only ever correct AFTER the fact.
+//
+// Decompiling the actually-installed `comfyui_frontend_package` **1.47.10**
+// (`static/assets/promotionUtils-DzZo8o5W.js`), legacy litegraph's own
+// resize-drag handler is:
+//
+//   let l = n.computeSize();
+//   c.width  < l[0] && (..., c.width  = l[0]),
+//   c.height < l[1] && (..., c.height = l[1]),
+//   n.pos = c.pos, n.setSize(c.size), this._dirty()
+//
+// Two facts fall out of that, and together they're why `onResize` could
+// never be made to work here (`onResizeControls`'s own doc comment has the
+// live measurement: `onResizeCalls: 0` on an actual height drag):
+//
+// 1. Litegraph clamps BOTH axes to `computeSize()` as MINIMUMS only -- there
+//    is no maximum, so nothing upstream stops a height DRAG from going
+//    taller than content. That headroom is the whole defect: a floor alone
+//    (what `computeSize` already provides) permits growing past content,
+//    never forbids it.
+// 2. `n.setSize(c.size)` runs on EVERY DRAG FRAME, and it runs BEFORE
+//    `this._dirty()` -- i.e. before the repaint that would otherwise show
+//    the node holding the dragged (too-tall) size for that frame.
+//    `onResize` is never called on this path at all, and `onDrawForeground`
+//    (a genuine per-frame hook) still only ever runs AFTER litegraph has
+//    already written the dragged size and asked for a repaint -- so both of
+//    them correct the node back to content height ONE FRAME LATE, which is
+//    exactly the "stretches, then snaps back" the owner asked to close.
+//    `setSize` itself is the one call that sits BEFORE that paint decision,
+//    which is why wrapping it (not `onResize`) is the fix.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap `node.setSize` so Class A's height lock lands at the point of
+ * assignment, pre-paint, rather than only being corrected after the fact by
+ * `onResizeControls`/`onDrawForegroundControls` (both kept -- see their own
+ * doc comments; this is defence in depth alongside them, not a replacement:
+ * `onResizeControls` still matters for a build/path where `onResize` DOES
+ * fire, and `onDrawForegroundControls` remains the backstop for any code
+ * path that writes `node.size` directly and never goes through `setSize` at
+ * all).
+ *
+ * Wraps, never reimplements: captures whatever `node.setSize` already is
+ * (the fake node's own bookkeeping under test, litegraph's real
+ * implementation live) and always delegates to it for the actual write --
+ * this function only decides WHAT size to hand it.
+ *
+ * Guarded exactly like `onResizeControls`/`onDrawForegroundControls`: a bare
+ * pass-through under `isVueNodes()` (Nodes 2.0 owns sizing via
+ * `computeLayoutSize`, don't fight it) and under `node._ctrlConfiguring`/
+ * `ctx.isGraphLoading()` (a load must never be fought -- litegraph itself
+ * can call `setSize` while restoring a saved node, and `restoreNodeSize`,
+ * above, already writes `node.size` directly rather than through this
+ * wrapper for the identical reason: some call sites need to bypass the
+ * clamp chain entirely, not merely have it no-op).
+ *
+ * Mutates the incoming `size` array's ENTRIES in place, never replaces the
+ * reference -- the same convention `onResizeControls` already uses for its
+ * own `size` parameter (a caller may have passed `node.size` itself; handing
+ * back a different array object would desync it from whatever the caller
+ * still holds a reference to).
+ *
+ * Verified as a no-op on `fitNode`'s own call: `fitNode` calls
+ * `node.setSize([w, h])` with `h` already `fitNodeH`'s answer, so the clamp
+ * below recomputes the exact SAME number (`fitNodeH` is pure given the
+ * node's current rows/`computeSize`) and writes it back unchanged -- a
+ * verified no-op, not a double correction. No recursion either: `original`
+ * is the REAL captured method, called directly, never `node.setSize` (i.e.
+ * never this wrapper) again.
+ */
+export function wrapSetSizeControls(node, ctx) {
+  if (typeof node.setSize !== "function") {
+    return; // nothing to wrap -- a stub/renderer without setSize at all
+  }
+  const original = node.setSize.bind(node);
+  node.setSize = function setSizeControls(size) {
+    if (isVueNodes() || node._ctrlConfiguring || (ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
+      return original(size); // Nodes 2.0, or a load in flight -- never fight either
+    }
+    const arr = Array.isArray(size) && size.length >= 2 ? size : null;
+    if (!arr) {
+      return original(size); // not a [w, h]-shaped call -- pass through untouched
+    }
+    if (arr[0] < MIN_W) {
+      arr[0] = MIN_W;
+    }
+    arr[1] = fitNodeH(node, ctx);
+    return original(arr);
+  };
 }
 
 /**
