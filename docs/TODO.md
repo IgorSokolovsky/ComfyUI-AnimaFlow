@@ -55,23 +55,35 @@ porting is fine *with attribution*, per `.claude/CLAUDE.md` and `THIRD_PARTY_NOT
 4. **The same for models**, not just LoRAs — so the UNET/checkpoint side of the Loader Panel gets it
    too. That makes this a **shared Civitai browser** consumed by two nodes, not a LoRA feature.
 
-**⚠️ Three things to settle before any code:**
+**Settled (owner, 2026-07-29):**
 
-- **Where the API key lives — and where it must NEVER live.** A Civitai key is a credential. Our node
-  settings blob is a *serialized STRING widget*, so it goes into the saved workflow — and the Preview
-  **embeds the workflow into saved PNGs**. A key in the settings blob would leak into every image the
-  user shares. It belongs in the ComfyUI settings section (`AnimaFlow.*`, server-side
-  `comfy.settings.json`) or an env var, and never in `panel_state`/`generation_settings`. (Today's
-  Colab notebook shipped a live tunnel token for a near-identical reason — saved UI state is a
-  credential sink.)
-- **Civicomfy's licence.** Not clonable here (not a sibling of this repo), so it hasn't been checked.
-  This pack's MIT boundary is strict: MIT ⇒ port with attribution in `THIRD_PARTY_NOTICES.md`;
-  GPL ⇒ **concept only, clean-room, never copy**. Establish which before reading its source.
-- **This is the pack's first outbound network call.** Everything today is local. It needs: no blocking
-  a graph run, degrade silently offline (a node must still load and execute with no network), rate
-  limiting, and downloads done **server-side in Python** — the browser can't write to `models/`. The
-  Colab launcher already has a model downloader with present/missing detection; check it for reusable
-  shape before starting fresh.
+- ✅ **Licence: Civicomfy is MIT** — [MoonGoblinDev/Civicomfy](https://github.com/MoonGoblinDev/Civicomfy),
+  verified on the repo page 2026-07-29. So porting is fine **with attribution**: add its own section
+  to `THIRD_PARTY_NOTICES.md` with a per-file derivation table, exactly as the Pixaroma and
+  EasyUseAnima entries do, at the moment anything is actually derived from it. (It isn't a sibling
+  clone here — pull it locally before porting, and re-verify the licence at that point rather than
+  trusting this line.)
+- ✅ **No API key required for basic use.** Search and public downloads must work with no key at all.
+  When an operation genuinely needs one (gated/early-access files, rate-limit relief), say so
+  **in the UI, naming what to do** — never fail with a bare 401 or, worse, silently return nothing.
+
+**Key handling — resolution order, and the one place it must never go:**
+
+1. our own ComfyUI setting (`AnimaFlow.*`, stored server-side in `comfy.settings.json`), then
+2. the **`CIVITAI_API_KEY`** environment variable — Civicomfy's own convention, so anyone already
+   running it gets ours working with zero extra setup, then
+3. no key ⇒ public-only mode, clearly indicated rather than silently degraded.
+
+**NEVER the node settings blob.** That blob is a *serialized STRING widget*, so it lands in the saved
+workflow — and the Preview **embeds the workflow into saved PNGs**. A key stored there would leak
+into every image the user shares. (This session's Colab notebook shipped a live tunnel token for the
+same class of reason: saved UI state is a credential sink, and it's invisible until someone looks.)
+
+**⚠️ Still to settle — this is the pack's first outbound network call.** Everything today is local.
+It needs: never blocking a graph run, degrading silently offline (a node must still load and execute
+with no network), rate limiting, and downloads done **server-side in Python** — the browser can't
+write to `models/`. The Colab launcher already has a model downloader with present/missing
+detection; read it for reusable shape before starting fresh.
 
 **Spillover to our Loader Panel** — candidates worth lifting even before the LoRA node exists:
 searchable picker, missing-file marks, the Civitai description/metadata panel, the downloader, and
