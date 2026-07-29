@@ -49,7 +49,13 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Next
 
-### 🎨 LoRA loader — **SPEC COMPLETE, READY TO BUILD** (2026-07-29)
+### 🎨 LoRA loader — **M1 BUILT, awaiting live verification** · M2 / M2b / M3 still spec (2026-07-29)
+
+**M1 shipped** across five reviewed slices — the node, the picker, the ⓘ panel + Civitai hash lookup,
+the ⚙ dialog, FLIP drag-reorder. It is in *Done (unverified)* below with the exact checks to run.
+**What remains here is M2 onward**, and §9's network policy still gates it.
+
+The rest of this section is the original spec framing, still accurate for M2/M2b/M3:
 
 **→ [`lora-loader-design.md`](lora-loader-design.md) — read its §0 first.** It carries the status, a
 20-row decisions table, the build plan, and the required-reading list. **→
@@ -75,10 +81,16 @@ policy) · M2b the toolbar modal · M3 Loader Panel reuse for checkpoints + UNET
 **The one thing still open: §9's outbound-network policy** — the pack's first network call. It does
 **not** block M1.
 
-Two unrelated things to settle while in `js/controls/index.js`, both found while locating the modal's
-mount point: the Rule Builder's `VERIFY-IN-COMFYUI` about whether its `commands` entry is reachable at
-all, and its user-visible label reading **"Webtoon: Rule Builder"** with `webtoon-rb-*` classes, left
-from the deleted webtoon line.
+~~Two unrelated things to settle while in `js/controls/index.js`~~ — **the label/CSS rename is DONE**
+(owner-approved, M1 slice 5: `"AnimaFlow: Rule Builder"`, `webtoon-rb-*` → `wtn-rb-*`, `COMMAND_ID` →
+`AnimaFlow.OpenRuleBuilder`). The **`VERIFY-IN-COMFYUI` about whether `commands` is reachable at all is
+still open** — it cannot be settled headlessly, so it was *sharpened* into a one-step live check rather
+than deleted. See the verification list below.
+
+**Left deliberately:** `app.registerExtension({ name: "webtoon.<track>" })` in all **five** entry points.
+It is a shared convention and a per-extension enable/disable persistence key; renaming one of five would
+create the inconsistency the rename was meant to remove, and would silently reset that choice. **Trigger:
+rename all five together, or not at all.**
 
 ## Deferred — with the reason
 
@@ -93,6 +105,37 @@ from the deleted webtoon line.
 ## Done (unverified in a live ComfyUI)
 
 Shipped and green, not yet exercised against a running ComfyUI.
+
+> ### 🎨 LoRA Loader M1 — `815c286`, built and pushed 2026-07-29, **NOT yet run in a live ComfyUI**
+>
+> Pushed, so a `git pull` + restart will pick it up. **Everything below is unverified against a running
+> ComfyUI** — that is what keeps this in *unverified* rather than *confirmed by use*.
+>
+> **What shipped:** `AnimaLoraLoader` (8th node) · `src/model_browser/` (kind whitelist, chunked SHA256,
+> safetensors header-only metadata, Civitai client on stdlib `urllib`, sidecar cache, four guarded
+> executor-offloaded routes) · the picker · the ⓘ panel + the four lookup states · the ⚙ dialog's eight
+> settings · FLIP drag-reorder · the Rule Builder rename.
+> **Suites at completion: Python 647, JS 1093, 5 auto-loaded `.js`, 8 nodes.** Five slices, each
+> built → independently reviewed → fixed → re-verified; three reviews returned NEEDS_CHANGES.
+>
+> **Verify in a live ComfyUI, in this order — nothing below is confirmed:**
+> 1. Restart. Node appears under `AnimaFlow/Controls`. Add it, add 3 LoRAs.
+> 2. **The image actually changes**, and routing the **patched** CLIP onward matters (wire the raw one
+>    and the model effect still lands while the CLIP effect silently vanishes — §4).
+> 3. **Drag a row: the node height must not move, even transiently.** This is the one Class A behaviour
+>    still unconfirmed from the 2026-07-29 sizing work, and now there's a FLIP animation over it.
+> 4. Save + reload: rows, trigger selections and node **width** survive; a clean workflow does not open
+>    as "modified".
+> 5. ⓘ on a LoRA that IS on Civitai (expect `found` + sidecar), and one that isn't (expect `notfound`
+>    explaining the hash — not a bare dead end).
+> 6. Turn **Settings → AnimaFlow → Civitai** off: no network affordance renders anywhere, **and
+>    already-cached notes/trigger words still display** (that combination is the whole point of §7d).
+> 7. **Subgraph recursion** (the one gap no headless test can reach): put an `AnimaLoraLoader` **inside
+>    a subgraph**, make one row's file missing, press `R` — the red mark must re-check. `findLoraNodes`
+>    walks `app.graph` directly, so it is only verifiable live.
+> 8. **The open `VERIFY-IN-COMFYUI`:** search the command palette for **"AnimaFlow: Rule Builder"**.
+>    Reachable ⇒ keep `commands`. Not reachable ⇒ delete the `commands` entry and let the toolbar button
+>    be the sole affordance. (Note: renaming `COMMAND_ID` **dropped any keybinding** you had for it.)
 
 | Item | Commit |
 |---|---|

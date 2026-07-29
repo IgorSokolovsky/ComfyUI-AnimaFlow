@@ -1,6 +1,10 @@
 # LoRA Loader + Civitai browser — design
 
-**Status: SPEC, nothing built.** Written 2026-07-29 from a full read of the upstream reference. Three
+**Status: M1 BUILT (2026-07-29), not yet verified in a live ComfyUI.** M2 (search + download) and M2b
+(the toolbar modal) remain spec-only and still need §9's network policy. See §0e for what M1 actually
+shipped and the two implementation decisions that are not in the 26-row table below.
+
+Originally written 2026-07-29 from a full read of the upstream reference. Three
 things the board listed as open are **settled here by investigation** (§2b, §5, §6); one genuinely
 open decision remains (§9). Read this before writing any code for this track — like
 [`control-panel-design.md`](control-panel-design.md) and [`generator-design.md`](generator-design.md),
@@ -37,7 +41,7 @@ off, open the modal and click a result card.
 | 12 | **One header row**: `＋ Add LoRA` (content+padding, **max 30%**) · master switch · `N/M` · 🔍 · ⚙ | §1a-ii |
 | 13 | Master switch **on only when all on**; mixed shows off, counter carries it; click = all on | §1a-ii |
 | 14 | Row order: **name · strength · ⓘ · switch(right)**; off row dimmed; missing = whole field red | §1a-ii |
-| 15 | **Drag-to-reorder with FLIP animation** (pack has none today); menu drops to **Duplicate / Remove** | §1a-iii |
+| 15 | **Drag-to-reorder with FLIP animation** (the *animation* is new; plain drag-reorder already ships — see §1a-iii's correction); menu drops to **Duplicate / Remove** | §1a-iii |
 | 16 | ⓘ panel: identity → `<hr>` → triggers → `<hr>` → author's notes (collapsible) | §1a-i |
 | 17 | `all`/`none` is an **ACTION segment** — never latches | §1a-i |
 | 18 | Custom trigger words allowed; **only user-authored chips get an `✕`** | §1a-i |
@@ -49,6 +53,28 @@ off, open the modal and click a result card.
 | 24 | The four lookup states each get **icon + cause + the one useful action**; `notfound` offers **search by name** and explains the hash | §7e |
 | 25 | Picker: root group **`All`**, subfolders their own; **current LoRA accented**; **ellipsis-truncated**; small **local-preview thumbnail** + size/base-model line | §1a-v |
 | 26 | Category: **subfolder grouping by default**, optional **group-by-Civitai-`tags`** (our parser must KEEP tags — upstream drops them); **never guess a category** | §1a-vi |
+
+### 0e. What M1 shipped, and two decisions taken during the build (2026-07-29)
+
+M1 is built across five reviewed slices. Suites at completion: **Python 647, JS 1093, 5 auto-loaded
+`.js`, 8 registered nodes.** Everything in §0c's M1 list landed. Two decisions were taken during
+implementation that the 26-row table does not cover, both recorded here so they don't read as drift:
+
+- **D — the Python package is `src/model_browser/`, not `src/civitai/`.** It holds the local-file
+  services too (per-kind listing, safetensors header-only metadata, preview discovery, the `kind`
+  whitelist), which the Loader Panel needs at M3 and which have nothing to do with Civitai. Civitai is
+  one *source* inside a model browser, not the package's subject. Routes are `/wtn/model_browser/*`.
+- **E — the reuse boundary is enforced by a test, not by intent.** `js/controls/model_picker.mjs`,
+  `model_info.mjs` and `civitai_api.mjs` are the three track-agnostic modules `AnimaLoaderPanel` imports
+  at M3; a layering guard fails the suite if any of them imports a `lora_*` module, via **static or
+  dynamic** `import()`. That is what keeps M3 an import rather than an extraction.
+
+**§7d's "cached sidecar info still displays" is implemented as a server-side guarantee, not a client
+promise.** `lookup_model_info(..., cached_only=True)` (`src/model_browser/lookup.py`) returns from the
+sidecar and, on a cache miss, returns **before** `hashing.sha256_file` or `civitai_client.lookup_by_hash`
+are reachable at all. So decision 20's "no path left from which a request could originate" is literally
+true — the fetch code is unreachable, not merely unused — while cached notes and trigger words still
+display with Civitai off. Tests poison both network functions to raise if reached.
 
 ### 0b. The ONE thing still open
 
@@ -204,6 +230,13 @@ than none, because a user filtering by it would silently not see LoRAs that are 
 invent a category; show nothing when we don't know.** (`no preview` sets the same precedent, §1a-v.)
 
 ### 1a-iii. Reordering is DRAG; the menu keeps four of its six items (owner, 2026-07-29)
+
+> ⚠️ **Correction (2026-07-29, found while building M1).** This section originally said the pack had no
+> drag-to-reorder. **It does.** `wireGrip` (`js/controls/interaction.mjs:1019`) implements the gesture,
+> `reorderRows` (`js/controls/rows.mjs:859`) is the pure array move, and `applyReorderLive`
+> (`js/controls/interaction.mjs:1082`) reorders widgets **without touching row DOM** — which is what keeps
+> the dragged row's pointer capture alive mid-gesture. Only the **FLIP animation** was genuinely new.
+> M1 reuses `reorderRows` rather than writing a second array move.
 
 Upstream's row menu, read off a reference shot, is **six** items — a source grep had shown me only four:
 
@@ -573,9 +606,14 @@ Surface, mirroring upstream's client-side caching (`api.mjs`'s `invalidateInfo` 
 | **download** | maybe (§8) | new; server-side Python only — the browser cannot write to `models/` |
 
 **Spillover into the Loader Panel**, worth lifting even before this node exists: the searchable
-picker, missing-file marks, the description/metadata panel, the downloader, and the memory-mode idea
-(our loader helpers already cache per `(kind, name, dtype)` — `control-panel-design.md` §2 — but
-expose no policy).
+picker, missing-file marks, the description/metadata panel, the downloader, and the memory-mode idea.
+
+> ⚠️ **Correction (2026-07-29, found while building M1).** This paragraph used to say "our loader helpers
+> already cache per `(kind, name, dtype)`". They do **not**. `_CACHE`
+> (`nodes/controls/_loaders_helpers.py:48`) holds **exactly one entry per kind** — changing a name
+> *overwrites* that kind's single slot — and that is a deliberate anti-VRAM-leak choice, with the
+> rationale at `:15-27`. There is no LRU to build on, so the LoRA memory modes implement their own
+> policy rather than layering onto an existing one.
 
 ---
 
