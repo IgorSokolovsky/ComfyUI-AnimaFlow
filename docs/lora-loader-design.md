@@ -57,19 +57,43 @@ hash lookup (no key, cacheable, and hideable by decision 20). Settle it before M
 
 ### 0c. Build plan
 
-**M1 — the node, offline-capable.** `AnimaLoraLoader` (`nodes/controls/`, `AnimaFlow/Controls`,
-registered from the existing `js/controls/index.js`). Declared `lora_state` widget with tolerant
-normalization (§3). Rows, searchable subfolder-grouped picker, strengths, missing marks, the header row,
-animated drag-reorder, the ⓘ panel, the ⚙ dialog, Class A sizing. Python: apply in row order, `triggers`
-from **applied rows only**, three memory modes (port the `last`-mode fix, §1b). Hash lookup + sidecar.
-Tests per §10 — **including `Float64Array` size tests**.
+> Decisions are cited as **d1–d26**, matching §0a. Four are framing rather than work items and so appear
+> nowhere below: **d1** (node ships first), **d2** (metadata needs no key), **d3** (not a layer-3
+> consumer), **d8** (three surfaces).
 
-**M2 — search + download.** Needs §9. Kind-parameterised routes with a whitelisted `kind`, the full
-filter set (pills in the node picker, `type` locked), server-side streamed download with progress and a
-destination derived from `kind`, the key ladder and public-only mode (§8).
+**M1 — the node, offline-capable.** No network policy needed; the only remote call is the hash lookup,
+which needs no key, caches to a sidecar, and is hideable (d20).
 
-**M2b — the toolbar modal.** Purely additive — M2 does not depend on it (§7c-ii). Icon button mounted from `js/controls/index.js` with a lazy `import()`; 90%
-modal; filter rail; result grid; detail view with version selector and community gallery.
+- `AnimaLoraLoader` — `nodes/controls/`, `AnimaFlow/Controls`, registered from the existing
+  `js/controls/index.js` (d4). Declared `lora_state` widget, tolerant normalization (d5, §3).
+- **Header row** (d12): `＋ Add LoRA` ≤30% · master switch with `N/M` (d13) · 🔍 · ⚙.
+- **Rows** (d14): name · strength · ⓘ · switch right; off row dimmed; missing = whole field red.
+  **Animated FLIP drag-reorder** (d15) — build it here, port to `js/controls/rows.mjs` after.
+  **Row menu** = `More info · Duplicate · Disable/Enable · Remove` (d23).
+- **Picker** (d25, d26): search on top, **local-preview thumbnail** + size/base-model line, current LoRA
+  accented, ellipsis-truncated, **group by subfolder** with optional group-by-category and a category chip
+  where Civitai `tags` are known — **our parser must keep `tags`** (upstream drops them).
+- **ⓘ panel** (d16–d18, d22): identity → `<hr>` → triggers (`all`/`none` **action** segment that never latches — d17, custom words with `✕`) → `<hr>` → collapsible author's notes; `View on Civitai ↗`.
+- **The four lookup states** (d24): searching / found / notfound / offline, each *icon + cause + the one
+  useful action*. `notfound` explains the hash and offers search-by-name — **that link lands in M2**, so in
+  M1 it is either disabled with a note or omitted.
+- **⚙ dialog** (d19): the eight settings, with the per-node vs Settings→AnimaFlow split (§7b). The
+  **Civitai** switch hides every network affordance (d20).
+- **Class A sizing** (d6, §6) — four layers; **read the sizing skill first**.
+- Python: apply in row order, `triggers` **from applied rows only**, three memory modes including the
+  `last`-mode fix (§1b).
+- Tests per §10, **including `Float64Array` size tests**.
+
+**M2 — search + download.** Needs §9's policy. Kind-parameterised routes with a **whitelisted `kind`**
+(d7), the full filter set as pills with `type` locked (d9), server-side streamed download with progress and
+a destination derived from `kind`, the key ladder and public-only mode (§8). Plus the **vertical Civitai
+info panel** the picker opens on a card click (d21) — version selector, description, single-column
+community gallery with prompt-on-hover and copy, `View on Civitai ↗`. Completes `notfound`'s
+search-by-name link from M1.
+
+**M2b — the toolbar modal.** Purely additive; M2 does not depend on it (§7c-ii). Icon button mounted from
+`js/controls/index.js` with a lazy `import()`; 90% modal; filter rail with **`<select>`-adds-a-chip** (d10);
+result grid; detail **swap** keeping the rail, with the multi-column gallery (d11).
 
 **M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only**.
 
