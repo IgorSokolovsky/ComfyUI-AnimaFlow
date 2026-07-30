@@ -49,6 +49,14 @@ from .src.anima import api as _anima_api  # noqa: F401
 # a node's own frontend calls, not a node in its own right.
 from .src.model_browser import api as _model_browser_api  # noqa: F401
 
+# Installs the browser-cache fix for this pack's own `.mjs`/`.js` files as an
+# import side effect (see `src/web_cache/api.py`) -- ported from
+# `../ComfyUI-Pixaroma` (MIT, see THIRD_PARTY_NOTICES.md), guarded the same
+# way as every other `api.py` above. No node class or route here either — it
+# only attaches an `on_response_prepare` hook and a middleware to the live
+# aiohttp app.
+from .src.web_cache import api as _web_cache_api  # noqa: F401
+
 NODE_CLASS_MAPPINGS: dict[str, type] = {
     "PromptRulesClip": PromptRulesClip,
     "PromptRulesText": PromptRulesText,
