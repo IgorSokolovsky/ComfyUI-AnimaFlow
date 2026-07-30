@@ -37,6 +37,7 @@ try:
     # `src.prompt_rules.core`.
     from ...src.anima.preview_settings import (  # type: ignore
         SaveNowError,
+        collision_suffixed_filename,
         format_filename,
         resolve_run_stage_labels,
         resolve_save_now_stage,
@@ -49,6 +50,7 @@ except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
     from src.anima.preview_settings import (
         SaveNowError,
+        collision_suffixed_filename,
         format_filename,
         resolve_run_stage_labels,
         resolve_save_now_stage,
@@ -66,6 +68,7 @@ except ImportError:
 # `extract_seed_from_prompt`/`build_preview_ui_images` here rather than
 # reaching into `src/anima/` directly itself.
 __all__ = [
+    "FilenameCollisionExhausted",
     "SaveNowError",
     "build_preview_ui_images",
     "extract_seed_from_prompt",
@@ -77,6 +80,7 @@ __all__ = [
     "save_images",
     "save_now",
     "write_temp_stage_images",
+    "write_without_overwriting",
 ]
 
 
@@ -111,6 +115,117 @@ def _next_counter(directory: str, static_prefix: str) -> int:
         if match:
             highest = max(highest, int(match.group(1)))
     return highest + 1
+
+
+# ---------------------------------------------------------------------------
+# Never-overwrite collision handling (data-loss bug fix). The PURE decision
+# ("what would candidate N look like") is `collision_suffixed_filename`
+# (`src/anima/preview_settings.py`); everything below is the impure half --
+# actually reserving a name against a real directory, one candidate at a
+# time, with the filesystem itself arbitrating so two concurrent saves can
+# never both win the same name (the bug we're fixing, wearing a race-
+# condition hat).
+# ---------------------------------------------------------------------------
+
+# An arbitrary but generous bound -- no real workflow saves the same
+# stage/seed/day combination this many times. Existing purely so a
+# pathological directory (or a bug) can't spin forever; a bound-hit is
+# reported as a readable error, never silently overwrites and never hangs.
+_MAX_COLLISION_ATTEMPTS = 10_000
+
+
+class FilenameCollisionExhausted(RuntimeError):
+    """Raised when `_MAX_COLLISION_ATTEMPTS` candidate filenames in a row
+    were all already taken. Deliberately a plain `RuntimeError` (not
+    `SaveNowError`) at this layer -- `save_now` below catches it and
+    re-raises as `SaveNowError` so it flows through `src/anima/api.py`'s
+    existing "readable error, not a traceback" handling; the auto-save path
+    (`save_images`) has no such wrapper, so it propagates as-is and ComfyUI's
+    own node-execution error surface (which prints the exception message) is
+    what makes it readable there.
+    """
+
+
+def write_without_overwriting(directory: str, filename: str, writer: Callable[[str], None]) -> str:
+    """Call `writer(full_path)` at the first collision-free candidate name
+    under `directory` for `filename` -- try `filename` itself first
+    (`collision_suffixed_filename`'s `attempt=0`, the "no collision" case),
+    then its `_000000`/`_000001`/... suffixed forms, up to
+    `_MAX_COLLISION_ATTEMPTS`. Returns the actual (base, not full-path)
+    filename `writer` was called with.
+
+    **Closes the race, doesn't just avoid it**: this does NOT `os.path.
+    exists` check then write -- `writer` itself is required to use
+    EXCLUSIVE creation (`os.O_EXCL`, e.g. `_write_pil_image_exclusive`
+    below) and raise `FileExistsError` when its candidate path is already
+    taken, so the filesystem is what arbitrates a genuine collision between
+    two concurrent saves, not a check this process performed a moment
+    earlier and might already be stale by the time it writes.
+    """
+    import os
+
+    for attempt in range(_MAX_COLLISION_ATTEMPTS):
+        candidate = collision_suffixed_filename(filename, attempt)
+        full_path = os.path.join(directory, candidate)
+        try:
+            writer(full_path)
+        except FileExistsError:
+            continue
+        return candidate
+
+    raise FilenameCollisionExhausted(
+        f"Could not find a free filename for {filename!r} in {directory!r} "
+        f"after {_MAX_COLLISION_ATTEMPTS} attempts -- giving up rather than "
+        "overwriting an existing file or spinning forever."
+    )
+
+
+# `png`/`jpg`/`jpeg`/`webp` cover every `save.extension` choice this pack's
+# frontend actually offers (`js/anima/`'s save-settings picker); anything
+# else (a hand-edited workflow's custom extension) falls back to upper-casing
+# the extension itself, which is what PIL's own format name is for the
+# common remaining cases (`"bmp"` -> `"BMP"`, etc).
+_PIL_FORMAT_BY_EXTENSION = {"jpg": "JPEG", "jpeg": "JPEG", "png": "PNG", "webp": "WEBP"}
+
+
+def _pil_format_for_extension(extension: str) -> str:
+    """A file EXTENSION (no leading dot, e.g. `"png"`) -> the PIL `format=`
+    name `Image.save` needs when handed an open file HANDLE instead of a
+    path string (a handle carries no filename for PIL to sniff a format
+    from, unlike `Image.save(path)`). Pure string mapping, no I/O -- kept
+    here rather than in `src/anima/preview_settings.py` because it's a PIL
+    implementation detail of THIS module's writers, not a decision anything
+    else in the pack needs.
+    """
+    return _PIL_FORMAT_BY_EXTENSION.get(extension.lower(), extension.upper())
+
+
+def _write_pil_image_exclusive(pil_image: Any, full_path: str, *, pil_format: str, pnginfo: Any = None) -> None:
+    """Write `pil_image` to `full_path` via EXCLUSIVE creation
+    (`os.O_CREAT | os.O_EXCL`) -- raises `FileExistsError` if `full_path`
+    already exists, which is exactly the signal `write_without_overwriting`
+    needs to try the next candidate, and is what actually closes the race
+    (the filesystem itself refuses a second exclusive create of the same
+    name, however close two concurrent saves land). PIL is handed the open
+    handle directly (not the path string) so there is no separate
+    check-then-write step in between -- `format=` is required in that case
+    since a handle carries no filename to sniff a format from.
+    """
+    import os
+
+    fd = os.open(full_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            pil_image.save(fh, format=pil_format, pnginfo=pnginfo)
+    except Exception:
+        # The exclusive create already claimed `full_path`; if the actual
+        # encode/write after that failed partway, don't leave a corrupt
+        # reservation behind blocking every future save under this name.
+        try:
+            os.remove(full_path)
+        except OSError:
+            pass
+        raise
 
 
 def extract_seed_from_prompt(prompt: Any) -> Any:
@@ -223,8 +338,15 @@ def save_images(
                     for key, value in extra_pnginfo.items():
                         metadata.add_text(key, json.dumps(value))
 
-            pil_image.save(os.path.join(output_dir, filename), pnginfo=metadata)
-            results.append({"filename": filename, "subfolder": subfolder, "type": "output", "stage": stage})
+            pil_format = _pil_format_for_extension(extension)
+            written_filename = write_without_overwriting(
+                output_dir,
+                filename,
+                lambda full_path, _img=pil_image, _fmt=pil_format, _meta=metadata: _write_pil_image_exclusive(
+                    _img, full_path, pil_format=_fmt, pnginfo=_meta,
+                ),
+            )
+            results.append({"filename": written_filename, "subfolder": subfolder, "type": "output", "stage": stage})
             counter += 1
 
     return results
@@ -387,13 +509,37 @@ def _default_probe_image_size(source_path: str):
 
 
 def _default_write_image_copy(source_path: str, dest_path: str) -> None:
+    """The default `write_fn`: re-encode `source_path` (a temp preview or an
+    already-saved output, per `save_now`'s own docstring) into `dest_path`.
+
+    **Collision-safe by EXCLUSIVE creation**, same discipline as
+    `_write_pil_image_exclusive` -- `dest_path` is opened with `os.O_CREAT |
+    os.O_EXCL`, so if it already exists (another save landed on the exact
+    same name in the meantime -- `save_now`'s own `write_without_overwriting`
+    call below assumed it was free a moment earlier, but only the filesystem
+    can actually arbitrate that) this raises `FileExistsError`, which is
+    exactly the signal that caller needs to try the next `_NNNNNN`-suffixed
+    candidate instead of clobbering the file that's already there.
+    """
+    import os
+
     from PIL import Image
 
     with Image.open(source_path) as im:
         im.load()
         if dest_path.lower().endswith((".jpg", ".jpeg")) and im.mode not in ("RGB", "L"):
             im = im.convert("RGB")
-        im.save(dest_path)
+        pil_format = _pil_format_for_extension(os.path.splitext(dest_path)[1].lstrip("."))
+        fd = os.open(dest_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                im.save(fh, format=pil_format)
+        except Exception:
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+            raise
 
 
 def save_now(
@@ -497,6 +643,19 @@ def save_now(
         template, stage=stage, seed=resolve_seed_int(seed), width=width, height=height, counter=counter,
     )
     out_filename = f"{filename_stem}.{extension}"
-    write(source_path, os.path.join(output_dir, out_filename))
+    # Never-overwrite (same fix as `save_images`): try `out_filename` itself
+    # first, then its `_000000`/`_000001`/... suffixed forms, until one
+    # writes cleanly. `write` (the default `_default_write_image_copy`, or
+    # an injected `write_fn`) is responsible for the actual exclusivity --
+    # this loop only supplies candidates and reacts to `FileExistsError`.
+    try:
+        out_filename = write_without_overwriting(
+            output_dir, out_filename, lambda full_path: write(source_path, full_path),
+        )
+    except FilenameCollisionExhausted as exc:
+        # Same "readable error, not a bare traceback" contract as every
+        # other `SaveNowError` this function raises -- `src/anima/api.py`'s
+        # `save_now_impl` already catches exactly this class.
+        raise SaveNowError(str(exc)) from exc
 
     return {"filename": out_filename, "subfolder": out_subfolder, "type": "output", "stage": stage}

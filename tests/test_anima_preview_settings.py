@@ -141,6 +141,42 @@ def test_hostile_template_never_raises():
 
 
 # ---------------------------------------------------------------------------
+# collision_suffixed_filename -- the PURE half of the "never overwrite" fix
+# (data-loss bug: a re-run with the same seed/day/stage silently clobbered
+# the previous file). attempt=0 is always the plain name; attempt>=1 inserts
+# a zero-padded 6-digit counter BEFORE the extension.
+# ---------------------------------------------------------------------------
+
+
+def test_collision_suffixed_filename_no_collision_keeps_plain_name():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 0) == "2026-07-29_42_final.png"
+
+
+def test_collision_suffixed_filename_first_collision_is_000000():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 1) == "2026-07-29_42_final_000000.png"
+
+
+def test_collision_suffixed_filename_second_collision_is_000001():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 2) == "2026-07-29_42_final_000001.png"
+
+
+def test_collision_suffixed_filename_preserves_extension():
+    # The suffix goes BEFORE the extension, never after it.
+    assert ps.collision_suffixed_filename("name.png", 1) == "name_000000.png"
+    assert not ps.collision_suffixed_filename("name.png", 1).endswith(".png_000000")
+
+
+def test_collision_suffixed_filename_handles_a_dotted_stem():
+    # Only the LAST extension is treated as one -- `my.file.png`'s suffix
+    # must land right before `.png`, not after the first dot.
+    assert ps.collision_suffixed_filename("my.file.png", 1) == "my.file_000000.png"
+
+
+def test_collision_suffixed_filename_no_extension_at_all():
+    assert ps.collision_suffixed_filename("plain_name", 1) == "plain_name_000000"
+
+
+# ---------------------------------------------------------------------------
 # Stage-routing -- resolve_wired_stages/resolve_shown_stage/resolve_save_stages/
 # split_preview_stages. All pure: no comfy/torch import, `wired` is just a
 # `{stage_name: tensor_or_None}` dict now (2026-07-28 reversal -- there is no
@@ -286,6 +322,12 @@ ALL_TESTS = [
     test_full_template_combining_every_token,
     test_template_with_no_tokens_passes_through_unchanged,
     test_hostile_template_never_raises,
+    test_collision_suffixed_filename_no_collision_keeps_plain_name,
+    test_collision_suffixed_filename_first_collision_is_000000,
+    test_collision_suffixed_filename_second_collision_is_000001,
+    test_collision_suffixed_filename_preserves_extension,
+    test_collision_suffixed_filename_handles_a_dotted_stem,
+    test_collision_suffixed_filename_no_extension_at_all,
     test_resolve_wired_stages_returns_only_wired_in_stable_order,
     test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,
     test_resolve_shown_stage_one_entry_degrades_to_single_image,

@@ -263,6 +263,39 @@ def normalize_preview_settings(raw: Any) -> Dict[str, Any]:
     return merged
 
 
+def collision_suffixed_filename(filename: str, attempt: int) -> str:
+    """The `attempt`-th candidate name in the "never overwrite" collision
+    loop (data-loss bug fix: `AnimaPreview` was silently clobbering an
+    existing file that happened to resolve to the same templated name --
+    e.g. the same seed run twice on the same day at the same stage, the
+    default filename template has no `%counter%` token). `attempt == 0` is
+    the plain `filename` unchanged -- the FIRST file at a given name always
+    keeps its plain name, per the owner's spec; a suffix only appears once
+    there is an actual collision. `attempt >= 1` inserts a zero-padded
+    6-digit counter BEFORE the extension: `name_000000.ext`,
+    `name_000001.ext`, ... so `attempt=1` is the first collision's name
+    (`_000000`), matching the spec's own example numbering exactly (its
+    `_000000`/`_000001` are 1-indexed off `attempt`, not 0-indexed).
+
+    Extension-preserving via `os.path.splitext`, so a dotted stem
+    (`my.file.png`) only has its LAST extension treated as one --
+    `my.file_000000.png`, never `my.file.png_000000`. `os.path` is pure
+    string manipulation (no filesystem access), so this stays a pure
+    function: no I/O, callable from a plain-script test with no directory
+    on disk at all. The actual collision LOOP (deciding which `attempt` is
+    free, and enforcing that atomically against a real directory) is
+    impure and lives in `nodes/anima/_preview_helpers.py`, which calls this
+    for each candidate in turn -- this function only ever answers "what
+    would attempt N look like", never "is attempt N free".
+    """
+    if attempt <= 0:
+        return filename
+    import os.path
+
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{attempt - 1:06d}{ext}"
+
+
 def format_filename(
     template: str, *, stage: str, seed: Any, width: int, height: int, counter: int, now: Any = None,
 ) -> str:
