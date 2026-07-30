@@ -2358,6 +2358,108 @@ def test_stream_download_non_safetensors_destination_skips_header_check():
         assert not os.path.isfile(dest + ".part")
 
 
+# ---------------------------------------------------------------------------
+# 2026-07-30 fix #2: a `200` whose `Content-Type` is `text/html` is never a
+# valid model file -- confirmed live, a gated LoRA's download landed as a
+# 10 KB file that was actually Civitai's own login page, served with a
+# genuine 200 and a correct `Content-Length` FOR ITSELF (so neither the
+# length gate nor the safetensors-header gate is the right tool -- the fix
+# is a Content-Type check BEFORE any bytes are read or written).
+# ---------------------------------------------------------------------------
+
+
+class _ReadTrackingDownloadResponse(_FakeDownloadResponse):
+    """Same as `_FakeDownloadResponse`, plus recording whether `.read()` was
+    ever called -- the HTML-content-type gate's whole point is failing
+    BEFORE the body is read at all, and a plain assertion on written bytes
+    can't distinguish "never read" from "read then discarded"."""
+
+    def __init__(self, body: bytes, *, headers=None):
+        super().__init__(body, headers=headers)
+        self.read_called = False
+
+    def read(self, n=-1):
+        self.read_called = True
+        return super().read(n)
+
+
+def test_stream_download_html_200_response_is_key_required_not_corrupt():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "gated.safetensors")
+        login_page = b"<!doctype html>\n<html lang=\"en\"><head><title>Civitai Login</title></head></html>"
+        response = _ReadTrackingDownloadResponse(
+            login_page, headers={"Content-Length": str(len(login_page)), "Content-Type": "text/html"},
+        )
+
+        def opener(url, timeout):
+            return response
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "key_required"
+        assert result["bytes_written"] == 0
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+        assert response.read_called is False  # the whole point: fail before reading the body
+
+
+def test_stream_download_html_200_response_with_charset_param_is_still_key_required():
+    # `_is_html_content_type` parses a MEDIA TYPE, not the whole header
+    # string -- a trailing `charset=utf-8` parameter must not defeat it.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "gated.safetensors")
+        login_page = b"<!doctype html><html><head><title>Civitai Login</title></head></html>"
+        response = _ReadTrackingDownloadResponse(
+            login_page,
+            headers={"Content-Length": str(len(login_page)), "Content-Type": "text/html; charset=utf-8"},
+        )
+
+        def opener(url, timeout):
+            return response
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "key_required"
+        assert result["bytes_written"] == 0
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+        assert response.read_called is False
+
+
+def test_stream_download_binary_content_type_still_downloads_successfully():
+    # The control case: a normal `application/octet-stream` response must
+    # still stream and land exactly as before -- this fix must not touch the
+    # ordinary success path.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "real.safetensors")
+        header_json = json.dumps({"__metadata__": {"format": "pt"}}).encode("utf-8")
+        payload = struct.pack("<Q", len(header_json)) + header_json
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(
+                payload, headers={"Content-Length": str(len(payload)), "Content-Type": "application/octet-stream"},
+            )
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "ok"
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+
+def test_stream_download_missing_content_type_header_still_downloads():
+    # No `Content-Type` header at all -- must not invent a requirement the
+    # server never stated (same stance as the missing-Content-Length case).
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "no_content_type.bin")
+        payload = b"z" * (1024 * 1024 + 5)
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={"Content-Length": str(len(payload))})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "ok"
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+
 # A real Civitai "you must be logged in to download this" body -- verified
 # live (2026-07-30) against three actual early-access LoRA versions:
 # `Content-Type: application/json`, `{"error": "Unauthorized", "message":
@@ -3174,6 +3276,10 @@ ALL_TESTS = [
     test_stream_download_html_error_page_to_safetensors_dest_is_corrupt,
     test_stream_download_valid_safetensors_header_is_ok,
     test_stream_download_non_safetensors_destination_skips_header_check,
+    test_stream_download_html_200_response_is_key_required_not_corrupt,
+    test_stream_download_html_200_response_with_charset_param_is_still_key_required,
+    test_stream_download_binary_content_type_still_downloads_successfully,
+    test_stream_download_missing_content_type_header_still_downloads,
     test_stream_download_401_with_confirmed_body_is_key_required,
     test_stream_download_403_with_confirmed_body_is_also_key_required,
     test_stream_download_401_without_a_body_is_forbidden_not_key_required,

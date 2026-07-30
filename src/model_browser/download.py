@@ -35,6 +35,23 @@ before that same rename -- a `Content-Length` length check, then (for a
 `.safetensors`/`.sft` destination) a safetensors-header sanity check via
 `local.is_valid_safetensors_header` -- and only reaches `os.replace` if both
 pass, closing the hole without changing where the guarantee itself lives.
+
+🔒 2026-07-30 fix #2 (confirmed live: a gated LoRA landed as a 10 KB file
+whose bytes were Civitai's OWN "Civitai Login" HTML page): the two gates
+above run AFTER the full body has already been read and written to `.part`,
+and neither one is a real fix for THIS shape of failure -- Civitai answered
+with a plain `200`, not a `401`/`403`, so `_http_error_result` never even
+runs; the page carried a correct `Content-Length` *for itself*, so the
+length gate agreed exactly; and the safetensors-header gate below DID stop
+the file landing, but reported `"corrupt"` -- true in the narrowest sense
+(it isn't a valid safetensors file) but actively misleading, since the real
+problem is "you're not logged in," not "the download broke." `stream_download`
+now checks the response's `Content-Type` BEFORE writing a single byte: an
+`html` media type is never a valid model file, full stop, so this is
+reported as `"key_required"` (the SAME reason a confirmed 401/403 body
+produces, `_is_key_required_body`/`_http_error_result`) with NO `.part` file
+ever created for this path -- see `_is_html_content_type`/
+`_html_login_page_result` below.
 """
 from __future__ import annotations
 
@@ -418,6 +435,51 @@ def _content_length(response: Any) -> Optional[int]:
         return None
 
 
+def _is_html_content_type(response: Any) -> bool:
+    """Whether `response`'s `Content-Type` header names the `text/html`
+    MEDIA TYPE -- parsed as a media type (split on the first `;`, so a
+    trailing `charset=...` parameter doesn't matter), never string-matched
+    against the whole header value. A missing header, or any other media
+    type, is `False` -- never invent a requirement the server didn't state
+    (same stance as `_content_length`'s "no header -> skip, don't fail").
+
+    This is the confirmed-bug signal (see this module's own top docstring,
+    2026-07-30 fix #2): Civitai can answer a gated download with a `200` and
+    its own login page instead of a `401`/`403`, so neither `_http_error_
+    result` nor the post-download integrity gates below ever see it. An HTML
+    body is never a valid model file under any circumstance, so this check
+    runs BEFORE any bytes are read or written.
+    """
+    try:
+        headers = response.headers
+        value = headers.get("Content-Type") if headers is not None else None
+    except AttributeError:
+        return False
+    if not isinstance(value, str):
+        return False
+    media_type = value.split(";", 1)[0].strip().lower()
+    return media_type == "text/html"
+
+
+def _html_login_page_result() -> Dict[str, Any]:
+    """The result for `_is_html_content_type` confirming a `200` response is
+    actually an HTML page, not a file -- reported as the SAME `"key_required"`
+    reason a confirmed 401/403 body produces (`_is_key_required_body`/
+    `_http_error_result`), routed through the same existing UI affordance
+    rather than a parallel one (task brief). `bytes_written` is always `0`
+    here: this fires before the `.part` file even exists, so nothing was
+    ever written and nothing needs cleaning up."""
+    return {
+        "reason": "key_required",
+        "message": (
+            "Civitai returned a web page instead of a file -- this usually "
+            "means the download needs an API key. Add one in "
+            "Settings -> AnimaFlow -> Controls."
+        ),
+        "bytes_written": 0,
+    }
+
+
 def _is_key_required_body(exc: urllib.error.HTTPError) -> bool:
     """Whether `exc`'s body is Civitai's OWN documented "you must be logged
     in to download this" shape, as opposed to a 401/403 that merely LOOKS
@@ -537,6 +599,11 @@ def stream_download(
         machine-readable reason, never a bare failure -- see
         `_is_key_required_body`; a 401/403 that DOESN'T confirm that shape
         is reported as `"offline"`/`"forbidden"` below instead, never this).
+        Also reported here -- with NO `.part` file ever created -- for a
+        `200` response whose `Content-Type` is `text/html`: 🔒 2026-07-30 fix
+        #2, a confirmed live bug where a gated download's login page was
+        served with a genuine `200` and written verbatim to the model's real
+        filename. See `_is_html_content_type`/`_html_login_page_result`.
       - `"offline"`        -- a network-level failure, with `offline_reason`
         matching `civitai_client`'s own vocabulary (`timeout`/`dns_tls`/
         `unreadable`/`rate_limited`/`notfound`/`forbidden`/`unknown`) plus
@@ -589,6 +656,12 @@ def stream_download(
     bytes_written = 0
     try:
         with opener(url, timeout) as response:
+            # 🔒 2026-07-30 fix #2 -- checked BEFORE anything else in this
+            # block: no bytes read, no `.part` file created, nothing to
+            # clean up on this path. See `_is_html_content_type`'s docstring
+            # and this module's own top docstring for the confirmed bug.
+            if _is_html_content_type(response):
+                return _html_login_page_result()
             total = _content_length(response)
             with open(part_path, "wb") as out:
                 while True:
