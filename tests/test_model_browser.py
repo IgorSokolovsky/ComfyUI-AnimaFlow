@@ -24,16 +24,24 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import struct
 import sys
 import tempfile
+import threading
+import time
 import types
 import urllib.error
+import urllib.parse
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.model_browser import api as mb_api
-from src.model_browser import civitai_client, civitai_parse, hashing, kinds, local, lookup, sidecar
+from src.model_browser import (
+    civitai_client, civitai_parse, civitai_search, download, hashing, keys,
+    kinds, local, lookup, rate_limit, sidecar,
+)
 
 # ---------------------------------------------------------------------------
 # kinds.py -- the whitelist / security boundary
@@ -1349,6 +1357,1225 @@ def test_every_impl_route_always_carries_a_reason_key():
         assert "reason" in mb_api.thumb_path_impl(payload)
 
 
+# ---------------------------------------------------------------------------
+# M2 -- civitai_search.py: request-building + response-parsing, pure/offline.
+# ---------------------------------------------------------------------------
+
+
+def test_type_for_kind_known_and_unknown():
+    assert civitai_search.type_for_kind("loras") == "LORA"
+    assert civitai_search.type_for_kind("checkpoints") == "Checkpoint"
+    assert civitai_search.type_for_kind("unet") == "Checkpoint"
+    for bad in ("../../etc", "", None, 42, "LORAS"):
+        assert civitai_search.type_for_kind(bad) is None, bad
+
+
+def test_build_search_url_shape_and_params():
+    url = civitai_search.build_search_url(
+        "civitai.com", "loras", "skin detail",
+        base_model="SDXL", sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
+    )
+    assert url.startswith("https://civitai.com/api/v1/models?")
+    assert "types=LORA" in url
+    assert "sort=Most+Downloaded" in url
+    assert "period=Month" in url
+    assert "limit=5" in url
+    assert "nsfw=true" in url
+    assert "query=skin+detail" in url
+    assert "baseModels=SDXL" in url
+    assert "cursor=abc" in url
+
+
+def test_build_search_url_rejects_unwhitelisted_kind():
+    assert civitai_search.build_search_url("civitai.com", "../../etc", "x") is None
+    assert civitai_search.build_search_url("civitai.com", "not-a-kind", "x") is None
+
+
+def test_build_search_url_garbage_sort_and_period_fall_back_to_defaults():
+    url = civitai_search.build_search_url("civitai.com", "loras", "x", sort="bogus", period="bogus")
+    assert f"sort={urllib.parse.quote_plus(civitai_search.DEFAULT_SORT)}" in url
+    assert f"period={civitai_search.DEFAULT_PERIOD}" in url
+
+
+def test_build_search_url_limit_is_clamped():
+    url = civitai_search.build_search_url("civitai.com", "loras", "x", limit=999)
+    assert f"limit={civitai_search._MAX_LIMIT}" in url
+    url_low = civitai_search.build_search_url("civitai.com", "loras", "x", limit=0)
+    assert "limit=1" in url_low
+
+
+def test_search_models_rejects_unwhitelisted_kind_without_any_network():
+    result = civitai_search.search_models("../../etc", "x", opener=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reach the network")))
+    assert result["reason"] == "invalid_kind"
+
+
+def test_search_models_success_and_api_key_rides_as_token_param():
+    body = json.dumps({"items": [], "metadata": {}}).encode("utf-8")
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(body)
+
+    result = civitai_search.search_models("loras", "skin", api_key="secret-key-123", opener=opener)
+    assert result["reason"] == "found"
+    assert len(seen_urls) == 1
+    assert "token=secret-key-123" in seen_urls[0]
+
+
+def test_search_models_no_api_key_omits_token_param():
+    body = json.dumps({"items": []}).encode("utf-8")
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(body)
+
+    civitai_search.search_models("loras", "skin", api_key=None, opener=opener)
+    assert "token=" not in seen_urls[0]
+
+
+def test_search_models_404_folds_into_offline_unknown_not_notfound():
+    def raise_404():
+        raise urllib.error.HTTPError("url", 404, "Not Found", None, None)
+
+    opener, calls = _sequence_opener([raise_404])
+    result = civitai_search.search_models("loras", "x", opener=opener)
+    assert result["reason"] == "offline"
+    assert result["offline_reason"] == "unknown"
+    assert len(calls) == 1  # still definitive -- no backup-host retry
+
+
+def test_search_models_timeout_is_distinct_reason():
+    import socket as _socket
+
+    def raise_timeout():
+        raise _socket.timeout("timed out")
+
+    opener, calls = _sequence_opener([raise_timeout, raise_timeout])
+    result = civitai_search.search_models("loras", "x", opener=opener)
+    assert result["reason"] == "offline"
+    assert result["offline_reason"] == "timeout"
+
+
+def test_parse_search_response_typical_multi_item_shape():
+    raw = {
+        "items": [
+            {
+                "id": 1,
+                "name": "Skin Detail XL",
+                "type": "LORA",
+                "nsfw": False,
+                "tags": ["realism", {"name": "skin"}],
+                "creator": {"username": "someartist"},
+                "stats": {"downloadCount": 12400, "favoriteCount": 890, "rating": 4.8},
+                "modelVersions": [
+                    {
+                        "id": 10, "modelId": 1, "name": "v1.0", "baseModel": "SDXL",
+                        "publishedAt": "2026-01-01T00:00:00Z",
+                        "files": [
+                            {"name": "skin_detail_xl.safetensors", "sizeKB": 144000.0,
+                             "downloadUrl": "https://civitai.com/api/download/models/10",
+                             "primary": True, "hashes": {"SHA256": "deadbeef"}},
+                        ],
+                    },
+                ],
+            },
+            "not-a-dict-item",
+            {"id": 2},  # no modelVersions at all -- must be dropped
+        ],
+        "metadata": {"nextCursor": "xyz"},
+    }
+    parsed = civitai_search.parse_search_response(raw)
+    assert parsed["next_cursor"] == "xyz"
+    assert len(parsed["results"]) == 1  # the other two items are dropped
+    result = parsed["results"][0]
+    assert result["model_id"] == 1
+    assert result["name"] == "Skin Detail XL"
+    assert result["tags"] == ["realism", "skin"]
+    assert result["creator"] == "someartist"
+    assert result["stats"] == {"downloads": 12400, "favorites": 890, "rating": 4.8}
+    version = result["versions"][0]
+    assert version["version_id"] == 10
+    assert version["base_model"] == "SDXL"
+    assert version["gated"] is False
+    file = version["files"][0]
+    assert file["name"] == "skin_detail_xl.safetensors"
+    assert file["download_url"] == "https://civitai.com/api/download/models/10"
+    assert file["sha256"] == "deadbeef"
+    assert file["primary"] is True
+    assert file["gated"] is False  # copied down from the version
+
+
+def test_parse_search_response_early_access_marks_version_and_files_gated():
+    raw = {
+        "items": [{
+            "id": 5,
+            "modelVersions": [{
+                "id": 50, "baseModel": "SDXL", "earlyAccessEndsAt": "2099-01-01T00:00:00Z",
+                "files": [{"name": "gated.safetensors", "downloadUrl": "https://civitai.com/x", "primary": True}],
+            }],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    assert result["versions"][0]["gated"] is True
+    assert result["versions"][0]["files"][0]["gated"] is True
+
+
+def test_parse_search_response_files_missing_name_or_url_are_dropped():
+    raw = {
+        "items": [{
+            "id": 5,
+            "modelVersions": [{
+                "id": 50, "baseModel": "SDXL",
+                "files": [
+                    {"name": "", "downloadUrl": "https://civitai.com/x"},
+                    {"name": "ok.safetensors", "downloadUrl": ""},
+                    {"downloadUrl": "https://civitai.com/x"},
+                    {"name": "good.safetensors", "downloadUrl": "https://civitai.com/good"},
+                ],
+            }],
+        }],
+    }
+    files = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]["files"]
+    assert [f["name"] for f in files] == ["good.safetensors"]
+
+
+def test_parse_search_response_malformed_shapes_never_raise():
+    assert civitai_search.parse_search_response(None) == {"results": [], "next_cursor": None}
+    assert civitai_search.parse_search_response("not-a-dict") == {"results": [], "next_cursor": None}
+    assert civitai_search.parse_search_response({}) == {"results": [], "next_cursor": None}
+    assert civitai_search.parse_search_response({"items": "not-a-list"}) == {"results": [], "next_cursor": None}
+
+
+def test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first():
+    files = [{"name": "a", "primary": False}, {"name": "b", "primary": True}, {"name": "c", "primary": False}]
+    assert civitai_search.pick_primary_file(files)["name"] == "b"
+    files_no_primary = [{"name": "x"}, {"name": "y"}]
+    assert civitai_search.pick_primary_file(files_no_primary)["name"] == "x"
+    assert civitai_search.pick_primary_file([]) is None
+    assert civitai_search.pick_primary_file("not-a-list") is None
+
+
+# ---------------------------------------------------------------------------
+# M2 -- download.py: sanitisation, destination resolution, the streamed
+# downloader, and the serial DownloadManager.
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_filename_accepts_normal_names():
+    assert download.sanitize_filename("my_lora.safetensors") == "my_lora.safetensors"
+    assert download.sanitize_filename("  spaced.ckpt  ") == "spaced.ckpt"
+    assert download.sanitize_filename("weights.pt") == "weights.pt"
+    assert download.sanitize_filename("weights.bin") == "weights.bin"
+
+
+def test_sanitize_filename_rejects_hostile_values():
+    for bad in (
+        "../evil.safetensors", "a/b.safetensors", "a\\b.safetensors",
+        "..\\..\\evil.safetensors", "/etc/passwd.safetensors", ".hidden.safetensors",
+        "no-extension", "wrong.exe", "", "   ", None, 42, ["x.safetensors"],
+        "..", "a..b.safetensors",  # ".." anywhere, even mid-string, is rejected
+    ):
+        assert download.sanitize_filename(bad) is None, bad
+
+
+def test_sanitize_filename_rejects_an_embedded_nul_byte():
+    # 🔒 2026-07-30 fix: an embedded NUL used to sail through every other
+    # check here and reach `os.path.realpath` downstream, which raises
+    # `ValueError: embedded null character` -- uncaught, that broke
+    # `api.py`'s "every route answers 200 with a reason" contract.
+    assert download.sanitize_filename("mo\x00del.safetensors") is None
+    assert download.sanitize_filename("\x00.safetensors") is None
+    assert download.sanitize_filename("model.safetensors\x00") is None
+
+
+def test_validate_subfolder_accepts_normal_values():
+    assert download.validate_subfolder(None) == ""
+    assert download.validate_subfolder("") == ""
+    assert download.validate_subfolder("detail") == "detail"
+    assert download.validate_subfolder("detail/") == "detail"  # trailing slash tolerated
+    assert download.validate_subfolder("detail/character") == "detail/character"
+
+
+def test_validate_subfolder_rejects_hostile_values():
+    for bad in (
+        "..", "../secret", "detail/../secret", "detail//x", "/etc/passwd",
+        "C:\\Windows", "detail\\x", 42, ["detail"],
+    ):
+        assert download.validate_subfolder(bad) is None, bad
+
+
+def test_validate_subfolder_rejects_an_embedded_nul_byte():
+    assert download.validate_subfolder("de\x00tail") is None
+    assert download.validate_subfolder("\x00") is None
+
+
+def test_resolve_destination_path_rejects_a_nul_byte_in_filename_or_subfolder_without_raising():
+    # End-to-end: a NUL byte in EITHER input must degrade to `None`, never
+    # raise -- covers the actual crash path the security review found
+    # (`local._is_path_under`'s `os.path.realpath`), reached via
+    # `resolve_destination_path` when a caller's own sanitisation somehow
+    # let a NUL through.
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.resolve_destination_path("loras", "", "mo\x00del.safetensors") is None
+            assert download.resolve_destination_path("loras", "de\x00tail", "a.safetensors") is None
+        finally:
+            restore()
+
+
+def test_local_is_path_under_never_raises_on_an_embedded_nul_byte():
+    # 🔒 2026-07-30 fix: `os.path.realpath` raises `ValueError: embedded
+    # null character` for a NUL-containing path -- that call used to sit
+    # OUTSIDE this function's own try/except. Both the `path` and each
+    # `root` are exercised here.
+    with tempfile.TemporaryDirectory() as tmp:
+        assert local._is_path_under("mo\x00del.safetensors", tmp) is False
+        assert local._is_path_under(os.path.join(tmp, "a.safetensors"), "ro\x00ot") is False
+
+
+def test_resolve_destination_path_rejects_unwhitelisted_kind_without_folder_paths():
+    assert download.resolve_destination_path("../../etc", "", "a.safetensors") is None
+    assert download.resolve_destination_path("not-a-kind", "", "a.safetensors") is None
+
+
+def test_resolve_destination_path_happy_path_and_subfolder():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            path = download.resolve_destination_path("loras", "", "a.safetensors")
+            assert path == os.path.join(loras_root, "a.safetensors")
+
+            sub_path = download.resolve_destination_path("loras", "detail", "b.safetensors")
+            assert sub_path == os.path.join(loras_root, "detail", "b.safetensors")
+        finally:
+            restore()
+
+
+def test_resolve_destination_path_rejects_hostile_filename_or_subfolder():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.resolve_destination_path("loras", "", "../escape.safetensors") is None
+            assert download.resolve_destination_path("loras", "../escape", "a.safetensors") is None
+            assert download.resolve_destination_path("loras", "", "/etc/passwd.safetensors") is None
+        finally:
+            restore()
+
+
+def test_resolve_destination_path_subfolder_that_escapes_root_via_realpath_is_rejected():
+    # A subfolder that PASSES the cheap `validate_subfolder` check (no `..`
+    # segment) but whose REAL location (via a symlink) escapes the
+    # configured root must still be refused -- the actual guarantee lives in
+    # `local._is_path_under`'s realpath check, not the syntax pass.
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        outside = os.path.join(tmp, "outside")
+        os.makedirs(loras_root)
+        os.makedirs(outside)
+        try:
+            os.symlink(outside, os.path.join(loras_root, "escape_link"))
+        except (OSError, NotImplementedError):
+            return  # symlinks unavailable on this platform -- skip gracefully
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.resolve_destination_path("loras", "escape_link", "a.safetensors") is None
+        finally:
+            restore()
+
+
+def test_destination_exists_true_only_when_the_real_file_is_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "present.safetensors") is False
+            open(os.path.join(loras_root, "present.safetensors"), "wb").close()
+            assert download.destination_exists("loras", "", "present.safetensors") is True
+            # A `.part` sibling must NEVER count -- this is the guarantee
+            # decision 2 depends on.
+            open(os.path.join(loras_root, "partial.safetensors.part"), "wb").close()
+            assert download.destination_exists("loras", "", "partial.safetensors") is False
+        finally:
+            restore()
+
+
+def test_is_allowed_download_url():
+    assert download.is_allowed_download_url("https://civitai.com/api/download/models/1") is True
+    assert download.is_allowed_download_url("https://civitai.red/api/download/models/1") is True
+    assert download.is_allowed_download_url("http://civitai.com/api/download/models/1") is False  # not https
+    assert download.is_allowed_download_url("https://evil.example.com/x") is False  # not a Civitai host
+    assert download.is_allowed_download_url("ftp://civitai.com/x") is False
+    assert download.is_allowed_download_url(None) is False
+    assert download.is_allowed_download_url(42) is False
+
+
+def _fake_resolver_returning(*ips):
+    """An injectable `resolver(hostname, port)` (`_is_safe_redirect`'s own
+    `resolver=` seam) that returns fixed addresses -- used so a test never
+    depends on real, external DNS being reachable."""
+    def resolver(host, port):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips]
+    return resolver
+
+
+def _fake_resolver_raising(exc):
+    def resolver(host, port):
+        raise exc
+    return resolver
+
+
+def test_is_safe_redirect_https_and_not_private():
+    # A "real" third-party CDN host -- resolved via an INJECTED resolver
+    # (`resolver=`) rather than real DNS, so this doesn't depend on network
+    # access in a test environment. Public IP borrowed from `example.com`.
+    assert download._is_safe_redirect(
+        "https://cdn.example-storage.com/file.bin", resolver=_fake_resolver_returning("93.184.216.34"),
+    ) is True
+    assert download._is_safe_redirect("http://cdn.example-storage.com/file.bin") is False  # scheme downgrade -- rejected before resolution
+    assert download._is_safe_redirect("https://localhost/file.bin") is False
+    assert download._is_safe_redirect("not a url at all::::") is False
+
+    # These are IP LITERALS -- `getaddrinfo` resolves a literal locally, no
+    # network needed, so the REAL resolver (not injected) is used here,
+    # same as the actual (unmocked) code path.
+    assert download._is_safe_redirect("https://127.0.0.1/file.bin") is False
+    assert download._is_safe_redirect("https://10.0.0.5/file.bin") is False  # private range
+    assert download._is_safe_redirect("https://169.254.1.1/file.bin") is False  # link-local
+    assert download._is_safe_redirect("https://224.0.0.1/file.bin") is False  # multicast
+    assert download._is_safe_redirect("https://0.0.0.0/file.bin") is False  # unspecified
+
+
+def test_is_safe_redirect_dns_name_resolving_to_a_private_address_is_rejected():
+    # A hostname that LOOKS fine but resolves internally -- exactly the case
+    # a syntax-only check on the hostname string could never catch at all.
+    assert download._is_safe_redirect(
+        "https://internal.example.com/steal", resolver=_fake_resolver_returning("10.0.0.5"),
+    ) is False
+
+
+def test_is_safe_redirect_one_safe_address_among_several_unsafe_ones_is_still_rejected():
+    # Multiple A records, ONE of which is unsafe -- every returned address
+    # must be checked, not just the first.
+    assert download._is_safe_redirect(
+        "https://multi.example.com/x", resolver=_fake_resolver_returning("93.184.216.34", "127.0.0.1"),
+    ) is False
+
+
+def test_is_safe_redirect_resolution_failure_is_rejected_not_defaulted_to_allow():
+    assert download._is_safe_redirect(
+        "https://does-not-resolve.example.invalid/x",
+        resolver=_fake_resolver_raising(socket.gaierror("nodename nor servname provided")),
+    ) is False
+    assert download._is_safe_redirect(
+        "https://empty-result.example.com/x", resolver=lambda host, port: [],
+    ) is False
+
+
+# ---------------------------------------------------------------------------
+# 🔒 2026-07-30 SECURITY FIX -- confirmed SSRF bypass: `_is_safe_redirect`
+# used to parse the hostname STRING with `ipaddress.ip_address` and treat a
+# `ValueError` (any non-dotted-quad/IPv6-literal syntax) as "must be a real
+# hostname, therefore allowed" -- but decimal/hex/bare-integer IPv4
+# encodings are ALL real addresses the platform resolver (and hence
+# `urllib`'s own eventual connection) parses identically to the dotted-quad
+# form. These are LOCAL address-parsing behaviours (no DNS query), so the
+# REAL resolver is used here -- exactly reproducing the measured bypass and
+# proving the fix (resolve, don't pattern-match) actually closes it.
+# ---------------------------------------------------------------------------
+
+
+def test_is_safe_redirect_decimal_ipv4_encoding_of_loopback_is_rejected():
+    assert socket.getaddrinfo("2130706433", None)[0][4][0] == "127.0.0.1"  # sanity: this platform's resolver DOES parse it
+    assert download._is_safe_redirect("https://2130706433/steal") is False
+
+
+def test_is_safe_redirect_decimal_ipv4_encoding_of_cloud_metadata_is_rejected():
+    # 169.254.169.254 -- the AWS/GCP/Azure metadata endpoint; squarely in
+    # scope since the owner runs on Colab.
+    assert socket.getaddrinfo("2852039166", None)[0][4][0] == "169.254.169.254"  # sanity
+    assert download._is_safe_redirect("https://2852039166/steal") is False
+
+
+def test_is_safe_redirect_hex_ipv4_encoding_of_loopback_is_rejected():
+    assert socket.getaddrinfo("0x7f.0.0.1", None)[0][4][0] == "127.0.0.1"  # sanity
+    assert download._is_safe_redirect("https://0x7f.0.0.1/steal") is False
+
+
+def test_is_safe_redirect_bare_integer_zero_is_rejected():
+    assert socket.getaddrinfo("0", None)[0][4][0] == "0.0.0.0"  # sanity
+    assert download._is_safe_redirect("https://0/steal") is False
+
+
+def test_safe_redirect_handler_refuses_hostile_hops_through_the_actual_wiring():
+    # Drives the fix through `_SafeRedirectHandler.redirect_request` itself
+    # -- the real object `urllib`'s opener calls on every redirect -- not
+    # just the pure `_is_safe_redirect` predicate. `fp` is unused by the
+    # modern stdlib implementation for a non-error return, so `None` is fine.
+    handler = download._SafeRedirectHandler()
+    req = urllib.request.Request("https://civitai.com/api/download/models/1")
+
+    safe = handler.redirect_request(req, None, 302, "Found", {}, "https://civitai.com/cdn-redirect")
+    assert isinstance(safe, urllib.request.Request)
+    assert safe.full_url == "https://civitai.com/cdn-redirect"
+
+    for hostile_url in (
+        "https://127.0.0.1/steal",
+        "https://2130706433/steal",              # decimal loopback
+        "https://2852039166/steal",               # decimal cloud metadata
+        "https://0x7f.0.0.1/steal",                # hex loopback
+        "https://0/steal",                         # bare integer -> 0.0.0.0
+        "http://civitai.com/scheme-downgrade",     # https -> http mid-chain
+    ):
+        assert handler.redirect_request(req, None, 302, "Found", {}, hostile_url) is None, hostile_url
+
+
+def test_safe_redirect_handler_chain_of_good_hops_then_a_bad_one():
+    # A realistic multi-hop redirect chain (Civitai -> its own edge -> a CDN
+    # -> ... ) that stays safe for N hops and then turns hostile -- each hop
+    # is a SEPARATE `redirect_request` call, exactly how `urllib`'s opener
+    # drives a real chain one redirect at a time.
+    handler = download._SafeRedirectHandler()
+    req = urllib.request.Request("https://civitai.com/api/download/models/1")
+    chain = [
+        "https://civitai.com/edge/1",
+        "https://civitai.com/edge/2",
+        "https://civitai.com/edge/3",
+        "https://127.0.0.1/final-hop-is-hostile",
+    ]
+    results = [handler.redirect_request(req, None, 302, "Found", {}, hop) for hop in chain]
+    assert [r is not None for r in results] == [True, True, True, False]
+
+
+class _FakeDownloadResponse:
+    """Same shape as `_FakeResponse` above, plus a `.headers` dict --
+    `download.stream_download` reads `Content-Length` off it."""
+
+    def __init__(self, body: bytes, *, headers=None):
+        self._body = body
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            data, self._body = self._body, b""
+        else:
+            data, self._body = self._body[:n], self._body[n:]
+        return data
+
+
+def test_stream_download_success_writes_dest_and_removes_part():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "sub", "a.safetensors")
+        payload = b"x" * (3 * 1024 * 1024 + 7)  # not a clean multiple of the chunk size
+        progress_calls = []
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={"Content-Length": str(len(payload))})
+
+        result = download.stream_download(
+            "https://civitai.com/api/download/models/1", dest,
+            opener=opener, chunk_size=1024 * 1024,
+            progress_cb=lambda written, total: progress_calls.append((written, total)),
+        )
+        assert result["reason"] == "ok"
+        assert result["bytes_written"] == len(payload)
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+        with open(dest, "rb") as fh:
+            assert fh.read() == payload
+        assert progress_calls  # progress_cb was actually driven
+        assert progress_calls[-1][0] == len(payload)
+        assert progress_calls[-1][1] == len(payload)  # total came from Content-Length
+
+
+def test_stream_download_rejects_non_https_url_without_calling_opener():
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("a non-HTTPS url must never reach the opener")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "a.safetensors")
+        result = download.stream_download("http://civitai.com/x", dest, opener=_must_not_be_called)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "invalid_url"
+        assert not os.path.isfile(dest)
+
+
+def test_stream_download_cancellation_leaves_no_part_and_never_registers_installed():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        dest = os.path.join(loras_root, "cancelled.safetensors")
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"x" * (5 * 1024 * 1024))
+
+        cancel_after_first_chunk = {"calls": 0}
+
+        def should_cancel():
+            cancel_after_first_chunk["calls"] += 1
+            return cancel_after_first_chunk["calls"] > 1  # allow one read through, then cancel
+
+        result = download.stream_download(
+            "https://civitai.com/x", dest, opener=opener, chunk_size=1024 * 1024, should_cancel=should_cancel,
+        )
+        assert result["reason"] == "cancelled"
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "cancelled.safetensors") is False
+        finally:
+            restore()
+
+
+def test_stream_download_too_large_cleans_up_and_never_registers_installed():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        dest = os.path.join(loras_root, "huge.safetensors")
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"x" * (5 * 1024 * 1024))
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener, max_size_bytes=1024, chunk_size=4096)
+        assert result["reason"] == "too_large"
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "huge.safetensors") is False
+        finally:
+            restore()
+
+
+def test_stream_download_401_is_key_required_not_a_generic_offline_reason():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "gated.safetensors")
+
+        def opener(url, timeout):
+            raise urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "key_required"
+        assert not os.path.isfile(dest)
+
+
+def test_stream_download_403_is_also_key_required():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "gated.safetensors")
+
+        def opener(url, timeout):
+            raise urllib.error.HTTPError("url", 403, "Forbidden", None, None)
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "key_required"
+
+
+def test_stream_download_404_is_offline_notfound():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "missing.safetensors")
+
+        def opener(url, timeout):
+            raise urllib.error.HTTPError("url", 404, "Not Found", None, None)
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "notfound"
+
+
+def test_stream_download_interrupted_mid_stream_leaves_nothing_the_presence_check_counts():
+    # THE explicit regression this task's correction asked for: a download
+    # that writes SOME bytes and then fails mid-transfer must leave the
+    # destination in a state where `destination_exists` reports False --
+    # never a truncated file mistaken for "installed".
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        dest = os.path.join(loras_root, "interrupted.safetensors")
+
+        class _FlakyResponse:
+            def __init__(self):
+                self.headers = {}
+                self._reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n=-1):
+                self._reads += 1
+                if self._reads == 1:
+                    return b"partial-bytes-that-never-complete"
+                raise urllib.error.URLError(OSError("connection reset"))
+
+        def opener(url, timeout):
+            return _FlakyResponse()
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener, chunk_size=8)
+        assert result["reason"] == "offline"
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "interrupted.safetensors") is False
+        finally:
+            restore()
+
+
+def test_download_manager_start_progress_and_completion():
+    def fake_stream(url, dest_path, *, max_size_bytes, timeout, progress_cb, should_cancel):
+        progress_cb(50, 100)
+        progress_cb(100, 100)
+        return {"reason": "ok", "message": "", "bytes_written": 100}
+
+    manager = download.DownloadManager(stream_fn=fake_stream)
+    result = manager.start("job-1", "https://civitai.com/x", "/tmp/does-not-matter.safetensors")
+    assert result == {"reason": "started", "job_id": "job-1"}
+
+    # `start` launches a background thread -- give it a moment to finish
+    # (the fake stream_fn returns immediately, no real I/O) before asserting
+    # on the manager's own state.
+    for _ in range(200):
+        progress = manager.progress("job-1")
+        if progress["status"] not in ("downloading",):
+            break
+        time.sleep(0.005)
+    assert progress["reason"] == "ok"
+    assert progress["status"] == "ok"
+    assert progress["bytes"] == 100
+    assert progress["total"] == 100
+
+
+def test_download_manager_unknown_job_id():
+    manager = download.DownloadManager(stream_fn=lambda *a, **k: {"reason": "ok", "bytes_written": 0})
+    assert manager.progress("no-such-job")["reason"] == "unknown_job"
+    assert manager.cancel("no-such-job")["reason"] == "unknown_job"
+
+
+def test_download_manager_busy_while_a_download_is_in_flight():
+    started_event = threading.Event()
+    release_event = threading.Event()
+
+    def fake_stream(url, dest_path, *, max_size_bytes, timeout, progress_cb, should_cancel):
+        started_event.set()
+        release_event.wait(timeout=5)
+        return {"reason": "ok", "bytes_written": 0}
+
+    manager = download.DownloadManager(stream_fn=fake_stream)
+    first = manager.start("job-a", "https://civitai.com/a", "/tmp/a.safetensors")
+    assert first["reason"] == "started"
+    assert started_event.wait(timeout=5), "the background thread never started"
+
+    second = manager.start("job-b", "https://civitai.com/b", "/tmp/b.safetensors")
+    assert second == {"reason": "busy", "message": "Another download is already in progress.", "job_id": None}
+
+    release_event.set()  # let the first job finish so the thread doesn't leak past this test
+
+
+def test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_status():
+    cancel_seen = threading.Event()
+
+    def fake_stream(url, dest_path, *, max_size_bytes, timeout, progress_cb, should_cancel):
+        for _ in range(200):
+            if should_cancel():
+                cancel_seen.set()
+                return {"reason": "cancelled", "message": "Download cancelled.", "bytes_written": 0}
+            time.sleep(0.005)
+        return {"reason": "ok", "bytes_written": 0}
+
+    manager = download.DownloadManager(stream_fn=fake_stream)
+    manager.start("job-c", "https://civitai.com/c", "/tmp/c.safetensors")
+    cancel_result = manager.cancel("job-c")
+    assert cancel_result["reason"] == "cancelling"
+    assert cancel_seen.wait(timeout=5)
+
+    for _ in range(200):
+        progress = manager.progress("job-c")
+        if progress["status"] != "downloading":
+            break
+        time.sleep(0.005)
+    assert progress["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# M2 -- keys.py: the §8 resolution ladder.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_api_key_setting_wins_over_env():
+    previous = keys.get_setting
+    keys.get_setting = lambda setting_id, default=None: "setting-key" if setting_id == keys.SETTING_ID else default
+    try:
+        resolved = keys.resolve_api_key(env={"CIVITAI_API_KEY": "env-key"})
+        assert resolved.api_key == "setting-key"
+        assert resolved.source == "setting"
+        assert resolved.public_only is False
+    finally:
+        keys.get_setting = previous
+
+
+def test_resolve_api_key_falls_back_to_env_when_no_setting():
+    previous = keys.get_setting
+    keys.get_setting = lambda setting_id, default=None: default  # nothing set
+    try:
+        resolved = keys.resolve_api_key(env={"CIVITAI_API_KEY": "env-key"})
+        assert resolved.api_key == "env-key"
+        assert resolved.source == "env"
+        assert resolved.public_only is False
+    finally:
+        keys.get_setting = previous
+
+
+def test_resolve_api_key_public_only_when_neither_is_set():
+    previous = keys.get_setting
+    keys.get_setting = lambda setting_id, default=None: default
+    try:
+        resolved = keys.resolve_api_key(env={})
+        assert resolved.api_key is None
+        assert resolved.source == "none"
+        assert resolved.public_only is True
+    finally:
+        keys.get_setting = previous
+
+
+def test_resolve_api_key_blank_values_are_treated_as_unset():
+    previous = keys.get_setting
+    keys.get_setting = lambda setting_id, default=None: "   "
+    try:
+        resolved = keys.resolve_api_key(env={"CIVITAI_API_KEY": "   "})
+        assert resolved.api_key is None
+        assert resolved.source == "none"
+    finally:
+        keys.get_setting = previous
+
+
+# ---------------------------------------------------------------------------
+# M2 -- rate_limit.py.
+# ---------------------------------------------------------------------------
+
+
+def test_min_interval_limiter_allows_then_refuses_then_allows_again():
+    clock = {"t": 0.0}
+    limiter = rate_limit.MinIntervalLimiter(1.5, clock=lambda: clock["t"])
+    assert limiter.allow() is True
+    assert limiter.allow() is False  # same instant -- too soon
+    clock["t"] += 1.0
+    assert limiter.allow() is False  # still under 1.5s
+    clock["t"] += 0.6
+    assert limiter.allow() is True  # 1.6s since the last ALLOWED call
+
+
+def test_min_interval_limiter_seconds_until_allowed():
+    clock = {"t": 0.0}
+    limiter = rate_limit.MinIntervalLimiter(2.0, clock=lambda: clock["t"])
+    assert limiter.seconds_until_allowed() == 0.0  # never called yet
+    limiter.allow()
+    clock["t"] += 0.5
+    assert limiter.seconds_until_allowed() == 1.5
+
+
+# ---------------------------------------------------------------------------
+# M2 -- api.py: search_impl / download_start_impl / download_progress_impl /
+# download_cancel_impl.
+# ---------------------------------------------------------------------------
+
+
+def _install_permissive_search_limiter():
+    """Swaps in an always-allow rate limiter for a `search_impl` test that
+    isn't itself testing rate-limiting -- avoids cross-test bleed from the
+    real, shared `_SEARCH_LIMITER` singleton (tests run fast enough back-to-
+    back that its real 1.5s interval would otherwise flakily reject a LATER
+    test's first call)."""
+    previous = mb_api._SEARCH_LIMITER
+    mb_api._SEARCH_LIMITER = rate_limit.MinIntervalLimiter(0.0)
+    return lambda: setattr(mb_api, "_SEARCH_LIMITER", previous)
+
+
+def test_search_impl_rejects_unwhitelisted_kind_without_any_network():
+    restore = _install_permissive_search_limiter()
+    try:
+        result = mb_api.search_impl({"kind": "../../etc", "query": "x"})
+        assert result["reason"] == "invalid_kind"
+        assert result["results"] == []
+        assert result["public_only"] is True
+    finally:
+        restore()
+
+
+def test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {
+                "items": [{
+                    "id": 1, "name": "Skin Detail XL", "type": "LORA",
+                    "modelVersions": [{
+                        "id": 10, "baseModel": "SDXL",
+                        "files": [{"name": "skin.safetensors", "sizeKB": 1000,
+                                   "downloadUrl": "https://civitai.com/x", "primary": True}],
+                    }],
+                }],
+                "metadata": {"nextCursor": "next-page"},
+            },
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    # `search_impl` annotates `installed` via `download.destination_exists`,
+    # which -- for a WHITELISTED kind -- reaches `local._model_dirs`'s own
+    # unguarded `import folder_paths` (same as every other "valid kind"
+    # test in this file); a real ComfyUI-less environment needs the stub.
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "skin"})
+            assert result["reason"] == "ok"
+            assert result["next_cursor"] == "next-page"
+            assert result["public_only"] is True  # no key configured in this test env
+            card = result["results"][0]
+            assert card["installed"] is False  # nothing on disk in this test env
+            assert card["gated"] is False
+            assert card["base_model"] == "SDXL"
+            assert card["file_name"] == "skin.safetensors"
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "X",
+                "modelVersions": [{"id": 10, "baseModel": "SDXL",
+                                   "files": [{"name": "already_have.safetensors", "downloadUrl": "https://civitai.com/x", "primary": True}]}],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        open(os.path.join(loras_root, "already_have.safetensors"), "wb").close()
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "x"})
+            assert result["results"][0]["installed"] is True
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_marks_a_gated_result_before_any_download_attempt():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "Gated",
+                "modelVersions": [{"id": 10, "baseModel": "SDXL", "earlyAccessEndsAt": "2099-01-01",
+                                   "files": [{"name": "gated.safetensors", "downloadUrl": "https://civitai.com/x", "primary": True}]}],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "x"})
+            assert result["results"][0]["gated"] is True
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_passes_through_offline_reason_and_still_reports_public_only():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    mb_api.civitai_search.search_models = lambda kind, query, **kwargs: {
+        "reason": "offline", "offline_reason": "timeout", "message": "Civitai timed out.", "data": None,
+    }
+    try:
+        result = mb_api.search_impl({"kind": "loras", "query": "x"})
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "timeout"
+        assert result["results"] == []
+        assert "public_only" in result
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_rate_limited_never_reaches_the_network():
+    previous_limiter = mb_api._SEARCH_LIMITER
+    denying_limiter = rate_limit.MinIntervalLimiter(1000.0)
+    denying_limiter.allow()  # consume the one free call so the NEXT is refused
+    mb_api._SEARCH_LIMITER = denying_limiter
+
+    previous_search_models = civitai_search.search_models
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("a rate-limited search must never reach civitai_search.search_models")
+
+    mb_api.civitai_search.search_models = _must_not_be_called
+    try:
+        result = mb_api.search_impl({"kind": "loras", "query": "x"})
+        assert result["reason"] == "rate_limited"
+        assert result["results"] == []
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        mb_api._SEARCH_LIMITER = previous_limiter
+
+
+# --- download_start_impl / download_progress_impl / download_cancel_impl ---
+
+
+class _FakeDownloadManager:
+    """Swapped in for `mb_api._DOWNLOAD_MANAGER` -- records every call so a
+    test can assert `download_start_impl` never reaches the manager on a
+    rejected request (invalid destination/already-installed/invalid url/
+    too-large), and controls exactly what `start`/`progress`/`cancel`
+    return on the happy path."""
+
+    def __init__(self, start_result=None, progress_result=None, cancel_result=None):
+        self.start_calls = []
+        self.progress_calls = []
+        self.cancel_calls = []
+        self._start_result = start_result or {"reason": "started", "job_id": "job-x"}
+        self._progress_result = progress_result or {"reason": "ok", "status": "downloading", "bytes": 0, "total": None, "message": ""}
+        self._cancel_result = cancel_result or {"reason": "cancelling", "message": "Cancelling…"}
+
+    def start(self, job_id, url, dest_path, *, max_size_bytes):
+        self.start_calls.append((job_id, url, dest_path, max_size_bytes))
+        return dict(self._start_result)
+
+    def progress(self, job_id):
+        self.progress_calls.append(job_id)
+        return dict(self._progress_result)
+
+    def cancel(self, job_id):
+        self.cancel_calls.append(job_id)
+        return dict(self._cancel_result)
+
+
+def _install_fake_download_manager(**kwargs):
+    previous = mb_api._DOWNLOAD_MANAGER
+    fake = _FakeDownloadManager(**kwargs)
+    mb_api._DOWNLOAD_MANAGER = fake
+    return fake, lambda: setattr(mb_api, "_DOWNLOAD_MANAGER", previous)
+
+
+def test_download_start_impl_rejects_unwhitelisted_kind_without_touching_the_manager():
+    fake, restore = _install_fake_download_manager()
+    try:
+        result = mb_api.download_start_impl({"kind": "../../etc", "filename": "a.safetensors", "download_url": "https://civitai.com/x"})
+        assert result["reason"] == "invalid_kind"
+        assert fake.start_calls == []
+    finally:
+        restore()
+
+
+def test_download_start_impl_rejects_hostile_destination_without_touching_the_manager():
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "../escape.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x",
+            })
+            assert result["reason"] == "invalid_destination"
+            assert fake.start_calls == []
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_rejects_a_nul_byte_filename_with_a_reason_instead_of_raising():
+    # 🔒 2026-07-30 fix, end-to-end at the ROUTE layer (`api.py`'s own
+    # contract: "every route answers 200 with a reason"): before the fix,
+    # this raised `ValueError: embedded null character` straight out of
+    # `download_start_impl` -- which runs inside `loop.run_in_executor` in
+    # the real aiohttp route, so it would have surfaced as an unhandled
+    # exception rather than a JSON `{reason: ...}` response.
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "mo\x00del.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x",
+            })
+            assert result["reason"] == "invalid_destination"
+            assert fake.start_calls == []
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_already_installed_short_circuits_before_the_manager():
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        open(os.path.join(loras_root, "have.safetensors"), "wb").close()
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "have.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x",
+            })
+            assert result["reason"] == "already_installed"
+            assert fake.start_calls == []
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_rejects_an_untrusted_download_url():
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://evil.example.com/x",
+            })
+            assert result["reason"] == "invalid_url"
+            assert fake.start_calls == []
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_rejects_an_advisory_size_over_the_cap():
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            huge_kb = (download.DEFAULT_MAX_DOWNLOAD_BYTES / 1024) + 1
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x", "size_kb": huge_kb,
+            })
+            assert result["reason"] == "too_large"
+            assert fake.start_calls == []
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_happy_path_starts_a_job_and_never_returns_the_api_key():
+    fake, restore = _install_fake_download_manager(start_result={"reason": "started", "job_id": "job-real"})
+    previous_resolve = keys.resolve_api_key
+    keys.resolve_api_key = lambda **kwargs: keys.ResolvedKey("super-secret", "setting")
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x", "size_kb": 100,
+            })
+            assert result["reason"] == "started"
+            assert len(fake.start_calls) == 1
+            job_id, url, dest_path, max_size_bytes = fake.start_calls[0]
+            # `download_start_impl` generates its OWN job id (uuid4) and uses
+            # it consistently for both the manager call and its own return
+            # value -- the fake manager's own `start_result["job_id"]` is
+            # deliberately NOT what's returned (that would be the real
+            # manager's job to decide, and it never disagrees in practice).
+            assert result["job_id"] == job_id
+            assert "token=super-secret" in url
+            assert dest_path == os.path.join(loras_root, "new.safetensors")
+            # The key must never appear in the RETURNED result, only in the
+            # URL handed to the (fake, in-test) manager.
+            assert "super-secret" not in json.dumps(result)
+        finally:
+            restore_fp()
+            keys.resolve_api_key = previous_resolve
+            restore()
+
+
+def test_download_start_impl_propagates_busy_from_the_manager():
+    fake, restore = _install_fake_download_manager(start_result={"reason": "busy", "message": "Another download is already in progress.", "job_id": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x",
+            })
+            assert result["reason"] == "busy"
+            assert result["job_id"] is None
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_progress_impl_and_cancel_impl_delegate_to_the_manager():
+    fake, restore = _install_fake_download_manager(
+        progress_result={"reason": "ok", "status": "downloading", "bytes": 42, "total": 100, "message": ""},
+        cancel_result={"reason": "cancelling", "message": "Cancelling…"},
+    )
+    try:
+        progress = mb_api.download_progress_impl({"job_id": "job-1"})
+        assert progress["bytes"] == 42
+        assert fake.progress_calls == ["job-1"]
+
+        cancel = mb_api.download_cancel_impl({"job_id": "job-1"})
+        assert cancel["reason"] == "cancelling"
+        assert fake.cancel_calls == ["job-1"]
+    finally:
+        restore()
+
+
 ALL_TESTS = [
     test_folder_for_kind_known_kinds,
     test_folder_for_kind_rejects_traversal_and_garbage,
@@ -1430,6 +2657,78 @@ ALL_TESTS = [
     test_thumb_path_impl_ok_when_a_preview_file_sits_next_to_it,
     test_thumb_path_impl_rejects_a_traversal_name_same_guard_as_resolve_model_path,
     test_every_impl_route_always_carries_a_reason_key,
+    test_type_for_kind_known_and_unknown,
+    test_build_search_url_shape_and_params,
+    test_build_search_url_rejects_unwhitelisted_kind,
+    test_build_search_url_garbage_sort_and_period_fall_back_to_defaults,
+    test_build_search_url_limit_is_clamped,
+    test_search_models_rejects_unwhitelisted_kind_without_any_network,
+    test_search_models_success_and_api_key_rides_as_token_param,
+    test_search_models_no_api_key_omits_token_param,
+    test_search_models_404_folds_into_offline_unknown_not_notfound,
+    test_search_models_timeout_is_distinct_reason,
+    test_parse_search_response_typical_multi_item_shape,
+    test_parse_search_response_early_access_marks_version_and_files_gated,
+    test_parse_search_response_files_missing_name_or_url_are_dropped,
+    test_parse_search_response_malformed_shapes_never_raise,
+    test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first,
+    test_sanitize_filename_accepts_normal_names,
+    test_sanitize_filename_rejects_hostile_values,
+    test_sanitize_filename_rejects_an_embedded_nul_byte,
+    test_validate_subfolder_accepts_normal_values,
+    test_validate_subfolder_rejects_hostile_values,
+    test_validate_subfolder_rejects_an_embedded_nul_byte,
+    test_resolve_destination_path_rejects_a_nul_byte_in_filename_or_subfolder_without_raising,
+    test_local_is_path_under_never_raises_on_an_embedded_nul_byte,
+    test_resolve_destination_path_rejects_unwhitelisted_kind_without_folder_paths,
+    test_resolve_destination_path_happy_path_and_subfolder,
+    test_resolve_destination_path_rejects_hostile_filename_or_subfolder,
+    test_resolve_destination_path_subfolder_that_escapes_root_via_realpath_is_rejected,
+    test_destination_exists_true_only_when_the_real_file_is_present,
+    test_is_allowed_download_url,
+    test_is_safe_redirect_https_and_not_private,
+    test_is_safe_redirect_dns_name_resolving_to_a_private_address_is_rejected,
+    test_is_safe_redirect_one_safe_address_among_several_unsafe_ones_is_still_rejected,
+    test_is_safe_redirect_resolution_failure_is_rejected_not_defaulted_to_allow,
+    test_is_safe_redirect_decimal_ipv4_encoding_of_loopback_is_rejected,
+    test_is_safe_redirect_decimal_ipv4_encoding_of_cloud_metadata_is_rejected,
+    test_is_safe_redirect_hex_ipv4_encoding_of_loopback_is_rejected,
+    test_is_safe_redirect_bare_integer_zero_is_rejected,
+    test_safe_redirect_handler_refuses_hostile_hops_through_the_actual_wiring,
+    test_safe_redirect_handler_chain_of_good_hops_then_a_bad_one,
+    test_stream_download_success_writes_dest_and_removes_part,
+    test_stream_download_rejects_non_https_url_without_calling_opener,
+    test_stream_download_cancellation_leaves_no_part_and_never_registers_installed,
+    test_stream_download_too_large_cleans_up_and_never_registers_installed,
+    test_stream_download_401_is_key_required_not_a_generic_offline_reason,
+    test_stream_download_403_is_also_key_required,
+    test_stream_download_404_is_offline_notfound,
+    test_stream_download_interrupted_mid_stream_leaves_nothing_the_presence_check_counts,
+    test_download_manager_start_progress_and_completion,
+    test_download_manager_unknown_job_id,
+    test_download_manager_busy_while_a_download_is_in_flight,
+    test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_status,
+    test_resolve_api_key_setting_wins_over_env,
+    test_resolve_api_key_falls_back_to_env_when_no_setting,
+    test_resolve_api_key_public_only_when_neither_is_set,
+    test_resolve_api_key_blank_values_are_treated_as_unset,
+    test_min_interval_limiter_allows_then_refuses_then_allows_again,
+    test_min_interval_limiter_seconds_until_allowed,
+    test_search_impl_rejects_unwhitelisted_kind_without_any_network,
+    test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
+    test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk,
+    test_search_impl_marks_a_gated_result_before_any_download_attempt,
+    test_search_impl_passes_through_offline_reason_and_still_reports_public_only,
+    test_search_impl_rate_limited_never_reaches_the_network,
+    test_download_start_impl_rejects_unwhitelisted_kind_without_touching_the_manager,
+    test_download_start_impl_rejects_hostile_destination_without_touching_the_manager,
+    test_download_start_impl_rejects_a_nul_byte_filename_with_a_reason_instead_of_raising,
+    test_download_start_impl_already_installed_short_circuits_before_the_manager,
+    test_download_start_impl_rejects_an_untrusted_download_url,
+    test_download_start_impl_rejects_an_advisory_size_over_the_cap,
+    test_download_start_impl_happy_path_starts_a_job_and_never_returns_the_api_key,
+    test_download_start_impl_propagates_busy_from_the_manager,
+    test_download_progress_impl_and_cancel_impl_delegate_to_the_manager,
 ]
 
 

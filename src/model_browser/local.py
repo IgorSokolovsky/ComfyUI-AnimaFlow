@@ -169,11 +169,25 @@ def _is_path_under(path: str, *roots: str) -> bool:
     including the upstream lexical cross-drive fallback deliberately NOT
     ported here). `False` (never raises) if the paths don't share a common
     drive/root at all (Windows cross-drive `commonpath` raises `ValueError`).
+
+    🔒 2026-07-30 fix: `os.path.realpath` ALSO raises `ValueError: embedded
+    null character` for a path containing `\x00` -- that used to be OUTSIDE
+    this function's own try/except, so a NUL byte smuggled through a
+    caller that didn't already reject one (`download.py`'s
+    `sanitize_filename`/`validate_subfolder` now do, belt-and-suspenders)
+    would crash straight out of this "never raises" guard. Both
+    `os.path.realpath` calls are now inside the same `try` as the
+    `commonpath` call, so ANY `ValueError` at any step -- a NUL byte, a
+    Windows cross-drive mismatch, or anything else `os.path` might reject --
+    degrades to "not under this root" for that one `root`, never a crash.
     """
-    real_path = os.path.realpath(path)
+    try:
+        real_path = os.path.realpath(path)
+    except ValueError:
+        return False
     for root in roots:
-        real_root = os.path.realpath(root)
         try:
+            real_root = os.path.realpath(root)
             if os.path.commonpath([real_path, real_root]) == real_root:
                 return True
         except ValueError:

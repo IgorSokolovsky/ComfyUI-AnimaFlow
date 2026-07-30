@@ -41,6 +41,13 @@ from typing import Any, Callable, Dict, Optional, Sequence
 # transient (never after a 404 -- see module docstring).
 _CIVITAI_HOSTS: Sequence[str] = ("civitai.com", "civitai.red")
 
+# Public alias -- M2 (`civitai_search.py`, `download.py`) reuses the SAME two
+# hosts for search requests and for pinning the INITIAL download URL to a
+# known-good host (`download.is_allowed_download_url`), rather than each
+# module inventing its own copy of "which hosts do we trust" (docs/lora-
+# loader-design.md's M2 brief: "extend them, don't fork them").
+CIVITAI_HOSTS: Sequence[str] = _CIVITAI_HOSTS
+
 _USER_AGENT = "AnimaFlow-ComfyUI/model-browser"
 
 _DEFAULT_TIMEOUT = 30.0
@@ -77,36 +84,41 @@ def _classify_urlerror(exc: BaseException) -> str:
     return "dns_tls"  # any other connection-level refusal folds in here
 
 
-def lookup_by_hash(
-    sha256_hex: str,
+def fetch_json_with_host_fallback(
+    build_url: Callable[[str], str],
     *,
     timeout: float = _DEFAULT_TIMEOUT,
     max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
     hosts: Sequence[str] = _CIVITAI_HOSTS,
     opener: Optional[Callable[[str, float], Any]] = None,
+    notfound_message: str = "Not found on Civitai.",
 ) -> Dict[str, Any]:
-    """Ask Civitai's public by-hash endpoint about `sha256_hex`.
+    """The shared two-host-fallback GET-JSON transport every Civitai read in
+    this package goes through -- extracted (M2, docs/lora-loader-design.md's
+    own "extend them, don't fork them" instruction) from what used to be two
+    near-identical copies of this exact loop inside `lookup_by_hash` and
+    `lookup_model_by_id` below; `civitai_search.search_models` is the THIRD
+    caller this was extracted for, so a third copy never gets written at
+    all. `build_url(host) -> url` lets each caller pick its own path/query
+    while sharing every transport rule verbatim: two hosts tried in order
+    with a DEFINITIVE 404 that skips the backup host, a non-200 that DOES
+    fall through (rate limit/maintenance are transient), the 30s timeout,
+    the 4 MB body cap, and every distinct offline reason (module docstring
+    has the full rationale for each, not repeated here).
 
     Always returns `{"reason": "found"|"notfound"|"offline",
-    "offline_reason": None|one of _OFFLINE_REASONS, "message": str,
-    "data": <parsed JSON dict>|None}` -- never raises. `data` is the RAW
-    Civitai response on `found`; parsing it into our own shape is
-    `civitai_parse.parse_model_version`'s job, not this module's.
-
-    `opener` (keyword-only, defaults to a real `urllib.request.urlopen`
-    call) is the one seam this function's own test suite uses: a fake
-    `opener(url, timeout)` returning a context-manager-with-`.read()`
-    fake response, or raising `urllib.error.HTTPError`/`URLError`/
-    `socket.timeout`, lets every branch below (404, 429, timeout, DNS
-    failure, an oversized body, an unreadable body) be exercised with no
-    network at all.
+    "offline_reason": None|one of _OFFLINE_REASONS, "message": str, "data":
+    <parsed JSON dict>|None}` -- never raises. `opener` is the same
+    `opener(url, timeout)` seam `lookup_by_hash`'s own docstring describes;
+    unchanged from before this refactor, so every existing fake-opener test
+    for `lookup_by_hash`/`lookup_model_by_id` keeps working unmodified.
     """
     opener = opener or _default_opener
     last_offline_reason = "unknown"
     last_message = "Could not reach Civitai."
 
     for host in hosts:
-        url = f"https://{host}/api/v1/model-versions/by-hash/{sha256_hex}"
+        url = build_url(host)
         try:
             with opener(url, timeout) as response:
                 # Cap the body so a malfunctioning endpoint can't spike
@@ -136,7 +148,7 @@ def lookup_by_hash(
                 return {
                     "reason": "notfound",
                     "offline_reason": None,
-                    "message": "This exact file isn't on Civitai.",
+                    "message": notfound_message,
                     "data": None,
                 }
             if exc.code == 429:
@@ -163,6 +175,41 @@ def lookup_by_hash(
             continue
 
     return {"reason": "offline", "offline_reason": last_offline_reason, "message": last_message, "data": None}
+
+
+def lookup_by_hash(
+    sha256_hex: str,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    hosts: Sequence[str] = _CIVITAI_HOSTS,
+    opener: Optional[Callable[[str, float], Any]] = None,
+) -> Dict[str, Any]:
+    """Ask Civitai's public by-hash endpoint about `sha256_hex`.
+
+    Always returns `{"reason": "found"|"notfound"|"offline",
+    "offline_reason": None|one of _OFFLINE_REASONS, "message": str,
+    "data": <parsed JSON dict>|None}` -- never raises. `data` is the RAW
+    Civitai response on `found`; parsing it into our own shape is
+    `civitai_parse.parse_model_version`'s job, not this module's.
+
+    `opener` (keyword-only, defaults to a real `urllib.request.urlopen`
+    call) is the one seam this function's own test suite uses: a fake
+    `opener(url, timeout)` returning a context-manager-with-`.read()`
+    fake response, or raising `urllib.error.HTTPError`/`URLError`/
+    `socket.timeout`, lets every branch below (404, 429, timeout, DNS
+    failure, an oversized body, an unreadable body) be exercised with no
+    network at all. A thin wrapper over `fetch_json_with_host_fallback`
+    (see its own docstring for the shared transport rules).
+    """
+    return fetch_json_with_host_fallback(
+        lambda host: f"https://{host}/api/v1/model-versions/by-hash/{sha256_hex}",
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        hosts=hosts,
+        opener=opener,
+        notfound_message="This exact file isn't on Civitai.",
+    )
 
 
 def lookup_model_by_id(
@@ -182,68 +229,17 @@ def lookup_model_by_id(
     Public, no API key needed -- same as `lookup_by_hash` (§2b) -- and the
     SAME envelope/rules (two hosts with a definitive 404, 30s timeout, 4 MB
     body cap, distinct offline reasons); see that function's own docstring
-    for the full rationale, not repeated here.
+    for the full rationale, not repeated here. A thin wrapper over
+    `fetch_json_with_host_fallback`, same as `lookup_by_hash` above.
     """
-    opener = opener or _default_opener
-    last_offline_reason = "unknown"
-    last_message = "Could not reach Civitai."
-
-    for host in hosts:
-        url = f"https://{host}/api/v1/models/{model_id}"
-        try:
-            with opener(url, timeout) as response:
-                body = response.read(max_body_bytes + 1)
-                if len(body) > max_body_bytes:
-                    return {
-                        "reason": "offline",
-                        "offline_reason": "unreadable",
-                        "message": "Civitai response too large.",
-                        "data": None,
-                    }
-                try:
-                    data = json.loads(body)
-                except (ValueError, TypeError):
-                    return {
-                        "reason": "offline",
-                        "offline_reason": "unreadable",
-                        "message": "Civitai sent an unreadable reply (a login or block page?).",
-                        "data": None,
-                    }
-                return {"reason": "found", "offline_reason": None, "message": "", "data": data}
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                # DEFINITIVE -- do NOT try the backup host (same rule as
-                # `lookup_by_hash`).
-                return {
-                    "reason": "notfound",
-                    "offline_reason": None,
-                    "message": "This model isn't on Civitai.",
-                    "data": None,
-                }
-            if exc.code == 429:
-                last_offline_reason = "rate_limited"
-                last_message = "Civitai returned 429 (rate limited)."
-                continue
-            last_offline_reason = "unknown"
-            last_message = f"Civitai returned {exc.code}."
-            continue
-        except urllib.error.URLError as exc:
-            last_offline_reason = _classify_urlerror(exc)
-            last_message = (
-                "Civitai timed out." if last_offline_reason == "timeout"
-                else "Couldn't reach Civitai (DNS/TLS)."
-            )
-            continue
-        except (socket.timeout, TimeoutError):
-            last_offline_reason = "timeout"
-            last_message = "Civitai timed out."
-            continue
-        except Exception as exc:  # noqa: BLE001 - degrade to offline, never raise
-            last_offline_reason = "unknown"
-            last_message = f"Could not reach Civitai ({type(exc).__name__})."
-            continue
-
-    return {"reason": "offline", "offline_reason": last_offline_reason, "message": last_message, "data": None}
+    return fetch_json_with_host_fallback(
+        lambda host: f"https://{host}/api/v1/models/{model_id}",
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        hosts=hosts,
+        opener=opener,
+        notfound_message="This model isn't on Civitai.",
+    )
 
 
-__all__ = ("lookup_by_hash", "lookup_model_by_id")
+__all__ = ("CIVITAI_HOSTS", "fetch_json_with_host_fallback", "lookup_by_hash", "lookup_model_by_id")
