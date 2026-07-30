@@ -97,6 +97,19 @@ test("queue_probe.mjs never imports anything from js/controls/rows.mjs or lora_s
   assert.doesNotMatch(SRC, /from\s*"\.\.\/controls\//);
 });
 
+test("queue_probe.mjs checks for a duplicate same-name widget (candidate 4, 2026-07-30 course correction) BEFORE building the raw-value report, using .filter() (not .find()) so a genuine duplicate is actually detected rather than silently collapsed to the first match", () => {
+  const fnIdx = SRC.indexOf("function runQueueProbe(payload)");
+  assert.ok(fnIdx >= 0);
+  const nextFnIdx = SRC.indexOf("function ", fnIdx + 1);
+  const fnBody = SRC.slice(fnIdx, nextFnIdx > fnIdx ? nextFnIdx : undefined);
+  const filterIdx = fnBody.indexOf(".filter((w) => w.name === widgetName)");
+  const dupCheckIdx = fnBody.indexOf("formatDuplicateWidgetLine");
+  const reportIdx = fnBody.indexOf("buildNodeReport(");
+  assert.ok(filterIdx >= 0, "must collect ALL matching widgets via .filter(), not just the first via .find()");
+  assert.ok(dupCheckIdx > filterIdx, "the duplicate check must run after collecting all matches");
+  assert.ok(reportIdx > dupCheckIdx, "the duplicate check must run BEFORE the raw-value report, so it's never buried under a (possibly misleading) diff");
+});
+
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exitCode = 1;

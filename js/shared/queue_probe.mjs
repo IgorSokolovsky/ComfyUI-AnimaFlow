@@ -118,9 +118,20 @@ function runQueueProbe(payload) {
     try {
       const className = node.comfyClass || node.type;
       const widgetName = fingerprint.STATE_WIDGET_NAME_BY_CLASS[className];
-      const widget = (node.widgets || []).find((w) => w.name === widgetName);
-      const liveRaw = widget ? widget.value : undefined;
       const nodeId = String(node.id);
+      const matches = (node.widgets || []).filter((w) => w.name === widgetName);
+      // Candidate 4 (2026-07-30 course correction, "cheap to rule out"):
+      // a genuine duplicate would make .find() (every read/write in this
+      // pack) and graphToPrompt's own "last one wins" serialize loop
+      // disagree on which widget is authoritative -- checked and reported
+      // FIRST, before the rest of this node's comparison, so it's never
+      // buried under the (likely misleading, in that case) raw-value diff
+      // below.
+      if (matches.length > 1) {
+        console.warn(fingerprint.formatDuplicateWidgetLine(nodeId, className, widgetName, matches.map((w) => w.value)));
+      }
+      const widget = matches[0];
+      const liveRaw = widget ? widget.value : undefined;
       const inputs = output[nodeId] && output[nodeId].inputs;
       const payloadHasInput = !!(inputs && Object.prototype.hasOwnProperty.call(inputs, widgetName));
       const payloadRaw = payloadHasInput ? inputs[widgetName] : undefined;

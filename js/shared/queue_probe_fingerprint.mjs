@@ -284,6 +284,30 @@ export function formatSummaryLine(checkedCount, mismatchCount) {
   return `[AnimaFlow] queue-probe: ${checkedCount} node(s) checked, ${mismatchCount} mismatch(es)`;
 }
 
+/**
+ * The line printed when a node carries MORE THAN ONE widget with the same
+ * state-widget name (2026-07-30 course correction, candidate 4: "cheap to
+ * rule out"). `node.widgets.find(w => w.name === widgetName)` -- which
+ * EVERY read/write in this pack's own `getStateWidget` uses -- always
+ * returns the FIRST match, whereas the installed frontend's own
+ * `graphToPrompt`/serialize step assigns `t[widget.name] = value` while
+ * iterating `node.widgets` IN ORDER, so with a genuine duplicate the LAST
+ * one wins. That mismatch (first vs. last) would look EXACTLY like the
+ * reported bug: the console/DOM (reading the first) shows the new value,
+ * while the submitted payload (built from the last) carries whatever the
+ * duplicate's own value happens to be. Lists every duplicate's raw value,
+ * verbatim, so which one actually reached the payload is visible without
+ * guessing. This headless pack's own `js/controls/interaction.mjs` code
+ * path never creates a duplicate (`test_reload_race.mjs`'s own "candidate
+ * 4" regression covers that) -- if this line ever prints on a live page,
+ * the duplicate came from somewhere OUTSIDE this pack's control (the
+ * ComfyUI/litegraph runtime itself, or another extension).
+ */
+export function formatDuplicateWidgetLine(nodeId, className, widgetName, rawValues) {
+  const head = `[AnimaFlow] queue-probe node ${nodeId} (${className})`;
+  return `${head}: !!! ${rawValues.length} widgets named '${widgetName}' found on this ONE node !!! .find() (what every read/write in this pack uses) returns the FIRST -- raw values in node.widgets order: ${JSON.stringify(rawValues)}`;
+}
+
 /** Whether `output` (the per-node prompt dict half of the payload
  * `api.queuePrompt` was actually called with) is a real, comparable
  * prompt-payload object — a plain object, not an array. `false` for

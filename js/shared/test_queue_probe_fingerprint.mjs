@@ -25,6 +25,7 @@ import {
   formatSummaryLine,
   hasComparablePayload,
   formatNoPayloadLine,
+  formatDuplicateWidgetLine,
 } from "./queue_probe_fingerprint.mjs";
 
 let failures = 0;
@@ -401,6 +402,24 @@ test("formatNoPayloadLine: a single non-empty string, prefixed [AnimaFlow]", () 
   const line = formatNoPayloadLine();
   assert.equal(typeof line, "string");
   assert.ok(line.startsWith("[AnimaFlow]"));
+});
+
+// ---------------------------------------------------------------------------
+// formatDuplicateWidgetLine -- candidate 4 (2026-07-30 course correction).
+// ---------------------------------------------------------------------------
+
+test("formatDuplicateWidgetLine: names the node/class/widget, the count, and every duplicate's raw value verbatim in node.widgets order", () => {
+  const rawValues = ['{"rows":[]}', '{"rows":[{"x":1}]}'];
+  const line = formatDuplicateWidgetLine(7, "AnimaLoaderPanel", "panel_state", rawValues);
+  assert.ok(line.startsWith("[AnimaFlow]"));
+  assert.ok(line.includes("node 7"));
+  assert.ok(line.includes("AnimaLoaderPanel"));
+  assert.ok(line.includes("panel_state"));
+  assert.ok(line.includes("2 widgets"));
+  // The raw values are embedded via JSON.stringify(rawValues) (an array of
+  // strings), which escapes each entry's own quotes -- assert against that
+  // SAME encoding rather than the unescaped literal.
+  assert.ok(line.includes(JSON.stringify(rawValues)));
 });
 
 console.log(`\n${count - failures}/${count} passed`);
