@@ -33,12 +33,18 @@ Two things, one pass:
    weaker result (design doc §4). That is the failure mode most likely to go unnoticed, so check it
    deliberately rather than assuming the wire is right.
 
-### 🎓 Ready to graduate: `AnimaControlPanel` — owner's call
+### 📋 Owner's check — does a LoRA Loader inside a **subgraph** still self-heal? (open 2026-07-30)
 
-Its last known interface-affecting defect (drag-reorder ignoring canvas zoom) shipped in `d5088d3`.
-The bar is *interface* stability — frozen widget order, stable state contract, stable sockets — not
-bug-freeness, and its Loader Panel sibling graduated in `4879634`. Deliberately **not** done
-unilaterally: graduating is deleting `EXPERIMENTAL`, and that is a promise to workflows.
+ComfyUI lets you select nodes and collapse them into a reusable **subgraph** node. Those nodes then
+live in a *nested* graph — they are **not** in `app.graph._nodes`, which `findLoraNodes()` walks
+directly. So a LoRA Loader hidden inside a subgraph may be invisible to our refresh hook.
+
+**Check:** put an `AnimaLoraLoader` inside a subgraph → point one row at a model file → delete or
+rename that file on disk → press `R` (refresh node definitions). The row's red missing-file mark must
+update. If it stays stale, `findLoraNodes` needs to recurse into subgraph children.
+
+No headless test can reach this — the walk is over the live graph object — which is why it sits here
+rather than in a suite.
 
 > ### ✅ Resolved 2026-07-29 — the Class A height bug, on the third attempt
 >
@@ -68,6 +74,26 @@ unilaterally: graduating is deleting `EXPERIMENTAL`, and that is a promise to wo
 > porting only the first one is a decision that needs a trigger, not a footnote.
 
 ## Next
+
+### ✍️ Revisit the Prompt track — Rule Builder fixes + UI changes, and the Prompt Builder (owner, 2026-07-30)
+
+Owner wants to come back to the prompt side: **fix some things and change some UI**. Two distinct
+pieces of work, deliberately named separately because they are not the same kind of task:
+
+- **Rule Builder** (`PromptRulesText` / `PromptRulesClip`, `js/prompt_rules/`) — **exists and ships.**
+  This is a change pass on a working feature: specific fixes plus UI changes, both **still to be
+  specified**. Read [`rule-builder.md`](rule-builder.md) and
+  [`rules-reference.md`](rules-reference.md) before touching it, and note the overlay and the node UI
+  are separate surfaces (`js/prompt_rules/rule_builder/` vs `js/prompt_rules/node/`).
+- **Prompt Builder** — **deleted, deliberately** (see `.claude/CLAUDE.md`'s "Deleted, deliberately"
+  list, alongside Prompt Combiner and the whole `AnimaFlow/panel` group). Bringing it back is a
+  **re-specification, not a restore** — the owner said at deletion time they would re-specify on need,
+  and this is that need. Do not reconstruct it from git history and assume the old shape was wanted.
+
+**Nothing is specified yet** — this entry exists so the intent isn't lost, not as a ready brief. The
+memories worth loading first: Anima's structured prompt format is **labelled PROSE sections, not
+JSON** (JSON tested worse), and every composing node must stay **prompt-format-agnostic** — booru tags
+*and* natural-language prose, configurable separator, no comma-splitting assumptions.
 
 ### 🎨 LoRA loader — **M1 BUILT, awaiting live verification** · M2 / M2b / M3 still spec (2026-07-29)
 
@@ -185,11 +211,13 @@ Shipped and green, not yet exercised against a running ComfyUI.
 >    subgraph, point one row at a file you then delete or rename, press `R` (refresh node
 >    definitions) — the row's red missing-file mark must update. If it doesn't, `findLoraNodes` needs
 >    to recurse into subgraph children. No headless test can reach this.
-> 3. **Is the command palette reachable at all?** We register a `commands` entry titled **"AnimaFlow:
->    Rule Builder"**, but whether this frontend surfaces extension-registered commands there was never
->    established. **Check:** open the command palette and search for that title. Reachable ⇒ keep
->    `commands`. Not reachable ⇒ it is dead code; delete the entry and let the toolbar button be the
->    sole affordance. (Renaming `COMMAND_ID` **dropped any keybinding** you had for it.)
+> **✅ The `VERIFY-IN-COMFYUI` on `commands` is SETTLED (owner, 2026-07-30): it is there and it
+> works.** The command palette does surface extension-registered commands, so `"AnimaFlow: Rule
+> Builder"` (`js/prompt_rules/rule_builder/index.js:62`) is a real, reachable affordance — **keep the
+> `commands` registration**; it is not dead code. Two consequences worth knowing: a `commands` entry
+> is the thing a keyboard shortcut can point at, so a shortcut can be bound in **Settings →
+> Keybinding**; and the earlier `Webtoon.* → AnimaFlow.OpenRuleBuilder` id rename dropped any binding
+> that existed against the old id.
 
 | Item | Commit |
 |---|---|
