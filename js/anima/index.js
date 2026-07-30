@@ -139,7 +139,13 @@ import { isSubmitting } from "../shared/submit_guard.mjs";
 // plain relative import with zero `/scripts/app.js`/`window` reference at
 // module scope, like `isGraphLoading`/`isSubmitting` above -- cheap enough
 // to import eagerly rather than riding this file's own lazy `loadMods()`.
-import { registerAnimaFlowSettings } from "../shared/settings.mjs";
+// `getSetting`/`SETTING_IDS`/`SETTING_DEFAULTS` ride this SAME import --
+// `logHealedSockets` (below) is the one other thing in this file that needs
+// a live setting value (gating its `console.info` on "Console logging"),
+// and they're exactly as cheap/eager-safe as `registerAnimaFlowSettings`
+// itself (same module, same zero-`app`-at-module-scope shape) -- no new
+// static import line, still one specifier list off one module path.
+import { registerAnimaFlowSettings, getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 // Duck-typed size-pair check -- `node.size` on a live litegraph node is a
 // Float64Array VIEW over a Rectangle, NOT a plain Array
 // (`Array.isArray(node.size) === false`, measured live); `setupNode`'s own
@@ -401,10 +407,22 @@ function buildCtx(mods) {
 // reconciliation is `interaction.mjs`'s `healNodeSockets` (pure enough to be
 // unit-tested against a fake node/graph); this is just the one place that
 // logs it, once per healed node, so a surprised user can see what happened
-// rather than guessing why a wire vanished (task brief).
+// rather than guessing why a wire vanished (task brief) -- gated on the
+// "Console logging" setting (below) so it doesn't fire on every graph load
+// for a user who has it turned off.
 // ---------------------------------------------------------------------------
 
 function logHealedSockets(node, nodeData, summary) {
+  // Gated on the live "Console logging" setting (`js/shared/settings.mjs`) --
+  // stay silent at "off" (the default), emit at "summary" or "debug". Unlike
+  // `js/shared/queue_probe.mjs:103`'s own gate (`!== "debug"`, per-run
+  // noise), this is a genuine one-off, load-time event worth surfacing at
+  // "summary" too -- so this compares against `"off"` instead, the inverse
+  // sense of that reference gate.
+  const level = getSetting(SETTING_IDS.CONSOLE_LOGGING, SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING], app);
+  if (level === "off") {
+    return;
+  }
   const parts = [];
   if (summary.removedInputs.length) {
     parts.push(`removed input(s) [${summary.removedInputs.join(", ")}]`);

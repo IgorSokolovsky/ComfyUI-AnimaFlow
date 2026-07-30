@@ -4924,6 +4924,94 @@ test("index.js: socket healing (healNodeSockets) is wired into onConfigure only 
   assert.match(onConfigureBlock, /healNodeSockets\(/, "onConfigure must be the one place healing runs");
 });
 
+// `logHealedSockets`'s own `console.info` used to fire UNGATED on every
+// restored node with stale sockets, spamming the console on every graph load
+// regardless of the "Console logging" setting (live-confirmed in the owner's
+// own log). Gated the same way `js/shared/queue_probe.mjs:103` gates its own
+// per-run probe, off `getSetting`/`SETTING_IDS.CONSOLE_LOGGING`/
+// `SETTING_DEFAULTS` -- except this compares against `"off"` (inverse sense
+// of that reference's `!== "debug"`), since a load-time heal is worth
+// surfacing at "summary" too, not just "debug".
+//
+// `index.js` can't be imported directly here (its top-level `/scripts/
+// app.js` import 404s under plain `node` -- this file's own established
+// constraint, see every other `index.js` source-scan test above). Rather
+// than settle for a regex-only check (which can't tell a correct comparison
+// from a subtly wrong one, e.g. `!== "off"`), this extracts `logHealedSockets`
+// itself as source text and runs it for real via `Function`, with `app`/
+// `getSetting`/`SETTING_IDS`/`SETTING_DEFAULTS` supplied as plain parameters
+// instead of module-scope imports -- the REAL gating logic, not a re-typed
+// copy of it.
+function extractLogHealedSockets() {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function logHealedSockets(node, nodeData, summary) {");
+  assert.ok(fnIdx >= 0, "logHealedSockets must exist");
+  const nextFnIdx = indexSource.indexOf("function ", fnIdx + 1);
+  assert.ok(nextFnIdx > fnIdx, "must find the next function declaration to bound the slice");
+  const fnSrc = indexSource.slice(fnIdx, nextFnIdx);
+  // eslint-disable-next-line no-new-func -- deliberate: see this section's
+  // own doc comment for why this is the one place this suite executes an
+  // index.js function body directly instead of only regex-scanning it.
+  const build = new Function("app", "getSetting", "SETTING_IDS", "SETTING_DEFAULTS", `${fnSrc}\nreturn logHealedSockets;`);
+  return build;
+}
+
+test('index.js: logHealedSockets stays silent when "Console logging" resolves to "off"', () => {
+  const build = extractLogHealedSockets();
+  const infoCalls = [];
+  const originalInfo = console.info;
+  console.info = (...args) => infoCalls.push(args);
+  try {
+    const logHealedSockets = build({}, () => "off", SETTING_IDS, SETTING_DEFAULTS);
+    logHealedSockets({ id: 42 }, { name: "AnimaGenerator" }, { removedInputs: ["old_socket"], removedOutputs: [] });
+  } finally {
+    console.info = originalInfo;
+  }
+  assert.equal(infoCalls.length, 0, 'must not log anything when the resolved level is "off"');
+});
+
+for (const level of ["summary", "debug"]) {
+  test(`index.js: logHealedSockets emits its console.info when "Console logging" resolves to "${level}"`, () => {
+    const build = extractLogHealedSockets();
+    const infoCalls = [];
+    const originalInfo = console.info;
+    console.info = (...args) => infoCalls.push(args);
+    try {
+      const logHealedSockets = build({}, () => level, SETTING_IDS, SETTING_DEFAULTS);
+      logHealedSockets({ id: 42 }, { name: "AnimaGenerator" }, { removedInputs: ["old_socket"], removedOutputs: [] });
+    } finally {
+      console.info = originalInfo;
+    }
+    assert.equal(infoCalls.length, 1, `must log exactly once when the resolved level is "${level}"`);
+    assert.match(infoCalls[0][0], /healed "AnimaGenerator" #42/, "must still carry the same message text");
+  });
+}
+
+test("index.js: logHealedSockets reads the setting through getSetting(SETTING_IDS.CONSOLE_LOGGING, SETTING_DEFAULTS[...], app) -- not a re-typed literal", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function logHealedSockets(node, nodeData, summary) {");
+  const nextFnIdx = indexSource.indexOf("function ", fnIdx + 1);
+  const fnSrc = indexSource.slice(fnIdx, nextFnIdx);
+  assert.match(
+    fnSrc,
+    /getSetting\(\s*SETTING_IDS\.CONSOLE_LOGGING\s*,\s*SETTING_DEFAULTS\[SETTING_IDS\.CONSOLE_LOGGING\]\s*,\s*app\s*\)/,
+    "must resolve the level through the shared getSetting helper, matching queue_probe.mjs's own call shape",
+  );
+});
+
+test("index.js: settings.mjs is imported via ONE extended specifier list, not a second import statement", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const settingsImportLines = indexSource
+    .split("\n")
+    .filter((line) => /from\s*"\.\.\/shared\/settings\.mjs"/.test(line));
+  assert.equal(settingsImportLines.length, 1, "must be exactly one import statement from ../shared/settings.mjs");
+  assert.match(
+    settingsImportLines[0],
+    /import\s*\{\s*registerAnimaFlowSettings\s*,\s*getSetting\s*,\s*SETTING_IDS\s*,\s*SETTING_DEFAULTS\s*\}\s*from\s*"\.\.\/shared\/settings\.mjs"/,
+    "getSetting/SETTING_IDS/SETTING_DEFAULTS must extend the EXISTING registerAnimaFlowSettings import, never a new import line",
+  );
+});
+
 // ===========================================================================
 // H2. The "Generator loses its saved size on every refresh" race
 //     (`isGraphLoading()`, `js/shared/graph_loading.mjs`, ported from
