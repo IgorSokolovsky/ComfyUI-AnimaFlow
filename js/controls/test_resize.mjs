@@ -4273,6 +4273,95 @@ test("add menu: exactly one add-menu element in the DOM at a time; no orphan lef
 });
 
 // =========================================================================
+// Stale-state diagnostic wiring ("AnimaLoaderPanel generates with a stale
+// model" investigation) -- `index.js` itself can't be imported directly
+// here (top-level absolute `/scripts/app.js` import), so this is a static
+// source scan, same technique as this file's other `index.js:`-prefixed
+// tests above. The pure half (`state_diagnostic.mjs`) has its own dedicated
+// suite, `test_state_diagnostic.mjs`.
+// =========================================================================
+
+test("index.js: imports onGraphToPromptResult from ../shared/submit_guard.mjs (extending the EXISTING wrap, never a second one) and the pure state_diagnostic.mjs module, both eagerly", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\s*\{\s*onGraphToPromptResult\s*\}\s*from\s*"\.\.\/shared\/submit_guard\.mjs"/,
+    "must import onGraphToPromptResult eagerly (not through loadMods())",
+  );
+  assert.match(
+    indexSource,
+    /import\s*\*\s*as\s*stateDiagnostic\s*from\s*"\.\/state_diagnostic\.mjs"/,
+    "must import the pure diagnostic module eagerly",
+  );
+});
+
+test("index.js: installStateDiagnosticHook() is called from beforeRegisterNodeDef, alongside installQueuePromptHook()/registerAnimaFlowSettings(app), and is idempotent (module-level guard)", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const beforeIdx = indexSource.indexOf("beforeRegisterNodeDef(nodeType, nodeData) {");
+  assert.ok(beforeIdx >= 0, "expected beforeRegisterNodeDef");
+  const bodyEnd = indexSource.indexOf("if (nodeData.name === \"AnimaLoraLoader\")", beforeIdx);
+  const body = indexSource.slice(beforeIdx, bodyEnd);
+  assert.match(body, /installQueuePromptHook\(\);/);
+  assert.match(body, /registerAnimaFlowSettings\(app\);/);
+  assert.match(body, /installStateDiagnosticHook\(\);/, "must install the diagnostic hook from the same unconditional, every-node-type call site");
+
+  assert.match(indexSource, /let _stateDiagnosticWrapped = false;/, "must guard against double-registration (hot reload)");
+  const fnIdx = indexSource.indexOf("function installStateDiagnosticHook()");
+  assert.ok(fnIdx >= 0);
+  const fnBody = indexSource.slice(fnIdx, indexSource.indexOf("\n}", fnIdx));
+  assert.match(fnBody, /if \(_stateDiagnosticWrapped\) \{\s*return;/, "must bail out on a second call");
+  assert.match(fnBody, /onGraphToPromptResult\(runStateDiagnostic\);/, "must register runStateDiagnostic on submit_guard's tap");
+});
+
+test("index.js: runStateDiagnostic is gated on the LIVE 'Console logging' setting being exactly 'debug' -- 'off'/'summary' must stay silent -- checked BEFORE the graph walk", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function runStateDiagnostic(resolved)");
+  assert.ok(fnIdx >= 0);
+  const nextFnIdx = indexSource.indexOf("let _stateDiagnosticWrapped", fnIdx);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx);
+  const levelIdx = fnBody.indexOf("getSetting(SETTING_IDS.CONSOLE_LOGGING");
+  const walkIdx = fnBody.indexOf("findDiagnosticNodes()");
+  assert.ok(levelIdx >= 0 && walkIdx > levelIdx, "the debug-level check must run BEFORE the graph walk");
+  assert.match(fnBody, /if \(level !== "debug"\) \{\s*return;/, "must stay silent for anything other than exactly 'debug'");
+});
+
+test("index.js: runStateDiagnostic's entire body is wrapped in a top-level try/catch (belt-and-braces alongside submit_guard.mjs's own per-listener catch) -- a diagnostic bug must never be able to prevent a queue", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function runStateDiagnostic(resolved) {");
+  assert.ok(fnIdx >= 0);
+  const bodyAfterBrace = indexSource.slice(fnIdx + "function runStateDiagnostic(resolved) {".length, fnIdx + 400);
+  assert.match(bodyAfterBrace.trimStart(), /^try \{/, "the function body must open with a try immediately");
+  const nextFnIdx = indexSource.indexOf("let _stateDiagnosticWrapped", fnIdx);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx);
+  assert.match(fnBody, /\} catch \(err\) \{\s*console\.error\("\[AnimaFlow\] state-diagnostic top-level failure \(ignored\):", err\);\s*\}/, "must catch and swallow any top-level error");
+  // Per-node work is ALSO individually try/caught, so one bad node can't stop
+  // the rest from being reported.
+  assert.match(fnBody, /for \(const node of nodes\) \{\s*try \{/, "each node's own comparison must be individually try/caught");
+});
+
+test("index.js: findDiagnosticNodes walks app.graph (and subgraphs) filtering on stateDiagnostic.STATE_WIDGET_NAME_BY_CLASS -- the same class set as the pure module, never a second hardcoded list", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function findDiagnosticNodes()");
+  assert.ok(fnIdx >= 0);
+  const fnBody = indexSource.slice(fnIdx, indexSource.indexOf("function runStateDiagnostic", fnIdx));
+  assert.match(fnBody, /stateDiagnostic\.STATE_WIDGET_NAME_BY_CLASS\[className\]/, "must key off the pure module's own class->widget map, not a second copy");
+  assert.match(fnBody, /walk\(app\.graph\)/);
+});
+
+test("index.js: runStateDiagnostic bails out via stateDiagnostic.hasComparablePayload BEFORE the per-node loop -- a rejected/failed graphToPrompt still fires the listener with `undefined`, which must never be reported as every node 'missing' its input", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function runStateDiagnostic(resolved) {");
+  assert.ok(fnIdx >= 0);
+  const nextFnIdx = indexSource.indexOf("let _stateDiagnosticWrapped", fnIdx);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx);
+  const guardIdx = fnBody.indexOf("stateDiagnostic.hasComparablePayload(output)");
+  const loopIdx = fnBody.indexOf("for (const node of nodes)");
+  assert.ok(guardIdx >= 0, "must call stateDiagnostic.hasComparablePayload(output)");
+  assert.ok(loopIdx > guardIdx, "the payload-shape guard must run BEFORE the per-node loop");
+  assert.match(fnBody, /console\.warn\(stateDiagnostic\.formatNoPayloadLine\(\)\);/, "the no-payload case must print loudly (console.warn), via the pure formatter");
+});
+
+// =========================================================================
 
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {

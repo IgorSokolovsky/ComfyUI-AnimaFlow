@@ -53,6 +53,33 @@
  * **Do not remove this guard** without also fixing the churn at its
  * source — doing so silently reintroduces "post-run context-supplied
  * values never appear."
+ *
+ * ## `onGraphToPromptResult` — the stale-model diagnostic's tap (added for
+ * the "AnimaLoaderPanel generates with a stale model" investigation)
+ *
+ * This module is already the ONE place `app.graphToPrompt` is wrapped —
+ * extending it with a read-only result tap is the least invasive way to see
+ * what a submit actually carried, rather than adding a SECOND wrap of
+ * `app.graphToPrompt` next to this one (exactly the fragility
+ * `docs/lora-loader-design.md` §3 warns about). `js/controls/index.js`'s
+ * `installStateDiagnosticHook` is the one real caller: it registers a
+ * listener that reads the resolved `{workflow, output}` (confirmed by
+ * reading the installed `comfyui_frontend_package`'s own
+ * `dialogService-*.js` bundle — `app.graphToPrompt(e) { return
+ * graphToPrompt(e, {...}) }`, whose body ends `return {workflow: r, output:
+ * a}`, `a` keyed by node id with `{inputs, class_type, _meta}` — and
+ * crucially reads each widget's LIVE `.value` via `serializeValue`/`i.value`
+ * at call time, not a cached snapshot) and compares it against each node's
+ * own live widget value.
+ *
+ * Fired from a SEPARATE `.then()` chain with its own `.catch()`, exactly
+ * like `js/controls/index.js`'s existing `advanceSeedsAfterRun` pattern for
+ * `app.queuePrompt` above this module — so a listener that throws (or the
+ * whole diagnostic feature) can NEVER affect what `graphToPrompt` itself
+ * returns to its real caller, delay it, or turn a queue attempt into a
+ * rejection. Every listener call is ALSO individually try/caught
+ * (`notifyGraphToPromptListeners` below), so one bad listener can't stop a
+ * second one from running.
  */
 import { app } from "/scripts/app.js";
 
@@ -60,6 +87,39 @@ const TRAILING_MS = 600; // generous -- see this module's own doc comment for wh
 
 let _submitting = false;
 let _clearTimer = null;
+
+// See this module's own "onGraphToPromptResult" doc comment above.
+const _graphToPromptListeners = [];
+
+/** Register `fn` to run every time `app.graphToPrompt` resolves, called with
+ * the EXACT resolved value (whatever `graphToPrompt` itself hands back —
+ * `{workflow, output}` on the currently installed frontend build, per this
+ * module's own doc comment). No unregister — every real caller registers at
+ * most once per page load, module-level-guarded exactly like every other
+ * "wrap once" mechanism in this pack (`js/controls/index.js`'s
+ * `_stateDiagnosticWrapped`). A non-function `fn` is silently ignored rather
+ * than queued, matching `wrapSubmitFn`'s own "absent capability, do nothing"
+ * posture. */
+export function onGraphToPromptResult(fn) {
+  if (typeof fn === "function") {
+    _graphToPromptListeners.push(fn);
+  }
+}
+
+/** Fan `resolved` out to every registered listener, each wrapped in its own
+ * try/catch — one listener throwing must never stop the next one, or ever
+ * propagate up into the `graphToPrompt` call chain that triggered it (this
+ * module's own doc comment: "can NEVER affect what graphToPrompt itself
+ * returns"). */
+function notifyGraphToPromptListeners(resolved) {
+  for (const listener of _graphToPromptListeners) {
+    try {
+      listener(resolved);
+    } catch (err) {
+      console.error("[AnimaFlow] a graphToPrompt-result listener threw (ignored):", err);
+    }
+  }
+}
 
 function armSubmitting() {
   _submitting = true;
@@ -99,6 +159,13 @@ function wrapSubmitFn(fnName) {
       // call settles (Promise.resolve on a non-promise value resolves on
       // the next microtask), plus the trailing window on top of that.
       Promise.resolve(result).finally(releaseSubmittingLater);
+      if (fnName === "graphToPrompt") {
+        // A SEPARATE chain from the one above, with its own `.catch()` --
+        // see `onGraphToPromptResult`'s own doc comment for why this can
+        // never affect `result` (the real return value) or the timing of
+        // the trailing window just above.
+        Promise.resolve(result).then(notifyGraphToPromptListeners).catch(() => {});
+      }
     }
     return result;
   };
