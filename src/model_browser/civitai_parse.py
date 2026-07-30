@@ -74,7 +74,9 @@ def html_to_text(value: Any) -> str:
     we correctly write it with `textContent` -- never `innerHTML`, that is
     the XSS boundary and must not change -- so left as-is the raw tags
     showed up as literal text (`<p>Trained on preview3.</p>`). This converts
-    HTML to READABLE PLAIN TEXT before it ever reaches `out["description"]`:
+    HTML to READABLE PLAIN TEXT before it ever reaches `out["model_description"]`
+    or `out["version_description"]` (§7d-i -- both go through this SAME
+    conversion, never a second one):
     tags stripped, entities decoded, block-level closers turned into real
     newlines so a multi-paragraph write-up stays readable: `<br>` and a
     paragraph closer (`</p>`, `</div>`, `</h1>`-`</h6>`, `</blockquote>`) get
@@ -110,12 +112,41 @@ def html_to_text(value: Any) -> str:
 
 def parse_model_version(obj: Any) -> Dict[str, Any]:
     """A Civitai model-version-by-hash response -> `{name?, type?,
-    base_model?, triggers?, tags?, description?, _version_description?,
+    base_model?, triggers?, tags?, model_description?, version_description?,
     thumbnail?, model_id?, version_id?}` -- only the keys actually present in
     the source are set, so an empty return genuinely means "nothing usable
     was in this response at all", not "every field happened to be absent".
-    `description` and `_version_description` are MUTUALLY EXCLUSIVE (BUG
-    11b, see below) -- never both set on the same result.
+
+    docs/lora-loader-design.md §7d-i (owner, 2026-07-30): Civitai carries TWO
+    distinct pieces of prose and they are returned as two INDEPENDENT,
+    first-class fields, never collapsed into one -- a caller labels and
+    renders each separately:
+
+      - `model_description` -- the author's overall write-up for the whole
+        model (what it's for, how to prompt it, recommended settings). Read
+        from this response's embedded `model.description` when present; in
+        practice the by-hash endpoint's `model` sub-object almost never
+        actually carries one (verified live, 2026-07-29: it's `{name, type,
+        nsfw, poi}` only) -- `lookup.py`'s `_augment_with_model_description`
+        is the fallback that actually supplies it most of the time, by
+        fetching `/api/v1/models/{id}` once and caching the result back into
+        this same shape (so a future parse of the cached sidecar finds it
+        right here, with no second fetch).
+      - `version_description` -- the model-VERSION object's own `description`
+        field, a per-version note that usually reads like a short changelog
+        ("Trained on preview3.") -- NOT a lower-fidelity copy of the author
+        write-up, a genuinely different piece of text. Read straight off
+        this same response with no fallback fetch of its own: it either was
+        in the payload already or it wasn't.
+
+    BUG 11b (2026-07-29 owner report, superseded by §7d-i): an earlier cut
+    collapsed both into one `description` key, which made a present version
+    description silently SUPPRESS the model-id fallback fetch that gets the
+    real write-up (the fetch was gated on `description` already being
+    empty). Keeping the two fields fully independent -- `version_description`
+    never gates, and is never gated by, `model_description` -- is what
+    prevents that bug from coming back; there is no "collapse" step left to
+    regress.
 
     **A response with no `trainedWords` and no `model.name` still counts as
     a usable record** (§2b) as long as ANYTHING else identifying comes back
@@ -143,7 +174,6 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
     # which Civitai endpoint answered; prefer the top-level one if both are
     # present, since it's the more specific of the two when they disagree.
     model = obj.get("model")
-    model_description = None
     if isinstance(model, dict):
         if model.get("name"):
             out["name"] = str(model["name"])
@@ -154,45 +184,21 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
             out["tags"] = model_tags
         if model.get("description"):
             model_description = html_to_text(str(model["description"]))
+            if model_description:
+                out["model_description"] = model_description
 
     top_tags = _clean_strings(obj.get("tags"))
     if top_tags:
         out["tags"] = top_tags
 
-    # BUG 2 (2026-07-29 owner report): a LoRA that matched on Civitai and DID
-    # have an author write-up still showed "no author's notes" -- this used
-    # to read `obj["description"]` ONLY, the per-VERSION field (often null,
-    # or a short changelog). The author's MAIN description lives on the
-    # MODEL, not the version, so it wins here when present. In practice the
-    # by-hash endpoint's embedded `model` object almost never actually
-    # carries one (verified live, 2026-07-29: it's `{name, type, nsfw, poi}`
-    # only) -- `lookup.py`'s `_augment_with_model_description` is the
-    # fallback that actually supplies it most of the time, by fetching
-    # `/api/v1/models/{id}` once and caching the result back into this same
-    # shape (so a future parse of the cached sidecar finds it right here,
-    # with no second fetch).
-    #
-    # BUG 11b (2026-07-29 owner report): the FIRST version of this fix set
-    # `out["description"]` from the version's own text whenever the model
-    # had none -- which meant `lookup.py`'s augmentation (gated on
-    # `parsed.get("description")` already being truthy) never even TRIED the
-    # model-id fetch whenever a version description existed, which is most
-    # of the time. A per-VERSION description reads like a changelog
-    # ("Trained on preview3.") verified live, 2026-07-29 (see this module's
-    # own `parse_model_description` doc comment for the sibling model-id
-    # response, which carries the real author write-up as a multi-paragraph
-    # intro) -- NOT the author's write-up, so it must not stand in the way of
-    # fetching the real one. It's kept here ONLY as `_version_description`,
-    # a last-resort candidate `lookup.py`'s `_finalize_description` uses
-    # ONLY once every real attempt at the author's own description (model-
-    # level here, or the model-id fallback fetch) has come back empty --
-    # never as a reason to skip that attempt in the first place.
-    if model_description:
-        out["description"] = model_description
-    elif obj.get("description"):
+    # §7d-i: the two descriptions are independent fields, computed
+    # independently -- `version_description`'s presence/absence never
+    # depends on `model_description`, and vice versa (see this function's
+    # own docstring for why that independence is what keeps BUG 11b fixed).
+    if obj.get("description"):
         version_description = html_to_text(str(obj["description"]))
         if version_description:
-            out["_version_description"] = version_description
+            out["version_description"] = version_description
 
     mid = _clean_id(obj.get("modelId"))
     if mid is not None:

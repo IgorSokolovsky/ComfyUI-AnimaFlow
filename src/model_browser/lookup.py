@@ -21,14 +21,14 @@ def _augment_with_model_description(
     *,
     cached_only: bool,
 ) -> "tuple[Dict[str, Any], bool]":
-    """BUG 2 (2026-07-29 owner report): `parsed["description"]` prefers the
-    MODEL's own write-up (`civitai_parse.parse_model_version`'s own
-    priority), but the by-hash endpoint's embedded `model` object almost
-    never actually carries one (verified live, 2026-07-29: it's `{name,
-    type, nsfw, poi}` only) -- so a `parsed` with a `model_id` but no
-    `description` almost always means "we haven't fetched the model's own
-    page yet", not "this LoRA genuinely has no author write-up". One extra
-    call, `civitai_client.lookup_model_by_id` (public, no key -- §2b's same
+    """BUG 2 (2026-07-29 owner report): `parsed["model_description"]` is the
+    MODEL's own write-up (`civitai_parse.parse_model_version`'s own key),
+    but the by-hash endpoint's embedded `model` object almost never actually
+    carries one (verified live, 2026-07-29: it's `{name, type, nsfw, poi}`
+    only) -- so a `parsed` with a `model_id` but no `model_description`
+    almost always means "we haven't fetched the model's own page yet", not
+    "this LoRA genuinely has no author write-up". One extra call,
+    `civitai_client.lookup_model_by_id` (public, no key -- §2b's same
     rules), fetches it; a hit is folded BOTH into the returned `parsed` AND
     into `raw` (the sidecar's own on-disk shape, under `model.description`,
     matching the real Civitai response's own key) so the very next read --
@@ -37,40 +37,36 @@ def _augment_with_model_description(
 
     Returns `(parsed, raw_changed)` -- the caller re-writes the sidecar only
     when `raw_changed` is true, so a call that changes nothing (already had
-    a description, no `model_id` to ask about, or `cached_only`) never
-    triggers a pointless disk write.
+    a model description, no `model_id` to ask about, or `cached_only`)
+    never triggers a pointless disk write.
 
     Never reached when `cached_only` (the same network-policy gate
     `lookup_model_info` enforces everywhere else in this module) -- and
     never raises, mirroring every other function in this module: a failed/
-    offline fetch here just leaves `parsed` without a description, exactly
-    like any other Civitai data that couldn't be fetched.
+    offline fetch here just leaves `parsed` without a model description,
+    exactly like any other Civitai data that couldn't be fetched.
 
-    A "once-only" marker (`raw["_wtn_description_checked"]`) is set once
-    Civitai has given a DEFINITIVE answer (found, with or without a usable
-    description, or a definitive 404/notfound) -- so a model that genuinely
-    has no description is never re-asked on every panel open. A transient
-    failure (timeout/DNS/rate-limit) does NOT set it, so a later open tries
-    again instead of being stuck.
+    A "once-only" marker (`raw["_wtn_model_description_checked"]`) is set
+    once Civitai has given a DEFINITIVE answer (found, with or without a
+    usable description, or a definitive 404/notfound) -- so a model that
+    genuinely has no description is never re-asked on every panel open. A
+    transient failure (timeout/DNS/rate-limit) does NOT set it, so a later
+    open tries again instead of being stuck. `_finalize_descriptions`
+    (below) turns this raw-sidecar marker into the public
+    `model_description_checked` flag a caller can render on.
 
-    BUG 11b (2026-07-29 owner report): the gate below reads
-    `parsed.get("description")` -- and, since BUG 11b's fix to
-    `civitai_parse.parse_model_version`, that key is populated ONLY by the
-    MODEL's own description (or a PREVIOUS successful call to this very
-    function, which caches its find under that same key -- see below). It is
-    deliberately never populated by the version's own description, which
-    `parse_model_version` now exposes separately as `_version_description` --
-    a last resort `_finalize_description` (this module) applies only once
-    this function has had its chance to run. Before this fix, `parsed[
-    "description"]` was ALSO set from the version's text, which meant this
-    function's very first line returned early -- skipping the model-id fetch
-    -- every time a version description existed, which is most of the time.
-    That produced author's-notes that were actually a per-version changelog
-    note ("Trained on preview3.") instead of the real write-up.
+    §7d-i (owner, 2026-07-30): `model_description` and `version_description`
+    are independent fields since `civitai_parse.parse_model_version` stopped
+    collapsing them (BUG 11b) -- so the gate below only ever looks at
+    `model_description`. A version description existing can no longer
+    suppress this fetch (that WAS the bug: the pre-BUG-11b gate read a
+    single shared `description` key, so a present version note skipped the
+    fetch that gets the real write-up, most of the time). There is nothing
+    left to regress here because there is no shared key to gate on any more.
     """
-    if parsed.get("description") or cached_only:
+    if parsed.get("model_description") or cached_only:
         return parsed, False
-    if raw.get("_wtn_description_checked"):
+    if raw.get("_wtn_model_description_checked"):
         return parsed, False
     model_id = parsed.get("model_id")
     if model_id is None:
@@ -83,11 +79,11 @@ def _augment_with_model_description(
 
     # "found" (with or without a usable description) or a definitive
     # "notfound" -- either way we now genuinely know the answer.
-    raw["_wtn_description_checked"] = True
+    raw["_wtn_model_description_checked"] = True
     if result.get("reason") == "found" and isinstance(result.get("data"), dict):
         description = civitai_parse.parse_model_description(result["data"])
         if description:
-            parsed["description"] = description
+            parsed["model_description"] = description
             model_obj = raw.get("model")
             if not isinstance(model_obj, dict):
                 model_obj = {}
@@ -96,22 +92,36 @@ def _augment_with_model_description(
     return parsed, True
 
 
-def _finalize_description(parsed: Dict[str, Any]) -> Dict[str, Any]:
-    """BUG 11b's last resort: if NOTHING better ever turned up -- no
-    `model.description`, and the model-id fallback fetch (above) either
-    never ran (no `model_id`, offline, `cached_only`) or ran and genuinely
-    found nothing -- fall back to the version's own `_version_description`
-    (a changelog-style note, not the author's write-up, but still better
-    than showing nothing at all). Always called, on every code path,
-    AFTER `_augment_with_model_description` has had its one chance to
-    supply the real thing, so the fallback can never pre-empt the fetch.
-    `_version_description` never survives into the returned `parsed` either
-    way -- it is scratch state for this function alone, not part of the
-    public shape `parse_model_version`'s docstring promises.
+def _finalize_descriptions(parsed: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    """§7d-i: attach the public `model_description_checked` flag -- the
+    thing that lets a caller distinguish "genuinely no model description"
+    from "haven't asked Civitai yet", per field. (`version_description` needs
+    no equivalent flag: it comes straight off the SAME by-hash response that
+    produced everything else in `parsed`, with no separate fetch of its own
+    -- by the time `parsed` exists at all, its value is already final.)
+
+    `True` when any of the following holds -- i.e. there is genuinely
+    nothing further this lookup could ever learn about `model_description`:
+
+      - `model_description` is already present (whatever supplied it).
+      - The model-id fallback fetch (`_augment_with_model_description`) has
+        reached a DEFINITIVE answer at some point, recorded in the raw
+        sidecar shape as `_wtn_model_description_checked` -- covers "ran
+        just now" and "ran on an earlier open", both.
+      - There is no `model_id` to ever fetch by in the first place -- the
+        fallback fetch can never run for this record, on this open or any
+        future one, so there is nothing left to "not yet" about.
+
+    `False` only when a fetch that COULD supply the answer hasn't happened
+    yet: `cached_only` skipped it, or a transient failure (timeout/DNS/
+    rate-limit) left it unresolved for a later open to retry.
     """
-    if not parsed.get("description") and parsed.get("_version_description"):
-        parsed["description"] = parsed["_version_description"]
-    parsed.pop("_version_description", None)
+    checked = (
+        bool(parsed.get("model_description"))
+        or bool(raw.get("_wtn_model_description_checked"))
+        or parsed.get("model_id") is None
+    )
+    parsed["model_description_checked"] = checked
     return parsed
 
 
@@ -169,7 +179,7 @@ def lookup_model_info(
         if cached is not None:
             parsed = civitai_parse.parse_model_version(cached)
             if parsed:
-                # BUG 2 -- top up a cached record that's missing a
+                # BUG 2 -- top up a cached record that's missing a MODEL
                 # description (common: the by-hash sidecar's `model` object
                 # almost never carries one) with the one-time model-id
                 # fallback fetch, re-caching the raw sidecar only if it
@@ -181,7 +191,7 @@ def lookup_model_info(
                     "reason": "found",
                     "offline_reason": None,
                     "message": "",
-                    "data": _finalize_description(parsed),
+                    "data": _finalize_descriptions(parsed, cached),
                     "source": "sidecar",
                 }
 
@@ -231,7 +241,13 @@ def lookup_model_info(
     # earlier when it's set), passed through for defensiveness only.
     parsed, _ = _augment_with_model_description(parsed, result["data"], cached_only=cached_only)
     sidecar.write_sidecar(path, result["data"])
-    return {"reason": "found", "offline_reason": None, "message": "", "data": _finalize_description(parsed), "source": "civitai"}
+    return {
+        "reason": "found",
+        "offline_reason": None,
+        "message": "",
+        "data": _finalize_descriptions(parsed, result["data"]),
+        "source": "civitai",
+    }
 
 
 def forget_cached(kind: object, name: Any) -> bool:

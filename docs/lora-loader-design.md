@@ -760,6 +760,46 @@ Three things this table is load-bearing for:
 > on the first result card. Read the mockup before claiming it is silent on something; grepping it for the
 > word you expect is not the same as looking at it.
 
+### 7d-i. TWO descriptions, labelled — never collapsed into one (owner, 2026-07-30)
+
+Civitai carries **two** distinct pieces of prose, and the first cut of the lookup picked one and threw the
+other away. Both must be shown, each under its own label, **on every per-model info surface** — the LoRA
+ⓘ panel, the toolbar browser, and (M3) the Loader Panel's model info. This is not LoRA-specific; it holds
+for checkpoints and UNET too.
+
+| label | source | what it is |
+|---|---|---|
+| **Model Description** | `/api/v1/models/{id}` → `description` | the author's overall write-up: what the model is for, how to prompt it, recommended settings |
+| **Version Description** | the model-version object's own `description` | a per-version note — usually a short changelog (`Trained on preview3.`) |
+
+Why the distinction earns two labels rather than a merge: they answer different questions, and a reader
+who sees only "Trained on preview3." under a generic *Author's notes* heading reasonably concludes the
+author wrote nothing useful — when in fact the real write-up exists one endpoint away. That exact
+confusion is what surfaced this (owner, 2026-07-30).
+
+Rules:
+
+- **Render each only when present**, and never invent a heading for an empty one. A model with no version
+  note shows just *Model Description*.
+- **Distinguish "absent" from "not fetched yet"** — the same rule §7e applies to the lookup states. Saying
+  a model has no description when we simply have not asked is a lie the UI has already told once.
+- **Both are cached in the sidecar** so the second open costs nothing, and both are governed by the
+  Civitai setting.
+- Both are **untrusted HTML**: convert to plain text and write with `textContent`, never `innerHTML`.
+
+**The wire shape** (built 2026-07-30; `lookup_model_info(...)["data"]`, keys present only when known):
+
+| key | meaning |
+|---|---|
+| `model_description` | the author's write-up. **Absent ≠ empty** — absent means not known |
+| `version_description` | the per-version note. Known synchronously, so absent genuinely means none |
+| `model_description_checked` | **always present.** `True` = nothing further could ever be learned (already have it, a fetch reached a definitive answer, or there is no `model_id` to ask by). `False` = a fetch that could answer it hasn't happened — `cached_only` skipped it, or a transient failure. `version_description` needs no equivalent, since it never requires a second call |
+
+> **Why the split is structural, not cosmetic.** The earlier bug — a present *version* description
+> suppressing the fetch that gets the real write-up — is now **unable to recur**, because
+> `_augment_with_model_description` gates solely on `model_description`. There is no shared key left for
+> the two to collide on. That is a stronger guarantee than the regression test beside it.
+
 ### The modal
 
 **90% of the viewport**, centred, over a scrim. Full features: search, **filters** (type, base model,
