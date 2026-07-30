@@ -65,13 +65,20 @@ _BASE_MODEL_KEYS = ("modelspec.architecture", "ss_base_model_version", "ss_sd_mo
 # ---------------------------------------------------------------------------
 
 
-def read_safetensors_metadata(path: str) -> Dict[str, Any]:
-    """The file's `__metadata__` dict (str -> str), or `{}` for ANY problem
-    (missing file, a truncated header, an oversized/garbage length prefix,
-    or a header that isn't valid JSON) -- never raises. Reads ONLY the
-    8-byte little-endian header-length prefix and that many header bytes;
-    the tensor block itself is never opened, so no torch import is needed
-    or possible here.
+def _parse_safetensors_header(path: str) -> Optional[Dict[str, Any]]:
+    """Read + parse ONLY `path`'s safetensors header (the 8-byte
+    little-endian header-length prefix, then that many header bytes) -> the
+    parsed JSON object, or `None` for ANY problem (missing file, a truncated
+    header, an oversized/garbage length prefix, or header bytes that aren't
+    valid JSON or aren't a JSON object) -- never raises. The tensor block
+    itself is never opened, so no torch import is needed or possible here.
+
+    Factored out of `read_safetensors_metadata` (2026-07-30) so
+    `download.py`'s post-download integrity check can reuse the SAME parse
+    rather than a second copy of it -- that function's own `{}`-on-any-
+    failure contract deliberately can't tell "not a safetensors file" apart
+    from "a safetensors file with no `__metadata__`", which is fine for its
+    own best-effort-metadata job but useless as a validity signal.
 
     Near-verbatim port of `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:34-57`'s
     own `read_safetensors_metadata` (MIT, THIRD_PARTY_NOTICES.md).
@@ -80,20 +87,45 @@ def read_safetensors_metadata(path: str) -> Dict[str, Any]:
         with open(path, "rb") as fh:
             raw = fh.read(8)
             if len(raw) != 8:
-                return {}
+                return None
             n = struct.unpack("<Q", raw)[0]
             if n <= 0 or n > _MAX_HEADER_BYTES:
-                return {}
+                return None
             head = fh.read(n)
             if len(head) != n:
-                return {}
+                return None
         obj = json.loads(head)
     except Exception:
-        return {}
+        return None
     if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def read_safetensors_metadata(path: str) -> Dict[str, Any]:
+    """The file's `__metadata__` dict (str -> str), or `{}` for ANY problem
+    (missing file, a truncated header, an oversized/garbage length prefix,
+    or a header that isn't valid JSON) -- never raises. See
+    `_parse_safetensors_header` for the actual read/parse.
+    """
+    obj = _parse_safetensors_header(path)
+    if obj is None:
         return {}
     meta = obj.get("__metadata__")
     return meta if isinstance(meta, dict) else {}
+
+
+def is_valid_safetensors_header(path: str) -> bool:
+    """Whether `path` starts with a well-formed safetensors header: the
+    8-byte length prefix followed by that many bytes that parse as a JSON
+    object. This is the validity SIGNAL `read_safetensors_metadata`
+    deliberately discards (a file with no `__metadata__` block is still a
+    perfectly valid safetensors file, and gets `{}` there same as a
+    genuinely corrupt one) -- `download.py`'s post-download integrity check
+    needs exactly this distinction, so it calls this instead of duplicating
+    the header parse.
+    """
+    return _parse_safetensors_header(path) is not None
 
 
 def trigger_words_from_metadata(meta: Any) -> List[str]:
@@ -320,6 +352,7 @@ def list_models(kind: object) -> List[Dict[str, Any]]:
 
 __all__ = (
     "read_safetensors_metadata",
+    "is_valid_safetensors_header",
     "trigger_words_from_metadata",
     "base_model_from_metadata",
     "find_preview_path",

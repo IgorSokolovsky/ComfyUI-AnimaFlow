@@ -2156,8 +2156,12 @@ class _FakeDownloadResponse:
 
 
 def test_stream_download_success_writes_dest_and_removes_part():
+    # `.bin` deliberately -- NOT a `.safetensors`/`.sft` destination, so the
+    # 2026-07-30 safetensors-header integrity gate never applies here; this
+    # test is about the plain exact-length success path, not header validity
+    # (that's `test_stream_download_valid_safetensors_header_is_ok` below).
     with tempfile.TemporaryDirectory() as tmp:
-        dest = os.path.join(tmp, "sub", "a.safetensors")
+        dest = os.path.join(tmp, "sub", "a.bin")
         payload = b"x" * (3 * 1024 * 1024 + 7)  # not a clean multiple of the chunk size
         progress_calls = []
 
@@ -2240,6 +2244,118 @@ def test_stream_download_too_large_cleans_up_and_never_registers_installed():
             assert download.destination_exists("loras", "", "huge.safetensors") is False
         finally:
             restore()
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-30 integrity-gate fix: a short/dropped stream (`bytes_written !=
+# Content-Length`) or a wrong-content body (an HTML/login page with a
+# perfectly correct `Content-Length` for ITSELF) used to be renamed over
+# `dest_path` and reported `"ok"` anyway -- root cause of a real
+# `json.JSONDecodeError` out of `AnimaLoaderPanel`. Both gates run BEFORE the
+# atomic rename; on either failure `dest_path` is never touched and `.part`
+# is cleaned up, same contract as every other failure reason.
+# ---------------------------------------------------------------------------
+
+
+def test_stream_download_short_read_with_known_length_is_incomplete():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        dest = os.path.join(loras_root, "dropped.safetensors")
+
+        # The server PROMISED 1000 bytes via Content-Length, but the stream
+        # only actually delivers 500 before ending (a dropped connection /
+        # the server closing early) -- indistinguishable from a clean finish
+        # by `if not chunk: break` alone.
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"x" * 500, headers={"Content-Length": "1000"})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener, chunk_size=64)
+        assert result["reason"] == "incomplete"
+        assert "500" in result["message"] and "1000" in result["message"]
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "dropped.safetensors") is False
+        finally:
+            restore()
+
+
+def test_stream_download_no_content_length_is_still_ok():
+    # No `Content-Length` header at all -- the length gate can't run, so it
+    # must be SKIPPED, not treated as a mismatch (`total` stays `None`).
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "no_length.bin")
+        payload = b"y" * (2 * 1024 * 1024 + 3)
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener, chunk_size=1024 * 1024)
+        assert result["reason"] == "ok"
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+        with open(dest, "rb") as fh:
+            assert fh.read() == payload
+
+
+def test_stream_download_html_error_page_to_safetensors_dest_is_corrupt():
+    # A wrong-content body: an HTML error/login page served with a perfectly
+    # correct `Content-Length` FOR ITSELF -- the length gate alone can't
+    # catch this, only the safetensors-header sanity check can.
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        dest = os.path.join(loras_root, "real_skin-step00000200.safetensors")
+        body = b"<html><body>Please log in to continue</body></html>"
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(body, headers={"Content-Length": str(len(body))})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "corrupt"
+        assert not os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+        restore = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            assert download.destination_exists("loras", "", "real_skin-step00000200.safetensors") is False
+        finally:
+            restore()
+
+
+def test_stream_download_valid_safetensors_header_is_ok():
+    header_json = json.dumps({"__metadata__": {"format": "pt"}}).encode("utf-8")
+    payload = struct.pack("<Q", len(header_json)) + header_json
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "good.safetensors")
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={"Content-Length": str(len(payload))})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "ok"
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
+
+
+def test_stream_download_non_safetensors_destination_skips_header_check():
+    # Arbitrary bytes that would fail the safetensors header parse outright
+    # -- but the destination is `.pt`, so the header gate must not apply.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "legacy.pt")
+        body = b"not a safetensors header at all"
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(body, headers={"Content-Length": str(len(body))})
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "ok"
+        assert os.path.isfile(dest)
+        assert not os.path.isfile(dest + ".part")
 
 
 # A real Civitai "you must be logged in to download this" body -- verified
@@ -3053,6 +3169,11 @@ ALL_TESTS = [
     test_stream_download_rejects_non_https_url_without_calling_opener,
     test_stream_download_cancellation_leaves_no_part_and_never_registers_installed,
     test_stream_download_too_large_cleans_up_and_never_registers_installed,
+    test_stream_download_short_read_with_known_length_is_incomplete,
+    test_stream_download_no_content_length_is_still_ok,
+    test_stream_download_html_error_page_to_safetensors_dest_is_corrupt,
+    test_stream_download_valid_safetensors_header_is_ok,
+    test_stream_download_non_safetensors_destination_skips_header_check,
     test_stream_download_401_with_confirmed_body_is_key_required,
     test_stream_download_403_with_confirmed_body_is_also_key_required,
     test_stream_download_401_without_a_body_is_forbidden_not_key_required,

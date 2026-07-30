@@ -25,6 +25,16 @@ routes call to decide "already on disk") only ever `os.path.isfile`s
 `dest_path` itself, never the `.part` file, so a cancelled, failed, or
 crashed-mid-stream download is invisible to that check by construction, not
 by a case the code happens to also handle.
+
+🔒 2026-07-30 fix: reaching the rename used to be gated on nothing but "the
+socket stopped sending bytes" -- indistinguishable from a genuinely complete
+transfer, so a short read (dropped connection, flaky link) or a wrong-content
+body (an HTML error/login page) got renamed over `dest_path` and reported
+`"ok"` anyway. `stream_download` now runs two integrity gates immediately
+before that same rename -- a `Content-Length` length check, then (for a
+`.safetensors`/`.sft` destination) a safetensors-header sanity check via
+`local.is_valid_safetensors_header` -- and only reaches `os.replace` if both
+pass, closing the hole without changing where the guarantee itself lives.
 """
 from __future__ import annotations
 
@@ -57,6 +67,14 @@ _CHUNK_SIZE = 1024 * 1024  # 1 MiB -- same streaming granularity as `hashing.sha
 # older LoRAs; `.safetensors` is what the overwhelming majority of Civitai
 # LoRAs (and this pack's own M1 preview/metadata code) already assume.
 ALLOWED_MODEL_EXTENSIONS = frozenset({".safetensors", ".ckpt", ".pt", ".bin"})
+
+# 🔒 2026-07-30 fix: the two suffixes `stream_download`'s post-download
+# safetensors-header sanity check applies to -- `.sft` is an alternate
+# extension for the exact same container format, seen in the wild alongside
+# `.safetensors`; nothing else in `ALLOWED_MODEL_EXTENSIONS` (`.ckpt`/`.pt`/
+# `.bin`) uses this header shape, so checking them would just be a false
+# "corrupt" on a legitimate legacy pickle checkpoint.
+_SAFETENSORS_DEST_SUFFIXES = (".safetensors", ".sft")
 
 
 # ---------------------------------------------------------------------------
@@ -531,10 +549,29 @@ def stream_download(
       - `"write_error"`    -- couldn't create the destination directory,
         write the `.part` file, or complete the final rename (disk full,
         permissions, ...).
+      - `"incomplete"`     -- 🔒 2026-07-30 fix: the server sent a
+        `Content-Length` and the stream stopped before that many bytes
+        arrived (a dropped connection, the server closing early, a flaky
+        link) -- checked BEFORE the rename, never after. Skipped (not
+        failed) when there was no `Content-Length` to compare against.
+      - `"corrupt"`        -- 🔒 2026-07-30 fix: `dest_path` is a
+        `.safetensors`/`.sft` destination and the bytes that arrived don't
+        even parse as a safetensors header (an HTML error/login page served
+        with a perfectly correct `Content-Length` for ITSELF, which the
+        length check above can't catch). See `local.is_valid_safetensors_
+        header`.
+
+    Both of the above exist because the `.part`-then-rename design's own
+    guarantee -- "`dest_path` exists => it is the complete file" -- used to
+    have a hole: `bytes_written` was compared against nothing before the
+    atomic rename, so a short read got renamed over the real filename and
+    reported `"ok"` (root cause of a `json.JSONDecodeError` surfacing all
+    the way up through `AnimaLoaderPanel` trying to load the result).
 
     On EVERY path except `"ok"`, `dest_path` itself is guaranteed untouched
     and no `.part` file survives (see `_cleanup_part`) -- so `destination_
-    exists` never counts a partial/failed/cancelled download as installed.
+    exists` never counts a partial/failed/cancelled/incomplete/corrupt
+    download as installed.
     """
     if not _is_https(url):
         return {"reason": "offline", "offline_reason": "invalid_url", "message": "Refusing a non-HTTPS download URL.", "bytes_written": 0}
@@ -587,6 +624,47 @@ def stream_download(
     except Exception as exc:  # noqa: BLE001 - degrade to offline, never raise
         _cleanup_part(part_path)
         return {"reason": "offline", "offline_reason": "unknown", "message": f"Download failed ({type(exc).__name__}).", "bytes_written": bytes_written}
+
+    # 🔒 2026-07-30 fix: two integrity gates, BOTH before the atomic rename --
+    # neither ever renames `.part` over `dest_path`, both leave `dest_path`
+    # untouched and clean up `.part` on failure, same as every other
+    # non-"ok" path above.
+    #
+    # Gate 1 -- length check: `total` (the `Content-Length` the server sent,
+    # captured above) is the one signal a short/dropped stream leaves behind
+    # that a bare `if not chunk: break` can't distinguish from "the server
+    # finished normally". `total is None` (no `Content-Length` header at
+    # all) means this check simply cannot run -- skipped, not failed; do not
+    # invent an expectation the server never stated.
+    if total is not None and bytes_written != total:
+        _cleanup_part(part_path)
+        return {
+            "reason": "incomplete",
+            "message": (
+                f"The download ended early: got {bytes_written} of {total} bytes. "
+                "The file was not saved -- try again."
+            ),
+            "bytes_written": bytes_written,
+        }
+
+    # Gate 2 -- safetensors header sanity: catches what the length check
+    # above cannot -- a wrong-content body (an HTML error/login page) served
+    # with a perfectly correct `Content-Length` for ITSELF. Only applies to
+    # destinations that are actually claiming to be a safetensors file;
+    # `local.is_valid_safetensors_header` is the SAME header parse
+    # `local.read_safetensors_metadata` uses, factored out so this isn't a
+    # second copy of it.
+    if dest_path.lower().endswith(_SAFETENSORS_DEST_SUFFIXES):
+        if not local.is_valid_safetensors_header(part_path):
+            _cleanup_part(part_path)
+            return {
+                "reason": "corrupt",
+                "message": (
+                    "The download did not produce a valid safetensors file. "
+                    "The file was not saved -- try again."
+                ),
+                "bytes_written": bytes_written,
+            }
 
     try:
         os.replace(part_path, dest_path)
