@@ -1470,6 +1470,374 @@ await asyncTest("openModelInfo: a second call with the SAME ownerKey toggles the
   }
 });
 
+// ---------------------------------------------------------------------------
+// Owner-reported bug (2026-07-30): "fixed on all except lora info as its
+// shown correctly but after info loaded it expand and then overflows" -- the
+// ⓘ panel is the one popover whose content changes ASYNCHRONOUSLY, well
+// after `openOverlay`'s own initial placement already ran against a
+// near-empty box, and nothing used to tell the overlay to look again once
+// the real (taller) content landed.
+//
+// `makeGrowableDocStub`/`makeGrowableElement`, below, are a SEPARATE stub
+// family from `makeDocStub` above -- same "each track/test keeps its own
+// minimal doc stub" convention this file's own top doc comment already
+// follows, and the same two-stub-per-file split `js/shared/test_overlay.mjs`
+// uses (`makeElement`+`makeDocStub` for wheel tests, `makeLayoutElement`+
+// `makeLayoutDocStub` for geometry tests) -- `makeDocStub`'s own
+// `getBoundingClientRect` returns the SAME fixed rect for every element
+// regardless of content, which is exactly right for every OTHER test in this
+// file (none of them ever assert real pixel placement) but useless for a
+// test that must observe whether the panel's OWN measured height actually
+// grew and whether `reposition()` reacted to that. `makeGrowableElement`'s
+// height is instead `BASE_HEIGHT + (recursive descendant count) *
+// PER_NODE_HEIGHT` -- i.e. it grows exactly when the SUT actually appends
+// more real DOM nodes (a status box, two description sections, more trigger
+// chips), the same mechanism a real browser's layout would react to, without
+// this test file needing to hand-roll a full box model. Its `left`/`top` sum
+// the real `parentNode` chain (mirrors `makeLayoutElement` in
+// `test_overlay.mjs`), so the PANEL's own rect reflects wherever
+// `reposition()` most recently placed the OVERLAY that wraps it.
+// ---------------------------------------------------------------------------
+
+const GROWABLE_BASE_HEIGHT = 40;
+const GROWABLE_PER_NODE_HEIGHT = 6;
+const GROWABLE_PANEL_WIDTH = 336;
+
+function countDescendants(e) {
+  let n = 0;
+  for (const c of e.children || []) {
+    n += 1 + countDescendants(c);
+  }
+  return n;
+}
+
+function makeGrowableDocStub() {
+  let doc;
+  function makeElement(tag) {
+    const e = {
+      tagName: tag,
+      _listeners: {},
+      children: [],
+      style: {},
+      value: "",
+      textContent: "",
+      title: "",
+      type: "",
+      href: "",
+      disabled: false,
+      parentNode: null,
+      get ownerDocument() {
+        return doc;
+      },
+      set innerHTML(_v) {
+        e.children = [];
+      },
+      classList: {
+        _set: new Set(),
+        add(...cls) {
+          cls.forEach((c) => this._set.add(c));
+        },
+        remove(...cls) {
+          cls.forEach((c) => this._set.delete(c));
+        },
+        contains(c) {
+          return this._set.has(c);
+        },
+        toggle(c, force) {
+          const on = force === undefined ? !this._set.has(c) : !!force;
+          if (on) {
+            this._set.add(c);
+          } else {
+            this._set.delete(c);
+          }
+          return on;
+        },
+      },
+      addEventListener(t, fn) {
+        (e._listeners[t] = e._listeners[t] || []).push(fn);
+      },
+      removeEventListener(t, fn) {
+        const arr = e._listeners[t];
+        if (!arr) {
+          return;
+        }
+        const i = arr.indexOf(fn);
+        if (i >= 0) {
+          arr.splice(i, 1);
+        }
+      },
+      click() {
+        (e._listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+      },
+      appendChild(child) {
+        const idx = e.children.indexOf(child);
+        if (idx >= 0) {
+          e.children.splice(idx, 1);
+        }
+        e.children.push(child);
+        child.parentNode = e;
+        return child;
+      },
+      removeChild(child) {
+        const idx = e.children.indexOf(child);
+        if (idx >= 0) {
+          e.children.splice(idx, 1);
+        }
+        child.parentNode = null;
+        return child;
+      },
+      getBoundingClientRect() {
+        // Absolute position: sum this element's own chain of ancestor
+        // `style.left`/`style.top` -- only the overlay div itself ever gets
+        // an explicit one (from `reposition()`), everything inside it
+        // (including this panel) sits unstyled, exactly like the real DOM.
+        let left = 0;
+        let top = 0;
+        let node = e;
+        while (node) {
+          left += parseFloat(node.style && node.style.left) || 0;
+          top += parseFloat(node.style && node.style.top) || 0;
+          node = node.parentNode;
+        }
+        const width = e.style.width ? parseFloat(e.style.width) : GROWABLE_PANEL_WIDTH;
+        const height = GROWABLE_BASE_HEIGHT + countDescendants(e) * GROWABLE_PER_NODE_HEIGHT;
+        return { left, top, right: left + width, bottom: top + height, width, height };
+      },
+      focus() {},
+      contains(node) {
+        let cur = node;
+        while (cur) {
+          if (cur === e) {
+            return true;
+          }
+          cur = cur.parentNode;
+        }
+        return false;
+      },
+    };
+    Object.defineProperty(e, "className", {
+      get() {
+        return [...e.classList._set].join(" ");
+      },
+      set(v) {
+        e.classList._set = new Set(String(v).split(/\s+/).filter(Boolean));
+      },
+    });
+    return e;
+  }
+  const win = {
+    _listeners: {},
+    innerWidth: 1200,
+    innerHeight: 800,
+    addEventListener(t, fn) {
+      (win._listeners[t] = win._listeners[t] || []).push(fn);
+    },
+    removeEventListener(t, fn) {
+      const arr = win._listeners[t];
+      if (!arr) {
+        return;
+      }
+      const i = arr.indexOf(fn);
+      if (i >= 0) {
+        arr.splice(i, 1);
+      }
+    },
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    // Synchronous, like every other stub timer in this pack's tests (e.g.
+    // `test_overlay.mjs`'s own `setTimeout: (fn) => fn()`) -- there's no real
+    // paint to wait for under `node`, so `repositionAfterChange`'s own
+    // "one frame later" re-measure happens on the very next microtask/tick
+    // instead, which is enough to prove the SEQUENCING (measure -> mutate ->
+    // re-measure -> reposition) without a real render loop.
+    requestAnimationFrame: (cb) => cb(),
+  };
+  doc = {
+    createElement: makeElement,
+    getElementById() {
+      return null;
+    },
+    head: makeElement("head"),
+    body: makeElement("body"),
+    defaultView: win,
+  };
+  return doc;
+}
+
+await asyncTest("THE reported bug: async Civitai content landing after open grows the panel, and it is re-clamped so its bottom edge stays inside the viewport", async () => {
+  const kind = "loras";
+  const name = "info-growth-bug.safetensors";
+  invalidateInfo(kind, name);
+  let resolveFetch;
+  const pending = new Promise((resolve) => {
+    resolveFetch = resolve;
+  });
+  globalThis.fetch = async () => pending;
+  try {
+    const doc = makeGrowableDocStub();
+    // Anchored low in an 800px-tall viewport -- exactly the case the owner
+    // hit: a small/placeholder panel fits there, a grown one does not
+    // unless something re-clamps it.
+    const anchor = doc.createElement("button");
+    anchor.getBoundingClientRect = () => ({ left: 900, top: 620, right: 1050, bottom: 650, width: 150, height: 30 });
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      fileTriggers: [],
+      civitaiEnabled: true,
+    });
+    await settle(2);
+
+    const panel = findAll(handle.overlay, "wtn-mi-panel")[0];
+    const viewportBottomLimit = 800 - 4; // OVERLAY_EDGE_MARGIN_PX
+    const beforeRect = panel.getBoundingClientRect();
+    assert.ok(beforeRect.bottom <= viewportBottomLimit, "sanity: the SMALL/placeholder panel is already placed correctly on open (the owner's own 'shown correctly' half)");
+
+    // The Civitai lookup resolves asynchronously, well after open, with a
+    // much taller body: a found record, several trigger words, and BOTH
+    // description sections.
+    resolveFetch({
+      json: async () => ({
+        reason: "found",
+        offline_reason: null,
+        message: "",
+        data: {
+          name: "Grown Model",
+          triggers: ["alpha", "beta", "gamma", "delta", "epsilon"],
+          model_description: "A".repeat(400),
+          version_description: "B".repeat(400),
+          model_description_checked: true,
+          model_id: 1,
+          version_id: 2,
+        },
+      }),
+    });
+    await settle(5);
+
+    const afterRect = panel.getBoundingClientRect();
+    assert.ok(afterRect.height > beforeRect.height, "sanity: the panel's own content genuinely grew");
+    assert.ok(
+      afterRect.bottom <= viewportBottomLimit,
+      `the panel's visible bottom edge (${afterRect.bottom}) must stay inside the viewport (<= ${viewportBottomLimit}) after growing`,
+    );
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("the async lookup resolving AFTER the panel was closed does not throw and never repositions a detached panel", async () => {
+  const kind = "loras";
+  const name = "info-growth-closed.safetensors";
+  invalidateInfo(kind, name);
+  let resolveForget;
+  const pendingForget = new Promise((resolve) => {
+    resolveForget = resolve;
+  });
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/forget")) {
+      return pendingForget;
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { model_id: 1, version_id: 2 } }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    // Spy on `reposition` -- `repositionAfterChange` reads `handle.
+    // reposition` fresh at call time, so replacing it here intercepts every
+    // future call the same way a real caller's own instrumentation would.
+    let repositionCalls = 0;
+    const origReposition = handle.reposition;
+    handle.reposition = (...args) => {
+      repositionCalls += 1;
+      return origReposition(...args);
+    };
+
+    // "Clear cache" starts a forget request that won't resolve until this
+    // test says so -- long enough to close the panel while it's in flight.
+    const forgetBtn = findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
+    assert.ok(forgetBtn, "sanity: the found state's Clear cache button exists");
+    forgetBtn.click();
+
+    handle.close();
+    assert.equal(handle.overlay.parentNode, null, "sanity: close() really did detach the overlay");
+
+    // NOW the async forget resolves, well after the user already dismissed
+    // the popover -- this must not throw, and must not reposition a panel
+    // that's no longer attached to anything.
+    assert.doesNotThrow(() => resolveForget({ json: async () => ({ reason: "ok", deleted: true }) }));
+    await settle();
+
+    assert.equal(repositionCalls, 0, "a closed/detached panel must never be repositioned");
+    assert.equal(handle.overlay.parentNode, null, "still detached -- nothing re-attached it");
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("content that does NOT change size does not cause a spurious re-place", async () => {
+  const kind = "loras";
+  const name = "info-growth-nochange.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/forget")) {
+      return { json: async () => ({ reason: "ok", deleted: true }) };
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { model_id: 1, version_id: 2 } }) };
+  };
+  try {
+    // The plain, fixed-rect `makeDocStub` -- every element (including the
+    // panel) reports the SAME height regardless of content, so this is
+    // "content that does not change size" by construction: any wrapped
+    // call site that fires here has nothing to react to.
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    let repositionCalls = 0;
+    const origReposition = handle.reposition;
+    handle.reposition = (...args) => {
+      repositionCalls += 1;
+      return origReposition(...args);
+    };
+
+    // "Clear cache" -> runForget() -> renderStatus/renderIdentity/
+    // renderTriggers/renderDescriptions all re-run, but the (fixed-rect)
+    // panel measures identically before and after.
+    const forgetBtn = findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
+    assert.ok(forgetBtn);
+    forgetBtn.click();
+    await settle();
+
+    assert.equal(repositionCalls, 0, "same-size content must never trigger a spurious reposition() call");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exitCode = 1;
