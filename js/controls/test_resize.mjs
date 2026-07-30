@@ -2403,6 +2403,54 @@ test("Loader Panel row (unet): clicking the steppers cycles the value and persis
   assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet").value, unetEntry.refs.row.value);
 });
 
+// Bug report (2026-07-30, owner-confirmed live): "picked nyaIrisAnima from
+// the unet row's own OPTION-LIST menu, the row visibly shows it, but the
+// next run's log has no Loader Panel lines at all -- generation used the
+// OLD model." The stepper path above was already covered; the LIST-CLICK
+// path (`interaction.mjs`'s `openListMenuFor`, a SEPARATE code path from
+// `wireComboRow`'s `cycle`) was not -- this closes that gap. Both this test
+// and the stepper one above PASS against the current code (the persist
+// chain itself -- `afterEdit` -> `persistState` -> `writeStateToWidget` --
+// is correct for both paths in this harness), which is exactly why the
+// live bug, if it reproduces at all, has to be something this headless
+// harness's node/widget stub cannot model (see the build report).
+test("Loader Panel row (unet): picking a NEW model from the option-list menu (not the steppers) changes the SERIALIZED panel_state widget, not just the on-screen row", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({
+      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
+      vae: ["v.safetensors"],
+      clip: ["c.safetensors"],
+    }),
+  });
+  syncRows(node, ctx); // default loader rows: unet/vae/clip
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
+  assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet").value, "waiANIMA_v10Base10.safetensors");
+
+  fire(unetEntry.refs.combo, "click");
+  const menu = doc.body.children[doc.body.children.length - 1];
+  assert.ok(menu.className.includes("wtn-ctl-overlay"));
+  const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
+  const target = opts.find((o) => o.textContent === "nyaIrisAnima_base1V20.safetensors");
+  assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
+  fire(target, "click");
+
+  // Row display -- the part the owner could SEE was already right.
+  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  // The part the owner could NOT see, and the part the backend actually
+  // reads (per `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` --
+  // "test the widget, not node.properties"): the SERIALIZED panel_state.
+  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors");
+  // node.properties too, since that's the OTHER half of the handshake this
+  // pack's skill file documents.
+  assert.equal(node.properties.loaderPanelState.rows.find((r) => r.kind === "unet").value, "nyaIrisAnima_base1V20.safetensors");
+  closeActiveOverlay();
+});
+
 // =========================================================================
 // Bug 2 -- a fresh/orphaned `unet` row must adopt an Anima-looking file over
 // optionList[0], via rows.mjs's `preferredNameDefault`

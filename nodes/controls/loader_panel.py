@@ -156,7 +156,18 @@ def _emit_loader_log(
             duplicate_count=len(duplicate_collisions),
         ))
         if log_level == "debug":
+            # Skip a per-slot line for a genuinely empty slot (no row at
+            # all) -- the run summary's own "N slot(s) empty" count already
+            # covers those, so printing one "(no row) -- skipped (empty
+            # row)" line per unused slot (5 of them on a typical 3-row
+            # panel, since MAX_ROWS is a fixed 8) is pure noise that buries
+            # the lines that actually carry information (owner feedback,
+            # 2026-07-30: "why do we have empty slots when the UI doesn't
+            # have it"). A slot that HAS a row -- loaded, skipped for any
+            # other reason, or errored -- still gets its own line.
             for event in events:
+                if event.get("skip_reason") == "empty row":
+                    continue
                 _logger.info(format_loader_slot_line(event))
             for collision in duplicate_collisions:
                 _logger.info(format_duplicate_slot_line(**collision))

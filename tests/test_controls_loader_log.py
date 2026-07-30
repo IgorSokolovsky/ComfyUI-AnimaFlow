@@ -408,6 +408,34 @@ def test_debug_shows_duplicate_slot_collision_from_a_hand_edited_payload():
         restore()
 
 
+def test_debug_never_prints_a_per_slot_line_for_a_genuinely_empty_slot():
+    # A 3-row panel leaves 5 of MAX_ROWS's 8 slots empty -- debug must print
+    # exactly one line per slot that HAS a row (3 here), never one per empty
+    # slot too (owner feedback, 2026-07-30: "why do we have empty slots when
+    # the UI doesn't have it" -- 5 "(no row) -- skipped (empty row)" lines
+    # buried the 3 that mattered). The run summary's own "N slot(s) empty"
+    # count still covers the rest.
+    restore = _install_fake_comfy()
+    lh._reset_cache_for_tests()
+    try:
+        rows = [
+            {"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}},
+            {"slot": 2, "kind": "vae", "value": "vaeA.safetensors", "opts": {}},
+            {"slot": 3, "kind": "clip", "value": "clipA.safetensors", "opts": {}},
+        ]
+        state = _panel_state(rows)
+        with _without_env_var(), _patched_get_setting("debug"), _CaptureLogs() as cap:
+            AnimaLoaderPanel().run(state)
+
+        assert "5 slot(s) empty" in cap.records[0], cap.records[0]
+        empty_slot_lines = [l for l in cap.records if "(no row)" in l]
+        assert empty_slot_lines == [], f"expected zero per-slot lines for empty slots, saw: {empty_slot_lines}"
+        # The 3 real rows still each get their own line -- summary + 3, no more.
+        assert len(cap.records) == 4, cap.records
+    finally:
+        restore()
+
+
 def test_summary_level_prints_exactly_one_line_even_with_a_collision():
     restore = _install_fake_comfy()
     lh._reset_cache_for_tests()
@@ -445,6 +473,7 @@ ALL_TESTS = [
     test_debug_shows_slot_vs_display_index_divergence_and_cache_hit_then_miss,
     test_debug_shows_missing_file_before_the_error_propagates,
     test_debug_shows_duplicate_slot_collision_from_a_hand_edited_payload,
+    test_debug_never_prints_a_per_slot_line_for_a_genuinely_empty_slot,
     test_summary_level_prints_exactly_one_line_even_with_a_collision,
 ]
 
