@@ -22,12 +22,14 @@
 import assert from "node:assert/strict";
 
 import {
+  openOverlay,
   openOverlayWithZoom,
   closeActiveOverlay,
   activeOverlayRef,
   computeAnchoredMaxHeight,
   POPOVER_ANCHOR_GAP_PX,
   POPOVER_VIEWPORT_MARGIN_PX,
+  OVERLAY_EDGE_MARGIN_PX,
 } from "./overlay.mjs";
 
 let failures = 0;
@@ -105,11 +107,16 @@ function makeElement(tag) {
   return e;
 }
 
-function makeDocStub() {
+function makeDocStub(viewport) {
+  // `viewport === null` simulates a host with no real window size at all
+  // (mirrors `overlay.mjs`'s own "`null` means never adjust" convention) --
+  // every OTHER call site keeps the original hardcoded 1200x800 default, so
+  // none of the existing wheel-handling tests below change behaviour.
+  const size = viewport === null ? { w: undefined, h: undefined } : { w: 1200, h: 800, ...viewport };
   const win = {
     _listeners: {},
-    innerWidth: 1200,
-    innerHeight: 800,
+    innerWidth: size.w,
+    innerHeight: size.h,
     addEventListener(type, fn) {
       (win._listeners[type] = win._listeners[type] || []).push(fn);
     },
@@ -278,6 +285,214 @@ test("closeActiveOverlay() also tears down the wheel listener via the overlay's 
   activeOverlayRef.current = handle;
   closeActiveOverlay();
   assert.equal((handle.overlay._listeners.wheel || []).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// reposition()'s viewport clamp -- owner-reported live 2026-07-30: "the menus
+// (settings/search etc...) are overflowing also to the right side (it should
+// be fixed from all side and not only bottom)". Needs its own element/doc
+// stub, distinct from `makeElement`/`makeDocStub` above (whose
+// `getBoundingClientRect` is a fixed rect irrespective of `style` -- fine for
+// the wheel tests, useless for a test that must observe what `reposition()`
+// actually computed): `makeLayoutElement`'s box is DERIVED from `style.left`/
+// `style.top` (summed up the real `parentNode` chain, since only `overlay`
+// itself ever gets an explicit `style.left`/`top` -- `contentEl` sits inside
+// it unstyled, exactly like `.wtn-cs-panel` etc. do in the real DOM) plus an
+// `_size` intrinsic width/height a test can override per element, so a
+// content box wider than its overlay is directly expressible.
+// ---------------------------------------------------------------------------
+
+function makeLayoutElement(tag) {
+  const e = {
+    tagName: tag,
+    style: {},
+    children: [],
+    parentNode: null,
+    _size: { width: 150, height: 40 }, // intrinsic content-box size; override per test
+    _listeners: {},
+    addEventListener(type, fn) {
+      (e._listeners[type] = e._listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const arr = e._listeners[type];
+      if (!arr) {
+        return;
+      }
+      const i = arr.indexOf(fn);
+      if (i >= 0) {
+        arr.splice(i, 1);
+      }
+    },
+    appendChild(child) {
+      e.children.push(child);
+      child.parentNode = e;
+      return child;
+    },
+    removeChild(child) {
+      const i = e.children.indexOf(child);
+      if (i >= 0) {
+        e.children.splice(i, 1);
+      }
+      child.parentNode = null;
+      return child;
+    },
+    contains(node) {
+      let cur = node;
+      while (cur) {
+        if (cur === e) {
+          return true;
+        }
+        cur = cur.parentNode;
+      }
+      return false;
+    },
+    getBoundingClientRect() {
+      let left = 0;
+      let top = 0;
+      let node = e;
+      while (node) {
+        left += parseFloat(node.style && node.style.left) || 0;
+        top += parseFloat(node.style && node.style.top) || 0;
+        node = node.parentNode;
+      }
+      const width = e.style.width ? parseFloat(e.style.width) : e._size.width;
+      const height = e.style.height ? parseFloat(e.style.height) : e._size.height;
+      return { left, top, right: left + width, bottom: top + height, width, height };
+    },
+  };
+  return e;
+}
+
+function makeLayoutDocStub(viewport) {
+  // `viewport === null` (rather than omitted) simulates a host with no real
+  // window size at all -- mirrors `makeDocStub`'s own convention above.
+  const size = viewport === null ? { w: undefined, h: undefined } : { w: 1200, h: 800, ...viewport };
+  const win = {
+    _listeners: {},
+    innerWidth: size.w,
+    innerHeight: size.h,
+    addEventListener(type, fn) {
+      (win._listeners[type] = win._listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const arr = win._listeners[type];
+      if (!arr) {
+        return;
+      }
+      const i = arr.indexOf(fn);
+      if (i >= 0) {
+        arr.splice(i, 1);
+      }
+    },
+    setTimeout: (fn) => fn(),
+  };
+  const doc = {
+    createElement: makeLayoutElement,
+    body: makeLayoutElement("body"),
+    defaultView: win,
+  };
+  return doc;
+}
+
+test("\"below\": anchor near the RIGHT edge, content wider than the anchor -- left is pulled back so the content's right edge sits inside the viewport (THE reported bug)", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 1000, top: 50, right: 1150, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 400, height: 40 }; // wider than the anchor -- e.g. `.wtn-cs-panel`'s 346px vs a narrower row
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    const left = parseFloat(handle.overlay.style.left);
+    const contentRight = content.getBoundingClientRect().right;
+    // The overlay is only sized to the anchor's own 150px width -- measuring
+    // ONLY `overlay.getBoundingClientRect()` would see right=1150 (well
+    // inside 1200) and conclude nothing needs clamping. The content's real
+    // 400px box is what actually overflows, and is what must be pulled back.
+    assert.ok(contentRight <= 1200 - OVERLAY_EDGE_MARGIN_PX, `content's right edge (${contentRight}) must sit inside the viewport`);
+    assert.equal(left, 1000 - ((1000 + 400) - (1200 - OVERLAY_EDGE_MARGIN_PX)), "left pulled back by exactly the content's own overshoot");
+    assert.ok(left < 1000, "left must move BACK from the anchor's own left, not stay put");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"below\": anchor near the LEFT edge -- left never goes below the margin", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 2, top: 50, right: 122, bottom: 80, width: 120, height: 30 });
+  const content = doc.createElement("div");
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(handle.overlay.style.left, `${OVERLAY_EDGE_MARGIN_PX}px`);
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"right\": the existing flip-to-left still happens when there is room on the left", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 1000, top: 50, right: 1050, bottom: 80, width: 50, height: 30 });
+  const content = doc.createElement("div"); // default 150x40 -- matches the overlay's own default box, so the new clamp is a no-op here
+  const handle = openOverlay(doc, anchor, content, "right");
+  try {
+    // rect.right(1050) + gap(10) + boxW(150) = 1210 > vw(1200) -> flips left.
+    assert.equal(handle.overlay.style.left, "840px", "rect.left(1000) - boxW(150) - gap(10)");
+    assert.equal(handle.overlay.style.top, "50px", "unflipped/unclamped vertically -- plenty of room");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"right\": flipped AND still too wide -- clamped, not left overflowing off the far side", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 1000, top: 50, right: 1050, bottom: 80, width: 50, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 1400, height: 40 }; // wider than the whole viewport
+  const handle = openOverlay(doc, anchor, content, "right");
+  try {
+    // Flip still triggers (identical to the test above -- the flip decision
+    // only ever measures the overlay's own box, unchanged by this task), but
+    // the flipped position (840) would put a 1400px-wide box's left edge at
+    // 840 -1400 overshoot well past the viewport on the left -- the final
+    // clamp must catch that, pinning to the margin instead of a negative left.
+    const left = parseFloat(handle.overlay.style.left);
+    assert.equal(left, OVERLAY_EDGE_MARGIN_PX, "pinned to the margin, not left free to run negative");
+    assert.ok(left >= 0, "never a negative/off-screen left");
+  } finally {
+    handle.close();
+  }
+});
+
+test("a popover taller/wider than the whole viewport is pinned to the TOP-LEFT margin, not the bottom-right", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 500, top: 300, right: 650, bottom: 330, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 3000, height: 2000 }; // bigger than the viewport on both axes
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(handle.overlay.style.left, `${OVERLAY_EDGE_MARGIN_PX}px`, "far-edge-then-near-edge clamping must settle on the LEFT margin");
+    assert.equal(handle.overlay.style.top, `${OVERLAY_EDGE_MARGIN_PX}px`, "...and the TOP margin -- the start of the content stays visible, not its end");
+  } finally {
+    handle.close();
+  }
+});
+
+test("no live window (vw/vh null) -- positions exactly as today, no throw", () => {
+  const doc = makeLayoutDocStub(null);
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 10, top: 20, right: 250, bottom: 50, width: 240, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 5000, height: 5000 }; // absurdly oversized -- must still be a no-op with no real viewport to clamp against
+  assert.doesNotThrow(() => {
+    const handle = openOverlay(doc, anchor, content, "below");
+    assert.equal(handle.overlay.style.left, "10px");
+    assert.equal(handle.overlay.style.top, "56px"); // bottom + 6, no flip/clamp possible without a real vh
+    assert.equal(handle.overlay.style.width, "240px");
+    handle.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

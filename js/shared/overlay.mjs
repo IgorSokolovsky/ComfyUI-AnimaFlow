@@ -65,6 +65,81 @@ function viewportSize(doc) {
   return { w, h };
 }
 
+/** `elm.getBoundingClientRect()`, or `null` if `elm` doesn't have a real one
+ * (every existing headless test stub that never sets `_rect`, or a host with
+ * no live DOM at all) — mirrors this module's own "no measurement available"
+ * convention rather than throwing or synthesizing a fake box. */
+function measureBox(elm) {
+  if (!elm || typeof elm.getBoundingClientRect !== "function") {
+    return null;
+  }
+  const box = elm.getBoundingClientRect();
+  return box || null;
+}
+
+/** Margin kept between a popover's own edge and the viewport's -- the single
+ * named constant for what used to be a `4` scattered across three separate
+ * spots in `reposition()` below (the vertical flip's floor, the horizontal
+ * flip's floor, and the old "right" placement's own bottom clamp). Distinct
+ * from `POPOVER_VIEWPORT_MARGIN_PX` (12px): that one reserves room for a
+ * "below"-anchored popover's own scrollable-content HEIGHT
+ * (`computeAnchoredMaxHeight`); this one is the POSITION clamp's own edge
+ * margin, a separate mechanism entirely. */
+export const OVERLAY_EDGE_MARGIN_PX = 4;
+
+/**
+ * Final pass, run for EVERY placement (below/right, flipped or not): pins
+ * `overlay` inside the viewport on all four edges, `OVERLAY_EDGE_MARGIN_PX`
+ * of breathing room from each. A no-op if there's no real viewport size at
+ * all (`vw == null && vh == null` -- the existing "never adjust" convention),
+ * or if `overlay` itself can't be measured.
+ *
+ * Measures `overlay` AND `contentEl` — not just the overlay — because the
+ * overlay box only ever gets the ANCHOR's width for `"below"` (or is left
+ * entirely unsized for `"right"`), while the panels mounted inside it
+ * routinely set their own wider fixed width in CSS (`.wtn-cs-panel`,
+ * `.wtn-mp-panel`, `.wtn-lora-set`, ...). A clamp that measured only the
+ * overlay's own rect would report success while the content still spilled
+ * past it — the owner-reported 2026-07-30 bug this whole pass exists to fix.
+ *
+ * Order matters: the far edge (right, then bottom) is clamped FIRST, the
+ * near edge (left, then top) SECOND. That way a popover genuinely bigger
+ * than the viewport still lands with its top-left corner pinned to the
+ * margin — the START of its content stays visible — rather than the
+ * near-edge clamp winning and pinning the END instead.
+ */
+function clampOverlayToViewport(overlay, contentEl, vw, vh) {
+  if (vw == null && vh == null) {
+    return;
+  }
+  const obox = measureBox(overlay);
+  if (!obox) {
+    return;
+  }
+  const cbox = measureBox(contentEl);
+  const rightEdge = cbox ? Math.max(obox.right, cbox.right) : obox.right;
+  const bottomEdge = cbox ? Math.max(obox.bottom, cbox.bottom) : obox.bottom;
+  let left = parseFloat(overlay.style.left) || 0;
+  let top = parseFloat(overlay.style.top) || 0;
+
+  if (vw != null) {
+    const overshoot = rightEdge - (vw - OVERLAY_EDGE_MARGIN_PX); // far edge first
+    if (overshoot > 0) {
+      left -= overshoot;
+    }
+    left = Math.max(OVERLAY_EDGE_MARGIN_PX, left); // near edge second
+    overlay.style.left = `${left}px`;
+  }
+  if (vh != null) {
+    const overshootH = bottomEdge - (vh - OVERLAY_EDGE_MARGIN_PX); // far edge first
+    if (overshootH > 0) {
+      top -= overshootH;
+    }
+    top = Math.max(OVERLAY_EDGE_MARGIN_PX, top); // near edge second
+    overlay.style.top = `${top}px`;
+  }
+}
+
 /**
  * Opens a themed overlay anchored to `anchorEl`, appended to `doc.body`.
  * `placement` is `"below"` (drops below the anchor, at the anchor's own
@@ -110,10 +185,10 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
         // Measure AFTER width is set, so a wrapped-text height is real —
         // the overlay is already attached to `body`, so this reflects
         // actual layout in a live browser.
-        const box = typeof overlay.getBoundingClientRect === "function" ? overlay.getBoundingClientRect() : null;
+        const box = measureBox(overlay);
         const boxH = box ? box.height : 0;
         if (boxH && rect.bottom + 6 + boxH > vh) {
-          overlay.style.top = `${Math.max(4, rect.top - boxH - 6)}px`; // flip: open ABOVE instead
+          overlay.style.top = `${rect.top - boxH - 6}px`; // flip: open ABOVE instead (final clamp below catches any residual overflow)
         }
       }
     } else {
@@ -122,17 +197,21 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
       overlay.style.left = `${rect.right + gap}px`;
       overlay.style.top = `${rect.top}px`;
       if (vw != null) {
-        const box = typeof overlay.getBoundingClientRect === "function" ? overlay.getBoundingClientRect() : null;
+        const box = measureBox(overlay);
         const boxW = box ? box.width : 0;
-        const boxH = box ? box.height : 0;
         if (boxW && rect.right + gap + boxW > vw) {
-          overlay.style.left = `${Math.max(4, rect.left - boxW - gap)}px`; // flip: open to the LEFT instead
-        }
-        if (vh != null && boxH && rect.top + boxH > vh) {
-          overlay.style.top = `${Math.max(4, vh - boxH - 4)}px`; // clamp so a tall popover never falls off the bottom
+          overlay.style.left = `${rect.left - boxW - gap}px`; // flip: open to the LEFT instead (final clamp below catches any residual overflow)
         }
       }
     }
+
+    // One final pass, for EVERY placement (below/right, flipped or not): pin
+    // the popover inside the viewport on all four edges. See
+    // `clampOverlayToViewport`'s own doc comment for why this measures BOTH
+    // `overlay` and `contentEl`, and why far-edge-then-near-edge ordering
+    // matters — this is what fixes the owner-reported 2026-07-30 overflow
+    // (menus spilling off the right side; only the bottom was ever handled).
+    clampOverlayToViewport(overlay, contentEl, vw, vh);
   };
   reposition();
 
