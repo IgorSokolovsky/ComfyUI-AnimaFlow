@@ -14,6 +14,16 @@ Two rules, both learned the hard way:
 Status is only meaningful if it's honest: **"done" means merged and pushed, not "the tests pass"**.
 Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unverified)*.
 
+- **Only the OWNER closes an item.** *Done (confirmed by use)* requires **Igor saying it works from
+  the UI**, in his own words — for a bug fix, a feature, a capability, anything. Green suites, a
+  passing review and a successful push are **never** sufficient, and no assistant or sub-agent may
+  promote an item on its own judgement. (Rule stated 2026-07-30, immediately after eight commits were
+  self-certified into *confirmed* — one of which, the popover clamp, he then reported as still broken
+  from another direction. Corrected in the same pass.) A change with genuinely no UI surface — docs,
+  an internal refactor — says so explicitly instead of claiming a confirmation nobody gave.
+  Record WHAT he validated, not just that he did: *"same result as `PixaromaLoraLoader`"* is worth
+  more later than *"works"*.
+
 ---
 
 ## Now
@@ -164,7 +174,24 @@ the call on scope. They are small; none is forgotten, none was done by assumptio
 
 ## Done (unverified in a live ComfyUI)
 
-Shipped and green, not yet exercised against a running ComfyUI.
+Shipped and green, **not yet confirmed by the owner from the UI**. Nothing leaves this section on an
+assistant's or a reviewer's judgement — see the rule at the top.
+
+### 2026-07-30 — pushed, awaiting the owner's own check
+
+| Item | Commit | What would confirm it |
+|---|---|---|
+| **`AnimaControlPanel` left beta.** Second graduation, on interface stability once the drag-zoom defect shipped | `92249fe` | `[BETA]` gone from the picker after a restart, and a saved workflow still loads |
+| A short download was renamed over the real filename — `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates now run before the rename | `68a2998` | An interrupted download leaves NO file behind, and reports "ended early" rather than succeeding |
+| **Civitai's login page was saved as the model.** A gated download answers with HTML and a genuine `200`. The length gate was structurally incapable — the page's own `Content-Length` was correct. `Content-Type` is now parsed before a single byte is read | `d70942b` | Re-download the gated LoRA: it must say an API key is needed, not "corrupt", and write nothing |
+| **Our `.mjs` modules were never cache-busted.** Core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`. Two layers ported from Pixaroma | `31aaf90` | **After a full restart**, a pulled JS change appears on a plain reload — no Disable-cache dance |
+| The LoRA picker ran off the bottom of the screen (`max-height: 62vh` says nothing about the room below the anchor) | `a562811` | ⚠️ **Partially disproven already** — the owner then reported the same menus overflowing to the RIGHT. The bottom case may be fixed; a follow-up clamps all four sides |
+| The loader model cache was module-level, so two Loader Panels with different UNETs evicted each other every run | `12625c0` | Two Loader Panels, different UNETs, both stay warm across runs |
+| The socket-healing notice ignored the Console logging setting | `0948e0d` | Silent at `off`; the heal line appears at `summary` |
+| A state input receiving foreign data now says so, loudly, on all five stateful nodes | `205d9fd` | It has never actually fired in the owner's console — unproven in the wild |
+| `docs/settings.md` documented 10 of 15 settings; README undercounted nodes and omitted `AnimaLoraLoader` | `8d3aa8d` | *No UI surface — docs only. Nothing to confirm.* |
+
+### Older
 
 > ### 🎨 LoRA Loader M1 — `815c286` · `0ed9bd0` · `9a3b132` · `ae7cd38`, **partly confirmed live**
 >
@@ -279,14 +306,8 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
-| **Anima Control Panel leaves beta** — second graduation, on interface stability once the drag-zoom defect shipped | `92249fe` |
-| LoRA strength was capped at `[0, 2]`; now `[-10, 10]`. The `0` floor was never a decision — inherited from upstream Pixaroma. Python's own `±100` clamp is deliberately NOT harmonised: it guards a hand-edited API payload, not the UI | `0d86075` — **confirmed live** |
-| The switch alone decides whether a LoRA applies; a switched-on row at strength 0 is now loaded and applied like any other. Costs a disk read for a mathematically identical image — the tradeoff is stated, not hidden | `542a911` — **confirmed live** |
-| A short download was renamed over the real filename. `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates before the rename: length, and a safetensors-header check for `.safetensors` destinations | `68a2998` |
-| **Civitai's login page was saved as the model.** A gated download answers with HTML and a genuine `200`; we wrote it verbatim. The length gate was structurally incapable (the page's own `Content-Length` was correct). Now the `Content-Type` is parsed before a single byte is read, and an HTML body aborts as `key_required` | `d70942b` — evidence: `<title>Civitai Login</title>` in the 10 KB file |
-| **Our `.mjs` modules were never cache-busted.** ComfyUI core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`, so every lazily-imported module was cacheable forever — every JS fix looked undeployed. Two layers ported from Pixaroma: no-store headers, plus `?v=` stamping of relative `.mjs` imports | `31aaf90` — **needs a full restart** |
-| The LoRA picker ran off the bottom of the screen: `max-height: 62vh` is a fraction of the viewport, which says nothing about the room below the anchor. Anchor-aware computation moved to `js/shared/overlay.mjs` and shared with the search panel | `a562811` |
-| `docs/settings.md` documented 10 of 15 settings; README said "seven settings" and "Seven nodes", omitting `AnimaLoraLoader` though `__init__.py` has registered 8 since `815c286` | `8d3aa8d` |
+| LoRA strength was capped at `[0, 2]`; now `[-10, 10]`. The `0` floor was never a decision — inherited from upstream Pixaroma. Python's own `±100` clamp is deliberately NOT harmonised: it guards a hand-edited API payload, not the UI | `0d86075` — owner: **"range works"** |
+| The switch alone decides whether a LoRA applies; a switched-on row at strength 0 is now loaded and applied like any other. Costs a disk read for a mathematically identical image — the tradeoff is stated, not hidden | `542a911` — owner: **"0 strength still aplied works"** |
 | A hidden state input refuses a dropped wire. `preview_state` (STRING, index 0) was beating `metadata_json` (STRING, index 2) in `findInputByType`'s first-free-match scan, so the Generator's metadata wire landed on an invisible input. Vetoed via `onConnectInput`; graph load never routes through `connectSlots`, so saved workflows still load | `de3dc23` — probe now reads `0 mismatch(es)` |
 | A state input receiving foreign data says so, loudly, on all five stateful nodes — absent (silent) / own state (silent) / present-but-foreign (names the node and the likely cause). Deliberately **not** gated behind Console logging: it is a correctness signal | `205d9fd` |
 | The loader model cache belongs to the node, not the module. `_CACHE` was module-level, so two Loader Panels with different UNETs evicted each other every run. One-entry-per-kind (the anti-VRAM-leak choice) preserved | `12625c0` |
