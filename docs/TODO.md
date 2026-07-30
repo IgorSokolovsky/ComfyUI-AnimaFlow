@@ -28,15 +28,46 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
+### 🐛 The ⓘ info panel overflows once its content loads (CONFIRMED live 2026-07-30)
+
+Owner, after `eea739b` fixed every other popover: *"Fixed on all except lora info as its shown correctly
+but after info loaded it expand and then overflows."*
+
+Exactly the shape predicted when this was deferred, now observed. `js/controls/model_info.mjs:149`
+(`max-height: 78vh`) is the **only** popover that renders first and populates **asynchronously**
+afterwards, from the Civitai lookup — and it never calls `reposition()` or re-clamps when that data
+lands. The row context menu and the ⚙ dialog build their content synchronously, so the overlay's own
+placement already sees their final height; this one is placed against a near-empty box and then grows.
+
+**Sequenced deliberately after the side-choice/flip fix**, which is rewriting the very mechanism this
+needs (measure natural height → choose the side → cap). Doing both at once would have them fighting.
+Once that lands, this is "re-place after the content changes" and should be small.
+
+### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
+
+*"did we cover if the download is in progress and we close the menu/browser what will be the
+behaviour?"* — good question, and the code answers half of it. **Closing does NOT cancel**: the close
+handler only unsubscribes the UI, clears timers and removes listeners; the job lives in a module-level
+`_activeDownload` singleton whose own comment says it exists "so a job survives the panel that started
+it closing", and the transfer runs server-side.
+
+What is NOT confirmed, and needs a live check:
+1. **Reopen the panel mid-download** — does it re-attach and show live progress again?
+   (`subscribeDownloadState` should re-subscribe.)
+2. **Reload the page mid-download** — module state dies, so the UI forgets. The file should still land
+   correctly via the `.part`-then-rename path, but nothing will tell you it did.
+
 ### 📋 Owner's check — does a LoRA Loader inside a **subgraph** still self-heal? (open 2026-07-30)
 
 ComfyUI lets you select nodes and collapse them into a reusable **subgraph** node. Those nodes then
 live in a *nested* graph — they are **not** in `app.graph._nodes`, which `findLoraNodes()` walks
 directly. So a LoRA Loader hidden inside a subgraph may be invisible to our refresh hook.
 
-**Check:** put an `AnimaLoraLoader` inside a subgraph → point one row at a model file → delete or
-rename that file on disk → press `R` (refresh node definitions). The row's red missing-file mark must
-update. If it stays stale, `findLoraNodes` needs to recurse into subgraph children.
+**Check** (the owner asked what "break a file" meant — it just means make the row's file unreachable):
+put an `AnimaLoraLoader` inside a subgraph → point one row at a model file → **rename or move that
+`.safetensors` in `models/loras`** so the row's saved name no longer resolves → press `R` (refresh
+node definitions) → the row's red missing-file mark must appear. Rename it back afterwards. If the
+mark stays stale, `findLoraNodes` needs to recurse into subgraph children.
 
 No headless test can reach this — the walk is over the live graph object — which is why it sits here
 rather than in a suite.
@@ -193,7 +224,6 @@ the call on scope. They are small; none is forgotten, none was done by assumptio
 
 | Item | Why it's deferred |
 |---|---|
-| **The ⓘ info panel can still overflow the viewport** (`js/controls/model_info.mjs:149`, `max-height: 78vh`) | The same static-`vh` bug `a562811` just fixed on the picker, and **the highest-risk of the three remaining**: unlike the row context menu (`lora_render.mjs:637`) and the ⚙ dialog (`:661`), whose content is built synchronously before the overlay opens, this one renders and THEN populates asynchronously from the Civitai lookup — and never calls `reposition()` or re-clamps when that data lands. A long model description opened from a low row will run off screen. **Trigger: the owner seeing it, or any pass through `model_info.mjs`** — `computeAnchoredMaxHeight` now exists in `js/shared/overlay.mjs`, so it is a small fix. |
 | **`STRENGTH_STEP_MAX` is still `1`** (`js/controls/lora_state.mjs:113`) | Its justification was "`1` is the whole usable range in one bump" — true when strength was `[0, 2]`, meaningless now the range is `[-10, 10]`. The comment is corrected; the VALUE is the owner's call, since a faster ▲▼ step is a feel decision, not a correctness one. **Trigger: the arrows feeling too slow at the wider range.** |
 | **The strength input is 34px wide** (`lora_render.mjs:274`, `STR_VAL_W`) | Sized for `0.80`. `-10.00` is a longer string and may read tight. Cosmetic only, and it sits in sizing code that this pack treats as read-the-skill-first territory. **Trigger: it actually looking wrong with a negative value on screen.** |
 | **A downloaded result card's `installed` flag is sticky** (`js/controls/civitai_search.mjs:1287`) | After a download completes the client sets `finishedResult.installed = true` directly, so the card flips without waiting for a re-query. Nothing clears it if the file later leaves disk. A fresh search re-derives it correctly from the server (which checks the real filesystem per request), so this only affects an already-rendered card. Investigated 2026-07-30 on a suspected sighting that turned out to be a false alarm. **Trigger: a card disagreeing with disk in practice.** |
@@ -216,14 +246,11 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit | What would confirm it |
 |---|---|---|
-| **`AnimaControlPanel` left beta.** Second graduation, on interface stability once the drag-zoom defect shipped | `92249fe` | `[BETA]` gone from the picker after a restart, and a saved workflow still loads |
-| A short download was renamed over the real filename — `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates now run before the rename | `68a2998` | An interrupted download leaves NO file behind, and reports "ended early" rather than succeeding |
-| **Civitai's login page was saved as the model.** A gated download answers with HTML and a genuine `200`. The length gate was structurally incapable — the page's own `Content-Length` was correct. `Content-Type` is now parsed before a single byte is read | `d70942b` | Re-download the gated LoRA: it must say an API key is needed, not "corrupt", and write nothing |
-| **Our `.mjs` modules were never cache-busted.** Core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`. Two layers ported from Pixaroma | `31aaf90` | **After a full restart**, a pulled JS change appears on a plain reload — no Disable-cache dance |
-| The LoRA picker ran off the bottom of the screen (`max-height: 62vh` says nothing about the room below the anchor) | `a562811` | ⚠️ **Partially disproven already** — the owner then reported the same menus overflowing to the RIGHT. The bottom case may be fixed; a follow-up clamps all four sides |
-| The loader model cache was module-level, so two Loader Panels with different UNETs evicted each other every run | `12625c0` | Two Loader Panels, different UNETs, both stay warm across runs |
-| The socket-healing notice ignored the Console logging setting | `0948e0d` | Silent at `off`; the heal line appears at `summary` |
-| A state input receiving foreign data now says so, loudly, on all five stateful nodes | `205d9fd` | It has never actually fired in the owner's console — unproven in the wild |
+| A short download was renamed over the real filename — `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates now run before the rename | `68a2998` | An interrupted download leaves NO file behind, and reports "ended early" rather than succeeding. **The `corrupt` half IS confirmed** (via `d70942b` below); only the LENGTH gate is untested |
+| **Our `.mjs` modules were never cache-busted.** Core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`. Two layers ported from Pixaroma | `31aaf90` | **After a full restart**, a pulled JS change appears on a plain reload — no Disable-cache dance. Not reported on yet |
+| The loader model cache was module-level, so two Loader Panels with different UNETs evicted each other every run | `12625c0` | Two Loader Panels, different UNETs, both stay warm across runs. Only worth checking if that setup is ever actually run |
+| A state input receiving foreign data now says so, loudly, on all five stateful nodes | `205d9fd` | It has never actually fired in the owner's console — unproven in the wild, and hopefully stays that way |
+| Sidecar + preview image written on download — **BACKEND HALF ONLY** | `4965389` | *Nothing to test yet: no frontend sends `civitai_meta`/`preview_url`, so downloads behave exactly as before. Do not report it as broken.* |
 | `docs/settings.md` documented 10 of 15 settings; README undercounted nodes and omitted `AnimaLoraLoader` | `8d3aa8d` | *No UI surface — docs only. Nothing to confirm.* |
 
 ### Older
@@ -341,6 +368,12 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
+| **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (see *Now* — that one is a different, confirmed bug) |
+| **Adding an API key could not un-gate a card, and the "key required" chip lit up on hover.** `_sessionGatedKeys` learned correctly from a live failure but nothing ever re-evaluated it; the only thing that cleared it was a test-only helper, and the button is `disabled`, so there was no retry either | `030b579` — owner: **"fixed"** |
+| **Civitai's login page was saved as the model** — a gated download answers with HTML and a genuine `200`, and the length gate was structurally incapable because the page's own `Content-Length` was correct. `Content-Type` is now parsed before a single byte is read | `d70942b` — owner: **"Works"** |
+| **The Control Panel dropped edits after a reload** — same detached-row-object bug as the Loader Panel, masked for months because a random seed changed the payload every run anyway | `4e2c3ac` — owner: **"works"** (steps/cfg changed after a reload, no structural edit) |
+| **`AnimaControlPanel` left beta** — second graduation, on interface stability once the drag-zoom defect shipped | `92249fe` — owner: **"gone"** from the picker |
+| The socket-healing notice ignored the Console logging setting | `0948e0d` — owner: **"works"** (silent at `off`) |
 | LoRA strength was capped at `[0, 2]`; now `[-10, 10]`. The `0` floor was never a decision — inherited from upstream Pixaroma. Python's own `±100` clamp is deliberately NOT harmonised: it guards a hand-edited API payload, not the UI | `0d86075` — owner: **"range works"** |
 | The switch alone decides whether a LoRA applies; a switched-on row at strength 0 is now loaded and applied like any other. Costs a disk read for a mathematically identical image — the tradeoff is stated, not hidden | `542a911` — owner: **"0 strength still aplied works"** |
 | A hidden state input refuses a dropped wire. `preview_state` (STRING, index 0) was beating `metadata_json` (STRING, index 2) in `findInputByType`'s first-free-match scan, so the Generator's metadata wire landed on an invisible input. Vetoed via `onConnectInput`; graph load never routes through `connectSlots`, so saved workflows still load | `de3dc23` — probe now reads `0 mismatch(es)` |
