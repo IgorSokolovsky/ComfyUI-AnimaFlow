@@ -228,3 +228,56 @@ def _reset_cache_for_tests() -> None:
     """Test-only escape hatch: plain-script tests share one process, so
     without this a later test would see an earlier test's cached object."""
     _CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic-only reads -- for the "which model did the Loader Panel
+# actually load" logging (`loader_panel.py`'s `_emit_loader_log`; see that
+# module's own docstring for the console-logging contract). Both functions
+# below are read-only: neither ever mutates `_CACHE`, and `resolve_full_path`
+# never raises. Kept HERE (not in the new `_loader_log_helpers.py`) because
+# they need this module's own private state/constants (`_CACHE`, `_cache_key`,
+# `_FOLDER_FOR_KIND`) -- exporting a probe alongside the state it reads is
+# less error-prone than reaching into another module's privates.
+# ---------------------------------------------------------------------------
+
+
+def cache_probe(kind: str, name: str, opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Would `load_row_model` hit the cache for this exact `(kind, name,
+    opts)` right now? Read-only: computes the same key `load_row_model`
+    itself would (`_cache_key`) and compares it against `_CACHE[kind]`
+    (`cached[0] == key`, the SAME comparison `load_row_model` makes) without
+    ever writing to `_CACHE` -- calling this before a real
+    `load_row_model(row)` cannot change what that call does or returns.
+    Returns `{"cache_key": key, "hit": bool}`.
+    """
+    key = _cache_key(kind, name, opts)
+    cached = _CACHE.get(kind)
+    hit = cached is not None and cached[0] == key
+    return {"cache_key": key, "hit": hit}
+
+
+def resolve_full_path(kind: str, name: Any) -> Optional[str]:
+    """Best-effort absolute path for `name` in `kind`'s folder -- the
+    decisive field a wrong-model log line needs (a name string alone doesn't
+    prove which FILE was actually read; a resolved path does). Diagnostic
+    ONLY: never raises, and its result is never fed back into any load
+    decision -- a `None` here means "couldn't resolve it for the log", not
+    "the file doesn't exist" (that's `_validate_name`'s job, and it already
+    ran, with a user-facing error, before this is ever called).
+    """
+    try:
+        import folder_paths  # ComfyUI-only; lazy (see module docstring).
+    except Exception:
+        return None
+    folder = _FOLDER_FOR_KIND.get(kind)
+    if not folder or not isinstance(name, str) or not name:
+        return None
+    getter = getattr(folder_paths, "get_full_path", None)
+    if getter is None:
+        return None
+    try:
+        path = getter(folder, name)
+    except Exception:
+        return None
+    return path if isinstance(path, str) else None
