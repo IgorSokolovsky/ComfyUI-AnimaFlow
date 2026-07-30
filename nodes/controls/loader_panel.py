@@ -88,7 +88,6 @@ class AnimaLoaderPanel:
     )
 
     CATEGORY = CATEGORY
-    EXPERIMENTAL = True
     FUNCTION = "run"
     RETURN_TYPES = (ANY,) * MAX_ROWS
     RETURN_NAMES = tuple(f"value_{i + 1}" for i in range(MAX_ROWS))

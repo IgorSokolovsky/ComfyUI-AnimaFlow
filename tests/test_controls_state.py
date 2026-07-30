@@ -379,7 +379,10 @@ def test_loader_panel_return_types_are_all_wildcard():
     assert len(AnimaLoaderPanel.RETURN_NAMES) == LOADER_MAX_ROWS
     assert len(AnimaLoaderPanel.OUTPUT_TOOLTIPS) == LOADER_MAX_ROWS
     assert AnimaLoaderPanel.CATEGORY == "AnimaFlow/Controls"
-    assert AnimaLoaderPanel.EXPERIMENTAL is True
+    # Graduated out of beta 2026-07-30 -- the attribute is absent, not False
+    # (ComfyUI treats a missing attribute the same as falsy; see
+    # tests/test_node_graduation.py for the pack-wide guard on this).
+    assert not getattr(AnimaLoaderPanel, "EXPERIMENTAL", False)
 
 
 def test_loader_panel_input_types_declares_a_real_string_widget():
