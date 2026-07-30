@@ -21,7 +21,14 @@
  */
 import assert from "node:assert/strict";
 
-import { openOverlayWithZoom, closeActiveOverlay, activeOverlayRef } from "./overlay.mjs";
+import {
+  openOverlayWithZoom,
+  closeActiveOverlay,
+  activeOverlayRef,
+  computeAnchoredMaxHeight,
+  POPOVER_ANCHOR_GAP_PX,
+  POPOVER_VIEWPORT_MARGIN_PX,
+} from "./overlay.mjs";
 
 let failures = 0;
 let count = 0;
@@ -271,6 +278,44 @@ test("closeActiveOverlay() also tears down the wheel listener via the overlay's 
   activeOverlayRef.current = handle;
   closeActiveOverlay();
   assert.equal((handle.overlay._listeners.wheel || []).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// computeAnchoredMaxHeight -- owner-reported overflow bug, 2026-07-30 (the
+// LoRA model picker's own `.wtn-mp-panel` clamped itself with a static CSS
+// `62vh` only, which overflowed the bottom of the screen for a node sitting
+// low in the viewport -- the exact same bug `civitai_search.mjs`'s panel had
+// and already fixed via `computeSearchPanelMaxHeight`, extracted here so
+// BOTH callers share one computation without `model_picker.mjs` (track-
+// agnostic, forbidden from importing a `lora_*`/search-specific module) ever
+// depending on `civitai_search.mjs`).
+// ---------------------------------------------------------------------------
+
+test("computeAnchoredMaxHeight: anchor near the TOP of a tall viewport -- a large max-height, not a fixed cap", () => {
+  // 800px viewport, anchor bottom at 60 (near the top), 30px of chrome above
+  // the caller's own scrollable area.
+  const maxH = computeAnchoredMaxHeight({ anchorBottom: 60, viewportHeight: 800, chromeHeight: 30 });
+  assert.equal(maxH, 800 - 60 - POPOVER_ANCHOR_GAP_PX - POPOVER_VIEWPORT_MARGIN_PX);
+  assert.ok(maxH > 600, "plenty of room below a top-anchored popover should yield a large max-height");
+});
+
+test("computeAnchoredMaxHeight: anchor near the BOTTOM of the viewport -- clamped to the minimum, never negative or absurdly small", () => {
+  const maxH = computeAnchoredMaxHeight({ anchorBottom: 780, viewportHeight: 800, chromeHeight: 30, minContentHeight: 40 });
+  assert.equal(maxH, 30 + 40, "floors to chromeHeight + minContentHeight rather than the (negative) raw available space");
+  assert.ok(maxH > 0);
+});
+
+test("computeAnchoredMaxHeight: non-finite/zero/missing viewportHeight returns null -- the caller must leave its CSS fallback alone", () => {
+  assert.equal(computeAnchoredMaxHeight({ anchorBottom: 100, viewportHeight: null, chromeHeight: 30 }), null);
+  assert.equal(computeAnchoredMaxHeight({ anchorBottom: 100, viewportHeight: undefined, chromeHeight: 30 }), null);
+  assert.equal(computeAnchoredMaxHeight({ anchorBottom: 100, viewportHeight: 0, chromeHeight: 30 }), null);
+  assert.equal(computeAnchoredMaxHeight({ anchorBottom: 100, viewportHeight: NaN, chromeHeight: 30 }), null);
+  assert.equal(computeAnchoredMaxHeight({ anchorBottom: NaN, viewportHeight: 800, chromeHeight: 30 }), null, "a non-finite anchorBottom must also degrade to null, not a garbage number");
+});
+
+test("computeAnchoredMaxHeight: garbage/missing chromeHeight or minContentHeight degrades to 0 rather than throwing or going negative", () => {
+  const maxH = computeAnchoredMaxHeight({ anchorBottom: 100, viewportHeight: 800, chromeHeight: null, minContentHeight: undefined });
+  assert.equal(maxH, Math.max(0, 800 - 100 - POPOVER_ANCHOR_GAP_PX - POPOVER_VIEWPORT_MARGIN_PX));
 });
 
 console.log(`\n${count - failures}/${count} passed`);

@@ -52,6 +52,7 @@ import {
   closeOverlayIfOwnedBy,
   closeOverlaysNotAncestorOf,
   activeOverlayRef,
+  computeAnchoredMaxHeight,
 } from "../shared/overlay.mjs";
 import { listModels, thumbUrl, cachedCategoryTag } from "./civitai_api.mjs";
 
@@ -104,7 +105,7 @@ const CSS = `
   border: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep}); color: var(--wtn-ink, ${TOKENS.ink});
   padding: 6px 8px 6px 24px; border-radius: 6px; font-size: 12px;
 }
-.wtn-mp-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 40px; flex: 1 1 auto; }
+.wtn-mp-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; min-height: 40px; /* keep in sync with MIN_LIST_HEIGHT_PX below */ flex: 1 1 auto; }
 .wtn-mp-group-hd {
   font-family: var(--wtn-font-mono, monospace); font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
   color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin: 8px 2px 3px;
@@ -150,6 +151,13 @@ const CSS = `
   color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); border: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep});
 }
 `;
+
+/** The list's own floor (same overflow bug/fix as `civitai_search.mjs`'s
+ * `MIN_RESULTS_HEIGHT_PX`, owner-reported 2026-07-30) -- matches
+ * `.wtn-mp-list`'s own CSS `min-height: 40px` above, so the JS-computed
+ * `max-height` never floors the list smaller than the CSS already promises
+ * it. */
+export const MIN_LIST_HEIGHT_PX = 40;
 
 function el(doc, tag, className) {
   const e = doc.createElement(tag);
@@ -501,6 +509,37 @@ export function openModelPicker({
   }, "wtn-mp-overlay wtn");
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
+
+  // Size the panel for real (owner-reported overflow bug, 2026-07-30): the
+  // CSS `max-height: 62vh` fallback above is a fraction of the WHOLE
+  // viewport, which says nothing about how much room actually exists below
+  // THIS anchor -- a picker opened from a row near the bottom of the screen
+  // ran the panel straight off the bottom. Computed from the space actually
+  // available below the anchor instead (`../shared/overlay.mjs`'s
+  // `computeAnchoredMaxHeight`, the same fix already applied to
+  // `civitai_search.mjs`'s panel), then re-run `reposition()` so the
+  // above/below flip decision sees the corrected height. A no-op (leaves the
+  // CSS fallback in place) with no real live `window` to measure -- every
+  // headless test with no `defaultView`.
+  const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
+  if (win && typeof win.innerHeight === "number") {
+    const anchorRect = typeof anchorEl.getBoundingClientRect === "function" ? anchorEl.getBoundingClientRect() : null;
+    if (anchorRect) {
+      const chromeHeight = searchWrap.getBoundingClientRect().height;
+      const maxH = computeAnchoredMaxHeight({
+        anchorBottom: anchorRect.bottom,
+        viewportHeight: win.innerHeight,
+        chromeHeight,
+        minContentHeight: MIN_LIST_HEIGHT_PX,
+      });
+      if (maxH != null) {
+        panel.style.maxHeight = `${Math.round(maxH)}px`;
+        if (typeof handle.reposition === "function") {
+          handle.reposition();
+        }
+      }
+    }
+  }
 
   if (typeof search.focus === "function") {
     search.focus(); // "takes focus on open" (§1a-v)

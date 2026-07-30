@@ -81,6 +81,9 @@ import {
   closeOverlayIfOwnedBy,
   closeOverlaysNotAncestorOf,
   activeOverlayRef,
+  computeAnchoredMaxHeight,
+  POPOVER_ANCHOR_GAP_PX,
+  POPOVER_VIEWPORT_MARGIN_PX,
 } from "../shared/overlay.mjs";
 import { searchModels, startDownload, downloadProgress, cancelDownload, invalidateList } from "./civitai_api.mjs";
 import {
@@ -584,12 +587,17 @@ export function downloadTerminalMessage(status, response) {
 export const MIN_RESULTS_HEIGHT_PX = 120;
 
 /** Matches `overlay.mjs`'s own "below" placement gap (`rect.bottom + 6`) --
- * kept in agreement rather than guessing independently. */
-export const PANEL_ANCHOR_GAP_PX = 6;
+ * kept in agreement rather than guessing independently. Re-exports
+ * `overlay.mjs`'s `POPOVER_ANCHOR_GAP_PX` under this file's original name so
+ * any existing import of `PANEL_ANCHOR_GAP_PX` keeps working unchanged (see
+ * `computeSearchPanelMaxHeight`'s own doc comment below for why the
+ * computation itself moved there). */
+export const PANEL_ANCHOR_GAP_PX = POPOVER_ANCHOR_GAP_PX;
 
 /** Breathing room so a maxed-out panel never touches the viewport's own
- * bottom edge. */
-export const PANEL_VIEWPORT_MARGIN_PX = 12;
+ * bottom edge. Re-exported from `overlay.mjs` -- see `PANEL_ANCHOR_GAP_PX`
+ * above. */
+export const PANEL_VIEWPORT_MARGIN_PX = POPOVER_VIEWPORT_MARGIN_PX;
 
 /** BUG G's own infinite-scroll trigger distance -- the next page fetches
  * once fewer than this many pixels remain below the visible viewport of
@@ -613,15 +621,18 @@ export const SCROLL_LOAD_MORE_THRESHOLD_PX = 96;
  * `null` when no real viewport size is available (mirrors `overlay.mjs`'s
  * own "`null` means never adjust" convention for a headless host with no
  * live `window`) -- the caller keeps its CSS fallback `max-height` untouched.
+ *
+ * The actual computation now lives in `overlay.mjs`'s
+ * `computeAnchoredMaxHeight` (owner-reported overflow bug, 2026-07-30 --
+ * `model_picker.mjs` needed the exact same fix, and is deliberately
+ * track-agnostic, so the pure math moved to the one module both already
+ * import) -- this function is kept, unchanged in name and behaviour, as a
+ * thin delegation so every existing import of `computeSearchPanelMaxHeight`
+ * (this file's own call site below, `test_civitai_search.mjs`) keeps working
+ * with no changes required.
  */
 export function computeSearchPanelMaxHeight({ anchorBottom, viewportHeight, chromeHeight }) {
-  if (!Number.isFinite(anchorBottom) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
-    return null;
-  }
-  const safeChrome = Number.isFinite(chromeHeight) && chromeHeight >= 0 ? chromeHeight : 0;
-  const minTotal = safeChrome + MIN_RESULTS_HEIGHT_PX;
-  const available = viewportHeight - anchorBottom - PANEL_ANCHOR_GAP_PX - PANEL_VIEWPORT_MARGIN_PX;
-  return Math.max(minTotal, available);
+  return computeAnchoredMaxHeight({ anchorBottom, viewportHeight, chromeHeight, minContentHeight: MIN_RESULTS_HEIGHT_PX });
 }
 
 // ---------------------------------------------------------------------------

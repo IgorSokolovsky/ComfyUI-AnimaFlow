@@ -416,3 +416,63 @@ export function openOverlayWithZoom(getCanvasEl, doc, anchorEl, contentEl, place
   };
   return handle;
 }
+
+// ---------------------------------------------------------------------------
+// Anchor-aware max-height -- a SECOND overflow guard alongside the "below"
+// placement's own viewport-flip above (`reposition()`, above): a popover can
+// still be too TALL to fit even after flipping above the anchor, or a
+// caller may never want the flip at all (a "below"-only list, like the
+// model picker's) and just needs its own scrollable area clamped to
+// whatever room genuinely exists.
+//
+// Extracted here (owner-reported overflow bug, 2026-07-30) from
+// `civitai_search.mjs`'s original `computeSearchPanelMaxHeight` -- that
+// panel's `.wtn-cs-panel` used to clamp itself with a static CSS `vh` value
+// only, which says nothing about how much room actually exists BELOW a
+// given anchor and overflowed the bottom of the screen for a node sitting
+// low in the viewport (`c00fd24` fixed it there). `model_picker.mjs` had the
+// exact same bug (`.wtn-mp-panel`'s own static `max-height: 62vh`) and needs
+// the exact same computation -- but `model_picker.mjs` is deliberately
+// track-agnostic (`AnimaLoaderPanel` imports it unchanged at M3, and a
+// layering guard forbids it importing a `lora_*`/search-specific module), so
+// this pure computation lives HERE, the one shared popover/overlay module
+// both already import, rather than in `civitai_search.mjs` itself.
+// ---------------------------------------------------------------------------
+
+/** Gap between an anchor's own bottom edge and an anchored, "below"-placed
+ * popover's top -- shared by every "how much room is there below the
+ * anchor" computation in this pack. */
+export const POPOVER_ANCHOR_GAP_PX = 6;
+
+/** Breathing room so a maxed-out popover never touches the viewport's own
+ * bottom edge. */
+export const POPOVER_VIEWPORT_MARGIN_PX = 12;
+
+/**
+ * A "below"-anchored popover's own `max-height`, derived from the space
+ * actually available below `anchorBottom` -- `viewportHeight - anchorBottom
+ * - gap - margin` -- never smaller than `chromeHeight + minContentHeight`
+ * (whatever fixed header/search-box the caller's own popover renders above
+ * its scrollable area, plus that scrollable area's own floor), so a popover
+ * anchored low in the viewport still reserves at least a USABLE amount of
+ * its own scrollable content rather than shrinking to an unusable sliver --
+ * at that point the popover's own height exceeds the space actually below
+ * the anchor, and (for a caller using `openOverlay`'s `"below"` placement)
+ * `reposition()`'s own viewport-flip, above, is what decides whether it
+ * opens above the anchor instead. This function only ever answers "how much
+ * room is there below" -- reusing, never duplicating, that flip decision.
+ *
+ * `null` when no real viewport size is available (mirrors this module's own
+ * "`null` means never adjust" convention for a headless host with no live
+ * `window`) -- the caller keeps its own CSS fallback `max-height` untouched.
+ */
+export function computeAnchoredMaxHeight({ anchorBottom, viewportHeight, chromeHeight, minContentHeight }) {
+  if (!Number.isFinite(anchorBottom) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    return null;
+  }
+  const safeChrome = Number.isFinite(chromeHeight) && chromeHeight >= 0 ? chromeHeight : 0;
+  const safeMinContent = Number.isFinite(minContentHeight) && minContentHeight >= 0 ? minContentHeight : 0;
+  const minTotal = safeChrome + safeMinContent;
+  const available = viewportHeight - anchorBottom - POPOVER_ANCHOR_GAP_PX - POPOVER_VIEWPORT_MARGIN_PX;
+  return Math.max(minTotal, available);
+}

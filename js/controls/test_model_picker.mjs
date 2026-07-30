@@ -557,6 +557,80 @@ await asyncTest("openModelPicker: showThumbnails === false suppresses the thumbn
 });
 
 // ---------------------------------------------------------------------------
+// Inline max-height -- owner-reported overflow bug, 2026-07-30: the panel's
+// CSS `max-height: 62vh` fallback is a fraction of the WHOLE viewport, which
+// says nothing about how much room actually exists below a given anchor, so
+// a picker opened from a row near the bottom of the screen ran the panel
+// straight off the bottom. `openModelPicker` now applies a real inline
+// `panel.style.maxHeight`, computed from `../shared/overlay.mjs`'s
+// `computeAnchoredMaxHeight` (the same fix already shipped for
+// `civitai_search.mjs`'s panel) -- these two tests are the behavioural half
+// of that fix's coverage (the pure computation itself is tested directly in
+// `js/shared/test_overlay.mjs`).
+// ---------------------------------------------------------------------------
+
+await asyncTest("openModelPicker: an anchor near the BOTTOM of the viewport gets a real, clamped inline max-height -- never the untouched CSS 62vh fallback", async () => {
+  const kind = "picker-kind-lowanchor";
+  invalidateList(kind);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "top.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  try {
+    const doc = makeDocStub(); // win.innerHeight === 800
+    const anchor = doc.createElement("button");
+    // Near the bottom of an 800px-tall viewport.
+    anchor._rect = { left: 10, top: 770, right: 200, bottom: 790, width: 190, height: 20 };
+    const handle = openModelPicker({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      onPick: () => {},
+    });
+    const panel = findAll(handle.overlay, "wtn-mp-panel")[0];
+    assert.ok(panel, "the panel root must exist");
+    assert.match(panel.style.maxHeight, /^\d+px$/, "a real computed pixel value must be set, overriding the CSS 62vh fallback");
+    const px = parseInt(panel.style.maxHeight, 10);
+    assert.ok(px > 0, "must never be zero or negative even when the anchor sits right at the bottom edge");
+    assert.ok(px < 800, "must be clamped well below the FULL viewport height, not just left at the untouched fallback");
+  } finally {
+    globalThis.fetch = _origFetchForPicker;
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelPicker: plenty of room below the anchor -- inline max-height reflects the real available space (no behaviour change vs. the old fallback's intent)", async () => {
+  const kind = "picker-kind-highanchor";
+  invalidateList(kind);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "top.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  try {
+    const doc = makeDocStub(); // win.innerHeight === 800
+    const anchor = doc.createElement("button");
+    // Near the TOP of the same 800px-tall viewport.
+    anchor._rect = { left: 10, top: 40, right: 200, bottom: 60, width: 190, height: 20 };
+    const handle = openModelPicker({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      onPick: () => {},
+    });
+    const panel = findAll(handle.overlay, "wtn-mp-panel")[0];
+    const px = parseInt(panel.style.maxHeight, 10);
+    assert.ok(px > 600, "an anchor near the top should reserve the large majority of the viewport for the panel");
+  } finally {
+    globalThis.fetch = _origFetchForPicker;
+    invalidateList(kind);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Layering guard — docs/lora-loader-design.md's reuse boundary: none of
 // model_picker.mjs / civitai_api.mjs / model_info.mjs may ever import a
 // `lora_*` module (that's the whole point of the split -- AnimaLoaderPanel
