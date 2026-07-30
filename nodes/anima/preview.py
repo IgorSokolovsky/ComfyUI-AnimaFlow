@@ -114,6 +114,16 @@ class AnimaPreview:
     by leaving it unwired — the whole Generator then does nothing at all,
     which is intended (design doc §2)."""
 
+    DESCRIPTION = (
+        "Compares two of the Generator's stage images with a hover wipe, "
+        "and owns saving them to disk. Wire the Generator's images and "
+        "metadata_json outputs here directly -- base, mid and final can "
+        "each be saved under their own filename via the %stage% token. "
+        "This is the terminal node of the pipeline: nothing runs if a "
+        "Preview isn't wired, since the Generator itself never saves or "
+        "displays anything on its own."
+    )
+
     CATEGORY = CATEGORY
     EXPERIMENTAL = True
     OUTPUT_NODE = True

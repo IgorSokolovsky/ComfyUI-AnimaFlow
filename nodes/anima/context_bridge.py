@@ -83,6 +83,16 @@ class AnimaContextBridge:
     keeps the graph clean, and since this bridge is where composition
     happens, the plain sockets aren't lost — they moved one node upstream)."""
 
+    DESCRIPTION = (
+        "Bundles the model, CLIP, VAE, conditioning, latent and sampler "
+        "values Anima Generator needs into one wire. It exists because the "
+        "Generator collapsed nine separate sockets down to this single "
+        "context input -- wire whatever you have here instead of looking "
+        "for those sockets on the Generator itself. Every input is "
+        "optional; the Generator reports exactly what's missing when it "
+        "runs."
+    )
+
     CATEGORY = CATEGORY
     EXPERIMENTAL = True
     FUNCTION = "build"

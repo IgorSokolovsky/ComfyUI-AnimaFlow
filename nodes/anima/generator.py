@@ -51,6 +51,17 @@ class AnimaGenerator:
     node works, if plainly, with ComfyUI's raw widgets until the `js/anima/`
     slice lands)."""
 
+    DESCRIPTION = (
+        "Runs the whole txt2img pipeline -- first pass, highres, detailer, "
+        "upscale, postprocess -- behind one node. Takes a single context "
+        "input from an Anima Context Bridge instead of separate model/"
+        "CLIP/sampler sockets. The detailer deliberately runs before the "
+        "upscale, so faces get fixed at generation resolution and only "
+        "then get enlarged, rather than chasing an already-upscaled image. "
+        "Produces nothing on its own -- wire its images output to an Anima "
+        "Preview, or the whole node runs for no visible result."
+    )
+
     CATEGORY = CATEGORY
     EXPERIMENTAL = True
     FUNCTION = "generate"

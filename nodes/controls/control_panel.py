@@ -45,6 +45,15 @@ class AnimaControlPanel:
     """`Anima Control Panel` -- sampler/scheduler/seed/int/float/latent rows,
     each wired out to its own fixed output slot."""
 
+    DESCRIPTION = (
+        "Holds every sampler/scheduler/seed/int/float/empty-latent dial in "
+        "one node, each on its own row with its own output socket. A fresh "
+        "row adopts its type, range and name from whatever you plug it "
+        "into first, so wire it before setting its value. Reordering rows "
+        "never rewires them -- a row keeps the slot it was created with, "
+        "so hover a dot if you're unsure which row it belongs to."
+    )
+
     CATEGORY = CATEGORY
     EXPERIMENTAL = True
     FUNCTION = "run"

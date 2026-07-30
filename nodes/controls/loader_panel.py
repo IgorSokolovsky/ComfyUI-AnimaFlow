@@ -77,6 +77,16 @@ class AnimaLoaderPanel:
     something downstream; an unwired row's slot emits `0`, same as an empty
     slot."""
 
+    DESCRIPTION = (
+        "Holds unet/vae/clip loader rows in one node, each emitting a real "
+        "MODEL/VAE/CLIP object from its own output socket. A row only "
+        "loads -- and only then touches VRAM -- when its socket is "
+        "actually wired to something downstream, so an unused row costs "
+        "nothing. Kept separate from the Control Panel on purpose: sharing "
+        "one node with a fast-changing row like seed would reload every "
+        "model on every bump."
+    )
+
     CATEGORY = CATEGORY
     EXPERIMENTAL = True
     FUNCTION = "run"
