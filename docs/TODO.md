@@ -18,23 +18,27 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 🐛 Control Panel's drag-to-reorder ignores the canvas zoom scale (found 2026-07-30)
+### 📋 Owner's check — does the LoRA Loader actually change the image? (open 2026-07-30)
 
-`js/controls/interaction.mjs:1044-1045`'s `wireGrip` computes
-`delta = Math.round((ev.clientY - startY) / step)` — a **screen-pixel** pointer delta divided by a row
-pitch in **node units**. At zoom `z`, one row of visual movement is `pitch × z` screen pixels, so it
-reorders **`z` rows instead of 1**: two rows at 2× zoom, three at 3×.
+**The only behavioural gap left in the LoRA track.** Every live check so far has been UI — the picker,
+the ⓘ panel, the ⚙ dialog, the search panel, all confirmed. Nothing has confirmed the node affects a
+generation at all.
 
-Found because the LoRA Loader inherited this gesture verbatim and the owner hit it there immediately
-(fixed there in `ae7cd38` by dividing by `getCanvasScale()` first). **The Control Panel has therefore been
-overshooting on any zoomed canvas since it shipped** — plausibly never reported because it reads as
-clumsiness rather than a bug.
+Two things, one pass:
 
-**Deliberately not fixed in `ae7cd38`**: that is a change to a shipped, working node and it deserves its
-own scoped pass rather than riding along in a LoRA bugfix. The fix is known and small — `getCanvasScale`
-already exists in `js/controls/index.js`, wired into `buildLoraCtx` only; this needs it in `buildCtx` too,
-plus the scale-1-and-scale-2 regression tests that now exist on the LoRA side. **Confirmed real by an
-independent reviewer, 2026-07-30.**
+1. Add a LoRA with an obvious visual effect at strength 1.0. Same seed, row on vs row off — the image
+   must change.
+2. Wire the node's **own `CLIP` output** onward, not the raw CLIP from the Loader Panel. With the raw
+   one the model effect still lands while the **CLIP effect silently vanishes** — no error, just a
+   weaker result (design doc §4). That is the failure mode most likely to go unnoticed, so check it
+   deliberately rather than assuming the wire is right.
+
+### 🎓 Ready to graduate: `AnimaControlPanel` — owner's call
+
+Its last known interface-affecting defect (drag-reorder ignoring canvas zoom) shipped in `d5088d3`.
+The bar is *interface* stability — frozen widget order, stable state contract, stable sockets — not
+bug-freeness, and its Loader Panel sibling graduated in `4879634`. Deliberately **not** done
+unilaterally: graduating is deleting `EXPERIMENTAL`, and that is a promise to workflows.
 
 > ### ✅ Resolved 2026-07-29 — the Class A height bug, on the third attempt
 >
@@ -161,26 +165,31 @@ Shipped and green, not yet exercised against a running ComfyUI.
 > safetensors header-only metadata, Civitai client on stdlib `urllib`, sidecar cache, guarded
 > executor-offloaded routes) · the picker · the ⓘ panel + the four lookup states · the ⚙ dialog's eight
 > settings · FLIP drag-reorder · the Rule Builder rename.
-> **Suites: Python 672, JS 1182, 5 auto-loaded `.js`, 8 nodes.**
+> **Suites at the time of that build: Python 672, JS 1182, 5 auto-loaded `.js`, 8 nodes.** (Current
+> totals live at the top of *Done (confirmed by use)* — re-count rather than trusting either number.)
 >
-> **STILL UNVERIFIED — this is the remaining list:**
-> 1. **The image actually changes**, and routing the **patched** CLIP onward matters (wire the raw one
->    and the model effect still lands while the CLIP effect silently vanishes — §4). **Nothing has yet
->    confirmed this node affects a generation at all** — every live check so far has been UI.
-> 2. **Drag a row: the node height must not move, even transiently.** The one Class A behaviour still
->    unconfirmed from the 2026-07-29 sizing work, now with a FLIP animation over it.
-> 3. Save + reload: rows, trigger selections and node **width** survive; a clean workflow does not open
->    as "modified".
-> 4. `notfound` — ⓘ on a LoRA that ISN'T on Civitai should explain the hash, not dead-end. (`found` is
->    confirmed; this branch is not.)
-> 5. Turn **Settings → AnimaFlow → Civitai** off: no network affordance renders anywhere, **and
->    already-cached notes/trigger words still display** (that combination is the whole point of §7d).
-> 7. **Subgraph recursion** (the one gap no headless test can reach): put an `AnimaLoraLoader` **inside
->    a subgraph**, make one row's file missing, press `R` — the red mark must re-check. `findLoraNodes`
->    walks `app.graph` directly, so it is only verifiable live.
-> 8. **The open `VERIFY-IN-COMFYUI`:** search the command palette for **"AnimaFlow: Rule Builder"**.
->    Reachable ⇒ keep `commands`. Not reachable ⇒ delete the `commands` entry and let the toolbar button
->    be the sole affordance. (Note: renaming `COMMAND_ID` **dropped any keybinding** you had for it.)
+> **✅ Confirmed live by the owner, 2026-07-30** — four of the six then-open checks:
+> - **Drag a row and the node height does not move, even transiently.** This closes the last open
+>   Class A behaviour from the 2026-07-29 sizing work, now with a FLIP animation over it.
+> - **Save + reload** keeps rows, trigger selections and node **width**; a clean workflow does not
+>   open as "modified".
+> - **`notfound`** explains the hash instead of dead-ending.
+> - **Civitai off** renders no network affordance anywhere, **while already-cached notes and trigger
+>   words still display** — that combination is the whole point of §7d.
+>
+> **STILL UNVERIFIED:**
+> 1. **The image actually changes.** Promoted to *Now* above — the only behavioural gap left.
+> 2. **Subgraph recursion.** ComfyUI lets you collapse selected nodes into a reusable **subgraph**
+>    node; those nodes then live in a nested graph, NOT in `app.graph._nodes`. `findLoraNodes()` walks
+>    `app.graph` directly, so it may never see them. **Check:** put an `AnimaLoraLoader` inside a
+>    subgraph, point one row at a file you then delete or rename, press `R` (refresh node
+>    definitions) — the row's red missing-file mark must update. If it doesn't, `findLoraNodes` needs
+>    to recurse into subgraph children. No headless test can reach this.
+> 3. **Is the command palette reachable at all?** We register a `commands` entry titled **"AnimaFlow:
+>    Rule Builder"**, but whether this frontend surfaces extension-registered commands there was never
+>    established. **Check:** open the command palette and search for that title. Reachable ⇒ keep
+>    `commands`. Not reachable ⇒ it is dead code; delete the entry and let the toolbar button be the
+>    sole affordance. (Renaming `COMMAND_ID` **dropped any keybinding** you had for it.)
 
 | Item | Commit |
 |---|---|
@@ -190,8 +199,52 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 ## Done (confirmed by use)
 
+**Suites as of 2026-07-30: Python 867 (1 skip), JS 1373, 5 auto-loaded `.js`, 8 nodes.** These only
+ever grow — re-count rather than trusting the number.
+
+> ### 🐛 ROOT CAUSE — the Loader Panel loaded the wrong model (`4e2c3ac`, confirmed live 2026-07-30)
+>
+> A whole session, **ten** dead hypotheses. The node kept using the previously loaded UNET after the
+> owner picked a different one, and it always started working after "add a row, run, remove it, run".
+>
+> **What it was:** the row DOM held row objects that were no longer the ones `persistState`
+> serialized. Measured on the live node, not argued — after picking a new unet:
+> `domRow.value="JANIMA_v10"`, `liveState.value="animayume_v10BaseFinal"`, `sameObject=false`,
+> `idInLiveState=true`, ids **preserved** (7/8/9). A combo click set `row.value` on the detached
+> object; `repaintRows` read `entry.refs.row` so the UI looked right; `persistState` wrote
+> `node.properties[stateProp]`, so `panel_state` never changed; ComfyUI's cache signature therefore
+> never changed (`caching.py`'s `get_immediate_node_signature` appends `(key, inputs[key])` verbatim
+> for every input, with no exclusion list); `run()` was never called — proven by **zero** loader log
+> lines on a run where console logging was demonstrably on — and the previous MODEL was reused.
+>
+> **Fix:** every row handler now captures only `row.id` and re-resolves the row from `ensureState` at
+> the moment it fires, mirroring `lora_interaction.mjs`, which was already immune for exactly this
+> reason. `repaintRows` also rebinds a diverged `entry.refs.row`.
+>
+> **Two lessons worth more than the fix:**
+> - **"widget == payload" proves the two mirrors agree, not that either is right.** The queue probe
+>   reported MATCH on every failing run and was telling the truth — nothing compared either side
+>   against *the value the owner had actually picked*. That one missing comparison kept nine
+>   hypotheses alive.
+> - **A disproof can be locally sound and still wrong.** `normalizeRow` mints a fresh `id: nextUid()`
+>   on every parse, so two parses cannot collide — correct, and it retired the wrong mechanism while
+>   the detachment was real. The ids here were **preserved**, so the second object was a *copy*, never
+>   a parse. **The swap site is still unidentified** (most plausibly litegraph serializing
+>   `node.properties`); the fix is immune to it by construction, which is why it was not chased.
+>
+> **Control Panel shares this code path**, so seed/sampler/int/float edits were being dropped after a
+> reload too — masked by a random seed changing the payload every run anyway.
+
 | Item | Commit |
 |---|---|
+| A hidden state input refuses a dropped wire. `preview_state` (STRING, index 0) was beating `metadata_json` (STRING, index 2) in `findInputByType`'s first-free-match scan, so the Generator's metadata wire landed on an invisible input. Vetoed via `onConnectInput`; graph load never routes through `connectSlots`, so saved workflows still load | `de3dc23` — probe now reads `0 mismatch(es)` |
+| A state input receiving foreign data says so, loudly, on all five stateful nodes — absent (silent) / own state (silent) / present-but-foreign (names the node and the likely cause). Deliberately **not** gated behind Console logging: it is a correctness signal | `205d9fd` |
+| The loader model cache belongs to the node, not the module. `_CACHE` was module-level, so two Loader Panels with different UNETs evicted each other every run. One-entry-per-kind (the anti-VRAM-leak choice) preserved | `12625c0` |
+| The socket-healing notice respects Console logging — silent at `off`, emitted at `summary`/`debug`. The refused-link warning stays unconditional: a silently refused wire is worse than the noise | `0948e0d` |
+| Civitai rejected our User-Agent (401) and we reported it as `key_required` — a wrong diagnosis shown to the user | `892b643` |
+| Menus consume the wheel instead of zooming the canvas behind them, across every overlay | `24f171c` |
+| Preview silently overwrote images with a colliding filename | `caf7c93` |
+| Control Panel drag-reorder no longer overshoots on a zoomed canvas (`getCanvasScale` reaches `buildCtx`, not just `buildLoraCtx`) — it had been reordering `z` rows at zoom `z` since it shipped | `d5088d3` |
 | **ROOT CAUSE of five failed sizing fixes: `node.size` is a `Float64Array` view over a `Rectangle`, so every `Array.isArray` size guard was dead code.** One shared `isSizeLike` predicate now gates all 15 size/pos sites in both tracks. This is what makes the Class A height lock, both tracks' saved-size restore, AND every min width/height (`GENERATOR_MIN_H`, `PREVIEW_MIN_W`, `PREVIEW_MIN_H`) actually take effect — they were all decorative before | `d57cfc4` — **confirmed live 2026-07-29** |
 | Class A sizing: panel height content-fixed. **Four layers**, primary being `getMaxHeight === getMinHeight` on every mounted DOM widget (the only real lock — litegraph's drag min-clamps both axes with NO maximum), plus a `setSize` wrap (pre-paint), the per-frame draw hook, and the load-path correction. Confirmed live: self-sizes on row change, height ends at content. **Still to confirm: that a height drag no longer moves it even transiently.** | `dd7261a` → `d9b9106` → `09121bb` → **`d57cfc4`** (the four layers only began executing at all with this one) — **confirmed live 2026-07-29** |
 | `Save now` button height matches its card at every font scale (`SAVE_NOW_BTN_H = SHEAD_H`); floors moved to 288/368 | `f620f4b` — owner confirmed directly |

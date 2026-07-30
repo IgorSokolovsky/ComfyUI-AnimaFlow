@@ -73,10 +73,17 @@ the whole reason for two nodes rather than one.
 normal thing to do (a "tweak these" panel and a "set once" panel).
 
 **Residual coupling, inside the Loader Panel:** changing the VAE row still re-executes the UNET row's
-load. Mitigate with a module-level cache in the loader helpers keyed by `(kind, name, dtype)`, LRU
-of 1 per row kind, so a re-execution returns the same object without re-reading from disk. Note the
-tradeoff in the code: holding the reference keeps the model resident, so the cache must be a single
-entry per row and must drop on name change.
+load. Mitigated by a cache in the loader helpers keyed by `(kind, name, dtype)`, one entry per row
+kind, so a re-execution returns the same object without re-reading from disk. Note the tradeoff in
+the code: holding the reference keeps the model resident, so the cache must be a single entry per
+kind and must drop on name change.
+
+**Corrected 2026-07-30 (`12625c0`):** this said *module-level*, and it was built that way — which
+made every `AnimaLoaderPanel` in the graph share one entry per kind, so two panels holding different
+UNETs evicted each other on every run, the exact opposite of the intent. The cache now lives on the
+node instance (`self._cache`, passed explicitly into `load_row_model`/`cache_probe`), matching
+`nodes/controls/lora_loader.py` and upstream Pixaroma. ComfyUI keeps one node instance per
+`(node_id, class_type)` across runs, so the cross-run reuse this mitigation depends on is unaffected.
 
 **A third consequence, and its fix — don't load a row nothing is wired to.** Node-granularity
 execution means the Loader Panel's `run()` is called once and must return a value for every row
