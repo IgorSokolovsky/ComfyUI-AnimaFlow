@@ -29,6 +29,7 @@ by a case the code happens to also handle.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import socket
 import threading
@@ -399,16 +400,66 @@ def _content_length(response: Any) -> Optional[int]:
         return None
 
 
+def _is_key_required_body(exc: urllib.error.HTTPError) -> bool:
+    """Whether `exc`'s body is Civitai's OWN documented "you must be logged
+    in to download this" shape, as opposed to a 401/403 that merely LOOKS
+    like an auth failure because of the status code alone -- a WAF/edge
+    rejection (e.g. the 2026-07-30 User-Agent bug -- `civitai_client.py`'s
+    `_USER_AGENT` docstring has the measurement), a proxy, or anything else
+    upstream of Civitai's own API code ever answering.
+
+    Verified live (2026-07-30) against three real early-access LoRA
+    versions: Civitai's genuine 401 is `Content-Type: application/json`,
+    body `{"error": "Unauthorized", "message": "The creator of this asset
+    requires you to be logged in to download it"}`. This checks for that
+    shape specifically -- a JSON body with an `"error"`/`"message"` field
+    that reads as an auth refusal -- rather than trusting the status code by
+    itself. Never raises: a body that can't be read or parsed, or isn't a
+    dict, is simply NOT confirmed (`False`), the safe default (§8: naming
+    the WRONG thing to do is worse than not naming one).
+    """
+    headers = exc.headers
+    content_type = headers.get("Content-Type", "") if headers is not None else ""
+    if "json" not in content_type.lower():
+        return False
+    try:
+        body = exc.read(4096)
+    except Exception:  # noqa: BLE001 - an unreadable body is just "not confirmed"
+        return False
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    error_field = str(data.get("error", "")).lower()
+    message_field = str(data.get("message", "")).lower()
+    return "unauthorized" in error_field or "logged in" in message_field or "api key" in message_field
+
+
 def _http_error_result(exc: urllib.error.HTTPError) -> Dict[str, Any]:
     if exc.code in (401, 403):
-        # A distinct, machine-readable reason -- NEVER folded into a generic
-        # offline/failure bucket (§8: "say so in the UI naming what to do --
-        # never a bare 401"). This is the download route's defense-in-depth
-        # answer to a gated file even when `civitai_search.py`'s own
-        # `earlyAccessEndsAt`-based `gated` flag didn't already say so in
-        # advance (a stale/edited-in-transit search result, or a version
-        # that goes early-access after being listed).
-        return {"reason": "key_required", "message": "Civitai requires an API key for this file (early access or a restricted download).", "bytes_written": 0}
+        if _is_key_required_body(exc):
+            # A distinct, machine-readable reason -- NEVER folded into a
+            # generic offline/failure bucket (§8: "say so in the UI naming
+            # what to do -- never a bare 401"). This is the download route's
+            # defense-in-depth answer to a gated file even when
+            # `civitai_search.py`'s own `earlyAccessEndsAt`-based `gated`
+            # flag didn't already say so in advance (a stale/edited-in-
+            # transit search result, or a version that goes early-access
+            # after being listed). CONFIRMED by `_is_key_required_body`
+            # above, not assumed from the status code alone (2026-07-30 fix
+            # -- an unrelated User-Agent rejection used to be reported as
+            # this exact reason, which was a confidently wrong claim to a
+            # user about a perfectly public file).
+            return {"reason": "key_required", "message": "Civitai requires an API key for this file (early access or a restricted download).", "bytes_written": 0}
+        # A 401/403 that did NOT confirm Civitai's own "you need to be
+        # logged in" shape -- most likely an edge/WAF-level rejection (the
+        # 2026-07-30 User-Agent bug was exactly this), not evidence a key
+        # would fix anything. `forbidden` says "refused" without asserting
+        # WHY -- see `civitai_client._OFFLINE_REASONS`'s own comment for the
+        # same distinction on the read-only (search/lookup) side.
+        return {"reason": "offline", "offline_reason": "forbidden", "message": "Civitai refused this download (not confirmed to require an API key).", "bytes_written": 0}
     if exc.code == 404:
         return {"reason": "offline", "offline_reason": "notfound", "message": "Civitai returned 404 for this file.", "bytes_written": 0}
     if exc.code == 429:
@@ -463,13 +514,20 @@ def stream_download(
         `.part` is cleaned up, `dest_path` was never touched.
       - `"too_large"`      -- more than `max_size_bytes` were read before
         the server stopped sending; `.part` is cleaned up.
-      - `"key_required"`   -- Civitai answered 401/403 (§8: a distinct,
-        machine-readable reason, never a bare failure).
+      - `"key_required"`   -- Civitai answered 401/403 with its own
+        confirmed "you must be logged in" body (§8: a distinct,
+        machine-readable reason, never a bare failure -- see
+        `_is_key_required_body`; a 401/403 that DOESN'T confirm that shape
+        is reported as `"offline"`/`"forbidden"` below instead, never this).
       - `"offline"`        -- a network-level failure, with `offline_reason`
         matching `civitai_client`'s own vocabulary (`timeout`/`dns_tls`/
-        `unreadable`/`rate_limited`/`notfound`/`unknown`) plus
+        `unreadable`/`rate_limited`/`notfound`/`forbidden`/`unknown`) plus
         `"invalid_url"` for a non-HTTPS `url` (checked before anything else,
-        so a hostile URL never even reaches `opener`).
+        so a hostile URL never even reaches `opener`). `"forbidden"` is a
+        401/403 that was NOT confirmed to be an actual "needs a key"
+        response (2026-07-30: the real root cause of that class of failure
+        was a rejected User-Agent, not a gate -- see `civitai_client.py`'s
+        `_USER_AGENT` docstring).
       - `"write_error"`    -- couldn't create the destination directory,
         write the `.part` file, or complete the final rename (disk full,
         permissions, ...).

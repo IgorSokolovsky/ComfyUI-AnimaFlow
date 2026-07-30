@@ -22,6 +22,8 @@ Run directly: `python tests/test_model_browser.py` (no pytest, per project conve
 """
 from __future__ import annotations
 
+import email.message
+import io
 import json
 import os
 import socket
@@ -662,6 +664,80 @@ def test_lookup_by_hash_429_is_distinct_reason_and_falls_through():
     assert result["reason"] == "offline"
     assert result["offline_reason"] == "rate_limited"
     assert len(calls) == 2  # 429 IS transient -- both hosts tried
+
+
+def test_lookup_by_hash_401_and_403_are_forbidden_not_key_required():
+    # This read-only transport has never claimed `key_required` -- a 401/403
+    # here (2026-07-30: most likely the same edge-level rejection the
+    # `_USER_AGENT` fix addresses) is reported as its own `forbidden`
+    # offline_reason, never folded into `unknown` or any auth-specific claim.
+    for code in (401, 403):
+        def raise_it(code=code):
+            raise urllib.error.HTTPError("url", code, "reason", None, None)
+
+        opener, calls = _sequence_opener([raise_it, raise_it])
+        result = civitai_client.lookup_by_hash("deadbeef", opener=opener)
+        assert result["reason"] == "offline", code
+        assert result["offline_reason"] == "forbidden", code
+        assert len(calls) == 2  # NOT definitive like a 404 -- both hosts tried
+
+
+# ---------------------------------------------------------------------------
+# civitai_client._USER_AGENT -- the 2026-07-30 fix (see the constant's own
+# docstring: Civitai rejected the bare product-token UA in the field, and
+# every download of a public file was misreported as needing an API key as a
+# result). Both `civitai_client`'s own opener and `download.py`'s download
+# opener must send the EXACT SAME string -- they must never drift apart.
+# ---------------------------------------------------------------------------
+
+
+def test_user_agent_is_the_verified_working_browser_shaped_string():
+    assert civitai_client._USER_AGENT.startswith("Mozilla/5.0")
+    assert "AnimaFlow-ComfyUI/model-browser" in civitai_client._USER_AGENT
+    # Not the old bare product-token string that measured as rejected.
+    assert civitai_client._USER_AGENT != "AnimaFlow-ComfyUI/model-browser"
+
+
+def test_civitai_client_default_opener_sends_the_shared_user_agent():
+    # No real socket -- `urllib.request.urlopen` itself is swapped out, same
+    # "no real network in a unit test" discipline every other transport test
+    # in this file already follows via the injectable `opener` seam (this
+    # one exercises `_default_opener` ITSELF, the one function with no such
+    # seam of its own, so the swap happens one level further down instead).
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["user_agent"] = request.get_header("User-agent")
+        return None
+
+    real_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        civitai_client._default_opener("https://civitai.com/api/v1/models", 5.0)
+    finally:
+        urllib.request.urlopen = real_urlopen
+    assert captured.get("user_agent") == civitai_client._USER_AGENT
+
+
+def test_download_opener_sends_the_same_user_agent_as_civitai_client():
+    # Same no-real-socket discipline as the test above, one level further
+    # down again: `_default_download_opener` builds its OWN opener via
+    # `urllib.request.build_opener`, so that's what's swapped out here.
+    captured = {}
+
+    class _FakeOpener:
+        def open(self, request, timeout=None):
+            captured["user_agent"] = request.get_header("User-agent")
+            return None
+
+    real_build_opener = urllib.request.build_opener
+    urllib.request.build_opener = lambda *args, **kwargs: _FakeOpener()
+    try:
+        download._default_download_opener("https://civitai.com/api/download/models/1", 5.0)
+    finally:
+        urllib.request.build_opener = real_build_opener
+    assert captured.get("user_agent") == civitai_client._USER_AGENT
+    assert captured.get("user_agent") != "AnimaFlow-ComfyUI/model-browser"  # no drift back to the old string
 
 
 # ---------------------------------------------------------------------------
@@ -2166,27 +2242,92 @@ def test_stream_download_too_large_cleans_up_and_never_registers_installed():
             restore()
 
 
-def test_stream_download_401_is_key_required_not_a_generic_offline_reason():
+# A real Civitai "you must be logged in to download this" body -- verified
+# live (2026-07-30) against three actual early-access LoRA versions:
+# `Content-Type: application/json`, `{"error": "Unauthorized", "message":
+# "The creator of this asset requires you to be logged in to download it"}`.
+_CIVITAI_KEY_REQUIRED_BODY = json.dumps({
+    "error": "Unauthorized",
+    "message": "The creator of this asset requires you to be logged in to download it",
+}).encode("utf-8")
+
+
+def _http_error_with_body(code: int, body: bytes, *, content_type: str = "application/json; charset=utf-8"):
+    """A real `urllib.error.HTTPError` with an actually-readable `.headers`/
+    `.read()` -- unlike the bare `HTTPError(url, code, msg, None, None)`
+    shape used elsewhere in this file (which is fine for tests that never
+    look past `.code`), `_is_key_required_body` needs a genuine
+    Content-Type header and a genuine body stream to classify against."""
+    hdrs = email.message.Message()
+    hdrs["Content-Type"] = content_type
+    return urllib.error.HTTPError("https://civitai.com/x", code, "reason", hdrs, io.BytesIO(body))
+
+
+def test_stream_download_401_with_confirmed_body_is_key_required():
     with tempfile.TemporaryDirectory() as tmp:
         dest = os.path.join(tmp, "gated.safetensors")
 
         def opener(url, timeout):
-            raise urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+            raise _http_error_with_body(401, _CIVITAI_KEY_REQUIRED_BODY)
 
         result = download.stream_download("https://civitai.com/x", dest, opener=opener)
         assert result["reason"] == "key_required"
         assert not os.path.isfile(dest)
 
 
-def test_stream_download_403_is_also_key_required():
+def test_stream_download_403_with_confirmed_body_is_also_key_required():
     with tempfile.TemporaryDirectory() as tmp:
         dest = os.path.join(tmp, "gated.safetensors")
 
         def opener(url, timeout):
-            raise urllib.error.HTTPError("url", 403, "Forbidden", None, None)
+            raise _http_error_with_body(403, _CIVITAI_KEY_REQUIRED_BODY)
 
         result = download.stream_download("https://civitai.com/x", dest, opener=opener)
         assert result["reason"] == "key_required"
+
+
+def test_stream_download_401_without_a_body_is_forbidden_not_key_required():
+    # The actual 2026-07-30 bug: an edge/WAF-level 401 (e.g. the rejected
+    # User-Agent) carries no confirming Civitai auth-error body -- this used
+    # to be reported as `key_required` unconditionally, turning a public
+    # file's download failure into a confidently wrong claim.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "not_actually_gated.safetensors")
+
+        def opener(url, timeout):
+            raise urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "forbidden"
+        assert not os.path.isfile(dest)
+
+
+def test_stream_download_403_with_html_body_is_forbidden_not_key_required():
+    # A non-JSON (e.g. an HTML block/challenge page) 403 must not be read as
+    # "needs a key" either -- only Civitai's own confirmed JSON shape does.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "not_actually_gated.safetensors")
+
+        def opener(url, timeout):
+            raise _http_error_with_body(403, b"<html>Access Denied</html>", content_type="text/html")
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "forbidden"
+
+
+def test_stream_download_401_with_unrelated_json_body_is_forbidden_not_key_required():
+    # JSON, but not Civitai's own auth-refusal shape -- still not confirmed.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = os.path.join(tmp, "not_actually_gated.safetensors")
+
+        def opener(url, timeout):
+            raise _http_error_with_body(401, json.dumps({"error": "SomethingElse"}).encode("utf-8"))
+
+        result = download.stream_download("https://civitai.com/x", dest, opener=opener)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "forbidden"
 
 
 def test_stream_download_404_is_offline_notfound():
@@ -2825,6 +2966,10 @@ ALL_TESTS = [
     test_lookup_by_hash_timeout_is_distinct_reason,
     test_lookup_by_hash_dns_failure_is_distinct_reason,
     test_lookup_by_hash_429_is_distinct_reason_and_falls_through,
+    test_lookup_by_hash_401_and_403_are_forbidden_not_key_required,
+    test_user_agent_is_the_verified_working_browser_shaped_string,
+    test_civitai_client_default_opener_sends_the_shared_user_agent,
+    test_download_opener_sends_the_same_user_agent_as_civitai_client,
     test_lookup_model_by_id_success_on_first_host,
     test_lookup_model_by_id_404_is_definitive_and_never_tries_backup_host,
     test_lookup_model_by_id_timeout_is_distinct_reason,
@@ -2908,8 +3053,11 @@ ALL_TESTS = [
     test_stream_download_rejects_non_https_url_without_calling_opener,
     test_stream_download_cancellation_leaves_no_part_and_never_registers_installed,
     test_stream_download_too_large_cleans_up_and_never_registers_installed,
-    test_stream_download_401_is_key_required_not_a_generic_offline_reason,
-    test_stream_download_403_is_also_key_required,
+    test_stream_download_401_with_confirmed_body_is_key_required,
+    test_stream_download_403_with_confirmed_body_is_also_key_required,
+    test_stream_download_401_without_a_body_is_forbidden_not_key_required,
+    test_stream_download_403_with_html_body_is_forbidden_not_key_required,
+    test_stream_download_401_with_unrelated_json_body_is_forbidden_not_key_required,
     test_stream_download_404_is_offline_notfound,
     test_stream_download_interrupted_mid_stream_leaves_nothing_the_presence_check_counts,
     test_download_manager_start_progress_and_completion,

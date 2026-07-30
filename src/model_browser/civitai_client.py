@@ -48,14 +48,45 @@ _CIVITAI_HOSTS: Sequence[str] = ("civitai.com", "civitai.red")
 # loader-design.md's M2 brief: "extend them, don't fork them").
 CIVITAI_HOSTS: Sequence[str] = _CIVITAI_HOSTS
 
-_USER_AGENT = "AnimaFlow-ComfyUI/model-browser"
+# BUG (owner, 2026-07-30): Civitai's edge rejects a bare `Product/version`
+# User-Agent -- measured live, same URL/same minute, only this header
+# differing: `"AnimaFlow-ComfyUI/model-browser"` -> HTTP 401, a browser UA ->
+# HTTP 200, on BOTH `/api/v1/models` and `/api/download/models/<id>`. Every
+# download of a perfectly public file was reporting "Civitai requires an API
+# key" as a result (see `download.py`'s `_http_error_result` -- that mapping
+# is also fixed now, but this is the actual root cause).
+#
+# Fixed by sending a conventional browser-shaped UA with our own product
+# token appended, rather than inventing a plausible-looking string --
+# verified empirically (not guessed) against BOTH civitai.com and its
+# civitai.red mirror, on `/api/v1/models`, `/api/v1/model-versions/by-hash/
+# <hash>`, and a ranged `/api/download/models/<id>` (`Range: bytes=0-0`, never
+# a full file): this exact string returned 200/206 on every one of those six
+# combinations, same as the bare current string did in THIS environment --
+# the rejection is presumed to depend on the calling network (e.g. Colab's
+# cloud IP ranges are more heavily bot-filtered than the one this fix shipped
+# from), which is exactly why a browser-shaped UA -- indistinguishable from
+# real browser traffic to a header-only check -- is the right general fix
+# rather than one more guessable product-token variant.
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 "
+    "AnimaFlow-ComfyUI/model-browser"
+)
 
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 # What `lookup_by_hash` always returns for `result["reason"] == "offline"` --
-# see each branch below for which one is picked.
-_OFFLINE_REASONS = ("timeout", "dns_tls", "unreadable", "rate_limited", "unknown")
+# see each branch below for which one is picked. `forbidden` (2026-07-30) is
+# a 401/403 that was NOT confirmed to be Civitai's own "you must be logged
+# in" response shape (see `download.py`'s `_is_key_required_body` for that
+# confirmation logic, reused nowhere near this read-only path since a search/
+# lookup 401/403 has never been reported as `key_required` here in the first
+# place) -- distinct from `unknown` so a caller can tell "refused" from
+# "something else went wrong" without this module asserting a cause it can't
+# back up.
+_OFFLINE_REASONS = ("timeout", "dns_tls", "unreadable", "rate_limited", "forbidden", "unknown")
 
 
 def _default_opener(url: str, timeout: float):
@@ -154,6 +185,15 @@ def fetch_json_with_host_fallback(
             if exc.code == 429:
                 last_offline_reason = "rate_limited"
                 last_message = "Civitai returned 429 (rate limited)."
+                continue
+            if exc.code in (401, 403):
+                # NOT `key_required` -- this read-only path has never
+                # claimed that, and shouldn't start now. A 401/403 here is
+                # most likely the SAME kind of edge-level rejection
+                # `_USER_AGENT`'s own 2026-07-30 fix addresses (this module
+                # docstring), not evidence any particular key would help.
+                last_offline_reason = "forbidden"
+                last_message = f"Civitai refused the request (HTTP {exc.code})."
                 continue
             last_offline_reason = "unknown"
             last_message = f"Civitai returned {exc.code}."
