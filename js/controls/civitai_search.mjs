@@ -254,10 +254,16 @@ const CSS = `
    this override, \`.wtn-cs-action:hover\` above (a real class this badge ALSO
    carries, see \`buildCard\`'s \`"wtn-cs-action wtn-cs-action-installed"\`)
    still fires on hover and paints the "clickable" accent background even
-   though the badge is inert. The other three card states (available,
-   downloading, gated) keep their own hover styling unchanged. */
+   though the badge is inert. The gated button (below) is the SAME bug and
+   gets the same fix; \`available\`/\`downloading\` are genuinely clickable
+   (Download / Cancel), so \`.wtn-cs-action:hover\`/\`.wtn-cs-action-cancel:
+   hover\` below are correct as-is and are NOT touched here. */
 .wtn-cs-action-installed:hover { background: transparent; }
 .wtn-cs-action-gated { background: transparent; color: var(--wtn-warn, ${TOKENS.warn}); border-color: rgba(251,191,36,.4); }
+/* Owner, 2026-07-30 ("hover on key required also highlight it (should
+   not)"): the gated button is \`disabled\` (\`buildCard\`) -- same non-
+   clickable badge as \`.wtn-cs-action-installed\` above, same fix. */
+.wtn-cs-action-gated:hover { background: transparent; }
 .wtn-cs-action-cancel { background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); border: 1px dashed var(--wtn-line, ${TOKENS.line}); }
 .wtn-cs-action-cancel:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 `;
@@ -667,6 +673,85 @@ export function markResultGated(key) {
   }
 }
 
+/**
+ * BUG (owner, 2026-07-30): "i entered key but it still say key required
+ * (and i cant redownload it)". `_sessionGatedKeys` above is correctly
+ * LEARNED from a live `key_required` failure, but nothing ever
+ * re-evaluated that learning -- the only thing that ever cleared the set
+ * was `_resetDownloadStateForTests`, a test-only function. A user who did
+ * exactly what the gated message told them to (added an API key) had no
+ * way to make the panel notice: the premise the learning was correct UNDER
+ * ("no key yet") had changed, but the set just kept saying gated, and the
+ * gated button is `disabled` (`buildCard`), so there was no retry
+ * affordance either.
+ *
+ * Fix: remember a cheap SIGNATURE of the API key setting (`apiKeySignature`,
+ * below) each time this runs, and clear the whole learned-gated set the
+ * moment the signature differs from the last one seen -- including the
+ * reported empty -> non-empty transition, and a non-empty -> DIFFERENT
+ * non-empty change (someone swapping keys). Once cleared, a
+ * previously-learned-gated result falls straight back to whatever
+ * `resultCardState` already says from its OTHER two inputs -- still
+ * `gated` if the search response's own up-front flag says so (early access
+ * is untouched by any of this), else `available`, which is exactly what
+ * puts the "↓ Download" button back -- no separate "retry" affordance
+ * needed on top of the existing available-state button.
+ *
+ * Re-checked from `runSearch`'s own top (this file's only call site that
+ * covers BOTH "the panel opens" -- `openCivitaiSearch`'s own trailing
+ * `runSearch({ resetCursor: true })` call -- and "a new search runs": the
+ * debounced text search, every filter change, and paging all already funnel
+ * through this one function, so a single call site does both jobs the task
+ * asked for with nothing else to keep in sync).
+ *
+ * The empty -> empty case (key stays unset) and the non-empty -> SAME
+ * non-empty case (key unchanged) are both "no change" by this same
+ * comparison -- a session-learned gated key correctly stays gated while the
+ * key setting itself hasn't moved.
+ */
+let _lastApiKeySignature = null; // string | null; `null` = "never checked yet" -- never itself treated as a change
+
+/** A cheap, non-cryptographic hash -- ONLY ever used to detect that the key
+ * changed, never to recover or compare against the key's actual value. */
+function _cheapStringHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
+/**
+ * A cheap signature for `rawKey` (its length + a cheap hash) -- exported so
+ * the change-detection logic below is directly testable with a plain
+ * string, matching this module's "pure helper takes plain arguments, no
+ * DOM/window" convention. 🔒 Never returns, logs, or otherwise surfaces the
+ * key itself (`src/model_browser/keys.py`'s own top doc comment: "never
+ * logged... never surfaced") -- this is deliberately NOT reversible back to
+ * the original string.
+ */
+export function apiKeySignature(rawKey) {
+  const s = typeof rawKey === "string" ? rawKey : "";
+  return `${s.length}:${_cheapStringHash(s)}`;
+}
+
+/**
+ * Clears `sessionGatedKeys` iff `signature` differs from the last one this
+ * function has seen (module-level `_lastApiKeySignature`) -- the pure
+ * decision behind the fix above, factored out so it is directly testable
+ * with a plain `Set` and a plain signature string rather than needing a
+ * fake `window.app`. The FIRST call ever (`_lastApiKeySignature === null`)
+ * only records the baseline and never clears -- there is nothing stale to
+ * clear yet on a fresh module load.
+ */
+export function reconcileGatedKeysOnApiKeySignature(signature, sessionGatedKeys) {
+  if (_lastApiKeySignature !== null && signature !== _lastApiKeySignature
+    && sessionGatedKeys && typeof sessionGatedKeys.clear === "function") {
+    sessionGatedKeys.clear();
+  }
+  _lastApiKeySignature = signature;
+}
+
 function _notify() {
   for (const fn of _subscribers) {
     fn();
@@ -695,15 +780,16 @@ export function getActiveDownloadState() {
 }
 
 /** Test-only: force-clears the module-level singletons (the active download
- * job AND BUG F's `_sessionGatedKeys` -- both are the same kind of
- * session-lifetime state, cleared together) so a suite can start every test
- * from a clean slate -- never called by any real (non-test) code path
- * (mirrors `js/shared/settings.mjs`'s own `_resetRegistrationForTests`
- * convention). */
+ * job, BUG F's `_sessionGatedKeys`, AND the API-key signature the "un-gate
+ * on key change" fix above tracks -- all the same kind of session-lifetime
+ * state, cleared together) so a suite can start every test from a clean
+ * slate -- never called by any real (non-test) code path (mirrors
+ * `js/shared/settings.mjs`'s own `_resetRegistrationForTests` convention). */
 export function _resetDownloadStateForTests() {
   _activeDownload = null;
   _subscribers.clear();
   _sessionGatedKeys.clear();
+  _lastApiKeySignature = null;
 }
 
 function _sleep(ms) {
@@ -1177,8 +1263,19 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
    * (`loadingMore`/`nextCursor` guard -- task brief's "one request in flight
    * at a time" and "stop cleanly when next_cursor is null/absent") and
    * APPENDS (deduped, `appendDedupedResults`) rather than replacing.
+   *
+   * Also the one call site for the "un-gate on key change" fix
+   * (`reconcileGatedKeysOnApiKeySignature`'s own top doc comment): this
+   * function already runs both when the panel first opens (`openCivitaiSearch`'s
+   * own trailing call, below) and on every later search/filter change, so
+   * checking the API key setting here covers both of the task's "natural
+   * points" with one call.
    */
   async function runSearch({ resetCursor = true } = {}) {
+    reconcileGatedKeysOnApiKeySignature(
+      apiKeySignature(getSetting(SETTING_IDS.CIVITAI_API_KEY, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_API_KEY])),
+      _sessionGatedKeys,
+    );
     if (resetCursor) {
       nextCursor = null;
       loadingMore = false;

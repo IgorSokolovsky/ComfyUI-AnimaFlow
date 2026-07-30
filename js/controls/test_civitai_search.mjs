@@ -31,6 +31,8 @@ import {
   downloadTerminalMessage,
   appendDedupedResults,
   markResultGated,
+  apiKeySignature,
+  reconcileGatedKeysOnApiKeySignature,
   subscribeDownloadState,
   getActiveDownloadState,
   startDownloadJob,
@@ -45,6 +47,7 @@ import {
   openCivitaiSearch,
 } from "./civitai_search.mjs";
 import { invalidateList, hasFile, listModels } from "./civitai_api.mjs";
+import { SETTING_IDS } from "../shared/settings.mjs";
 
 let failures = 0;
 let count = 0;
@@ -327,6 +330,92 @@ test("BUG E: the CSS defines an explicit .wtn-cs-action-installed:hover override
     /\.wtn-cs-action-installed:hover\s*\{\s*background:\s*transparent;?\s*\}/,
     "an explicit hover override must neutralise the generic .wtn-cs-action:hover accent background for the installed badge",
   );
+});
+
+test("BUG (owner, 2026-07-30): the CSS defines an explicit .wtn-cs-action-gated:hover override -- the gated 'key required' badge is disabled and must never light up on hover", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cs-action-gated:hover\s*\{\s*background:\s*transparent;?\s*\}/,
+    "an explicit hover override must neutralise the generic .wtn-cs-action:hover accent background for the disabled gated badge",
+  );
+});
+
+// =========================================================================
+// apiKeySignature / reconcileGatedKeysOnApiKeySignature -- the "un-gate on
+// key change" fix (owner, 2026-07-30): "i entered key but it still say key
+// required (and i cant redownload it)".
+// =========================================================================
+
+test("apiKeySignature: same string -> same signature; a different string (even same length) -> a different signature; never returns the key itself", () => {
+  const a = apiKeySignature("sk-aaaaaaaa");
+  const b = apiKeySignature("sk-aaaaaaaa");
+  const c = apiKeySignature("sk-bbbbbbbb"); // same length, different value
+  assert.equal(a, b);
+  assert.notEqual(a, c);
+  assert.doesNotMatch(a, /sk-a/, "the signature must never contain the raw key");
+  assert.doesNotMatch(c, /sk-b/, "the signature must never contain the raw key");
+});
+
+test("apiKeySignature: garbage/missing input degrades to the empty-string signature, never throws", () => {
+  assert.equal(apiKeySignature(""), apiKeySignature(undefined));
+  assert.equal(apiKeySignature(""), apiKeySignature(null));
+});
+
+test("reconcileGatedKeysOnApiKeySignature: THE REPORTED BUG -- learned-gated with no key, then the key setting becomes non-empty, clears the set", () => {
+  _resetDownloadStateForTests();
+  const gated = new Set(["1:1"]);
+  // First check ever establishes the baseline (no key) -- must not clear.
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature(""), gated);
+  assert.ok(gated.has("1:1"), "nothing changed yet -- the baseline check alone must not clear a real learned-gated entry");
+  // The user adds a key -- this is the reported case.
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-real-key"), gated);
+  assert.equal(gated.size, 0, "adding an API key must clear the learned-gated set (this is the bug being fixed)");
+});
+
+test("reconcileGatedKeysOnApiKeySignature: a result learned-gated stays gated while the key setting is unchanged", () => {
+  _resetDownloadStateForTests();
+  const gated = new Set(["1:1"]);
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature(""), gated);
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature(""), gated); // same value again
+  assert.ok(gated.has("1:1"), "the key setting never moved -- a real learned-gated entry must survive");
+});
+
+test("reconcileGatedKeysOnApiKeySignature: changing the key from one non-empty value to a DIFFERENT one also clears it", () => {
+  _resetDownloadStateForTests();
+  const gated = new Set(["1:1"]);
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-old-key"), gated);
+  assert.ok(gated.has("1:1"));
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-new-key"), gated);
+  assert.equal(gated.size, 0, "swapping to a different key is also a change that must clear the stale learning");
+});
+
+test("reconcileGatedKeysOnApiKeySignature: clearing the key (non-empty -> empty) does not throw and clears the learned set (treated the same as any other change)", () => {
+  _resetDownloadStateForTests();
+  const gated = new Set(["1:1"]);
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-had-one"), gated);
+  assert.ok(gated.has("1:1"));
+  assert.doesNotThrow(() => reconcileGatedKeysOnApiKeySignature(apiKeySignature(""), gated));
+  assert.equal(gated.size, 0, "removing the key is still a signature change -- the stale learning is cleared, not resurrected");
+});
+
+test("reconcileGatedKeysOnApiKeySignature: a garbage/missing sessionGatedKeys argument is tolerated, never throws", () => {
+  _resetDownloadStateForTests();
+  assert.doesNotThrow(() => reconcileGatedKeysOnApiKeySignature(apiKeySignature("x"), undefined));
+  assert.doesNotThrow(() => reconcileGatedKeysOnApiKeySignature(apiKeySignature("y"), null));
+  assert.doesNotThrow(() => reconcileGatedKeysOnApiKeySignature(apiKeySignature("z"), "not a set"));
+});
+
+test("resultCardState: the server's own gated:true (early access) is honoured regardless of the API key -- reconciling the key never weakens it", () => {
+  _resetDownloadStateForTests();
+  const gatedKeys = new Set(); // deliberately NOT session-learned -- this is the up-front server flag path
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature(""), gatedKeys);
+  reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-now-has-a-key"), gatedKeys); // a key change, elsewhere clears session learning
+  const result = { model_id: 9, primary_version_id: 9, installed: false, gated: true };
+  assert.equal(resultCardState(result, null, gatedKeys), "gated", "the server's own early-access flag must still gate the card even after a key change reconciled session-learned entries");
 });
 
 // =========================================================================
@@ -983,6 +1072,81 @@ await asyncTest("openCivitaiSearch: BUG F -- a key_required download failure fli
     assert.equal(findAll(handle2.overlay, "wtn-cs-action-gated").length, 1, "the session-learned gated state survives a brand-new panel/search, not just a re-render of the same one");
     assert.equal(findAll(handle2.overlay, "wtn-cs-action").filter((e) => e.textContent === "↓ Download").length, 0);
     handle2.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: THE REPORTED BUG -- learned-gated with no key, then entering an API key un-gates the card and offers a download again on the next search", async () => {
+  _resetDownloadStateForTests();
+  let progressCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      // A FRESH result object every fetch -- exactly like a real server
+      // round-trip, which never sees this client's own earlier in-memory
+      // mutation (`onDownloadStateChange`'s `finishedResult.gated = true`,
+      // below) -- reusing the SAME object across calls would make a later
+      // search "still gated" for the wrong reason (a stale local mutation)
+      // rather than the one this test exists to prove (`_sessionGatedKeys`).
+      return jsonResponse({
+        reason: "ok", message: "",
+        results: [makeResult({ modelId: 55, versionId: 66, name: "Needs A Key", gated: false })],
+        next_cursor: null, public_only: false,
+      });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-key-req-2" });
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      if (progressCalls === 1) {
+        return jsonResponse({ reason: "ok", status: "downloading", bytes: 10, total: 100, message: "" });
+      }
+      return jsonResponse({ reason: "ok", status: "key_required", bytes: 10, total: 100, message: "" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 60)); // let the poll loop reach the terminal key_required
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-action-gated").length, 1, "the card must be learned-gated after the key_required failure -- the premise this whole test exercises");
+
+    // The owner's own words: "i entered key but it still say key required
+    // (and i cant redownload it)" -- simulate exactly that: no page reload,
+    // just the API key setting now holding a real value.
+    globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.CIVITAI_API_KEY ? "sk-the-users-real-key" : undefined) } } } };
+    try {
+      // A brand-new search against the SAME (still gated:false) server
+      // response is the natural re-check point (`runSearch`'s own top).
+      const search = findAll(handle.overlay, "wtn-cs-search")[0];
+      search.value = "needs";
+      search.dispatch("input");
+      await new Promise((resolve) => setTimeout(resolve, 450)); // clear the debounce timer
+      await settle();
+
+      assert.equal(
+        findAll(handle.overlay, "wtn-cs-action-gated").length,
+        0,
+        "adding the API key must un-gate the card -- this is the reported bug",
+      );
+      assert.equal(
+        findAll(handle.overlay, "wtn-cs-action").filter((e) => e.textContent === "↓ Download").length,
+        1,
+        "the card must offer a Download button again once un-gated -- the reported 'and i cant redownload it' half of the bug",
+      );
+    } finally {
+      delete globalThis.window;
+    }
+    handle.close();
   } finally {
     restoreFetch();
     _resetDownloadStateForTests();
