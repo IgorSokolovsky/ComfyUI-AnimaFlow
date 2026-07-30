@@ -435,13 +435,15 @@ function cardH(rowsBlockH) {
   return rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
 }
 
-// (2026-07-30 owner report): the node-edge gap (`BODY_PAD`) is REMOVED
-// ENTIRELY from the CSS now -- no root padding, no header/card margin --
-// so `contentHeight()` no longer adds a `BODY_PAD * 2` term for it either.
+// (2026-07-30 owner report, corrected): a prior pass on this file dropped
+// the `BODY_PAD * 2` term here, reasoning it was the (now CSS-removed)
+// node-edge gap. Live testing showed that was wrong -- the term accounts
+// for the rows-CARD's own top+bottom `CARD_PAD`, which is still there; see
+// `lora_render.mjs`'s `contentHeight` doc comment for the full correction.
 test("contentHeight: pure arithmetic, matches CSS constants, never needs the live DOM", () => {
-  assert.equal(contentHeight(0), HEADER_H + HEADER_GAP + cardH(ROW_H)); // empty state occupies one row's worth
-  assert.equal(contentHeight(1), HEADER_H + HEADER_GAP + cardH(ROW_H));
-  assert.equal(contentHeight(3), HEADER_H + HEADER_GAP + cardH(3 * ROW_H + 2 * ROW_GAP));
+  assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(ROW_H)); // empty state occupies one row's worth
+  assert.equal(contentHeight(1), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(ROW_H));
+  assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH(3 * ROW_H + 2 * ROW_GAP));
   assert.equal(contentHeight(-5), contentHeight(0), "negative row counts must not go negative/NaN");
 });
 
@@ -2043,9 +2045,11 @@ test("BUG 9: the memory-mode segmented buttons share the row's width evenly, SCO
 // -- 2026-07-30 owner report: the node-edge gap is REMOVED ENTIRELY (root
 // carries no padding, the header/card carry no margin) -- BUG 18 had moved
 // it from root's own padding to the header's/card's own margin; this is a
-// further change, not another move, and it is what actually fixed the "card
-// looks flush against the node's own bottom border" symptom -- see
-// `contentHeight()`'s own comment in lora_render.mjs for why. --
+// further change, not another move. The CSS removal below stands; the
+// arithmetic (`contentHeight`/`OUTER_CHROME_W`) is a SEPARATE matter -- see
+// `lora_render.mjs`'s `contentHeight` doc comment for the corrected
+// rationale (its `BODY_PAD * 2`/`BODY_PAD` terms were never about this
+// gap and are restored below). --
 
 test("BUG 18: '.wtn-lora-root' carries NO padding of its own -- unchanged by the 2026-07-30 gap removal", () => {
   const doc = makeDocStub();
@@ -2082,26 +2086,26 @@ test("BUG 10: the card's OWN inner padding is 8px (confirmed, not lowered furthe
   assert.match(css, /\.wtn-lora-rows-card\s*\{[^}]*padding:\s*8px/);
 });
 
-test("2026-07-30 owner report: contentHeight no longer adds BODY_PAD * 2 -- that node-edge chrome is gone from the CSS entirely", () => {
+test("2026-07-30 owner report, corrected: contentHeight DOES still add BODY_PAD * 2 -- that term was never the (now CSS-removed) node-edge gap, it's the rows-CARD's own top+bottom padding, still present", () => {
   const cardHeight = (rowsBlockH) => rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
-  assert.equal(contentHeight(0), HEADER_H + HEADER_GAP + cardHeight(ROW_H));
-  assert.equal(contentHeight(3), HEADER_H + HEADER_GAP + cardHeight(3 * ROW_H + 2 * ROW_GAP));
+  assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(ROW_H));
+  assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(3 * ROW_H + 2 * ROW_GAP));
 });
 
-test("2026-07-30 owner report: MIN_W/MIN_W_SEP account for EVERY layer of chrome remaining between the node's edge and the row -- card padding, card border, not the row's own internal padding, and NO node-edge (BODY_PAD) term anymore", () => {
+test("2026-07-30 owner report, corrected: MIN_W/MIN_W_SEP account for EVERY layer of chrome between the node's edge and the row -- BODY_PAD, card padding, card border, not just the row's own internal padding", () => {
   // Re-derive independently from the exported constants (never a hardcoded
-  // number). BUG 10/18 used to include a `2 * BODY_PAD` term here for the
-  // node-edge gap; that gap is gone from the CSS entirely as of 2026-07-30,
-  // so this floor must not include it either.
-  const outerChromeW = 2 * CARD_PAD + 2 * CARD_BORDER;
+  // number). A prior pass dropped the `2 * BODY_PAD` term here on the theory
+  // it was the (now CSS-removed) node-edge gap; live testing corrected that
+  // -- the term is restored, in step with `contentHeight`'s own correction.
+  const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
   const singleFixedW = outerChromeW + GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
   assert.equal(MIN_W, NAME_MIN_W + singleFixedW);
   const sepFixedW = singleFixedW + STEPPER_W + CTRL_GAP;
   assert.equal(MIN_W_SEP, NAME_MIN_W + sepFixedW);
 });
 
-test("2026-07-30 owner report: at the MIN_W floor, the row's own content (grip+name+stepper+info+switch) genuinely fits within what's left after ALL remaining outer chrome -- not just an internal-padding check", () => {
-  const outerChromeW = 2 * CARD_PAD + 2 * CARD_BORDER;
+test("2026-07-30 owner report, corrected: at the MIN_W floor, the row's own content (grip+name+stepper+info+switch) genuinely fits within what's left after ALL outer chrome -- not just an internal-padding check", () => {
+  const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
   const rowAvailableW = MIN_W - outerChromeW; // what's actually left for '.wtn-ctl-row' itself
   const rowOwnFixedW = GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
   assert.ok(rowAvailableW >= rowOwnFixedW + NAME_MIN_W, "the row must fit ENTIRELY inside the space left after card chrome, at the exact floor");

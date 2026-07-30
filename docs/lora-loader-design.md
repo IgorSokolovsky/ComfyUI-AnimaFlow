@@ -731,6 +731,35 @@ chosen by which surface is hosting it.
 **Milestone note (supersedes the earlier dependency warning):** because this panel is *not* the modal,
 **M2 no longer depends on M2b.** The node's search, results and detail are all self-contained in M2; the
 toolbar modal remains purely additive.
+### 7c-iii. A search result card has FOUR states (owner, 2026-07-30)
+
+Read off [`playground/lora-loader.html`](../playground/lora-loader.html) — the mockup specifies all four,
+in both the node's picker and the toolbar modal. Same states, same labels, two layouts.
+
+| state | mockup renders | **our label** |
+|---|---|---|
+| already on disk | `✓ have`, no download button | **`✓ installed`** — owner, 2026-07-30: "have" is vague, "installed" says what it means |
+| in flight | progress bar + `downloading 38%` + cancel | unchanged |
+| available | `↓ get` | **`↓ Download`** — owner, 2026-07-30: "get" is coy; name the action |
+| gated | padlock + `needs an API key` + an **amber** `key required` button | unchanged |
+
+Three things this table is load-bearing for:
+
+- **The gated state is a first-class outcome, not an error path** (§8). A result must be known to be gated
+  **before** the user clicks, so the card renders `key required` up front rather than discovering it on a
+  failed download. The search response therefore has to carry that flag, and a key-less download attempt
+  must return a *distinct* machine-readable reason rather than folding into a generic failure — the same
+  discipline `civitai_client.py` already applies to timeout / DNS / unreadable / 429.
+- **`installed` is driven by the presence check**, which is why the downloader's `.part`-then-atomic-rename
+  rule is not merely tidy: a partial download that registered as present would label a truncated,
+  unusable file `installed`.
+- The mockup also shows **`No API key set — public results only.`** above the results, and the modal
+  carries a `public mode` badge — the public-only posture is stated, never silently degraded (§8).
+
+> ⚠️ I initially reported that the mockup did not specify an already-present state. **It does** — `✓ have`,
+> on the first result card. Read the mockup before claiming it is silent on something; grepping it for the
+> word you expect is not the same as looking at it.
+
 ### The modal
 
 **90% of the viewport**, centred, over a scrim. Full features: search, **filters** (type, base model,
