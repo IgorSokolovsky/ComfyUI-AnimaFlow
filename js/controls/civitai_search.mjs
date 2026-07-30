@@ -202,6 +202,11 @@ const CSS = `
 
 .wtn-cs-list { display: flex; flex-direction: column; gap: 6px; min-height: 30px; }
 .wtn-cs-empty { padding: 14px 6px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); font-size: 12px; text-align: center; }
+/* BUG G's own "loading more" footer row -- reuses \`.wtn-cs-empty\`'s
+   colour/centering but at the list's own smaller type scale (a full 12px
+   "no results" size would read as its own oversized banner sitting under a
+   list of 12px cards). */
+.wtn-cs-loading-more { padding: 8px 6px; font-size: 10.5px; }
 
 .wtn-cs-card {
   display: flex; gap: 8px; align-items: center; padding: 6px; border-radius: 7px;
@@ -241,6 +246,14 @@ const CSS = `
 .wtn-cs-action:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-cs-action:disabled { opacity: .5; cursor: default; }
 .wtn-cs-action-installed { background: transparent; color: var(--wtn-ok, ${TOKENS.ok}); border-color: var(--wtn-line-soft, ${TOKENS.lineSoft}); cursor: default; }
+/* BUG E (owner, 2026-07-30): an installed card has no action at all --
+   nothing to click -- so it must never show a hover affordance. Without
+   this override, \`.wtn-cs-action:hover\` above (a real class this badge ALSO
+   carries, see \`buildCard\`'s \`"wtn-cs-action wtn-cs-action-installed"\`)
+   still fires on hover and paints the "clickable" accent background even
+   though the badge is inert. The other three card states (available,
+   downloading, gated) keep their own hover styling unchanged. */
+.wtn-cs-action-installed:hover { background: transparent; }
 .wtn-cs-action-gated { background: transparent; color: var(--wtn-warn, ${TOKENS.warn}); border-color: rgba(251,191,36,.4); }
 .wtn-cs-action-cancel { background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); border: 1px dashed var(--wtn-line, ${TOKENS.line}); }
 .wtn-cs-action-cancel:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
@@ -349,25 +362,75 @@ export function resultKey(result) {
 }
 
 /**
+ * BUG G -- appends `incoming` after `existing`, skipping any entry whose
+ * `resultKey` is already present in `existing`: Civitai's own pagination can
+ * legitimately repeat an entry across pages (the task brief's own "dedupe on
+ * a stable key"), so identity is checked by `resultKey`, never by object
+ * identity or array index. Neither argument is mutated -- returns a NEW
+ * array, matching every other pure helper in this file. Garbage/non-array
+ * input on either side degrades to treating that side as empty rather than
+ * throwing (mirrors `resultKey`'s own "never throw" contract); a garbage
+ * ENTRY within a valid array (one `resultKey` resolves to `""` for) is kept
+ * rather than silently dropped -- `""` never collides with a real key, so
+ * every such entry is still added, just never deduplicated against another
+ * garbage entry.
+ */
+export function appendDedupedResults(existing, incoming) {
+  const before = Array.isArray(existing) ? existing : [];
+  const add = Array.isArray(incoming) ? incoming : [];
+  const seen = new Set();
+  for (const r of before) {
+    const key = resultKey(r);
+    if (key) {
+      seen.add(key);
+    }
+  }
+  const out = before.slice();
+  for (const r of add) {
+    const key = resultKey(r);
+    if (key && seen.has(key)) {
+      continue;
+    }
+    if (key) {
+      seen.add(key);
+    }
+    out.push(r);
+  }
+  return out;
+}
+
+/**
  * The four card states (§7c-iii), in priority order: an in-flight download
  * FOR THIS RESULT wins over everything else (its `installed`/`gated` flags
  * are now stale -- a download would not have started if it were already
- * installed), then the search response's own first-class `installed`/
- * `gated` flags (read from the response, never inferred from a failed
- * download -- §7c-iii's own "first-class outcome, not an error path"), else
- * `"available"`.
+ * installed), then `installed` (the most final truth there is -- the file is
+ * literally on disk), then `gated` -- from EITHER the search response's own
+ * up-front flag OR `sessionGatedKeys` (BUG F, owner 2026-07-30): the
+ * up-front flag is only Civitai's `earlyAccessEndsAt` guess
+ * (`civitai_search.py`'s own doc comment), and a live download that actually
+ * came back `key_required` is GROUND TRUTH the guess got wrong for THIS
+ * result -- `openCivitaiSearch`'s `onDownloadStateChange` records that key
+ * into the module-level `_sessionGatedKeys` set once, and every card for
+ * that same `(model_id, primary_version_id)` renders gated from then on,
+ * this session, even across a brand-new search whose response repeats the
+ * same wrong `gated: false` -- else `"available"`.
+ *
+ * `sessionGatedKeys` is optional (any `{has(key)}`-shaped collection, e.g. a
+ * `Set`) so every existing caller/test that only ever cared about the
+ * response's own flags keeps working unmodified.
  */
-export function resultCardState(result, activeJob) {
+export function resultCardState(result, activeJob, sessionGatedKeys) {
   if (!result) {
     return "available";
   }
-  if (activeJob && activeJob.key === resultKey(result)) {
+  const key = resultKey(result);
+  if (activeJob && activeJob.key === key) {
     return "downloading";
   }
   if (result.installed) {
     return "installed";
   }
-  if (result.gated) {
+  if (result.gated || (sessionGatedKeys && typeof sessionGatedKeys.has === "function" && sessionGatedKeys.has(key))) {
     return "gated";
   }
   return "available";
@@ -528,6 +591,13 @@ export const PANEL_ANCHOR_GAP_PX = 6;
  * bottom edge. */
 export const PANEL_VIEWPORT_MARGIN_PX = 12;
 
+/** BUG G's own infinite-scroll trigger distance -- the next page fetches
+ * once fewer than this many pixels remain below the visible viewport of
+ * `.wtn-cs-scroll` (`scrollHeight - scrollTop - clientHeight`), so the next
+ * page is already loading by the time the user actually reaches the bottom
+ * rather than after a visible dead stop. */
+export const SCROLL_LOAD_MORE_THRESHOLD_PX = 96;
+
 /**
  * The panel's own `max-height`, derived from the space actually available
  * below the anchor -- `viewportHeight - anchorBottom - gap - margin` -- never
@@ -563,6 +633,29 @@ export function computeSearchPanelMaxHeight({ anchorBottom, viewportHeight, chro
 let _activeDownload = null; // { kind, jobId, key, filename, status, bytes, total, message } | null
 const _subscribers = new Set();
 
+/** BUG F (owner, 2026-07-30) -- every `resultKey` this session has actually
+ * seen a `key_required` download failure for, keyed the SAME way
+ * `resultKey` already is. A live 401/403 is ground truth that the search
+ * response's own up-front `gated` guess (Civitai's `earlyAccessEndsAt`, see
+ * `civitai_search.py`'s doc comment) got wrong for that one result -- once
+ * learned here, `resultCardState`'s `sessionGatedKeys` argument makes every
+ * later render of that same key gated, even a brand-new search that repeats
+ * the same wrong `gated: false`. Session-only (this module, cleared on a
+ * page reload same as `_activeDownload`) -- there is no server-side place to
+ * remember this yet, and re-learning it on the next click is an acceptable
+ * cost for something this rare. */
+let _sessionGatedKeys = new Set();
+
+/** Records that `key` (a `resultKey(...)` value) is now known-gated this
+ * session -- see `_sessionGatedKeys`'s own doc comment. A no-op for a falsy
+ * key (the `resultKey(garbage) === ""` case) rather than polluting the set
+ * with an empty string that could spuriously match another garbage result. */
+export function markResultGated(key) {
+  if (key) {
+    _sessionGatedKeys.add(key);
+  }
+}
+
 function _notify() {
   for (const fn of _subscribers) {
     fn();
@@ -590,13 +683,16 @@ export function getActiveDownloadState() {
   return _activeDownload ? { ..._activeDownload } : null;
 }
 
-/** Test-only: force-clears the module-level singleton so a suite can start
- * every test from a clean slate -- never called by any real (non-test) code
- * path (mirrors `js/shared/settings.mjs`'s own `_resetRegistrationForTests`
+/** Test-only: force-clears the module-level singletons (the active download
+ * job AND BUG F's `_sessionGatedKeys` -- both are the same kind of
+ * session-lifetime state, cleared together) so a suite can start every test
+ * from a clean slate -- never called by any real (non-test) code path
+ * (mirrors `js/shared/settings.mjs`'s own `_resetRegistrationForTests`
  * convention). */
 export function _resetDownloadStateForTests() {
   _activeDownload = null;
   _subscribers.clear();
+  _sessionGatedKeys.clear();
 }
 
 function _sleep(ms) {
@@ -878,6 +974,12 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   let results = [];
   let nextCursor = null;
   let loading = true;
+  // BUG G: distinct from `loading` (which replaces the WHOLE list with a
+  // "Searching…" placeholder for a fresh/reset search) -- `loadingMore` is
+  // true only while a PAGING fetch (`resetCursor: false`) is in flight, so
+  // the already-rendered results stay on screen with a small footer
+  // affordance appended below them (`renderList`) instead of being replaced.
+  let loadingMore = false;
   let searchSeq = 0;
   const cardMessages = new Map(); // resultKey -> a readable line under that card
 
@@ -919,7 +1021,7 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     const card = el(doc, "div", "wtn-cs-card");
     const rKey = resultKey(result);
     const job = getActiveDownloadState();
-    const state = resultCardState(result, job);
+    const state = resultCardState(result, job, _sessionGatedKeys);
 
     card.appendChild(buildThumb(doc, state === "gated"));
 
@@ -1037,6 +1139,14 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     for (const result of results) {
       list.appendChild(buildCard(result));
     }
+    if (loadingMore) {
+      // BUG G's own loading affordance -- appended BELOW the already-
+      // rendered results, never replacing them (a page-two fetch never
+      // wipes page one).
+      const msg = el(doc, "div", "wtn-cs-empty wtn-cs-loading-more");
+      msg.textContent = "Loading more…";
+      list.appendChild(msg);
+    }
   }
 
   function renderStatus() {
@@ -1044,9 +1154,32 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     publicOnlyLine.style.display = "none";
   }
 
+  /**
+   * BUG G -- fetches a page. `resetCursor: true` (a brand-new query or a
+   * filter change) always fires, replaces `results` wholesale, and forgets
+   * any prior page position (`nextCursor`/`loadingMore` reset FIRST, before
+   * the request even goes out -- task brief: "reset paging on every new
+   * search or filter change... a stale cursor from the previous query
+   * appending onto new results would be a nasty, hard-to-spot bug").
+   * `resetCursor: false` (the infinite-scroll path, `maybeLoadMore` below)
+   * is a no-op when a page is already in flight or there is no further page
+   * (`loadingMore`/`nextCursor` guard -- task brief's "one request in flight
+   * at a time" and "stop cleanly when next_cursor is null/absent") and
+   * APPENDS (deduped, `appendDedupedResults`) rather than replacing.
+   */
   async function runSearch({ resetCursor = true } = {}) {
+    if (resetCursor) {
+      nextCursor = null;
+      loadingMore = false;
+    } else if (loadingMore || !nextCursor) {
+      return;
+    } else {
+      loadingMore = true;
+    }
     const seq = (searchSeq += 1);
-    loading = resetCursor;
+    if (resetCursor) {
+      loading = true;
+    }
     renderList();
     const resp = await searchModels(kind, {
       query: search.value.trim(),
@@ -1057,9 +1190,14 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       cursor: resetCursor ? "" : (nextCursor || ""),
     });
     if (seq !== searchSeq) {
-      return; // superseded by a newer search -- discard this stale reply
+      // Superseded by a newer search (this ALSO covers a paging fetch made
+      // stale by a filter change/new query in the meantime -- that newer
+      // call already reset `loadingMore`/`nextCursor` itself at its own
+      // start, above) -- discard this stale reply.
+      return;
     }
     loading = false;
+    loadingMore = false;
     publicOnlyLine.style.display = resp.public_only ? "" : "none";
 
     statusLine.innerHTML = "";
@@ -1072,13 +1210,36 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         results = [];
         nextCursor = null;
       }
+      // A page-TWO failure (`rate_limited` -- our own limiter, per §9 -- or
+      // anything else) leaves the already-rendered EARLIER pages untouched,
+      // and deliberately leaves `nextCursor` itself alone too, so scrolling
+      // back down retries the SAME page rather than losing the user's place
+      // (task brief: "handle rate_limited on a page-two fetch as calmly as
+      // on page one").
       renderList();
       return;
     }
-    results = resetCursor ? (resp.results || []) : results.concat(resp.results || []);
+    const incoming = resp.results || [];
+    results = resetCursor ? appendDedupedResults([], incoming) : appendDedupedResults(results, incoming);
     nextCursor = resp.next_cursor;
     renderList();
   }
+
+  /** BUG G's infinite-scroll trigger -- fires on every `.wtn-cs-scroll`
+   * scroll event, but `runSearch`'s own `loadingMore`/`nextCursor` guard
+   * (above) is what actually keeps a burst of scroll events down to at most
+   * ONE in-flight request; this function only ever decides WHETHER the user
+   * is close enough to the bottom to ask. */
+  function maybeLoadMore() {
+    if (loadingMore || !nextCursor) {
+      return;
+    }
+    const remaining = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight;
+    if (remaining <= SCROLL_LOAD_MORE_THRESHOLD_PX) {
+      runSearch({ resetCursor: false });
+    }
+  }
+  scrollArea.addEventListener("scroll", maybeLoadMore);
 
   search.addEventListener("click", (e) => e.stopPropagation());
   const SEARCH_DEBOUNCE_MS = 400;
@@ -1113,6 +1274,22 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         // (task brief, deliverable 4).
         if (finishedResult) {
           finishedResult.installed = true;
+        }
+        cardMessages.delete(job.key);
+      } else if (job.status === "key_required") {
+        // BUG F (owner, 2026-07-30): the download itself just answered
+        // 401/403 -- GROUND TRUTH that the up-front `gated` guess for this
+        // result was wrong (or absent). Flip this card straight to the
+        // gated state (no waiting on a fresh search that would just repeat
+        // the same wrong guess), AND remember it session-wide
+        // (`markResultGated`) so a LATER re-render or a brand-new search
+        // still renders it gated -- see `resultCardState`'s own doc comment.
+        // `gatedSubtitle()`'s "needs an API key" already says everything a
+        // gated card needs to; no separate red `cardmsg` line underneath a
+        // Download button that no longer exists.
+        markResultGated(job.key);
+        if (finishedResult) {
+          finishedResult.gated = true;
         }
         cardMessages.delete(job.key);
       } else {
@@ -1160,6 +1337,9 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       clearTimeout(debounceTimer);
     }
     unsubscribe();
+    if (typeof scrollArea.removeEventListener === "function") {
+      scrollArea.removeEventListener("scroll", maybeLoadMore);
+    }
     if (win && onWindowResize && typeof win.removeEventListener === "function") {
       win.removeEventListener("resize", onWindowResize);
     }

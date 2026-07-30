@@ -29,6 +29,8 @@ import {
   searchReasonMessage,
   downloadStartMessage,
   downloadTerminalMessage,
+  appendDedupedResults,
+  markResultGated,
   subscribeDownloadState,
   getActiveDownloadState,
   startDownloadJob,
@@ -38,6 +40,8 @@ import {
   MIN_RESULTS_HEIGHT_PX,
   PANEL_ANCHOR_GAP_PX,
   PANEL_VIEWPORT_MARGIN_PX,
+  SCROLL_LOAD_MORE_THRESHOLD_PX,
+  injectStyles,
   openCivitaiSearch,
 } from "./civitai_search.mjs";
 import { invalidateList, hasFile, listModels } from "./civitai_api.mjs";
@@ -143,6 +147,70 @@ test("resultCardState: a job for a DIFFERENT result never marks this one downloa
   assert.equal(resultCardState(result, job), "available");
 });
 
+test("resultCardState: BUG F -- a session-known-gated key overrides the up-front (wrong) 'gated: false' guess", () => {
+  const result = { model_id: 7, primary_version_id: 8, installed: false, gated: false };
+  const sessionGatedKeys = new Set([resultKey(result)]);
+  assert.equal(resultCardState(result, null, sessionGatedKeys), "gated");
+});
+
+test("resultCardState: BUG F -- installed still wins over a session-known-gated flag (the file DID end up on disk)", () => {
+  const result = { model_id: 7, primary_version_id: 8, installed: true, gated: false };
+  const sessionGatedKeys = new Set([resultKey(result)]);
+  assert.equal(resultCardState(result, null, sessionGatedKeys), "installed");
+});
+
+test("resultCardState: BUG F -- an in-flight download still wins over a session-known-gated flag (a retry after adding a key)", () => {
+  const result = { model_id: 7, primary_version_id: 8, installed: false, gated: false };
+  const job = { key: resultKey(result) };
+  const sessionGatedKeys = new Set([resultKey(result)]);
+  assert.equal(resultCardState(result, job, sessionGatedKeys), "downloading");
+});
+
+test("resultCardState: BUG F -- a session-gated set that doesn't contain this key changes nothing", () => {
+  const result = { model_id: 1, primary_version_id: 2, installed: false, gated: false };
+  const sessionGatedKeys = new Set(["9:9"]);
+  assert.equal(resultCardState(result, null, sessionGatedKeys), "available");
+});
+
+test("resultCardState: a garbage/missing sessionGatedKeys argument is tolerated (backward compatible, never throws)", () => {
+  const result = { model_id: 1, primary_version_id: 2, installed: false, gated: true };
+  assert.equal(resultCardState(result, null, undefined), "gated");
+  assert.equal(resultCardState(result, null, null), "gated");
+  assert.equal(resultCardState(result, null, "not a set"), "gated");
+});
+
+// =========================================================================
+// appendDedupedResults -- BUG G's pagination dedupe.
+// =========================================================================
+
+test("appendDedupedResults: dedupes on resultKey -- a page can legitimately repeat an entry across pages", () => {
+  const a = { model_id: 1, primary_version_id: 1, name: "A" };
+  const b = { model_id: 2, primary_version_id: 2, name: "B" };
+  const bAgain = { model_id: 2, primary_version_id: 2, name: "B (repeated on page 2)" };
+  const c = { model_id: 3, primary_version_id: 3, name: "C" };
+  const out = appendDedupedResults([a, b], [bAgain, c]);
+  assert.deepEqual(out.map((r) => r.name), ["A", "B", "C"], "the FIRST-seen entry for a key wins; a later repeat is skipped, a genuinely new one is appended");
+});
+
+test("appendDedupedResults: never mutates either input array", () => {
+  const existing = [{ model_id: 1, primary_version_id: 1, name: "A" }];
+  const incoming = [{ model_id: 2, primary_version_id: 2, name: "B" }];
+  const existingLengthBefore = existing.length;
+  const incomingLengthBefore = incoming.length;
+  const out = appendDedupedResults(existing, incoming);
+  assert.equal(existing.length, existingLengthBefore);
+  assert.equal(incoming.length, incomingLengthBefore);
+  assert.equal(out.length, 2);
+});
+
+test("appendDedupedResults: garbage/non-array input on either side degrades to the other side rather than throwing", () => {
+  const b = { model_id: 2, primary_version_id: 2, name: "B" };
+  assert.deepEqual(appendDedupedResults(null, [b]).map((r) => r.name), ["B"]);
+  assert.deepEqual(appendDedupedResults([b], null).map((r) => r.name), ["B"]);
+  assert.deepEqual(appendDedupedResults(null, null), []);
+  assert.deepEqual(appendDedupedResults(undefined, undefined), []);
+});
+
 test("resultSubtitle: just the compact download count -- the base model moved to its own chip (owner, 2026-07-30)", () => {
   assert.equal(resultSubtitle({ base_model: "SDXL", stats: { downloads: 12400 } }), "12.4k ↓");
   assert.equal(resultSubtitle({ base_model: "", stats: { downloads: 0 } }), "0 ↓");
@@ -240,6 +308,25 @@ test("downloadTerminalMessage: every terminal status gets a readable line", () =
   assert.equal(downloadTerminalMessage("cancelled"), "Cancelled.");
   assert.match(downloadTerminalMessage("key_required"), /API key/i);
   assert.match(downloadTerminalMessage("write_error", { message: "disk full" }), /disk full/);
+});
+
+// =========================================================================
+// BUG E -- an installed card (no action at all) must never show a hover
+// state. There is no CSSOM in a plain-`node` test, so this asserts against
+// the injected `<style>` tag's own textContent -- the same technique any
+// pure-JS suite has for a CSS-only behaviour.
+// =========================================================================
+
+test("BUG E: the CSS defines an explicit .wtn-cs-action-installed:hover override (never the generic .wtn-cs-action:hover accent)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cs-action-installed:hover\s*\{\s*background:\s*transparent;?\s*\}/,
+    "an explicit hover override must neutralise the generic .wtn-cs-action:hover accent background for the installed badge",
+  );
 });
 
 // =========================================================================
@@ -444,6 +531,13 @@ function makeDocStub() {
       checked: false,
       spellcheck: false,
       selected: false,
+      // BUG G's infinite-scroll trigger reads these three off `.wtn-cs-
+      // scroll` -- a plain stub has no real layout engine, so a test drives
+      // "near the bottom" by setting these directly before dispatching a
+      // "scroll" event.
+      scrollTop: 0,
+      scrollHeight: 0,
+      clientHeight: 0,
       parentNode: null,
       _rect: { left: 10, top: 10, right: 30, bottom: 40, width: 20, height: 30 },
       get ownerDocument() {
@@ -831,6 +925,70 @@ await asyncTest("openCivitaiSearch: a download/start failure (e.g. 'busy') shows
   }
 });
 
+await asyncTest("openCivitaiSearch: BUG F -- a key_required download failure flips THAT card to gated (amber, no Download button), and it survives a brand-new search/panel this session", async () => {
+  _resetDownloadStateForTests();
+  // Deliberately `gated: false` -- the up-front guess (Civitai's own
+  // `earlyAccessEndsAt`) got this one wrong; the download itself is what
+  // will discover the truth.
+  const result = makeResult({ modelId: 77, versionId: 88, name: "Early Access LoRA", gated: false });
+  let searchCalls = 0;
+  let progressCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      searchCalls += 1;
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-key-req" });
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      if (progressCalls === 1) {
+        return jsonResponse({ reason: "ok", status: "downloading", bytes: 10, total: 100, message: "" });
+      }
+      return jsonResponse({ reason: "ok", status: "key_required", bytes: 10, total: 100, message: "" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(downloadBtn, "the card must start as plain 'available' -- the up-front guess said gated: false");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 60)); // let the (test-shortened) poll loop reach the terminal key_required
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-action-gated").length, 1, "the card must flip to gated once the download itself reports key_required");
+    assert.equal(
+      findAll(handle.overlay, "wtn-cs-action").filter((e) => e.textContent === "↓ Download").length,
+      0,
+      "no Download button must remain on a card that just failed with key_required (this is the bug being fixed)",
+    );
+
+    // A brand-new panel + a REPEAT search against the SAME server response
+    // (gated: false, the up-front guess never changes on its own) must still
+    // render this result gated -- the client learned better from the real
+    // failure, session-wide, not just for this one already-open panel.
+    searchCalls = 0;
+    handle.close();
+    const doc2 = makeDocStub();
+    const anchor2 = doc2.createElement("button");
+    const handle2 = openCivitaiSearch({ ctx: { doc: doc2, getCanvasEl: () => null }, anchorEl: anchor2, kind: "loras" });
+    await settle();
+    assert.equal(searchCalls, 1);
+    assert.equal(findAll(handle2.overlay, "wtn-cs-action-gated").length, 1, "the session-learned gated state survives a brand-new panel/search, not just a re-render of the same one");
+    assert.equal(findAll(handle2.overlay, "wtn-cs-action").filter((e) => e.textContent === "↓ Download").length, 0);
+    handle2.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
 await asyncTest("openCivitaiSearch: changing a filter <select> re-searches with the new value, and the search input is debounced", async () => {
   _resetDownloadStateForTests();
   const queries = [];
@@ -962,6 +1120,235 @@ await asyncTest("openCivitaiSearch: an anchor pinned near the bottom edge still 
     const px = Number(panel.style.maxHeight.replace("px", ""));
     assert.ok(px >= MIN_RESULTS_HEIGHT_PX, "the panel still reserves at least the results floor even with almost no room below the anchor");
     handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+// =========================================================================
+// BUG G -- infinite scroll: scrolling near the bottom of .wtn-cs-scroll
+// fetches the next page via `next_cursor`, appends (never replaces, deduped
+// on a stable key), stops when `next_cursor` is null/absent, never runs two
+// page-fetches at once, and resets cleanly on a new search/filter change.
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: BUG G -- scrolling near the bottom appends the next page (deduped), and stops once next_cursor is null", async () => {
+  _resetDownloadStateForTests();
+  const page1 = [
+    makeResult({ modelId: 1, versionId: 1, name: "One" }),
+    makeResult({ modelId: 2, versionId: 2, name: "Two" }),
+  ];
+  const page2 = [
+    makeResult({ modelId: 2, versionId: 2, name: "Two (repeated by Civitai on page 2)" }),
+    makeResult({ modelId: 3, versionId: 3, name: "Three" }),
+  ];
+  const cursorsRequested = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    const cursor = u.searchParams.get("cursor") || "";
+    cursorsRequested.push(cursor);
+    if (!cursor) {
+      return jsonResponse({ reason: "ok", message: "", results: page1, next_cursor: "cursor-2", public_only: false });
+    }
+    if (cursor === "cursor-2") {
+      return jsonResponse({ reason: "ok", message: "", results: page2, next_cursor: null, public_only: false });
+    }
+    throw new Error(`unexpected cursor: ${cursor}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    assert.equal(cursorsRequested.length, 1, "the initial search fires with no cursor");
+    assert.equal(findAll(handle.overlay, "wtn-cs-card").length, 2);
+
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    scrollArea.scrollHeight = 500;
+    scrollArea.clientHeight = 200;
+    scrollArea.scrollTop = 500 - 200 - (SCROLL_LOAD_MORE_THRESHOLD_PX - 10); // just inside the trigger threshold
+    scrollArea.dispatch("scroll");
+    await settle();
+
+    assert.equal(cursorsRequested.length, 2, "scrolling near the bottom fetches the next page");
+    assert.equal(cursorsRequested[1], "cursor-2", "the second page's request carries the FIRST page's own next_cursor");
+    const cardsAfterPage2 = findAll(handle.overlay, "wtn-cs-card");
+    assert.equal(cardsAfterPage2.length, 3, "appended, never replaced -- and the entry repeated across pages is deduped, not doubled");
+    assert.equal(cardsAfterPage2.filter((c) => textOf(c).includes("Two")).length, 1, "the model repeated on page 2 renders exactly once");
+    assert.ok(textOf(handle.overlay).includes("One"), "page one's own results survive the append");
+
+    // next_cursor is now null -- scrolling again must not fire a further request.
+    scrollArea.dispatch("scroll");
+    await settle();
+    assert.equal(cursorsRequested.length, 2, "no further request once next_cursor is null/absent");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: BUG G -- a scroll well above the threshold does nothing; only one page-fetch runs at a time even with a burst of scroll events", async () => {
+  _resetDownloadStateForTests();
+  let searchCalls = 0;
+  let resolveSecondPage;
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    const cursor = u.searchParams.get("cursor") || "";
+    searchCalls += 1;
+    if (!cursor) {
+      return jsonResponse({ reason: "ok", message: "", results: [makeResult({ modelId: 1, versionId: 1, name: "One" })], next_cursor: "cursor-2", public_only: false });
+    }
+    // The second page's own fetch hangs until the test releases it -- a
+    // burst of scroll events while it's in flight must not fire a second
+    // request (task brief: "one request in flight at a time").
+    return new Promise((resolve) => {
+      resolveSecondPage = () => resolve(jsonResponse({
+        reason: "ok", message: "", results: [makeResult({ modelId: 2, versionId: 2, name: "Two" })], next_cursor: null, public_only: false,
+      }));
+    });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    assert.equal(searchCalls, 1);
+
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    scrollArea.scrollHeight = 1000;
+    scrollArea.clientHeight = 200;
+    scrollArea.scrollTop = 0; // far from the bottom -- 800px remaining, well past the threshold
+    scrollArea.dispatch("scroll");
+    await settle();
+    assert.equal(searchCalls, 1, "a scroll far from the bottom must never fetch a page");
+
+    scrollArea.scrollTop = 1000 - 200 - (SCROLL_LOAD_MORE_THRESHOLD_PX - 10); // now inside the threshold
+    scrollArea.dispatch("scroll");
+    scrollArea.dispatch("scroll");
+    scrollArea.dispatch("scroll");
+    await settle();
+    assert.equal(searchCalls, 2, "a burst of scroll events while a page-fetch is in flight must only ever start ONE request");
+    assert.equal(findAll(handle.overlay, "wtn-cs-loading-more").length, 1, "a loading affordance shows while the next page is in flight");
+
+    resolveSecondPage();
+    await settle();
+    assert.equal(findAll(handle.overlay, "wtn-cs-loading-more").length, 0, "the loading affordance clears once the page resolves");
+    assert.equal(findAll(handle.overlay, "wtn-cs-card").length, 2);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: BUG G -- changing a filter resets paging; a stale cursor from the old query never leaks onto the new one", async () => {
+  _resetDownloadStateForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push({ cursor: u.searchParams.get("cursor") || "", sort: u.searchParams.get("sort") || "" });
+    if (queries.length === 1) {
+      return jsonResponse({ reason: "ok", message: "", results: [makeResult({ modelId: 1, versionId: 1, name: "One" })], next_cursor: "cursor-2", public_only: false });
+    }
+    return jsonResponse({ reason: "ok", message: "", results: [makeResult({ modelId: 9, versionId: 9, name: "Nine" })], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    assert.equal(queries.length, 1);
+    assert.equal(queries[0].cursor, "");
+
+    const selects = [];
+    const walk = (e) => {
+      if (e.tagName === "select") {
+        selects.push(e);
+      }
+      (e.children || []).forEach(walk);
+    };
+    walk(handle.overlay);
+    const sortSel = selects[1];
+    sortSel.value = "Newest";
+    sortSel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(queries.length, 2, "changing the filter re-searches");
+    assert.equal(queries[1].cursor, "", "the new query must NOT carry the previous query's next_cursor");
+
+    // The results list itself must be the NEW query's alone -- the old
+    // query's results must not still be sitting there with the new one
+    // appended onto them.
+    const cards = findAll(handle.overlay, "wtn-cs-card");
+    assert.equal(cards.length, 1);
+    assert.match(textOf(cards[0]), /Nine/);
+
+    // And a scroll that would have paged the OLD query must now be a no-op
+    // (there is no next_cursor for the new, single-result query).
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    scrollArea.scrollHeight = 500;
+    scrollArea.clientHeight = 200;
+    scrollArea.scrollTop = 500 - 200 - (SCROLL_LOAD_MORE_THRESHOLD_PX - 10);
+    scrollArea.dispatch("scroll");
+    await settle();
+    assert.equal(queries.length, 2, "no stale-cursor page fetch fires after a filter change");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: BUG G -- rate_limited on a page-two fetch is calm and never wipes the already-rendered first page", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    const cursor = u.searchParams.get("cursor") || "";
+    if (!cursor) {
+      return jsonResponse({ reason: "ok", message: "", results: [makeResult({ modelId: 1, versionId: 1, name: "One" })], next_cursor: "cursor-2", public_only: false });
+    }
+    return jsonResponse({ reason: "rate_limited", message: "Searching too quickly", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    scrollArea.scrollHeight = 500;
+    scrollArea.clientHeight = 200;
+    scrollArea.scrollTop = 500 - 200 - (SCROLL_LOAD_MORE_THRESHOLD_PX - 10);
+    scrollArea.dispatch("scroll");
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-card").length, 1, "a page-two failure must not wipe the already-rendered first page");
+    assert.equal(findAll(handle.overlay, "wtn-cs-bad").length, 0, "rate_limited stays calm on page two too -- never the error colour");
+    assert.equal(findAll(handle.overlay, "wtn-cs-info").length, 1);
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: BUG G -- closing the panel removes its own scroll listener (no leaked handler on a since-discarded node)", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [makeResult({ modelId: 1, versionId: 1, name: "One" })], next_cursor: "cursor-2", public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    assert.ok((scrollArea._listeners.scroll || []).length >= 1, "opening the panel must register its own scroll listener");
+    handle.close();
+    assert.equal((scrollArea._listeners.scroll || []).length, 0, "closing the panel must remove its own scroll listener");
   } finally {
     restoreFetch();
     _resetDownloadStateForTests();
