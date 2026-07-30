@@ -96,6 +96,41 @@ JSON** (JSON tested worse), and every composing node must stay **prompt-format-a
 the ⚙ dialog, FLIP drag-reorder. It is in *Done (unverified)* below with the exact checks to run.
 **What remains here is M2 onward**, and §9's network policy still gates it.
 
+#### What M2 still owes — asked for live 2026-07-30, and NOT previously on this board
+
+Both were specified in the design doc and simply never built. The owner found them by using the panel,
+which is the point: a spec entry is not a queue entry, and neither of these had one.
+
+- **Result thumbnails in the search panel.** Cards render a placeholder glyph today, and
+  `civitai_search.mjs:903-908` says why — the search parser carries no image URL. **This is about to
+  get cheap:** the download-sidecar work adds a per-version `preview_url` to
+  `civitai_search.py`'s parse for the preview-image download, so the same field feeds the card. Note
+  `civitai_parse._pick_thumbnail` already exists and rewrites to a 256px variant for exactly this
+  in-browser use — the untransformed URL is the one saved to disk; the card wants the rewrite. Doing
+  this AFTER the sidecar work lands avoids two people editing the same parser.
+- **The version selector.** Decision 11 and §"The detail view" (`lora-loader-design.md:826`): *"A
+  Civitai model has many versions and they differ in file size, base model…"* — so picking one
+  matters, and today we always take the primary. Part of the **M2 detail panel**, still unbuilt.
+
+#### Remove an installed model — owner decisions taken 2026-07-30
+
+The first code in this pack that would **destroy user data**. Decisions:
+**type-to-confirm** (a dialog naming the file, its size and its folder — not a yes/no, precisely so a
+mis-click cannot delete gigabytes) · buttons in **the ⓘ panel AND the search menu now**, the global
+browser when it is built · **all kinds**, not just LoRA (checkpoint, unet, vae, clip…).
+
+Not started; it was blocked on a concurrent builder holding `src/model_browser/`. Four things the
+brief must pin down:
+1. **The path guard is the entire security story.** A delete route turns a client-supplied name into
+   `os.remove`. It must reuse `kinds.py`'s folder whitelist and `local._is_path_under`'s
+   realpath-then-containment check — the same guards `resolve_model_path` applies — and must never
+   build a path any other way.
+2. **Sidecar and preview go with the model**, or the picker and ⓘ panel will keep describing a file
+   that no longer exists.
+3. **A LoRA row still pointing at the deleted file** must fall into the existing red missing-file
+   state, not vanish or throw. That path exists; delete just has to trigger the re-check.
+4. Size and folder in the confirm dialog — that is the whole reason type-to-confirm was chosen.
+
 The rest of this section is the original spec framing, still accurate for M2/M2b/M3:
 
 **→ [`lora-loader-design.md`](lora-loader-design.md) — read its §0 first.** It carries the status, a
