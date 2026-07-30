@@ -306,7 +306,7 @@ def _parse_search_item(item: Any) -> Optional[Dict[str, Any]]:
     stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
     creator = item.get("creator") if isinstance(item.get("creator"), dict) else {}
 
-    return {
+    result: Dict[str, Any] = {
         "model_id": model_id,
         "name": str(item.get("name") or ""),
         "type": str(item.get("type") or ""),
@@ -321,6 +321,27 @@ def _parse_search_item(item: Any) -> Optional[Dict[str, Any]]:
         "versions": versions,
     }
 
+    # Flatten the PRIMARY version's (`versions[0]` -- `versions` is never
+    # empty here, the "no usable version" case already returned `None`
+    # above) `base_model` onto the top level, so a search-result CARD can
+    # state a base model without a caller reaching into `versions` itself
+    # (the frontend's `resultSubtitle` reads exactly this key). A model CAN
+    # have versions on different base models, so this is deliberately a
+    # claim about the primary version only, NOT "the model's base model" --
+    # the per-version `base_model` above is untouched and stays the source
+    # of truth for any version other than the primary one (a future
+    # version-selector/detail view needs to be able to disagree with this
+    # card-level value without that being a bug). "Omit rather than invent"
+    # (docs/lora-loader-design.md §1a-vi): a primary version with no
+    # `baseModel` at all leaves this key ABSENT, never a placeholder like
+    # `"Unknown"` or an empty string -- `resultSubtitle`'s own comment
+    # already commits to "a Civitai result with no `base_model` genuinely
+    # has none".
+    primary_base_model = versions[0]["base_model"]
+    if primary_base_model:
+        result["base_model"] = primary_base_model
+    return result
+
 
 def parse_search_response(raw: Any) -> Dict[str, Any]:
     """A Civitai `/api/v1/models` search response -> `{"results": [...],
@@ -329,18 +350,23 @@ def parse_search_response(raw: Any) -> Dict[str, Any]:
     malformed/unexpected shape degrades to `{"results": [], "next_cursor":
     None}` rather than raising.
 
-    Each result: `{model_id, name, type, creator, tags, nsfw, stats:
-    {downloads, favorites, rating}, versions: [{version_id, name,
+    Each result: `{model_id, name, type, creator, tags, nsfw, base_model?,
+    stats: {downloads, favorites, rating}, versions: [{version_id, name,
     base_model, published_at, gated, files: [{name, size_kb, download_url,
     primary, sha256, gated}]}]}`. `versions` keeps EVERY version Civitai
     returned (a future version-selector/detail view needs all of them, not
     just the newest) -- a result with no usable version at all (every
     version failed to parse, or the list was empty/absent) is DROPPED
     entirely, since a search result nobody could ever download from isn't
-    useful. `installed`/`primary_*` convenience fields are NOT added here --
-    that requires touching local disk state (`download.destination_exists`)
-    and belongs to `api.py`'s `search_impl`, which is the impure layer;
-    this function stays offline-testable against recorded JSON alone.
+    useful. The top-level `base_model` is the PRIMARY version's (`versions
+    [0]`) value flattened up a level for the search-result card -- see
+    `_parse_search_item`'s own comment for why that's a distinct claim from
+    "the model's base model" and why the key is ABSENT (never `""` or a
+    placeholder) when the primary version has none. `installed`/`primary_*`
+    convenience fields are NOT added here -- that requires touching local
+    disk state (`download.destination_exists`) and belongs to `api.py`'s
+    `search_impl`, which is the impure layer; this function stays offline-
+    testable against recorded JSON alone.
     """
     if not isinstance(raw, dict):
         return {"results": [], "next_cursor": None}

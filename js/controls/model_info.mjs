@@ -26,13 +26,22 @@
  *   chips (candidates for the active source, ∪ custom words)
  *   [ add your own… ] [Add]
  *   ── <hr> ──
- *   ▾ AUTHOR'S NOTES                        [from Civitai pill]
- *   (collapsible)
+ *   ▾ MODEL DESCRIPTION                     [from Civitai pill]   (§7d-i)
+ *   (collapsible; rendered only when there's a model write-up)
+ *   ▾ VERSION DESCRIPTION                   [from Civitai pill]   (§7d-i)
+ *   (collapsible; rendered only when there's a version note)
+ *   (an honest "none"/"not looked up yet" line when NEITHER exists — §7d-i)
  *   ── footer ──
  *   [ Done ]   [ ↻ Civitai ]  (only when civitaiEnabled)
  *
- * Three sections, separated by rules (identity / triggers / notes) — see the
- * design doc's own reasoning for why that's real structure, not decoration.
+ * Three sections, separated by rules (identity / triggers / descriptions) —
+ * see the design doc's own reasoning for why that's real structure, not
+ * decoration. **The two descriptions (§7d-i, 2026-07-30) replaced a single
+ * merged "AUTHOR'S NOTES" block** that collapsed Civitai's two genuinely
+ * different pieces of prose into one heading — a LoRA whose only text was a
+ * one-line version changelog then read as "the author wrote nothing useful,"
+ * when the real write-up existed one endpoint away. See `descriptionsView`'s
+ * own doc comment for the exact per-field rules.
  *
  * ## The Civitai setting is READ BY THE CALLER, not by this file
  *
@@ -211,8 +220,9 @@ const CSS = `
   cursor: pointer; white-space: nowrap; background: transparent;
 }
 .wtn-mi-pill:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); color: var(--wtn-ink, ${TOKENS.ink}); }
-/* the AUTHOR'S NOTES pill states a source, it doesn't switch one -- static,
-   never interactive, so it must not borrow the source pill's hover/pointer. */
+/* each description section's pill states a source, it doesn't switch one --
+   static, never interactive, so it must not borrow the source pill's
+   hover/pointer. */
 .wtn-mi-pill.wtn-mi-pill-static { cursor: default; }
 .wtn-mi-pill.wtn-mi-pill-static:hover { border-color: var(--wtn-line-soft, ${TOKENS.lineSoft}); color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 
@@ -410,6 +420,61 @@ export function emptyStateMessage(source) {
   return source === "civitai"
     ? "No trigger words from Civitai for this version — add your own below."
     : "No trigger words in this file — add your own below, or try Civitai";
+}
+
+/**
+ * The two Civitai description sections (design doc §7d-i, owner report
+ * 2026-07-30): `model`/`version` are that section's own trimmed TEXT, or
+ * `null` when there is nothing to show — a caller renders NO heading at all
+ * for a `null` field ("render each only when it has content... never emit a
+ * heading for an empty one"). Never throws on garbage input.
+ *
+ * `emptyMessage` is set ONLY when BOTH are `null`, and is the one place the
+ * two fields are treated asymmetrically, matching the wire contract exactly:
+ *
+ *   - `version_description` needs no "checked" treatment at all — absent
+ *     always just means absent, so an empty `version` alone never produces
+ *     any message on its own (see the "only one present" case below).
+ *   - `model_description`'s absence is genuinely ambiguous without
+ *     `modelDescriptionChecked` (always present on any `found` result,
+ *     §7d-i): `true` means "we asked and there truly is none" (an honest
+ *     "none" line); anything else (`false`, or no record at all yet — which
+ *     is at least as unchecked as an explicit `false`) means a fetch that
+ *     COULD answer this hasn't happened, so the honest line is "not looked
+ *     up yet," never "no description" — that exact false claim is what
+ *     prompted this section's redesign (see this file's top doc comment).
+ *
+ * The "not looked up yet" wording points at the **existing** `↻ Civitai`
+ * footer button rather than inventing a second affordance, and only does so
+ * when `civitaiEnabled` — with the setting off that button doesn't render at
+ * all (§7b decision 20), so naming it would be a lie (a promised behaviour
+ * with nothing behind it).
+ *
+ * **"Only one present" never produces an empty-side message for the other**
+ * — a model with only a version note (or only a model write-up) shows just
+ * that one heading; the checked/unchecked distinction only ever surfaces
+ * when there is truly nothing else to show.
+ */
+export function descriptionsView({
+  modelDescription,
+  versionDescription,
+  modelDescriptionChecked,
+  civitaiEnabled = true,
+} = {}) {
+  const model = typeof modelDescription === "string" && modelDescription.trim() ? modelDescription.trim() : null;
+  const version = typeof versionDescription === "string" && versionDescription.trim() ? versionDescription.trim() : null;
+  if (model || version) {
+    return { model, version, emptyMessage: null };
+  }
+  let emptyMessage;
+  if (modelDescriptionChecked === true) {
+    emptyMessage = "This LoRA has no author's notes on Civitai.";
+  } else if (civitaiEnabled) {
+    emptyMessage = "Not looked up yet — use ↻ Civitai below to check.";
+  } else {
+    emptyMessage = "Author's notes haven't been checked yet — turn the Civitai setting on and re-check to see them.";
+  }
+  return { model: null, version: null, emptyMessage };
 }
 
 const OFFLINE_HEADLINES = {
@@ -612,7 +677,10 @@ export function openModelInfo({
   // never going anywhere near Civitai.
   let status = { phase: "idle" };
   let cancelled = false;
-  let notesOpen = true;
+  // Independent collapse state per description section (§7d-i) -- both
+  // default open, matching the single AUTHOR'S NOTES section's own default.
+  let modelNotesOpen = true;
+  let versionNotesOpen = true;
 
   function notify() {
     if (typeof onChange === "function") {
@@ -751,25 +819,12 @@ export function openModelInfo({
 
   panel.appendChild(el(doc, "hr", "wtn-mi-sep"));
 
-  // ---- author's notes (collapsible) ----------------------------------------
-  const notesHead = el(doc, "div", "wtn-mi-notes-head");
-  const notesCaret = el(doc, "span", "wtn-mi-notes-caret");
-  const notesLabel = el(doc, "span", "wtn-mi-seclabel");
-  notesLabel.textContent = "AUTHOR'S NOTES";
-  const notesPill = el(doc, "span", "wtn-mi-pill wtn-mi-pill-static");
-  notesPill.textContent = "from Civitai";
-  notesHead.appendChild(notesCaret);
-  notesHead.appendChild(notesLabel);
-  notesHead.appendChild(notesPill);
-  notesHead.addEventListener("click", (e) => {
-    e.stopPropagation();
-    notesOpen = !notesOpen;
-    renderNotes();
-  });
-  panel.appendChild(notesHead);
-
-  const notesBody = el(doc, "div", "wtn-mi-notes");
-  panel.appendChild(notesBody);
+  // ---- the two Civitai description sections (§7d-i) -------------------------
+  // A single dynamic host, rebuilt by `renderDescriptions()` on every change
+  // -- same "dynamic subtree, static shell" convention as `chipsHost`/
+  // `statusHost` above (this file's own doc comment).
+  const descHost = el(doc, "div");
+  panel.appendChild(descHost);
 
   panel.appendChild(el(doc, "hr", "wtn-mi-sep"));
 
@@ -1003,46 +1058,92 @@ export function openModelInfo({
   });
 
   /**
-   * A cached record (found via a normal OR cached-only lookup -- both
-   * populate `civitaiRecord` identically, see `applyFoundRecord`) shows its
-   * real notes regardless of `civitaiEnabled` (§7d: cached data still
-   * displays). The "turn Civitai on" line is shown ONLY when there is
-   * genuinely nothing cached yet AND the setting is off -- i.e. we
-   * actually don't know, not merely "the switch happens to be off right
-   * now".
-   *
-   * BUG 2 (2026-07-29 owner report): a LoRA that DID match on Civitai and
-   * genuinely HAS an author description used to show "No author's notes
-   * yet" regardless -- the root cause was Python reading only the per-
-   * VERSION `description` (`src/model_browser/civitai_parse.py`), never the
-   * MODEL's own write-up. That's fixed server-side now (`parse_model_version`
-   * prefers `model.description`, and `lookup.py`'s `_augment_with_model_
-   * description` fetches `/api/v1/models/{id}` once when neither is present
-   * and caches the result) -- so by the time `civitaiRecord` reflects a
-   * `found` result from a live-or-cached lookup that was actually ALLOWED to
-   * run the network step, a missing `description` here means "genuinely has
-   * none," not "haven't tried yet." The one case that's STILL "haven't tried
-   * yet" rather than "confirmed absent" is a cached record read with
-   * Civitai OFF (`cached_only`) -- the augmentation fetch is exactly the
-   * network step that setting disables, so this function says so instead
-   * of implying the LoRA has no notes.
+   * §7d-i (owner report, 2026-07-30): replaces the old single `renderNotes`
+   * -- which collapsed BOTH of Civitai's descriptions into one `description`
+   * key (a field the backend no longer even sends, `src/model_browser/
+   * civitai_parse.py`'s own doc comment) -- with two independent sections,
+   * each built via `buildDescSection` below and driven by the pure
+   * `descriptionsView` helper (its own doc comment has the full state
+   * table). A `found` result (live OR cached-only, `applyFoundRecord`) is
+   * what populates `civitaiRecord.model_description`/`version_description`/
+   * `model_description_checked` in the first place; with no `civitaiRecord`
+   * at all yet, `descriptionsView` treats that exactly like `checked:
+   * false` -- "not looked up yet" is at least as true when nothing has been
+   * found as when a found record explicitly says so.
    */
-  function renderNotes() {
-    notesCaret.textContent = notesOpen ? "▾" : "▸";
-    notesBody.style.display = notesOpen ? "" : "none";
-    notesBody.textContent = ""; // clear, then set via textContent below -- never innerHTML
-    const description = civitaiRecord && typeof civitaiRecord.description === "string" ? civitaiRecord.description.trim() : "";
-    if (description) {
-      notesBody.textContent = description;
+  function renderDescriptions() {
+    descHost.innerHTML = ""; // clear -- rebuild is the whole subtree, never a diff
+    const view = descriptionsView({
+      modelDescription: civitaiRecord ? civitaiRecord.model_description : undefined,
+      versionDescription: civitaiRecord ? civitaiRecord.version_description : undefined,
+      modelDescriptionChecked: civitaiRecord ? civitaiRecord.model_description_checked : undefined,
+      civitaiEnabled,
+    });
+    if (!view.model && !view.version) {
+      const empty = el(doc, "div", "wtn-mi-empty wtn-mi-desc-empty");
+      empty.textContent = view.emptyMessage; // honest "none"/"not looked up yet" -- see descriptionsView's own doc comment
+      descHost.appendChild(empty);
       return;
     }
-    if (!civitaiEnabled) {
-      notesBody.textContent = civitaiRecord
-        ? "Author's notes haven't been checked yet — turn the Civitai setting on and re-check to see them."
-        : "Author's notes come from Civitai — turn the Civitai setting on to see them (nothing is cached for this file yet).";
-      return;
+    if (view.model) {
+      const [head, body] = buildDescSection({
+        label: "MODEL DESCRIPTION",
+        text: view.model,
+        open: modelNotesOpen,
+        headClass: "wtn-mi-desc-model-head",
+        bodyClass: "wtn-mi-desc-model-body",
+        toggle: () => {
+          modelNotesOpen = !modelNotesOpen;
+          renderDescriptions();
+        },
+      });
+      descHost.appendChild(head);
+      descHost.appendChild(body);
     }
-    notesBody.textContent = "This LoRA has no author's notes on Civitai.";
+    if (view.version) {
+      const [head, body] = buildDescSection({
+        label: "VERSION DESCRIPTION",
+        text: view.version,
+        open: versionNotesOpen,
+        headClass: "wtn-mi-desc-version-head",
+        bodyClass: "wtn-mi-desc-version-body",
+        toggle: () => {
+          versionNotesOpen = !versionNotesOpen;
+          renderDescriptions();
+        },
+      });
+      descHost.appendChild(head);
+      descHost.appendChild(body);
+    }
+  }
+
+  /** One collapsible description section's head+body pair -- same DOM shape
+   * (and same `from Civitai` static pill, §1a-i item 3) the old single
+   * AUTHOR'S NOTES section used, just parameterised so `renderDescriptions`
+   * above can build either (or both) without duplicating the DOM wiring.
+   * `headClass`/`bodyClass` are extra, field-specific classes ADDED to the
+   * shared `wtn-mi-notes-head`/`wtn-mi-notes` ones -- so existing CSS still
+   * applies, and a test (or future caller) can still select one specific
+   * section without relying on DOM order. */
+  function buildDescSection({ label, text, open, toggle, headClass, bodyClass }) {
+    const head = el(doc, "div", `wtn-mi-notes-head wtn-mi-desc-head ${headClass}`);
+    const caret = el(doc, "span", "wtn-mi-notes-caret");
+    caret.textContent = open ? "▾" : "▸";
+    const lbl = el(doc, "span", "wtn-mi-seclabel");
+    lbl.textContent = label;
+    const pillEl = el(doc, "span", "wtn-mi-pill wtn-mi-pill-static");
+    pillEl.textContent = "from Civitai";
+    head.appendChild(caret);
+    head.appendChild(lbl);
+    head.appendChild(pillEl);
+    head.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggle();
+    });
+    const body = el(doc, "div", `wtn-mi-notes wtn-mi-desc-body ${bodyClass}`);
+    body.style.display = open ? "" : "none";
+    body.textContent = text; // Civitai-supplied text -- textContent only, never innerHTML (this file's top doc comment)
+    return [head, body];
   }
 
   function applyFoundRecord(data) {
@@ -1085,8 +1186,8 @@ export function openModelInfo({
    * explanation for a question that was never posed). It resolves to the
    * `unchecked` phase instead -- "not looked up yet", whose one action is
    * `↻ Civitai` -- mirroring the same "not checked yet" vs "confirmed
-   * absent" distinction this file's own `renderNotes` already draws for
-   * BUG 11's author's-notes wording.
+   * absent" distinction `descriptionsView` (§7d-i) already draws for the
+   * MODEL DESCRIPTION section's own wording.
    *
    * The `searching` phase is ONLY ever shown for a real, forced lookup now
    * -- there is nothing to "search" during a local cache read, so showing
@@ -1128,7 +1229,7 @@ export function openModelInfo({
         renderStatus();
         renderIdentity();
         renderTriggers();
-        renderNotes();
+        renderDescriptions();
         return;
       }
     } else {
@@ -1149,7 +1250,7 @@ export function openModelInfo({
     renderStatus();
     renderIdentity();
     renderTriggers();
-    renderNotes();
+    renderDescriptions();
   }
 
   async function runForget() {
@@ -1163,14 +1264,14 @@ export function openModelInfo({
     renderStatus();
     renderIdentity();
     renderTriggers();
-    renderNotes();
+    renderDescriptions();
   }
 
   // Initial paint.
   renderIdentity();
   renderStatus();
   renderTriggers();
-  renderNotes();
+  renderDescriptions();
 
   const handle = openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, panel, "right", () => {
     cancelled = true;

@@ -1685,6 +1685,63 @@ def test_parse_search_response_files_missing_name_or_url_are_dropped():
     assert [f["name"] for f in files] == ["good.safetensors"]
 
 
+def test_parse_search_response_flattens_primary_base_model_onto_the_result():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    assert result["base_model"] == "SDXL"
+    assert result["versions"][0]["base_model"] == "SDXL"  # per-version copy stays intact too
+
+
+def test_parse_search_response_no_base_model_on_primary_version_omits_the_key_absent_not_empty_string():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10,  # no `baseModel` key at all
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    # ABSENT, not `""` -- "omit rather than invent" (a Civitai result with
+    # no base model genuinely has none; a placeholder would be a lie).
+    assert "base_model" not in result
+    assert result["versions"][0]["base_model"] == ""  # the per-version field keeps its own (empty) convention
+
+
+def test_parse_search_response_multi_version_flattens_the_primary_ones_base_model_not_a_later_versions():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [
+                {
+                    "id": 10, "baseModel": "SDXL",
+                    "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+                },
+                {
+                    "id": 9, "baseModel": "SD 1.5",
+                    "files": [{"name": "b.safetensors", "downloadUrl": "https://civitai.com/b", "primary": True}],
+                },
+            ],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    # The primary version (`versions[0]`, Civitai's own ordering) wins at
+    # the top level -- NOT "the model's base model" in any aggregate sense.
+    assert result["base_model"] == "SDXL"
+    # Each version keeps its own individually-correct value underneath.
+    assert result["versions"][0]["base_model"] == "SDXL"
+    assert result["versions"][1]["base_model"] == "SD 1.5"
+
+
 def test_parse_search_response_malformed_shapes_never_raise():
     assert civitai_search.parse_search_response(None) == {"results": [], "next_cursor": None}
     assert civitai_search.parse_search_response("not-a-dict") == {"results": [], "next_cursor": None}
@@ -2818,6 +2875,9 @@ ALL_TESTS = [
     test_parse_search_response_typical_multi_item_shape,
     test_parse_search_response_early_access_marks_version_and_files_gated,
     test_parse_search_response_files_missing_name_or_url_are_dropped,
+    test_parse_search_response_flattens_primary_base_model_onto_the_result,
+    test_parse_search_response_no_base_model_on_primary_version_omits_the_key_absent_not_empty_string,
+    test_parse_search_response_multi_version_flattens_the_primary_ones_base_model_not_a_later_versions,
     test_parse_search_response_malformed_shapes_never_raise,
     test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first,
     test_sanitize_filename_accepts_normal_names,

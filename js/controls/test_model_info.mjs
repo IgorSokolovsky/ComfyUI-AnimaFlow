@@ -1,11 +1,12 @@
 /**
  * test_model_info.mjs — regression tests for `model_info.mjs`: the pure
  * helpers (`civitaiModelUrl`, `visibleChips`, `emptyStateMessage`,
- * `lookupStateView`'s four Civitai lookup states) PLUS a DOM-level
- * integration test of `openModelInfo` itself, via a minimal stub DOM
- * mirroring `test_model_picker.mjs`'s own `makeDocStub` (that file's top doc
- * comment explains why each track keeps its own copy rather than sharing
- * one). Plain `node js/controls/test_model_info.mjs`.
+ * `lookupStateView`'s four Civitai lookup states, `descriptionsView`'s two
+ * labelled Civitai descriptions -- §7d-i) PLUS a DOM-level integration test
+ * of `openModelInfo` itself, via a minimal stub DOM mirroring
+ * `test_model_picker.mjs`'s own `makeDocStub` (that file's top doc comment
+ * explains why each track keeps its own copy rather than sharing one).
+ * Plain `node js/controls/test_model_info.mjs`.
  */
 
 import assert from "node:assert/strict";
@@ -15,6 +16,7 @@ import {
   visibleChips,
   emptyStateMessage,
   lookupStateView,
+  descriptionsView,
   openModelInfo,
 } from "./model_info.mjs";
 import { invalidateInfo } from "./civitai_api.mjs";
@@ -133,6 +135,78 @@ test("emptyStateMessage: exact file-empty wording from the design doc", () => {
 test("emptyStateMessage: a distinct, honest line for the civitai-empty case", () => {
   assert.notEqual(emptyStateMessage("civitai"), emptyStateMessage("file"));
   assert.match(emptyStateMessage("civitai"), /civitai/i);
+});
+
+// =========================================================================
+// descriptionsView -- the two labelled Civitai descriptions (§7d-i, owner
+// report 2026-07-30). Render each only when it has content; distinguish
+// "absent" from "not yet checked" for `model_description` ONLY --
+// `version_description` never needs that treatment.
+// =========================================================================
+
+test("descriptionsView: BOTH present -- two independent sections, no empty message", () => {
+  const view = descriptionsView({
+    modelDescription: "The full write-up.",
+    versionDescription: "Trained on preview3.",
+    modelDescriptionChecked: true,
+    civitaiEnabled: true,
+  });
+  assert.equal(view.model, "The full write-up.");
+  assert.equal(view.version, "Trained on preview3.");
+  assert.equal(view.emptyMessage, null);
+});
+
+test("descriptionsView: only VERSION present -- MODEL renders nothing, no empty message either (never invents a heading for the other)", () => {
+  const view = descriptionsView({
+    modelDescription: undefined,
+    versionDescription: "Trained on preview3.",
+    modelDescriptionChecked: false, // even unchecked -- the other field having content wins, no separate empty state
+    civitaiEnabled: true,
+  });
+  assert.equal(view.model, null);
+  assert.equal(view.version, "Trained on preview3.");
+  assert.equal(view.emptyMessage, null);
+});
+
+test("descriptionsView: only MODEL present -- VERSION renders nothing", () => {
+  const view = descriptionsView({ modelDescription: "The full write-up.", versionDescription: "", modelDescriptionChecked: true });
+  assert.equal(view.model, "The full write-up.");
+  assert.equal(view.version, null);
+  assert.equal(view.emptyMessage, null);
+});
+
+test("descriptionsView: NEITHER present, modelDescriptionChecked TRUE -- an honest 'none' state, not a promise of anything", () => {
+  const view = descriptionsView({ modelDescriptionChecked: true, civitaiEnabled: true });
+  assert.equal(view.model, null);
+  assert.equal(view.version, null);
+  assert.equal(view.emptyMessage, "This LoRA has no author's notes on Civitai.");
+});
+
+test("descriptionsView: NEITHER present, modelDescriptionChecked FALSE, Civitai ON -- 'not looked up yet', names the EXISTING ↻ Civitai action, never claims absence", () => {
+  const view = descriptionsView({ modelDescriptionChecked: false, civitaiEnabled: true });
+  assert.match(view.emptyMessage, /not looked up yet/i);
+  assert.match(view.emptyMessage, /↻ Civitai/);
+  assert.doesNotMatch(view.emptyMessage, /no author's notes|has no description/i);
+});
+
+test("descriptionsView: NEITHER present, no record at all (modelDescriptionChecked undefined) -- treated the SAME as an explicit false, never as confirmed-none", () => {
+  const view = descriptionsView({ civitaiEnabled: true });
+  assert.match(view.emptyMessage, /not looked up yet/i);
+});
+
+test("descriptionsView: NEITHER present, unchecked, Civitai OFF -- never names the ↻ Civitai button (it doesn't render then)", () => {
+  const view = descriptionsView({ modelDescriptionChecked: false, civitaiEnabled: false });
+  assert.doesNotMatch(view.emptyMessage, /↻ Civitai/, "the footer button this would point at is hidden with the setting off");
+  assert.match(view.emptyMessage, /turn the Civitai setting on/);
+});
+
+test("descriptionsView: garbage/whitespace-only input degrades safely, never throws", () => {
+  assert.doesNotThrow(() => descriptionsView());
+  const view = descriptionsView({ modelDescription: "   ", versionDescription: 42, modelDescriptionChecked: "yes" });
+  assert.equal(view.model, null);
+  assert.equal(view.version, null);
+  // `modelDescriptionChecked: "yes"` is not the literal boolean `true` -- must not be treated as confirmed-checked.
+  assert.match(view.emptyMessage, /not looked up yet/i);
 });
 
 // =========================================================================
@@ -384,7 +458,9 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
           base_model: "SDXL",
           triggers: ["detailed skin"],
           tags: ["character"],
-          description: "Works best at 0.6-0.8.",
+          model_description: "The full write-up.",
+          version_description: "Works best at 0.6-0.8.",
+          model_description_checked: true,
           model_id: 111,
           version_id: 222,
         },
@@ -437,8 +513,17 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
     // The title upgrades to Civitai's own display name once found.
     assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Skin Detail XL");
 
-    const notes = findAll(handle.overlay, "wtn-mi-notes")[0];
-    assert.equal(notes.textContent, "Works best at 0.6-0.8.");
+    // §7d-i: TWO labelled sections, never merged -- each field's own text
+    // under its OWN heading.
+    const modelHead = findAll(handle.overlay, "wtn-mi-desc-model-head")[0];
+    assert.equal(modelHead.children[1].textContent, "MODEL DESCRIPTION");
+    const modelBody = findAll(handle.overlay, "wtn-mi-desc-model-body")[0];
+    assert.equal(modelBody.textContent, "The full write-up.");
+    const versionHead = findAll(handle.overlay, "wtn-mi-desc-version-head")[0];
+    assert.equal(versionHead.children[1].textContent, "VERSION DESCRIPTION");
+    const versionBody = findAll(handle.overlay, "wtn-mi-desc-version-body")[0];
+    assert.equal(versionBody.textContent, "Works best at 0.6-0.8.");
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-empty").length, 0, "both present -- no empty state");
 
     // Toggle a chip -- selection change reaches the caller via onChange.
     chips = findAll(handle.overlay, "wtn-mi-chip");
@@ -446,6 +531,50 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
     assert.ok(lastSelected.includes("file-word-b"));
     assert.ok(lastSelected.includes("file-word-a"));
     assert.deepEqual(lastCustom, []);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: BOTH descriptions containing raw HTML / a literal '<lora:name:0.8>' reach the DOM as TEXT, never interpreted as markup", async () => {
+  const kind = "loras";
+  const name = "info-dom-untrusted-html.safetensors";
+  invalidateInfo(kind, name);
+  const modelText = "<script>alert(1)</script> Use <lora:name:0.8> for best results. <b>bold</b> not rendered.";
+  const versionText = "Trained with <lora:other:1.0> baked in -- <i>not</i> a tag.";
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: {
+        model_description: modelText,
+        version_description: versionText,
+        model_description_checked: true,
+      },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    // Exact string, unaltered -- if the implementation had used `innerHTML`
+    // instead of `textContent`, this stub's `innerHTML` setter wipes
+    // `children` without ever touching `textContent`, so the assertion below
+    // would fail rather than silently pass (same proxy-check convention this
+    // file already uses for custom trigger-word chip labels).
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-model-body")[0].textContent, modelText);
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-version-body")[0].textContent, versionText);
 
     handle.close();
   } finally {
@@ -1083,7 +1212,8 @@ await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- 
         data: {
           name: "Cached Display Name",
           triggers: ["cached civitai word"],
-          description: "Cached author notes.",
+          model_description: "Cached author notes.",
+          model_description_checked: true,
           model_id: 1,
           version_id: 2,
         },
@@ -1107,7 +1237,8 @@ await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- 
     assert.equal(lastBody.cached_only, true);
     // Cached data displays...
     assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Cached Display Name");
-    assert.equal(findAll(handle.overlay, "wtn-mi-notes")[0].textContent, "Cached author notes.");
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-model-body")[0].textContent, "Cached author notes.");
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-version-body").length, 0, "no version note in this fixture -- no heading for it");
     // ...but the "way out" and any LIVE-lookup affordance stay hidden regardless.
     assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 0);
     assert.equal(findAll(handle.overlay, "wtn-mi-status").length, 0);
@@ -1120,14 +1251,16 @@ await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- 
   }
 });
 
-await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when genuinely nothing is cached yet -- never merely because the setting is off", async () => {
+await asyncTest("openModelInfo: descriptions' 'turn Civitai on' message shows ONLY when genuinely nothing is cached yet -- never merely because the setting is off", async () => {
   const kind = "loras";
   const nameNoCache = "info-notes-no-cache.safetensors";
   const nameCachedNoDesc = "info-notes-cached-no-desc.safetensors";
   invalidateInfo(kind, nameNoCache);
   invalidateInfo(kind, nameCachedNoDesc);
 
-  // Case 1: off, and the cache genuinely misses.
+  // Case 1: off, and the cache genuinely misses -- no civitaiRecord at all,
+  // so `descriptionsView` treats it exactly like `modelDescriptionChecked:
+  // false` (its own doc comment).
   globalThis.fetch = async () => ({ json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) });
   try {
     const doc = makeDocStub();
@@ -1139,23 +1272,32 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
       civitaiEnabled: false,
     });
     await settle();
-    assert.match(findAll(handle.overlay, "wtn-mi-notes")[0].textContent, /turn the Civitai setting on/);
+    assert.equal(findAll(handle.overlay, "wtn-mi-desc-model-head").length, 0, "no confirmed heading -- nothing was ever found");
+    assert.match(findAll(handle.overlay, "wtn-mi-desc-empty")[0].textContent, /turn the Civitai setting on/);
     handle.close();
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, nameNoCache);
   }
 
-  // Case 2: off, but SOMETHING is cached (just no description in it) -- BUG 2
-  // (2026-07-29 owner report): this must read as "haven't been checked yet",
-  // NOT "this LoRA has no notes" -- with Civitai off, `lookup.py`'s
+  // Case 2: off, but SOMETHING is cached (just no description in it,
+  // `model_description_checked: false` -- BUG 2/§7d-i, 2026-07-29/30 owner
+  // reports): this must read as "haven't been checked yet", NOT "this LoRA
+  // has no notes" -- with Civitai off, `lookup.py`'s
   // `_augment_with_model_description` model-id fallback (the thing that
   // actually supplies the model's own description most of the time, since
   // the by-hash endpoint's embedded `model` object almost never carries one)
-  // is exactly the network step this setting disables, so "we already know"
-  // would be false: turning it on and re-checking genuinely COULD reveal one.
+  // is exactly the network step this setting disables, so `checked: false`
+  // is the literal, honest wire value here -- turning it on and re-checking
+  // genuinely COULD reveal one.
   globalThis.fetch = async () => ({
-    json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X" }, source: "sidecar" }),
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "X", model_description_checked: false },
+      source: "sidecar",
+    }),
   });
   try {
     const doc = makeDocStub();
@@ -1167,9 +1309,9 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
       civitaiEnabled: false,
     });
     await settle();
-    const notesText = findAll(handle.overlay, "wtn-mi-notes")[0].textContent;
-    assert.match(notesText, /haven't been checked yet/);
-    assert.match(notesText, /turn the Civitai setting on/);
+    const emptyText = findAll(handle.overlay, "wtn-mi-desc-empty")[0].textContent;
+    assert.match(emptyText, /haven't been checked yet/);
+    assert.match(emptyText, /turn the Civitai setting on/);
     handle.close();
   } finally {
     globalThis.fetch = _origFetch;
@@ -1177,12 +1319,17 @@ await asyncTest("openModelInfo: notes' 'turn Civitai on' message shows ONLY when
   }
 });
 
-await asyncTest("openModelInfo: found + Civitai ON + genuinely no description -- confirmed-absent wording, not 'haven't fetched yet'", async () => {
+await asyncTest("openModelInfo: neither description, Civitai ENABLED, not yet checked -- points at the EXISTING ↻ Civitai footer button, never claims 'no description'", async () => {
   const kind = "loras";
-  const name = "info-notes-confirmed-empty.safetensors";
+  const name = "info-notes-unchecked-enabled.safetensors";
   invalidateInfo(kind, name);
   globalThis.fetch = async () => ({
-    json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X" } }),
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "X", model_description_checked: false },
+    }),
   });
   try {
     const doc = makeDocStub();
@@ -1194,9 +1341,41 @@ await asyncTest("openModelInfo: found + Civitai ON + genuinely no description --
       civitaiEnabled: true,
     });
     await settle();
-    const notesText = findAll(handle.overlay, "wtn-mi-notes")[0].textContent;
+    const emptyText = findAll(handle.overlay, "wtn-mi-desc-empty")[0].textContent;
+    assert.match(emptyText, /Not looked up yet/);
+    assert.match(emptyText, /↻ Civitai/, "points at the EXISTING footer button rather than inventing a new one");
+    assert.doesNotMatch(emptyText, /no author's notes/i, "must never claim absence when we simply haven't asked");
+    // The footer button it names really does exist (Pattern 1b: an empty
+    // state that promises behaviour is a spec).
+    assert.equal(findAll(handle.overlay, "wtn-mi-refetch").length, 1);
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: found + Civitai ON + genuinely no description -- confirmed-absent wording, not 'haven't fetched yet'", async () => {
+  const kind = "loras";
+  const name = "info-notes-confirmed-empty.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X", model_description_checked: true } }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    const notesText = findAll(handle.overlay, "wtn-mi-desc-empty")[0].textContent;
     assert.match(notesText, /has no author's notes on Civitai/);
     assert.doesNotMatch(notesText, /haven't been checked/);
+    assert.doesNotMatch(notesText, /not looked up yet/i);
     handle.close();
   } finally {
     globalThis.fetch = _origFetch;
