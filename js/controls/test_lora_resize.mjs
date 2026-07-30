@@ -1857,18 +1857,15 @@ test("BUG 1 audit: the settings dialog no longer renders internal design-doc rea
   assert.doesNotMatch(wholeText, /Dropped from upstream/);
 });
 
-// -- BUG 6: the 🔍 Browse Civitai button is VISIBLY disabled, not silently
-// inert-looking -------------------------------------------------------------
+// -- M2 (docs/lora-loader-design.md §7c): the 🔍 Browse Civitai button is
+// LIVE now -- BUG 6's old "visibly disabled" treatment is retired
+// (`lora_interaction.mjs`'s `wireHeader` wires a real click handler). -------
 
-test("BUG 6: the header's search/browse button is rendered visibly disabled with an explanatory title", () => {
+test("M2: the header's search/browse button is no longer rendered disabled", () => {
   const doc = makeDocStub();
   const refs = buildRoot(doc);
-  assert.ok(refs.searchBtn.classList.contains("wtn-lora-icon-disabled"), "must carry the disabled-look class");
-  assert.match(refs.searchBtn.title, /arrives with search/i);
-
-  injectStyles(doc);
-  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
-  assert.match(css, /\.wtn-lora-icon\.wtn-lora-icon-disabled\s*\{[^}]*cursor:\s*default/);
+  assert.ok(!refs.searchBtn.classList.contains("wtn-lora-icon-disabled"), "the 🔍 must not carry the retired disabled-look class any more");
+  assert.equal(refs.searchBtn.title, "Browse Civitai");
 });
 
 // -- BUG 19 (2026-07-29 owner report): the ⚙ is the pack's plain glyph, not a

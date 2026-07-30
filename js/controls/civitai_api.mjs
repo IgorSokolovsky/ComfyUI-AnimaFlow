@@ -9,13 +9,23 @@
  *
  * ## Layering — the ONE thing a later slice must not violate
  *
- * This file, `model_picker.mjs`, and (Slice 4) `model_info.mjs` are what
- * `AnimaLoaderPanel` will import at M3 (the plan's whole reuse boundary,
- * `docs/lora-loader-design.md` build-plan §"Architecture"). **None of the
- * three may ever import a `lora_*` module** — that's the layering guard in
- * `test_model_picker.mjs` (precedent: `js/shared/test_field_logic.mjs`'s own
- * guard for `js/shared/` vs a track). This file has zero imports at all
- * beyond the standard library, so it trivially satisfies that from day one.
+ * This file, `model_picker.mjs`, `model_info.mjs`, and (M2)
+ * `civitai_search.mjs` are what `AnimaLoaderPanel` will import at M3 (the
+ * plan's whole reuse boundary, `docs/lora-loader-design.md` build-plan
+ * §"Architecture"). **None of the four may ever import a `lora_*` module** —
+ * that's the layering guard in `test_model_picker.mjs` (precedent:
+ * `js/shared/test_field_logic.mjs`'s own guard for `js/shared/` vs a track).
+ * This file has zero imports at all beyond the standard library, so it
+ * trivially satisfies that from day one.
+ *
+ * ## M2 adds the search + download client (docs/lora-loader-design.md §9)
+ *
+ * `searchModels`/`startDownload`/`downloadProgress`/`cancelDownload` (near
+ * the bottom of this file) are the client side of the four M2 routes
+ * (`src/model_browser/api.py`'s own `search`/`download/start`/
+ * `download/progress`/`download/cancel`). Consumed by
+ * `js/controls/civitai_search.mjs`, never by a `lora_*` module directly (same
+ * layering rule as everything else in this file).
  *
  * ## Slice 4 wires the REMOTE half too
  *
@@ -72,6 +82,10 @@ const LIST_URL = "/wtn/model_browser/list";
 const THUMB_URL = "/wtn/model_browser/thumb";
 const LOOKUP_URL = "/wtn/model_browser/lookup";
 const FORGET_URL = "/wtn/model_browser/forget";
+const SEARCH_URL = "/wtn/model_browser/search";
+const DOWNLOAD_START_URL = "/wtn/model_browser/download/start";
+const DOWNLOAD_PROGRESS_URL = "/wtn/model_browser/download/progress";
+const DOWNLOAD_CANCEL_URL = "/wtn/model_browser/download/cancel";
 
 // ---------------------------------------------------------------------------
 // Local file list -- per kind. `null`/absent-from-the-map means "never
@@ -347,4 +361,153 @@ export function thumbUrl(kind, name) {
     return null;
   }
   return `${THUMB_URL}?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
+}
+
+// ---------------------------------------------------------------------------
+// M2 -- Civitai search + the streamed download queue (docs/lora-loader-
+// design.md §9, `js/controls/civitai_search.mjs`'s own caller). Same
+// never-throw discipline as `lookupInfo`/`forgetInfo` above: every function
+// here ALWAYS resolves to the route's own `{reason, ...}` shape, degrading to
+// a well-shaped `offline`/`unknown_job` response for anything that goes
+// wrong on the way there (an unreachable dev server, a response that isn't
+// even JSON) -- `civitai_search.mjs` has exactly one shape to branch on
+// regardless of which hop actually failed, same reasoning as `lookupInfo`'s
+// own doc comment.
+// ---------------------------------------------------------------------------
+
+/** `GET /wtn/model_browser/search` (docs/lora-loader-design.md §7c-i's full
+ * filter set: base model / sort / period / NSFW, plus a free-text `query`
+ * and pagination `cursor`). Always resolves to `{reason, message, results,
+ * next_cursor, public_only}` -- `reason` is one of `invalid_kind`/
+ * `rate_limited`/`offline`/`ok` from the route itself, or this function's own
+ * `offline` degrade for a transport failure (never reaches the server at
+ * all, or the reply isn't JSON with a usable `reason`). No client-side
+ * caching here -- unlike `listModels`, a search result depends on the query
+ * string, so there is nothing sensible to key a cache by that wouldn't just
+ * be "the whole query string," which buys nothing over re-fetching. */
+export async function searchModels(kind, { query = "", baseModel = "", sort = "", period = "", nsfw = false, cursor = "", limit } = {}) {
+  if (!kind) {
+    return { reason: "invalid_kind", message: "No model kind.", results: [], next_cursor: null, public_only: true };
+  }
+  const params = new URLSearchParams({ kind });
+  if (query) {
+    params.set("query", query);
+  }
+  if (baseModel) {
+    params.set("base_model", baseModel);
+  }
+  if (sort) {
+    params.set("sort", sort);
+  }
+  if (period) {
+    params.set("period", period);
+  }
+  if (nsfw) {
+    params.set("nsfw", "true");
+  }
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  if (limit) {
+    params.set("limit", String(limit));
+  }
+  try {
+    const r = await fetch(`${SEARCH_URL}?${params.toString()}`, { cache: "no-store" });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return {
+      reason: "offline",
+      message: "The search route sent an unreadable reply.",
+      results: [], next_cursor: null, public_only: true,
+    };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the search route (${err && err.message ? err.message : err}).`,
+      results: [], next_cursor: null, public_only: true,
+    };
+  }
+}
+
+/** `POST /wtn/model_browser/download/start` -- kicks off a server-side
+ * streamed download (docs/lora-loader-design.md §9: "downloads are
+ * server-side Python... this pack's frontend cannot write to `models/`
+ * itself"). Always resolves to `{reason, message, job_id}` -- `reason` is one
+ * of `invalid_kind`/`invalid_destination`/`already_installed`/`invalid_url`/
+ * `too_large`/`busy`/`started` from the route itself, or this function's own
+ * `offline` degrade for a transport failure. `job_id` is set ONLY when
+ * `reason === "started"`; poll it via `downloadProgress` below. */
+export async function startDownload({ kind, subfolder = "", filename, downloadUrl, sizeKb } = {}) {
+  if (!kind || !filename || !downloadUrl) {
+    return { reason: "invalid_destination", message: "Missing required download fields.", job_id: null };
+  }
+  try {
+    const r = await fetch(DOWNLOAD_START_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, subfolder, filename, download_url: downloadUrl, size_kb: sizeKb }),
+    });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return { reason: "offline", message: "The download route sent an unreadable reply.", job_id: null };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the download route (${err && err.message ? err.message : err}).`,
+      job_id: null,
+    };
+  }
+}
+
+/** `GET /wtn/model_browser/download/progress?job_id=` -- a thin poll.
+ * Always resolves to `{reason, status, bytes, total, message}` (`reason` is
+ * `"ok"`/`"unknown_job"` from the route, or this function's own `offline`
+ * degrade for a transport failure) -- `status` is only meaningful when
+ * `reason === "ok"`: `"downloading"`/`"cancelling"` (still running),
+ * `"ok"`/`"cancelled"`/`"too_large"`/`"key_required"`/`"write_error"`/
+ * `"offline"` (terminal). */
+export async function downloadProgress(jobId) {
+  if (!jobId) {
+    return { reason: "unknown_job", message: "No job id.", status: null, bytes: 0, total: null };
+  }
+  try {
+    const r = await fetch(`${DOWNLOAD_PROGRESS_URL}?job_id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return { reason: "offline", message: "The progress route sent an unreadable reply.", status: null, bytes: 0, total: null };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the progress route (${err && err.message ? err.message : err}).`,
+      status: null, bytes: 0, total: null,
+    };
+  }
+}
+
+/** `POST /wtn/model_browser/download/cancel` -- always resolves to
+ * `{reason, message}` (`"cancelling"`/`"unknown_job"` from the route, or this
+ * function's own `offline` degrade). Cancellation is cooperative -- the next
+ * `downloadProgress` poll is what actually observes the job reaching
+ * `"cancelled"`, this call only requests it. */
+export async function cancelDownload(jobId) {
+  if (!jobId) {
+    return { reason: "unknown_job", message: "No job id." };
+  }
+  try {
+    const r = await fetch(DOWNLOAD_CANCEL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId }),
+    });
+    const j = await r.json();
+    return j && typeof j === "object" ? j : { reason: "offline", message: "" };
+  } catch (err) {
+    return { reason: "offline", message: `Could not reach the cancel route (${err && err.message ? err.message : err}).` };
+  }
 }

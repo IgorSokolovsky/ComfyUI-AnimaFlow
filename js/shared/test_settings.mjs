@@ -11,6 +11,9 @@ import {
   SETTING_IDS,
   SETTING_DEFAULTS,
   ANIMAFLOW_SETTINGS,
+  CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
+  CIVITAI_SEARCH_SORT_OPTIONS,
+  CIVITAI_SEARCH_PERIOD_OPTIONS,
   registerAnimaFlowSettings,
   _resetRegistrationForTests,
   getSetting,
@@ -32,16 +35,16 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — ten settings (seven from the original task brief, plus
-// `CIVITAI_ENABLED` — docs/lora-loader-design.md §7b decision 20/§7d, Slice 4
-// — plus `HIDE_FILE_EXTENSION`/`SHOW_PREVIEW_THUMBNAILS`, Slice 5, the two
-// user-wide halves of the LoRA Loader's own ⚙ dialog per §7b's ownership
-// split), all under the AnimaFlow category, ids in the documented namespace,
-// every one with a tooltip and a default matching the table.
+// Declaration shape — fifteen settings (the original ten, documented below,
+// plus M2's five: docs/lora-loader-design.md §8's `CIVITAI_API_KEY` and
+// §7c-i's four remembered search filters, `CIVITAI_SEARCH_BASE_MODEL`/
+// `_SORT`/`_PERIOD`/`_NSFW`), all under the AnimaFlow category, ids in the
+// documented namespace, every one with a tooltip and a default matching the
+// table. Re-count rather than trusting this number — it only ever grows.
 // ---------------------------------------------------------------------------
 
-test("ANIMAFLOW_SETTINGS declares exactly the ten documented settings", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 10);
+test("ANIMAFLOW_SETTINGS declares exactly the fifteen documented settings", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 15);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   assert.deepEqual(ids, Object.values(SETTING_IDS).sort());
 });
@@ -96,6 +99,46 @@ test("the console-logging setting is a combo of exactly off/summary/debug, defau
   assert.equal(setting.type, "combo");
   assert.deepEqual(setting.options, ["off", "summary", "debug"]);
   assert.equal(setting.defaultValue, "off");
+});
+
+// ---------------------------------------------------------------------------
+// M2 (docs/lora-loader-design.md §7c/§8) -- the Civitai API key + the four
+// remembered search filters.
+// ---------------------------------------------------------------------------
+
+test("CIVITAI_API_KEY: id matches src/model_browser/keys.py's SETTING_ID verbatim -- it is NOT this file's to choose", () => {
+  // This id string is read server-side by `src/model_browser/keys.py`
+  // (`SETTING_ID = "AnimaFlow.Controls.CivitaiApiKey"`), wired ahead of this
+  // frontend slice specifically so the read path works the instant this id
+  // exists. A rename here would silently break that resolution with no
+  // error on either side.
+  assert.equal(SETTING_IDS.CIVITAI_API_KEY, "AnimaFlow.Controls.CivitaiApiKey");
+  const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_API_KEY);
+  assert.equal(setting.type, "text");
+  assert.equal(setting.defaultValue, "");
+});
+
+test("the four search-filter settings are combos/boolean matching civitai_search.mjs's own option lists, NSFW defaults off", () => {
+  const baseModel = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL);
+  assert.equal(baseModel.type, "combo");
+  assert.deepEqual(baseModel.options, CIVITAI_SEARCH_BASE_MODEL_OPTIONS);
+  assert.equal(baseModel.defaultValue, "");
+
+  const sort = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_SORT);
+  assert.equal(sort.type, "combo");
+  assert.deepEqual(sort.options, CIVITAI_SEARCH_SORT_OPTIONS);
+  // Matches src/model_browser/civitai_search.py's own DEFAULT_SORT verbatim.
+  assert.equal(sort.defaultValue, "Highest Rated");
+
+  const period = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_PERIOD);
+  assert.equal(period.type, "combo");
+  assert.deepEqual(period.options, CIVITAI_SEARCH_PERIOD_OPTIONS);
+  // Matches src/model_browser/civitai_search.py's own DEFAULT_PERIOD verbatim.
+  assert.equal(period.defaultValue, "AllTime");
+
+  const nsfw = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW);
+  assert.equal(nsfw.type, "boolean");
+  assert.equal(nsfw.defaultValue, false, "NSFW ships OFF (owner decision, §7c-i)");
 });
 
 // ---------------------------------------------------------------------------

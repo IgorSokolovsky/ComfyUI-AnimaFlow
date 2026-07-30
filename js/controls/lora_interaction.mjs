@@ -116,6 +116,9 @@ import { openModelPicker } from "./model_picker.mjs";
 // `model_info.mjs` is the third file in that same reuse boundary (its own
 // top doc comment) -- the ⓘ panel Slice 4 wires live below (`openInfoPanelFor`).
 import { openModelInfo } from "./model_info.mjs";
+// `civitai_search.mjs` is M2's own addition to that same reuse boundary (its
+// own top doc comment) -- the header's 🔍 wires it below (`wireHeader`).
+import { openCivitaiSearch } from "./civitai_search.mjs";
 import {
   openOverlayWithZoom,
   closeActiveOverlay,
@@ -959,10 +962,17 @@ function wireHeader(node, ctx, refs) {
     e.stopPropagation();
     openLoraSettings(node, ctx, refs.settingsBtn);
   });
-  // `refs.searchBtn` deliberately gets no listener -- it renders as a
-  // placeholder until Slice 3's picker/browser milestone (M2, `docs/
-  // lora-loader-design.md`); its VISIBILITY is already wired (`syncRows`,
-  // below), which is all §7b decision 20 asks of Slice 5.
+  // M2 (docs/lora-loader-design.md §7c): the header's 🔍 opens the Civitai
+  // search panel, kind-LOCKED to `"loras"` (this node-embedded surface is a
+  // picker, never a browser of another kind -- §7c). Its VISIBILITY (not
+  // this listener) is what §7b decision 20 actually gates -- `syncRows`
+  // hides the whole button when the Civitai setting is off, so this handler
+  // never fires from a hidden control, but it deliberately does not
+  // re-check the setting itself: a hidden button has no way to be clicked.
+  refs.searchBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openCivitaiSearch({ ctx, anchorEl: refs.searchBtn, kind: "loras", ownerKey: `lora-civitai-search:${node.id != null ? node.id : ""}` });
+  });
 }
 
 // ---------------------------------------------------------------------------

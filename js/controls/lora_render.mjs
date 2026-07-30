@@ -449,10 +449,12 @@ const CSS = `
   mask-image: url("${SEARCH_ICON_SVG}"); -webkit-mask-image: url("${SEARCH_ICON_SVG}");
 }
 .wtn-lora-icon.wtn-lora-search:hover { background-color: var(--wtn-accent, ${TOKENS.accent}); }
-/* BUG 6 (2026-07-29 owner report): Civitai search/browse is M2, unbuilt --
-   render this button VISIBLY disabled rather than a normal-looking control
-   that silently does nothing on click. 'cursor: default' and a dimmed fill
-   (no hover accent at all). Search-only -- ⚙ never carries this class. */
+/* Retired by M2 (docs/lora-loader-design.md §7c): BUG 6 (2026-07-29 owner
+   report) used to render the 🔍 VISIBLY disabled via this class, because
+   search/browse was unbuilt. It's live now (lora_interaction.mjs's
+   wireHeader opens civitai_search.mjs on click) -- kept, unused, only in
+   case a future "temporarily inert" affordance wants the same look; no
+   element in this file carries it any more. */
 .wtn-lora-icon.wtn-lora-icon-disabled { cursor: default; opacity: .45; }
 .wtn-lora-icon.wtn-lora-icon-disabled:hover { background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 
@@ -786,13 +788,16 @@ export function buildRoot(doc) {
   const master = el(doc, "div", "wtn-lora-switch wtn-lora-master");
   master.title = "Turn every LoRA on or off";
   const count = el(doc, "span", "wtn-lora-count");
-  const searchBtn = el(doc, "span", "wtn-lora-icon wtn-lora-search wtn-lora-icon-disabled");
   // BUG 6 (2026-07-29 owner report): "civitai icon button doesnt open" --
-  // it's inert by design (search is M2, unbuilt), but a normal-looking
-  // button that silently does nothing is a bug in its own right. Visibly
-  // disabled (see this file's own CSS) + a title that says why, rather than
-  // presenting it as live.
-  searchBtn.title = "Browse Civitai — arrives with search, not built yet";
+  // it WAS inert by design pre-M2 (visibly disabled via the now-removed
+  // `wtn-lora-icon-disabled` class). M2 (docs/lora-loader-design.md §7c)
+  // makes it live: `lora_interaction.mjs`'s `wireHeader` opens
+  // `civitai_search.mjs`'s search panel on click. Its VISIBILITY (not its
+  // enabled-ness) is still governed by the Civitai setting -- `syncRows`
+  // hides it entirely when that setting is off (§7b decision 20), same as
+  // before.
+  const searchBtn = el(doc, "span", "wtn-lora-icon wtn-lora-search");
+  searchBtn.title = "Browse Civitai";
   const settingsBtn = el(doc, "span", "wtn-lora-icon wtn-lora-gear");
   // BUG 19 (2026-07-29 owner report): the pack's own plain '⚙' glyph, not a
   // second hand-rolled mask SVG -- see this file's top doc comment.

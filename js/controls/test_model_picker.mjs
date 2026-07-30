@@ -5,9 +5,9 @@
  * `js/controls/test_lora_resize.mjs`'s own `makeDocStub` independently --
  * see that file's top doc comment on why tracks keep their own copy), PLUS
  * the layering guard that keeps `docs/lora-loader-design.md`'s reuse
- * boundary real: `model_picker.mjs`, `civitai_api.mjs`, and (Slice 4)
- * `model_info.mjs` are what `AnimaLoaderPanel` will import unchanged at M3,
- * and none of them may EVER import a `lora_*` module. Precedent:
+ * boundary real: `model_picker.mjs`, `civitai_api.mjs`, `model_info.mjs`,
+ * and (M2) `civitai_search.mjs` are what `AnimaLoaderPanel` will import
+ * unchanged at M3, and none of them may EVER import a `lora_*` module. Precedent:
  * `js/shared/test_field_logic.mjs`'s own layering guard for `js/shared/` vs
  * a track. Plain `node js/controls/test_model_picker.mjs`.
  */
@@ -568,10 +568,11 @@ await asyncTest("openModelPicker: showThumbnails === false suppresses the thumbn
 const __filename = fileURLToPath(import.meta.url);
 const CONTROLS_DIR = path.dirname(__filename);
 
-// `model_info.mjs` landed in Slice 4 -- scanned along with the other two
-// unconditionally now; kept resilient to a missing file (a `continue` below)
-// only so a future rename/move degrades to "not scanned" rather than a crash.
-const GUARDED_FILES = ["model_picker.mjs", "civitai_api.mjs", "model_info.mjs"];
+// `model_info.mjs` landed in Slice 4, `civitai_search.mjs` in M2 -- scanned
+// along with the other two unconditionally now; kept resilient to a missing
+// file (a `continue` below) only so a future rename/move degrades to "not
+// scanned" rather than a crash.
+const GUARDED_FILES = ["model_picker.mjs", "civitai_api.mjs", "model_info.mjs", "civitai_search.mjs"];
 
 // Matches a relative import of `lora_state.mjs`/`lora_render.mjs`/
 // `lora_interaction.mjs` (or any future `lora_*.mjs`) from THIS directory --
@@ -588,7 +589,7 @@ const GUARDED_FILES = ["model_picker.mjs", "civitai_api.mjs", "model_info.mjs"];
 const FORBIDDEN_STATIC_RE = /from\s+["']\.\/(lora_[^"']*)["']/g;
 const FORBIDDEN_DYNAMIC_RE = /import\s*\(\s*["']\.\/(lora_[^"']*)["']/g;
 
-test("model_picker.mjs / civitai_api.mjs / model_info.mjs never import a lora_* module (static OR dynamic import)", () => {
+test("model_picker.mjs / civitai_api.mjs / model_info.mjs / civitai_search.mjs never import a lora_* module (static OR dynamic import)", () => {
   const violations = [];
   let scanned = 0;
   for (const name of GUARDED_FILES) {
@@ -608,12 +609,12 @@ test("model_picker.mjs / civitai_api.mjs / model_info.mjs never import a lora_* 
       }
     }
   }
-  assert.ok(scanned >= 3, "sanity check: model_picker.mjs, civitai_api.mjs AND model_info.mjs were actually scanned");
+  assert.ok(scanned >= 4, "sanity check: model_picker.mjs, civitai_api.mjs, model_info.mjs AND civitai_search.mjs were actually scanned");
   assert.deepEqual(
     violations,
     [],
-    "model_picker.mjs/civitai_api.mjs/model_info.mjs must never import a lora_* module -- " +
-      "these three are the reuse boundary AnimaLoaderPanel imports unchanged at M3 " +
+    "model_picker.mjs/civitai_api.mjs/model_info.mjs/civitai_search.mjs must never import a lora_* module -- " +
+      "these four are the reuse boundary AnimaLoaderPanel imports unchanged at M3 " +
       "(docs/lora-loader-design.md); a lora_* import here means M3 needs an extraction, " +
       "not an import. Violations found:\n  " +
       violations.join("\n  "),

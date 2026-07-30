@@ -89,7 +89,53 @@ export const SETTING_IDS = {
   // `setSetting`), never `lora_state.mjs`'s state blob.
   HIDE_FILE_EXTENSION: "AnimaFlow.Controls.HideFileExtension",
   SHOW_PREVIEW_THUMBNAILS: "AnimaFlow.Controls.ShowPreviewThumbnails",
+  // M2 (docs/lora-loader-design.md §7c/§7c-i/§8) -- the search panel's own
+  // remembered-user-wide state. `CIVITAI_API_KEY`'s id string is NOT ours to
+  // choose: `src/model_browser/keys.py`'s `SETTING_ID` already reads THIS
+  // exact string (`"AnimaFlow.Controls.CivitaiApiKey"`) -- it was wired
+  // server-side ahead of this frontend slice specifically so the read path
+  // starts working the instant this id exists, with no further Python change
+  // (that module's own top doc comment). §8's "never the node state blob"
+  // rule means this key is ONLY ever read/written through this id -- never
+  // through `lora_state.mjs`'s serialized blob (the Preview embeds workflows
+  // into saved PNGs, so a key in that blob would leak into every shared
+  // image).
+  CIVITAI_API_KEY: "AnimaFlow.Controls.CivitaiApiKey",
+  // The other four are a browsing PREFERENCE (§7c-i: "remembered user-wide
+  // ... not in the node's state blob"), so the picker and the later toolbar
+  // modal (M2b) open with the same remembered filters -- one browser, three
+  // mounts, not three independently-configured ones.
+  CIVITAI_SEARCH_BASE_MODEL: "AnimaFlow.Controls.CivitaiSearchBaseModel",
+  CIVITAI_SEARCH_SORT: "AnimaFlow.Controls.CivitaiSearchSort",
+  CIVITAI_SEARCH_PERIOD: "AnimaFlow.Controls.CivitaiSearchPeriod",
+  // NSFW ships OFF and thereafter follows the last value the user picked
+  // (owner decision, docs/lora-loader-design.md §7c-i) -- never re-defaults
+  // to off on a later session once the user has turned it on once.
+  CIVITAI_SEARCH_NSFW: "AnimaFlow.Controls.CivitaiSearchNsfw",
 };
+
+// ---------------------------------------------------------------------------
+// The search panel's own filter ENUMS (docs/lora-loader-design.md §7c-i) --
+// declared here, once, so the Settings-dialog combo item below and
+// `js/controls/civitai_search.mjs`'s own `<select>` pills share the exact
+// same allowed-values list rather than two hand-copied arrays drifting apart
+// (both are plain JS, unlike the JS/Python schema pairs elsewhere in this
+// pack that genuinely can't share a module). `sort`/`period`'s values are
+// Civitai's own raw enum strings, byte-for-byte matching `src/model_browser/
+// civitai_search.py`'s `SORT_VALUES`/`PERIOD_VALUES` -- sent to the search
+// route AS-IS, so a value here that didn't match one of those would silently
+// fall back to that module's own default rather than doing what the user
+// picked. `BASE_MODEL` has no server-side enum at all (`civitai_search.py`
+// passes it through unvalidated) -- this is a best-effort curated list of
+// Civitai's own common base-model tags, not a byte-exact enum; an unlisted
+// base model simply isn't offered as a quick filter here.
+// ---------------------------------------------------------------------------
+
+export const CIVITAI_SEARCH_BASE_MODEL_OPTIONS = [
+  "", "SD 1.5", "SDXL 1.0", "Pony", "Illustrious", "NoobAI", "Flux.1 D", "Flux.1 S", "SD 2.1", "SD 3.5", "Other",
+];
+export const CIVITAI_SEARCH_SORT_OPTIONS = ["Relevancy", "Most Downloaded", "Highest Rated", "Newest"];
+export const CIVITAI_SEARCH_PERIOD_OPTIONS = ["Day", "Week", "Month", "Year", "AllTime"];
 
 // The documented default for each id, above — every consumer's own
 // `getSetting(id, DEFAULT)` fallback cites one of these by name rather than
@@ -106,6 +152,15 @@ export const SETTING_DEFAULTS = {
   [SETTING_IDS.CIVITAI_ENABLED]: true,
   [SETTING_IDS.HIDE_FILE_EXTENSION]: false,
   [SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]: true,
+  [SETTING_IDS.CIVITAI_API_KEY]: "",
+  // Matches `src/model_browser/civitai_search.py`'s own `DEFAULT_SORT`/
+  // `DEFAULT_PERIOD` -- so a freshly-installed panel's remembered filters
+  // behave identically to what the search route would already do if these
+  // were left unset entirely.
+  [SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL]: "",
+  [SETTING_IDS.CIVITAI_SEARCH_SORT]: "Highest Rated",
+  [SETTING_IDS.CIVITAI_SEARCH_PERIOD]: "AllTime",
+  [SETTING_IDS.CIVITAI_SEARCH_NSFW]: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -248,6 +303,66 @@ export const ANIMAFLOW_SETTINGS = [
       + "and its larger thumbnail in the ⓘ info panel. Turn off for less "
       + "clutter or to avoid loading the (local, non-Civitai) preview files "
       + "at all -- the picker/panel still work, just without the pictures.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_API_KEY,
+    name: "Civitai API key",
+    category: ["AnimaFlow", "Controls", "Civitai API key"],
+    type: "text",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_API_KEY],
+    tooltip:
+      "Your own Civitai API key, used server-side ONLY -- for gated/early-"
+      + "access downloads and to relieve search rate limits. Never sent "
+      + "anywhere except Civitai's own API, never logged, and never written "
+      + "into a node's saved state (a LoRA Loader's state blob is embedded in "
+      + "every saved workflow, and the Preview embeds workflows into saved "
+      + "PNGs -- a key living there would leak into every shared image, so it "
+      + "lives ONLY here). Leave blank for public-only search results and no "
+      + "gated downloads; the CIVITAI_API_KEY environment variable also works "
+      + "as a fallback if you already have that set for another tool "
+      + "(docs/lora-loader-design.md §8).",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL,
+    name: "Civitai search: base model filter",
+    category: ["AnimaFlow", "Controls", "Civitai search: base model filter"],
+    type: "combo",
+    options: CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL],
+    tooltip:
+      "The base-model filter last used in the Civitai search panel (LoRA "
+      + "Loader 🔍, and later the toolbar browser/Loader Panel) -- remembered "
+      + "user-wide so every surface opens with the same filter, rather than "
+      + "per node. An empty value means \"any base model\".",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_SEARCH_SORT,
+    name: "Civitai search: sort",
+    category: ["AnimaFlow", "Controls", "Civitai search: sort"],
+    type: "combo",
+    options: CIVITAI_SEARCH_SORT_OPTIONS,
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_SORT],
+    tooltip: "The sort order last used in the Civitai search panel -- remembered user-wide.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_SEARCH_PERIOD,
+    name: "Civitai search: period",
+    category: ["AnimaFlow", "Controls", "Civitai search: period"],
+    type: "combo",
+    options: CIVITAI_SEARCH_PERIOD_OPTIONS,
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_PERIOD],
+    tooltip: "The time-period filter last used in the Civitai search panel -- remembered user-wide.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_SEARCH_NSFW,
+    name: "Civitai search: show NSFW",
+    category: ["AnimaFlow", "Controls", "Civitai search: show NSFW"],
+    type: "boolean",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_NSFW],
+    tooltip:
+      "Whether the Civitai search panel includes NSFW results. Ships OFF; "
+      + "once you turn it on, it stays on for next time -- remembered "
+      + "user-wide, the same as every other search filter here.",
   },
 ];
 
