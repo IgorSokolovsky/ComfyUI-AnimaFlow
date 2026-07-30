@@ -542,7 +542,7 @@ await asyncTest("openHistoryPanel: 'Open image' opens the entry's /view URL in a
   closeActiveOverlay();
 });
 
-console.log(`\n${count - failures}/${count} tests passed`);
+console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exit(1);
 }

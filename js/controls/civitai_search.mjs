@@ -125,7 +125,10 @@ const IMAGE_PLACEHOLDER_SVG =
 
 const CSS = `
 .wtn-cs-panel {
-  width: 346px; max-height: 76vh; display: flex; flex-direction: column;
+  width: 346px; max-height: 76vh; /* JS-computed inline max-height overrides this the instant the
+  panel is attached (see \`applyMaxHeight\` below) -- 76vh only ever paints for the one frame before
+  that runs, and is the fallback if no real viewport is available at all (headless/no window). */
+  display: flex; flex-direction: column; overflow: hidden;
   box-sizing: border-box; border-radius: 10px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line, ${TOKENS.line});
   box-shadow: var(--wtn-shadow, 0 20px 46px rgba(0,0,0,.66));
@@ -137,7 +140,16 @@ const CSS = `
 }
 .wtn-cs-close { margin-left: auto; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 13px; }
 .wtn-cs-close:hover { color: var(--wtn-ink, ${TOKENS.ink}); }
-.wtn-cs-body { padding: 9px 10px 10px; overflow-y: auto; flex: 1 1 auto; }
+/* \`.wtn-cs-body\` is itself a flex column so only \`.wtn-cs-scroll\` (the
+   results list) scrolls -- the search field, filter pills, hint and any
+   status banner live in \`.wtn-cs-pinned\` (flex: none, always visible), and
+   the destination/footer hints stay pinned too. \`min-height: 0\` on both the
+   body and the scroll area is what lets a flex child shrink below its
+   content's natural size instead of just overflowing its ancestor -- without
+   it, \`.wtn-cs-scroll\`'s own \`overflow-y: auto\` would never actually engage. */
+.wtn-cs-body { padding: 9px 10px 10px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.wtn-cs-pinned { flex: none; }
+.wtn-cs-scroll { flex: 1 1 auto; min-height: 120px; /* keep in sync with MIN_RESULTS_HEIGHT_PX below */ overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
 
 .wtn-cs-search-wrap { position: relative; margin-bottom: 7px; }
 .wtn-cs-search-icon {
@@ -168,7 +180,7 @@ const CSS = `
 .wtn-cs-nsfw { display: inline-flex; align-items: center; gap: 4px; font-family: var(--wtn-font-mono, monospace); font-size: 10px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); cursor: pointer; }
 .wtn-cs-nsfw input { cursor: pointer; }
 
-.wtn-cs-hint { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; }
+.wtn-cs-hint { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; flex: none; }
 .wtn-cs-warn { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; }
 .wtn-cs-info { color: var(--wtn-info, ${TOKENS.info}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; }
 .wtn-cs-bad { color: var(--wtn-bad, ${TOKENS.bad}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; }
@@ -208,6 +220,14 @@ const CSS = `
 .wtn-cs-thumb-gated { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 15px; }
 .wtn-cs-meta { flex: 1 1 auto; min-width: 0; }
 .wtn-cs-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The base-model chip + download count share one row (owner, 2026-07-30) --
+   the chip is js/shared/theme.css's own \`.wtn-chip.wtn-chip--accent\`
+   (its doc comment there covers the colour choice); \`.wtn-cs-chip\` here
+   only re-tunes SIZE for this card's already-compact type scale, never
+   colour -- reuse, not a parallel style. */
+.wtn-cs-metarow { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.wtn-cs-chip { flex: none; font-size: 9.5px; padding: 1px 7px; }
+.wtn-cs-metarow .wtn-cs-sub { flex: 1 1 auto; min-width: 0; margin-top: 0; }
 .wtn-cs-sub { font-family: var(--wtn-font-mono, monospace); font-size: 10px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtn-cs-cardmsg { font-size: 10px; color: var(--wtn-bad, ${TOKENS.bad}); margin-top: 2px; }
 .wtn-cs-bar { height: 4px; border-radius: 2px; background: var(--wtn-console, ${TOKENS.console}); overflow: hidden; margin-top: 4px; }
@@ -353,31 +373,42 @@ export function resultCardState(result, activeJob) {
   return "available";
 }
 
-/** The card's second line -- `"SDXL · 12.4k ↓"`, omitting a segment that
- * isn't known rather than rendering "unknown" (unlike `model_picker.mjs`'s
- * local-file `metaLineFor`, a Civitai result with no `base_model` genuinely
- * has none to report -- Civitai itself, not a missing local read). */
+/** The base model, on its OWN (owner, 2026-07-30 review of the search
+ * panel): it used to be folded into `resultSubtitle`'s joined text
+ * (`"SDXL 1.0 · 12.4k ↓"`), buried next to the download count where the
+ * owner's own words were "i didn't see it" scanning a list. Rendered as a
+ * standalone chip in `buildCard` instead -- this function only ever answers
+ * WHAT to put in it. `""` (never rendered) when genuinely unknown -- "omit
+ * rather than invent" (§1a-vi), unlike `model_picker.mjs`'s local-file
+ * `metaLineFor`, a Civitai result with no `base_model` genuinely has none to
+ * report (Civitai itself, not a missing local read). */
+export function resultBaseModel(result) {
+  if (!result) {
+    return "";
+  }
+  return (result.base_model && String(result.base_model).trim()) || "";
+}
+
+/** The card's second line -- now JUST the download count (`"12.4k ↓"`);
+ * the base model that used to share this line moved to its own chip
+ * (`resultBaseModel`, above). */
 export function resultSubtitle(result) {
   if (!result) {
     return "";
   }
-  const parts = [];
-  const base = (result.base_model && String(result.base_model).trim()) || "";
-  if (base) {
-    parts.push(base);
-  }
   const downloads = result.stats && Number.isFinite(result.stats.downloads) ? result.stats.downloads : 0;
-  parts.push(`${formatCompactCount(downloads)} ↓`);
-  return parts.join(" · ");
+  return `${formatCompactCount(downloads)} ↓`;
 }
 
 /** The GATED card's second line (§7c-iii: "padlock + `needs an API key`") --
- * `"SDXL · needs an API key"`, or bare `"needs an API key"` when no base
- * model is known -- same "omit rather than invent" rule as `resultSubtitle`,
- * never a stray leading separator. */
-export function gatedSubtitle(result) {
-  const base = (result && result.base_model && String(result.base_model).trim()) || "";
-  return base ? `${base} · needs an API key` : "needs an API key";
+ * always the bare `"needs an API key"` now (owner, 2026-07-30): the base
+ * model that used to prefix this line moved to the SAME standalone chip
+ * every other card state uses (`resultBaseModel` + `buildCard`'s own chip),
+ * so a gated card and an available/installed one stay visually consistent
+ * -- one card style carrying the base model as inline text while another
+ * carried it as a chip would read as two different components, not one. */
+export function gatedSubtitle() {
+  return "needs an API key";
 }
 
 /**
@@ -471,6 +502,56 @@ export function downloadTerminalMessage(status, response) {
     key_required: "Civitai requires an API key for this file (early access or a restricted download).",
   };
   return map[status] || (response && response.message) || "";
+}
+
+// ---------------------------------------------------------------------------
+// Panel height -- computed from the space actually available BELOW the
+// anchor (owner: "we should set max height and inner scroll ... based also
+// on the available space so it won't overflow down the viewport"), never a
+// fixed vh/px constant. Only the RESULTS area scrolls; the search field,
+// filter pills and any status banner stay pinned above it -- see this file's
+// `openCivitaiSearch` DOM section for the `.wtn-cs-pinned`/`.wtn-cs-scroll`
+// split this feeds.
+// ---------------------------------------------------------------------------
+
+/** The results area's own floor (task brief: "a panel anchored right at the
+ * bottom edge still shows something usable rather than collapsing to a
+ * sliver") -- a couple of result cards' worth (`.wtn-cs-card` is ~52px tall
+ * incl. gap), never zero. */
+export const MIN_RESULTS_HEIGHT_PX = 120;
+
+/** Matches `overlay.mjs`'s own "below" placement gap (`rect.bottom + 6`) --
+ * kept in agreement rather than guessing independently. */
+export const PANEL_ANCHOR_GAP_PX = 6;
+
+/** Breathing room so a maxed-out panel never touches the viewport's own
+ * bottom edge. */
+export const PANEL_VIEWPORT_MARGIN_PX = 12;
+
+/**
+ * The panel's own `max-height`, derived from the space actually available
+ * below the anchor -- `viewportHeight - anchorBottom - gap - margin` -- never
+ * smaller than `chromeHeight + MIN_RESULTS_HEIGHT_PX` (the head + pinned
+ * controls + footer's own real height, plus the results floor above), so the
+ * results area always reserves at least its minimum even when that means the
+ * panel's OWN height exceeds the space actually below the anchor -- at that
+ * point `overlay.mjs`'s own viewport-flip (it measures the REAL rendered
+ * height, which is this number) is what decides whether the panel opens
+ * above the anchor instead. This function only ever answers "how much room
+ * is there below" -- reusing, never duplicating, the flip decision itself.
+ *
+ * `null` when no real viewport size is available (mirrors `overlay.mjs`'s
+ * own "`null` means never adjust" convention for a headless host with no
+ * live `window`) -- the caller keeps its CSS fallback `max-height` untouched.
+ */
+export function computeSearchPanelMaxHeight({ anchorBottom, viewportHeight, chromeHeight }) {
+  if (!Number.isFinite(anchorBottom) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    return null;
+  }
+  const safeChrome = Number.isFinite(chromeHeight) && chromeHeight >= 0 ? chromeHeight : 0;
+  const minTotal = safeChrome + MIN_RESULTS_HEIGHT_PX;
+  const available = viewportHeight - anchorBottom - PANEL_ANCHOR_GAP_PX - PANEL_VIEWPORT_MARGIN_PX;
+  return Math.max(minTotal, available);
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +760,14 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   const body = el(doc, "div", "wtn-cs-body");
   panel.appendChild(body);
 
+  // `.wtn-cs-pinned` -- everything that must stay visible regardless of how
+  // long the results list gets (task brief: "search field, filter pills and
+  // any status banner pinned"); only `.wtn-cs-scroll` below (the results
+  // list) ever scrolls. See this file's CSS `.wtn-cs-body`/`.wtn-cs-pinned`/
+  // `.wtn-cs-scroll` comment for the flex mechanics.
+  const pinned = el(doc, "div", "wtn-cs-pinned");
+  body.appendChild(pinned);
+
   const searchWrap = el(doc, "div", "wtn-cs-search-wrap");
   searchWrap.appendChild(el(doc, "span", "wtn-cs-search-icon"));
   const search = el(doc, "input", "wtn-cs-search");
@@ -686,7 +775,7 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   search.placeholder = "Search Civitai…";
   search.spellcheck = false;
   searchWrap.appendChild(search);
-  body.appendChild(searchWrap);
+  pinned.appendChild(searchWrap);
 
   // ---- filters (§7c-i: the FULL set, `type` locked, laid out as a compact
   // row of dropdown pills -- a node panel is ~340px, no room for the
@@ -740,19 +829,19 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   nsfwLabel.appendChild(nsfwCheckbox);
   nsfwLabel.appendChild(nsfwText);
   filters.appendChild(nsfwLabel);
-  body.appendChild(filters);
+  pinned.appendChild(filters);
 
   const hint = el(doc, "div", "wtn-cs-hint");
   hint.textContent = "Same filters as the toolbar browser — only type is locked, and filters are remembered across every AnimaFlow model browser.";
-  body.appendChild(hint);
+  pinned.appendChild(hint);
 
   const publicOnlyLine = el(doc, "div", "wtn-cs-warn");
   publicOnlyLine.textContent = "No API key set — public results only.";
   publicOnlyLine.style.display = "none";
-  body.appendChild(publicOnlyLine);
+  pinned.appendChild(publicOnlyLine);
 
   const statusLine = el(doc, "div");
-  body.appendChild(statusLine);
+  pinned.appendChild(statusLine);
 
   // ---- destination (§ decision 5: editable, defaulting to models/<kind>) --
   const dest = el(doc, "div", "wtn-cs-dest");
@@ -766,18 +855,24 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   destInput.addEventListener("pointerdown", (e) => e.stopPropagation());
   dest.appendChild(destLabel);
   dest.appendChild(destInput);
-  body.appendChild(dest);
+  pinned.appendChild(dest);
 
   const activeHost = el(doc, "div");
-  body.appendChild(activeHost);
+  pinned.appendChild(activeHost);
+
+  // `.wtn-cs-scroll` -- the ONLY scrolling area (task brief). The results
+  // list lives here, sized by the panel's own JS-computed `max-height`
+  // (`applyMaxHeight`, below) rather than a fixed vh/px constant.
+  const scrollArea = el(doc, "div", "wtn-cs-scroll");
+  body.appendChild(scrollArea);
 
   const list = el(doc, "div", "wtn-cs-list");
-  body.appendChild(list);
+  scrollArea.appendChild(list);
 
   const footerHint = el(doc, "div", "wtn-cs-hint");
   footerHint.style.marginTop = "8px";
   footerHint.textContent = `Downloads run server-side into ${DEFAULT_ROOT_DISPLAY[kind] || "models"}/ — this browser cannot write there. A run is never blocked by a fetch.`;
-  body.appendChild(footerHint);
+  body.appendChild(footerHint); // pinned footer, NOT inside .wtn-cs-scroll -- always visible
 
   // ---- state --------------------------------------------------------------
   let results = [];
@@ -833,9 +928,26 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     title.textContent = result.name || "(untitled)";
     title.title = result.name || "";
     meta.appendChild(title);
+
+    // Base model + download count on their own row (owner, 2026-07-30): the
+    // base model used to be folded into the subtitle's joined text, where it
+    // "didn't register" scanning a list -- now a standalone chip, reusing
+    // `js/shared/theme.css`'s own `.wtn-chip` vocabulary (a new `--accent`
+    // variant, muted per that file's own precedent -- see its doc comment).
+    // Omitted entirely (never a placeholder) when genuinely unknown, same
+    // "omit rather than invent" rule `resultBaseModel` itself documents.
+    const metaRow = el(doc, "div", "wtn-cs-metarow");
+    const baseModel = resultBaseModel(result);
+    if (baseModel) {
+      const chip = el(doc, "span", "wtn-chip wtn-chip--accent wtn-cs-chip");
+      chip.textContent = baseModel;
+      chip.title = baseModel;
+      metaRow.appendChild(chip);
+    }
     const sub = el(doc, "div", "wtn-cs-sub");
-    sub.textContent = state === "gated" ? gatedSubtitle(result) : resultSubtitle(result);
-    meta.appendChild(sub);
+    sub.textContent = state === "gated" ? gatedSubtitle() : resultSubtitle(result);
+    metaRow.appendChild(sub);
+    meta.appendChild(metaRow);
 
     if (state === "downloading") {
       const pct = downloadPercent(job.bytes, job.total);
@@ -1014,11 +1126,46 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   renderStatus();
   renderList(); // initial "Searching…" paint
 
+  // ---- height: computed from the space actually available BELOW the
+  // anchor (task brief), never a fixed vh/px constant -- a no-op with no real
+  // live `window` to measure (every headless test with no `defaultView`),
+  // matching `overlay.mjs`'s own "`null` means never adjust" convention. ----
+  const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
+
+  function applyMaxHeight() {
+    if (!win || typeof win.innerHeight !== "number") {
+      return;
+    }
+    const anchorRect = typeof anchorEl.getBoundingClientRect === "function" ? anchorEl.getBoundingClientRect() : null;
+    if (!anchorRect) {
+      return;
+    }
+    // The head + pinned controls + footer's own REAL rendered height --
+    // measured live rather than assumed, so a taller filter row (a longer
+    // base-model list wrapping, say) is accounted for automatically.
+    const chromeHeight = head.getBoundingClientRect().height
+      + pinned.getBoundingClientRect().height
+      + footerHint.getBoundingClientRect().height;
+    const maxH = computeSearchPanelMaxHeight({ anchorBottom: anchorRect.bottom, viewportHeight: win.innerHeight, chromeHeight });
+    if (maxH != null) {
+      panel.style.maxHeight = `${Math.round(maxH)}px`;
+    }
+  }
+
+  let onWindowResize = null;
+  let anchorPollHandle = null;
+
   const handle = openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, panel, "below", () => {
     if (debounceTimer) {
       clearTimeout(debounceTimer);
     }
     unsubscribe();
+    if (win && onWindowResize && typeof win.removeEventListener === "function") {
+      win.removeEventListener("resize", onWindowResize);
+    }
+    if (anchorPollHandle != null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(anchorPollHandle);
+    }
     if (activeOverlayRef.current === handle) {
       activeOverlayRef.current = null;
     }
@@ -1028,6 +1175,53 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   }, "wtn-cs-overlay wtn");
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
+
+  // Now that the panel is actually attached to `doc.body`, size it for real
+  // (the CSS `max-height: 76vh` fallback painted for one frame at most), then
+  // re-run `overlay.mjs`'s own flip decision against the corrected height --
+  // reusing that mechanism rather than a second one here (task brief).
+  applyMaxHeight();
+  if (typeof handle.reposition === "function") {
+    handle.reposition();
+  }
+
+  // Recompute trigger 1/2: window resize.
+  onWindowResize = () => {
+    applyMaxHeight();
+    if (typeof handle.reposition === "function") {
+      handle.reposition();
+    }
+  };
+  if (win && typeof win.addEventListener === "function") {
+    win.addEventListener("resize", onWindowResize);
+  }
+
+  // Recompute trigger 2/2: the canvas panning/zooming the node moves this
+  // DOM-widget anchor with no DOM event to hook -- polled once per frame
+  // while the panel is open, acting only on an actual change. Guarded
+  // exactly like `js/controls/interaction.mjs`'s own `scheduleFit`
+  // (`typeof requestAnimationFrame !== "function"`): a genuine no-op under
+  // every headless test, never a fake timer to keep in sync there.
+  let lastAnchorSig = null;
+  function anchorSig() {
+    const r = typeof anchorEl.getBoundingClientRect === "function" ? anchorEl.getBoundingClientRect() : null;
+    return r ? `${r.left}:${r.top}:${r.right}:${r.bottom}` : null;
+  }
+  function pollAnchorMove() {
+    const sig = anchorSig();
+    if (sig !== null && sig !== lastAnchorSig) {
+      lastAnchorSig = sig;
+      applyMaxHeight();
+      if (typeof handle.reposition === "function") {
+        handle.reposition();
+      }
+    }
+    anchorPollHandle = requestAnimationFrame(pollAnchorMove);
+  }
+  if (typeof requestAnimationFrame === "function") {
+    lastAnchorSig = anchorSig();
+    anchorPollHandle = requestAnimationFrame(pollAnchorMove);
+  }
 
   if (typeof search.focus === "function") {
     search.focus(); // "focused on open" (task brief)

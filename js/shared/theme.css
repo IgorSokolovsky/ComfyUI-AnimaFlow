@@ -99,6 +99,18 @@
 .wtn-chip--warn { color: var(--wtn-warn); border-color: rgba(251,191,36,.35); }
 .wtn-chip--bad { color: var(--wtn-bad); border-color: rgba(248,113,113,.35); }
 .wtn-chip--info { color: var(--wtn-info); border-color: rgba(125,211,252,.35); }
+/* Brand-teal tint, deliberately MUTED and left at the base rule's own
+   --wtn-ink-dim text colour (no colour override here, unlike the four
+   variants above) -- a quiet LABEL, not a call to action. This pack has
+   already paid to learn that teal reads far louder than the other accents
+   at equal alpha: `.wtn-an-shead.wtn-an-expanded`'s card border went
+   full --wtn-accent (round 1) -> rgba(45,212,191,.35), matching the warn
+   border's own alpha (round 2, 98d0fe5) -> no teal at all (round 3,
+   a6478f0), because .35 STILL read as too much once seen in a live
+   ComfyUI. A chip has far less surface area than that section-card border
+   did, but this stays well under .35 on both channels anyway rather than
+   re-deriving the same mistake at a smaller scale. */
+.wtn-chip--accent { background: rgba(45,212,191,.12); border-color: rgba(45,212,191,.32); }
 
 /* status pill */
 .wtn-pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--wtn-font-mono);

@@ -126,13 +126,29 @@ export const SETTING_IDS = {
 // route AS-IS, so a value here that didn't match one of those would silently
 // fall back to that module's own default rather than doing what the user
 // picked. `BASE_MODEL` has no server-side enum at all (`civitai_search.py`
-// passes it through unvalidated) -- this is a best-effort curated list of
-// Civitai's own common base-model tags, not a byte-exact enum; an unlisted
-// base model simply isn't offered as a quick filter here.
+// passes it through unvalidated) -- this is Civitai's own authoritative list
+// of base-model values, verbatim and in the owner's order (design §1a-vi:
+// never invent a catalogue value). Do NOT normalise, re-case, de-duplicate
+// or "tidy" this list -- entries that look redundant (`Krea 2`/`Krea2`,
+// `LTXV2`/`LTXV 2.3`) are two distinct values Civitai itself uses, both sent
+// on the wire unchanged. An unlisted base model simply isn't offered as a
+// quick filter here.
 // ---------------------------------------------------------------------------
 
 export const CIVITAI_SEARCH_BASE_MODEL_OPTIONS = [
-  "", "SD 1.5", "SDXL 1.0", "Pony", "Illustrious", "NoobAI", "Flux.1 D", "Flux.1 S", "SD 2.1", "SD 3.5", "Other",
+  "",
+  "ACE Audio", "Anima", "AuraFlow", "Boogu", "Chroma", "CogVideoX", "Ernie", "Flux 1.0", "Flux.1 D",
+  "Flux.1 Kontext", "Flux.1 Krea", "Flux.1 S", "Flux.2 D", "Flux.2 Klein 4B", "Flux.2 Klein 4B-base",
+  "Flux.2 Klein 9B", "Flux.2 Klein 9B-base", "Grok", "HappyHorse", "HiDream", "HiDream-O1", "Hunyuan 1",
+  "Hunyuan Video", "Ideogram 4.0", "Illustrious", "Illustrious 0.1", "Imagen4", "Kling", "Kolors", "Krea 2",
+  "Krea2", "LTXV", "LTXV 2.3", "LTXV2", "Lens", "Lumina", "MAI", "MageFlow", "Mochi", "Nano Banana", "NoobAI",
+  "ODOR", "OpenAI", "Other", "PixArt E", "PixArt a", "Playground v2", "Pony", "Pony V7", "Qwen", "Qwen 2",
+  "Reve", "SD 1.4", "SD 1.5", "SD 1.5 Hyper", "SD 1.5 LCM", "SD 2.0", "SD 2.0 768", "SD 2.1", "SD 2.1 768",
+  "SD 2.1 Unclip", "SDXL 0.9", "SDXL 1.0", "SDXL 1.0 LCM", "SDXL Distilled", "SDXL Hyper", "SDXL Lightning",
+  "SVD XT", "Seedance", "Seedream", "Sora 2", "Stable Cascade", "Upscaler", "Veo 3", "Vidu Q1",
+  "Wan Image 2.7", "Wan Video", "Wan Video 1.3B t2v", "Wan Video 14B i2v 480p", "Wan Video 14B i2v 720p",
+  "Wan Video 14B t2v", "Wan Video 2.2 I2V-A14B", "Wan Video 2.2 T2V-A14B", "Wan Video 2.2 TI2V-5B",
+  "Wan Video 2.5 I2V", "Wan Video 2.5 T2V", "Wan Video 2.7", "Z-Image", "ZImageBase", "ZImageTurbo",
 ];
 export const CIVITAI_SEARCH_SORT_OPTIONS = ["Relevancy", "Most Downloaded", "Highest Rated", "Newest"];
 export const CIVITAI_SEARCH_PERIOD_OPTIONS = ["Day", "Week", "Month", "Year", "AllTime"];

@@ -22,6 +22,7 @@ import {
   downloadPercent,
   resultKey,
   resultCardState,
+  resultBaseModel,
   resultSubtitle,
   gatedSubtitle,
   subfolderFromDestinationField,
@@ -33,6 +34,10 @@ import {
   startDownloadJob,
   cancelActiveDownloadJob,
   _resetDownloadStateForTests,
+  computeSearchPanelMaxHeight,
+  MIN_RESULTS_HEIGHT_PX,
+  PANEL_ANCHOR_GAP_PX,
+  PANEL_VIEWPORT_MARGIN_PX,
   openCivitaiSearch,
 } from "./civitai_search.mjs";
 import { invalidateList, hasFile, listModels } from "./civitai_api.mjs";
@@ -138,11 +143,8 @@ test("resultCardState: a job for a DIFFERENT result never marks this one downloa
   assert.equal(resultCardState(result, job), "available");
 });
 
-test("resultSubtitle: base model + compact download count, joined", () => {
-  assert.equal(resultSubtitle({ base_model: "SDXL", stats: { downloads: 12400 } }), "SDXL · 12.4k ↓");
-});
-
-test("resultSubtitle: omits the base-model segment when genuinely absent (never 'unknown')", () => {
+test("resultSubtitle: just the compact download count -- the base model moved to its own chip (owner, 2026-07-30)", () => {
+  assert.equal(resultSubtitle({ base_model: "SDXL", stats: { downloads: 12400 } }), "12.4k ↓");
   assert.equal(resultSubtitle({ base_model: "", stats: { downloads: 0 } }), "0 ↓");
   assert.equal(resultSubtitle({ stats: {} }), "0 ↓");
 });
@@ -151,10 +153,19 @@ test("resultSubtitle: a missing result never throws", () => {
   assert.equal(resultSubtitle(null), "");
 });
 
-test("gatedSubtitle: base model + 'needs an API key', or the bare line with no stray separator when base model is unknown", () => {
-  assert.equal(gatedSubtitle({ base_model: "SDXL" }), "SDXL · needs an API key");
-  assert.equal(gatedSubtitle({ base_model: "" }), "needs an API key");
-  assert.equal(gatedSubtitle(null), "needs an API key");
+test("resultBaseModel: the base model, standalone (feeds the chip, never the subtitle)", () => {
+  assert.equal(resultBaseModel({ base_model: "SDXL 1.0" }), "SDXL 1.0");
+});
+
+test("resultBaseModel: '' when genuinely absent -- never a placeholder like 'Unknown' (§1a-vi)", () => {
+  assert.equal(resultBaseModel({ base_model: "" }), "");
+  assert.equal(resultBaseModel({ base_model: "   " }), "");
+  assert.equal(resultBaseModel({}), "");
+  assert.equal(resultBaseModel(null), "");
+});
+
+test("gatedSubtitle: always the bare line -- no base model, no separator (it now lives in the same chip every other card state uses)", () => {
+  assert.equal(gatedSubtitle(), "needs an API key");
 });
 
 // =========================================================================
@@ -229,6 +240,38 @@ test("downloadTerminalMessage: every terminal status gets a readable line", () =
   assert.equal(downloadTerminalMessage("cancelled"), "Cancelled.");
   assert.match(downloadTerminalMessage("key_required"), /API key/i);
   assert.match(downloadTerminalMessage("write_error", { message: "disk full" }), /disk full/);
+});
+
+// =========================================================================
+// computeSearchPanelMaxHeight -- BUG A: computed from the space actually
+// available BELOW the anchor, never a fixed vh/px constant.
+// =========================================================================
+
+test("computeSearchPanelMaxHeight: plenty of room below the anchor -- the available space, not a fixed cap", () => {
+  // A 100px-tall header sits near the TOP of an 800px-tall viewport --
+  // anchorBottom=140 leaves 800-140-gap-margin of headroom below it.
+  const maxH = computeSearchPanelMaxHeight({ anchorBottom: 140, viewportHeight: 800, chromeHeight: 150 });
+  assert.equal(maxH, 800 - 140 - PANEL_ANCHOR_GAP_PX - PANEL_VIEWPORT_MARGIN_PX);
+});
+
+test("computeSearchPanelMaxHeight: an anchor near the BOTTOM edge still reserves the results floor (never a sliver)", () => {
+  // Only 40px below the anchor before the viewport ends -- far less than
+  // even the chrome alone, let alone chrome + a usable results area.
+  const maxH = computeSearchPanelMaxHeight({ anchorBottom: 760, viewportHeight: 800, chromeHeight: 200 });
+  assert.equal(maxH, 200 + MIN_RESULTS_HEIGHT_PX, "floors to chromeHeight + MIN_RESULTS_HEIGHT_PX rather than the (smaller) available space");
+  assert.ok(maxH > 800 - 760, "this floor deliberately exceeds the true available space -- overlay.mjs's own flip is what handles that, not this function");
+});
+
+test("computeSearchPanelMaxHeight: garbage/missing chromeHeight degrades to 0 rather than throwing or going negative", () => {
+  const maxH = computeSearchPanelMaxHeight({ anchorBottom: 100, viewportHeight: 800, chromeHeight: null });
+  assert.equal(maxH, Math.max(MIN_RESULTS_HEIGHT_PX, 800 - 100 - PANEL_ANCHOR_GAP_PX - PANEL_VIEWPORT_MARGIN_PX));
+});
+
+test("computeSearchPanelMaxHeight: null when no real viewport size is available -- caller keeps its CSS fallback untouched", () => {
+  assert.equal(computeSearchPanelMaxHeight({ anchorBottom: 100, viewportHeight: null, chromeHeight: 100 }), null);
+  assert.equal(computeSearchPanelMaxHeight({ anchorBottom: null, viewportHeight: 800, chromeHeight: 100 }), null);
+  assert.equal(computeSearchPanelMaxHeight({ anchorBottom: 100, viewportHeight: 0, chromeHeight: 100 }), null);
+  assert.equal(computeSearchPanelMaxHeight({ anchorBottom: NaN, viewportHeight: 800, chromeHeight: 100 }), null);
 });
 
 // =========================================================================
@@ -613,6 +656,40 @@ await asyncTest("openCivitaiSearch: renders the exact §7c-iii labels for instal
   }
 });
 
+await asyncTest("openCivitaiSearch: the base model renders as its own chip, omitted when unknown, and never duplicated in the subtitle", async () => {
+  _resetDownloadStateForTests();
+  const results = [
+    makeResult({ modelId: 10, versionId: 10, name: "Has Base Model", baseModel: "SDXL 1.0", downloads: 12400 }),
+    makeResult({ modelId: 11, versionId: 11, name: "No Base Model", baseModel: "", downloads: 5 }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const cards = findAll(handle.overlay, "wtn-cs-card");
+    assert.equal(cards.length, 2);
+
+    const chips = findAll(handle.overlay, "wtn-chip--accent");
+    assert.equal(chips.length, 1, "only the result WITH a known base model gets a chip");
+    assert.equal(chips[0].textContent, "SDXL 1.0");
+
+    const subs = findAll(handle.overlay, "wtn-cs-sub");
+    for (const sub of subs) {
+      assert.doesNotMatch(sub.textContent, /SDXL/, "the subtitle must never duplicate the base model the chip already shows");
+    }
+    assert.match(textOf(cards[0]), /12\.4k ↓/);
+    assert.match(textOf(cards[1]), /5 ↓/);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
 await asyncTest("openCivitaiSearch: 'No API key set — public results only.' shows exactly when the response says public_only", async () => {
   _resetDownloadStateForTests();
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: true }));
@@ -800,6 +877,90 @@ await asyncTest("openCivitaiSearch: changing a filter <select> re-searches with 
     assert.equal(queries.length, 3, "exactly one debounced search fires after typing settles");
     assert.equal(queries[2].query, "skin");
 
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: only .wtn-cs-scroll wraps the results list -- search field, filters and destination stay in .wtn-cs-pinned", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const pinned = findAll(handle.overlay, "wtn-cs-pinned")[0];
+    assert.ok(pinned, "a pinned (non-scrolling) region must exist");
+    assert.equal(findAll(pinned, "wtn-cs-search").length, 1, "the search field is pinned");
+    assert.equal(findAll(pinned, "wtn-cs-filters").length, 1, "the filter pills are pinned");
+    assert.equal(findAll(pinned, "wtn-cs-dest").length, 1, "the destination field is pinned");
+
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    assert.ok(scrollArea, "a scrolling results region must exist");
+    assert.equal(findAll(scrollArea, "wtn-cs-list").length, 1, "the results list lives inside the scroll area");
+    assert.equal(findAll(pinned, "wtn-cs-list").length, 0, "the results list must NOT be inside the pinned region");
+
+    const allHints = findAll(handle.overlay, "wtn-cs-hint");
+    const footerHint = allHints.find((e) => e.textContent.includes("Downloads run server-side"));
+    assert.ok(footerHint, "the footer hint must exist");
+    assert.ok(!scrollArea.contains(footerHint), "the footer hint stays pinned below the scroll area, not inside it");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: max-height is a real computed pixel value (not the CSS 76vh fallback), recomputes on window resize, and the listener is removed on close", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const panel = findAll(handle.overlay, "wtn-cs-panel")[0];
+    const initialMaxHeight = panel.style.maxHeight;
+    assert.match(initialMaxHeight, /^\d+px$/, "a real computed pixel max-height, not the CSS 76vh fallback string");
+
+    const listenersBeforeClose = doc.defaultView._listeners.resize.length;
+    assert.ok(listenersBeforeClose >= 1, "opening the panel must register its own resize listener");
+
+    // Shrink the viewport -- the panel's own max-height must shrink to match.
+    doc.defaultView.innerHeight = 300;
+    doc.defaultView._listeners.resize.forEach((fn) => fn());
+    assert.notEqual(panel.style.maxHeight, initialMaxHeight, "resizing the window must recompute the max-height");
+    const shrunkPx = Number(panel.style.maxHeight.replace("px", ""));
+    assert.ok(shrunkPx < Number(initialMaxHeight.replace("px", "")), "a smaller viewport must yield a smaller computed max-height");
+
+    handle.close();
+    assert.equal(doc.defaultView._listeners.resize.length, listenersBeforeClose - 1, "closing the panel must remove its own resize listener");
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: an anchor pinned near the bottom edge still gets a usable (floored) max-height, not a sliver", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    // Anchor sits almost at the bottom of an 800px viewport -- almost no
+    // room below it at all.
+    anchor._rect = { left: 10, top: 770, right: 240, bottom: 790, width: 230, height: 20 };
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    const panel = findAll(handle.overlay, "wtn-cs-panel")[0];
+    const px = Number(panel.style.maxHeight.replace("px", ""));
+    assert.ok(px >= MIN_RESULTS_HEIGHT_PX, "the panel still reserves at least the results floor even with almost no room below the anchor");
     handle.close();
   } finally {
     restoreFetch();
