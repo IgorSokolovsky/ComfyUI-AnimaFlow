@@ -50,10 +50,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 from ._preview_helpers import (
     build_preview_ui_images,
     extract_seed_from_prompt,
+    record_history_entries,
     resolve_run_stage_labels,
     resolve_save_stages,
     resolve_wired_stages,
@@ -213,6 +215,29 @@ class AnimaPreview:
             wired=wired, preview_stages=preview_stages, stages_to_save=stages_to_save,
             preview_settings=settings, seed=seed, prompt=prompt, extra_pnginfo=extra_pnginfo,
         )
+
+        # Generation history (owner-requested feature) -- one entry per
+        # `ui_images` item, for BOTH the auto-save and the temp-preview path
+        # (this run's REAL `anima_stages` payload, exactly what the frontend
+        # is about to receive below). `record_history_entries` is best-effort
+        # by its own contract, but this call is wrapped again anyway -- a
+        # history failure (a corrupt tensor, an import that somehow didn't
+        # resolve) must never be why a generation run itself errors, and
+        # this node's own module docstring's whole point is "thin, calls
+        # helpers" -- the try/except belongs at this call site, not buried
+        # inside every helper it might ever call.
+        try:
+            try:
+                from ...src.anima.preview_settings import resolve_history_settings_snapshot  # type: ignore
+            except ImportError:
+                from src.anima.preview_settings import resolve_history_settings_snapshot
+            record_history_entries(
+                ui_images, wired=wired, seed=seed,
+                settings=resolve_history_settings_snapshot(metadata_json),
+                timestamp=time.time(),
+            )
+        except Exception:
+            pass
 
         # Server-side console line (task brief): how many images arrived,
         # which stage labels they resolved to, and -- per stage -- whether

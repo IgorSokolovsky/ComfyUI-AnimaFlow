@@ -304,6 +304,44 @@ def test_split_preview_stages_routes_saved_stages_to_output_the_rest_to_temp():
     assert routing_extra_save == {"output": ["final"], "temp": []}
 
 
+def test_resolve_history_settings_snapshot_parses_and_stringifies_the_seed():
+    metadata = json.dumps({
+        "schema": "x", "version": 1, "stage_labels": ["base"],
+        "sampler": {"seed": 16963467365598029952, "steps": 32},
+    })
+    snapshot = ps.resolve_history_settings_snapshot(metadata)
+    assert snapshot["schema"] == "x"
+    # A 20-digit int survives byte-for-byte as a STRING (never a JSON
+    # number, same precision-safety rule as `anima_seed`/`sampler.seed`
+    # elsewhere in this track).
+    assert snapshot["sampler"]["seed"] == "16963467365598029952"
+    assert isinstance(snapshot["sampler"]["seed"], str)
+    assert snapshot["sampler"]["steps"] == 32
+
+
+def test_resolve_history_settings_snapshot_never_mutates_its_input_string():
+    # Parsing must not have any observable side effect on the caller's own
+    # value -- `metadata_json` is a plain string here, so this is really
+    # asserting idempotency/no-crash on repeated calls with the same input.
+    metadata = json.dumps({"sampler": {"seed": 5}})
+    first = ps.resolve_history_settings_snapshot(metadata)
+    second = ps.resolve_history_settings_snapshot(metadata)
+    assert first == second == {"sampler": {"seed": "5"}}
+
+
+def test_resolve_history_settings_snapshot_missing_or_garbage_returns_none():
+    assert ps.resolve_history_settings_snapshot(None) is None
+    assert ps.resolve_history_settings_snapshot("") is None
+    assert ps.resolve_history_settings_snapshot("not json") is None
+    assert ps.resolve_history_settings_snapshot(json.dumps([1, 2, 3])) is None
+    assert ps.resolve_history_settings_snapshot(12345) is None
+
+
+def test_resolve_history_settings_snapshot_tolerates_a_missing_sampler_block():
+    snapshot = ps.resolve_history_settings_snapshot(json.dumps({"stage_labels": ["base"]}))
+    assert snapshot == {"stage_labels": ["base"]}
+
+
 ALL_TESTS = [
     test_defaults_shape,
     test_unknown_keys_survive,
@@ -340,6 +378,10 @@ ALL_TESTS = [
     test_resolve_run_stage_labels_falls_back_on_garbage_metadata,
     test_resolve_run_stage_labels_falls_back_when_stage_labels_missing_or_wrong_shape,
     test_resolve_run_stage_labels_zero_images_yields_empty_list,
+    test_resolve_history_settings_snapshot_parses_and_stringifies_the_seed,
+    test_resolve_history_settings_snapshot_never_mutates_its_input_string,
+    test_resolve_history_settings_snapshot_missing_or_garbage_returns_none,
+    test_resolve_history_settings_snapshot_tolerates_a_missing_sampler_block,
 ]
 
 

@@ -82,11 +82,46 @@ def test_save_now_impl_normalizes_a_missing_preview_state():
         api.save_now = original
 
 
+def test_history_list_impl_wraps_resolve_history_view():
+    from src.anima import api
+
+    # Same "patch the NAME api.py actually calls" discipline as
+    # `test_save_now_impl_ok_shape` above -- `api.py` does `from ...nodes.
+    # anima._preview_helpers import resolve_history_view`, so the name it
+    # calls lives in `api`'s own namespace.
+    original = api.resolve_history_view
+    try:
+        api.resolve_history_view = lambda: [
+            {"id": 1, "stage": "final", "seed": "1", "filename": "a.png", "subfolder": "", "type": "output",
+             "timestamp": 1.0, "width": 8, "height": 8, "settings": None, "expired": False},
+        ]
+        result = api.history_list_impl({})
+        assert result["ok"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["filename"] == "a.png"
+    finally:
+        api.resolve_history_view = original
+
+
+def test_history_list_impl_tolerates_no_payload_at_all():
+    from src.anima import api
+
+    original = api.resolve_history_view
+    try:
+        api.resolve_history_view = lambda: []
+        result = api.history_list_impl()
+        assert result == {"ok": True, "entries": []}
+    finally:
+        api.resolve_history_view = original
+
+
 ALL_TESTS = [
     test_anima_api_imports_without_comfyui,
     test_save_now_impl_ok_shape,
     test_save_now_impl_reports_a_readable_error_not_a_traceback,
     test_save_now_impl_normalizes_a_missing_preview_state,
+    test_history_list_impl_wraps_resolve_history_view,
+    test_history_list_impl_tolerates_no_payload_at_all,
 ]
 
 

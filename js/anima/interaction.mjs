@@ -2619,6 +2619,15 @@ export function buildPreviewBody(doc, node, ctx) {
     saveRow.appendChild(buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed));
   }
   saveRow.appendChild(buildSaveRow(doc, node, ctx, state));
+  // The "History" button (owner-requested generation-history feature) --
+  // appended LAST, so `.wtn-an-saverow`'s flex layout (Save card's own
+  // `flex: 1 1 auto`) leaves it pinned at the row's right edge regardless
+  // of whether "Save now" is present -- same reasoning `.wtn-an-saverow`'s
+  // own CSS comment already gives for the Save card claiming whatever's
+  // left. Always visible (not conditioned on `save.enabled`): the history
+  // it opens covers every image that ever passed through this node, saved
+  // or not, so there is no state in which hiding it would be correct.
+  saveRow.appendChild(buildHistoryButton(doc, node, ctx));
   body.appendChild(saveRow);
 
   body.appendChild(buildCompareCard(doc, node, ctx, state));
@@ -2938,6 +2947,67 @@ function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
   });
 
   return row;
+}
+
+/**
+ * The "History" button (owner-requested generation-history feature) --
+ * opens `js/anima/history.mjs`'s panel, lazily imported (this file's own top
+ * doc comment: `history.mjs` is never a static import here, matching every
+ * other per-node `.mjs` library this track loads on demand rather than
+ * paying for it on every page load). A second click on an already-open
+ * panel closes it (`openHistoryPanel`'s own `closeOverlayIfOwnedBy` toggle,
+ * same contract as every other opener in this pack) -- there's nothing to
+ * wire for that HERE, it's `history.mjs`'s own job.
+ *
+ * `previewStateJson` is threaded through so "Save it now" on a HISTORICAL
+ * entry uses this node's own currently-configured save settings (extension/
+ * path/filename template), the same settings its own Save-now button
+ * already posts -- read fresh at CLICK time (not captured once at row-build
+ * time), so an edit to Save's settings between opening the panel and
+ * clicking a historical entry's own "Save it now" is still honoured.
+ */
+function buildHistoryButton(doc, node, ctx) {
+  const btn = el(doc, "button");
+  btn.type = "button";
+  btn.className = "wtn-btn wtn-btn--ghost wtn-an-histbtn";
+  btn.textContent = "History";
+  // The history itself is SESSION-wide, not per-node (design decision 1:
+  // one process-wide ring records every `AnimaPreview` run, regardless of
+  // which node instance produced it) -- the tooltip says so, rather than
+  // implying (wrongly) that this shows only what THIS node produced.
+  btn.title = "Browse every image that has passed through any Anima Preview node this session.";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    import("./history.mjs")
+      .then((mod) => {
+        const widget = getPreviewStateWidget(node);
+        mod.openHistoryPanel({
+          ctx,
+          anchorEl: btn,
+          // Node-specific, NOT a single shared key -- the PANEL CONTENT is
+          // the same session-wide list regardless of which node's button
+          // opened it, but the ANCHOR is this specific button. A shared key
+          // across every Preview node would make clicking node B's History
+          // while node A's panel is still open silently CLOSE node A's
+          // panel (the toggle contract every opener in this pack shares)
+          // instead of opening one anchored to B -- keying by `node.id`
+          // means a different node's click always opens fresh (closing the
+          // other one via `closeOverlaysNotAncestorOf`, same as any other
+          // unrelated overlay), and only a second click on the SAME
+          // button's own node toggles it closed.
+          ownerKey: `anima-history:${node && node.id != null ? node.id : "?"}`,
+          previewStateJson: (widget && widget.value) || "{}",
+        });
+      })
+      .catch(() => {
+        // No live ComfyUI page to serve `./history.mjs` from (e.g. this
+        // click somehow fired in an environment with no module loader) --
+        // there is nothing more specific to report; failing silently here
+        // matches every other guarded dynamic `import()` in this pack
+        // (`render.mjs`/`model_info.mjs`'s own `injectStyles`).
+      });
+  });
+  return btn;
 }
 
 export function mountPreviewUI(node, ctx) {

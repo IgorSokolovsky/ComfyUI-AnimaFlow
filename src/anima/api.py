@@ -1,24 +1,59 @@
-"""aiohttp route for `js/anima/`'s Preview "Save now" button (task item 6):
+"""aiohttp routes for `js/anima/`'s Preview node -- the "Save now" button
+(task item 6) and the generation-history panel (owner-requested feature):
 
     POST /wtn/anima/preview/save_now
       {stages: {stage: {filename, subfolder, type}}, preview_state: "...json...",
        seed: "1234...decimal-string" | absent}
       -> {ok: true, filename, subfolder, stage} | {ok: false, error: "..."}
 
-Fires when the user clicks "Save now" on a Preview node whose
+    GET /wtn/anima/preview/history
+      -> {ok: true, entries: [{id, stage, seed, filename, subfolder, type,
+                                timestamp, width, height, settings, expired}, ...]}
+
+`save_now` fires when the user clicks "Save now" on a Preview node whose
 `preview.save.enabled` is off (the new default, task item 6) -- it writes
 the best-available stage (`final` -> `mid` -> `base`) through the exact same
 filename template + save path a normal enabled save would use, on demand,
 without turning saving on. This runs OUTSIDE a graph run, so there is no
 `AnimaPreview.preview()` execution to piggyback on; that is exactly why a
 small dedicated route exists (task brief) rather than re-queuing the graph.
+**It is also what a history entry's own "Save it now" action calls** -- the
+route takes an arbitrary `{stage: {filename, subfolder, type}}` map, not
+"the current run's" specifically, so a historical entry (any stage, any
+run) already fits this exact same contract with no change needed here: the
+frontend simply posts a single-entry `stages` map built from the history
+entry itself, `resolve_save_now_stage` picks it (it's the only one on
+offer), and `save_now`'s own existence check is what turns an already-
+cleaned-up temp file into the SAME readable `SaveNowError` a mid-session
+one would (see `_preview_helpers.save_now`'s own doc comment) -- confirmed
+by reading it, not assumed; see the build report.
 
-The actual decision (which stage wins) and file I/O both live in
-`nodes/anima/_preview_helpers.py`'s `save_now` (impure, folder_paths/PIL) --
+`history` lists `src/anima/history.STORE`'s entries (newest first, already
+bounded), each annotated with `expired` (`nodes/anima/_preview_helpers.
+resolve_history_view`'s own existence check -- see that function's doc
+comment for why this is a single stat call per entry, never a directory
+scan). Investigated ComfyUI's own `/history` endpoint first per the task
+brief and chose NOT to read it -- `src/anima/history.py`'s own top doc
+comment has the full ruling (no `stage` label on its `outputs`, and it
+would make this pack's own history dependent on ComfyUI-version internals
+it doesn't control).
+
+The actual decisions (which stage `save_now` wins, the ring's own
+bounding/ordering/eviction, the existence check) all live in
+`nodes/anima/_preview_helpers.py` / `src/anima/history.py` / `src/anima/
+preview_settings.py` (impure/pure per `.claude/CLAUDE.md`'s own rule) --
 this module is JUST the aiohttp wiring, the thinnest possible layer,
 following `src/prompt_rules/api/rules_api.py`'s own precedent: pure/impure
 logic lives elsewhere, this file only translates an HTTP request into a
 plain-Python call and its result back into a JSON response.
+
+`history_list_impl`'s aiohttp handler runs it through `loop.run_in_executor`
+(`src/model_browser/api.py`'s own precedent, itself citing `src/autocomplete/
+api.py` -- real filesystem work, here the per-entry existence check, must
+never run inline on ComfyUI's single-threaded event loop). `save_now_impl`'s
+own handler does NOT do this yet -- a pre-existing gap in this module this
+task did not introduce and, per its own scope, does not silently fix; flagged
+in the build report rather than left unmentioned.
 
 Route REGISTRATION needs a live ComfyUI `server.PromptServer` instance, so
 the `from server import PromptServer` import (and the aiohttp import it
@@ -37,10 +72,14 @@ try:
     # `nodes/anima/preview.py` (also two components deep, `nodes`/`anima`)
     # already uses for the mirror-image reach (THREE dots: `anima` -> `src`
     # -> pack root).
-    from ...nodes.anima._preview_helpers import SaveNowError, save_now  # type: ignore
+    from ...nodes.anima._preview_helpers import (  # type: ignore
+        SaveNowError,
+        resolve_history_view,
+        save_now,
+    )
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
-    from nodes.anima._preview_helpers import SaveNowError, save_now
+    from nodes.anima._preview_helpers import SaveNowError, resolve_history_view, save_now
 
 try:
     from .preview_settings import normalize_preview_settings  # type: ignore
@@ -95,7 +134,24 @@ def save_now_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, **result}
 
 
+def history_list_impl(payload: Dict[str, Any] = None) -> Dict[str, Any]:  # noqa: RUF013 - matches this module's own style
+    """`GET /wtn/anima/preview/history`'s pure-python body -- takes a
+    (currently unused) payload purely so its signature matches every other
+    `*_impl` in this pack (`payload or {}` is dead code here today, kept for
+    consistency and so a future query-string filter has somewhere to land
+    without changing this function's shape). Never raises: `resolve_history_
+    view` itself only ever degrades a bad entry to `expired: True` (that
+    function's own doc comment), so there is nothing left here that could
+    fail.
+    """
+    payload = payload or {}
+    return {"ok": True, "entries": resolve_history_view()}
+
+
 try:
+    import asyncio
+    import functools
+
     from aiohttp import web
     from server import PromptServer
 
@@ -108,9 +164,21 @@ try:
         status = 200 if result.get("ok") else 400
         return web.json_response(result, status=status)
 
+    @routes.get("/wtn/anima/preview/history")
+    async def _route_history(request):  # noqa: ANN001 - aiohttp handler signature
+        # `run_in_executor` -- `resolve_history_view` does real filesystem
+        # work (one existence stat per entry, `_preview_helpers.py`'s own
+        # doc comment), which must never run inline on ComfyUI's single-
+        # threaded event loop -- same `src/model_browser/api.py`/`src/
+        # autocomplete/api.py` precedent this module's own top doc comment
+        # cites (a MAJOR review finding earlier today, per the task brief).
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, functools.partial(history_list_impl, {}))
+        return web.json_response(result, status=200)
+
 except Exception:  # noqa: BLE001 - any failure here means "not running inside ComfyUI"
-    # VERIFY-IN-COMFYUI: route registration itself (the decorator above) only
-    # actually runs inside a live ComfyUI process with `server.py`'s
+    # VERIFY-IN-COMFYUI: route registration itself (the decorators above)
+    # only actually runs inside a live ComfyUI process with `server.py`'s
     # `PromptServer.instance` constructed; not exercised by the plain-script
-    # tests, which only call `save_now_impl` directly.
+    # tests, which only call `save_now_impl`/`history_list_impl` directly.
     pass

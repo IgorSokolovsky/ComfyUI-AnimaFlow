@@ -46,6 +46,7 @@ try:
         resolve_wired_stages,
         split_preview_stages,
     )
+    from ...src.anima.history import STORE as _HISTORY_STORE  # type: ignore
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
     from src.anima.preview_settings import (
@@ -59,6 +60,7 @@ except ImportError:
         resolve_wired_stages,
         split_preview_stages,
     )
+    from src.anima.history import STORE as _HISTORY_STORE
 
 # `resolve_save_stages`/`resolve_wired_stages`/`resolve_run_stage_labels` are
 # re-exported (unused directly in THIS module -- `build_preview_ui_images`
@@ -72,6 +74,8 @@ __all__ = [
     "SaveNowError",
     "build_preview_ui_images",
     "extract_seed_from_prompt",
+    "record_history_entries",
+    "resolve_history_view",
     "resolve_run_stage_labels",
     "resolve_save_now_stage",
     "resolve_save_stages",
@@ -472,6 +476,144 @@ def build_preview_ui_images(
     for stage in preview_stages:
         ordered.extend(by_stage.get(stage, []))
     return ordered
+
+
+# ---------------------------------------------------------------------------
+# Generation history (owner-requested feature) -- `record_history_entries`
+# is called by `nodes/anima/preview.py` right after `build_preview_ui_images`
+# resolves this run's entries (both the auto-save and the temp-preview
+# path); `resolve_history_view` is what `src/anima/api.py`'s listing route
+# calls. The RING itself (bounding/ordering/eviction) is pure, in
+# `src/anima/history.py` -- everything here is the impure half: reading a
+# tensor's own width/height, and (for listing) the on-disk existence check
+# that turns a stale entry into "expired".
+# ---------------------------------------------------------------------------
+
+
+def _tensor_size(image_tensor: Any) -> "tuple[int, int]":
+    """A batched `IMAGE` tensor's own `(width, height)`, read straight off
+    its `.shape` (`[B, H, W, C]`, stock ComfyUI layout) -- no PIL, no numpy,
+    just an attribute read, so this stays cheap enough to call once per
+    stage on every run regardless of `save.enabled`. Never raises: a
+    non-tensor, a tensor with an unexpected rank, or a missing `.shape`
+    degrades to `(0, 0)` rather than ever being the reason a history record
+    (or the run it's attached to) fails.
+    """
+    try:
+        shape = image_tensor.shape
+        return int(shape[2]), int(shape[1])
+    except Exception:
+        return 0, 0
+
+
+def record_history_entries(
+    entries: List[Dict[str, Any]],
+    *,
+    wired: Dict[str, Optional[Any]],
+    seed: Any,
+    settings: Any,
+    timestamp: Any,
+    store: Any = None,
+) -> None:
+    """Append one `src/anima/history.STORE` entry per item in `entries`
+    (`build_preview_ui_images`'s own return -- this run's REAL `anima_stages`
+    payload, one entry per stage present this run, whether it landed as a
+    real output file or an ephemeral temp one) -- `nodes/anima/preview.py`'s
+    own call site is what supplies `wired` (for each stage's tensor, to read
+    its size), `seed` (the same resolved seed the `anima_seed` ui payload
+    carries), `settings` (the generation-settings snapshot -- that module's
+    own comment on where it comes from), and `timestamp` (a single value for
+    every entry from the same run -- they all happened at the same moment).
+
+    **Never raises** -- a history-recording failure must never be the reason
+    a generation errors (task brief). Every per-entry `store.record` call is
+    individually guarded, so one malformed entry can't stop the rest of the
+    run's entries from being recorded.
+
+    `store` is dependency-injected (defaults to the real
+    `src.anima.history.STORE` singleton) purely so a test can pass its own
+    throwaway `HistoryStore` instance instead of mutating the process-wide
+    one, matching this module's existing `save_fn`/`temp_fn`/`*_fn`
+    injection convention.
+    """
+    target = store if store is not None else _HISTORY_STORE
+    for item in entries if isinstance(entries, list) else []:
+        try:
+            if not isinstance(item, dict):
+                continue
+            stage = item.get("stage")
+            width, height = _tensor_size(wired.get(stage)) if isinstance(wired, dict) else (0, 0)
+            target.record(
+                stage=stage,
+                seed=seed,
+                filename=item.get("filename"),
+                subfolder=item.get("subfolder"),
+                file_type=item.get("type"),
+                timestamp=timestamp,
+                width=width,
+                height=height,
+                settings=settings,
+            )
+        except Exception:
+            # Best-effort, by design -- see this function's own doc comment.
+            continue
+
+
+def resolve_history_view(
+    *,
+    output_dir_fn: Optional[Callable[[], str]] = None,
+    temp_dir_fn: Optional[Callable[[], str]] = None,
+    exists_fn: Optional[Callable[[str], bool]] = None,
+    store: Any = None,
+) -> List[Dict[str, Any]]:
+    """`src/anima/api.py`'s `/wtn/anima/preview/history` route calls this
+    directly. Every entry from `src/anima/history.STORE.list_entries()`
+    (already newest-first, already bounded), annotated with one extra field,
+    `expired`: `True` when the entry's own on-disk file is no longer there
+    (`temp` cleaned up mid-session by ComfyUI itself, or an `output` file
+    moved/deleted by hand) -- the ONE thing the pure ring can't know on its
+    own, since it never touches a filesystem.
+
+    **The existence check happens HERE, at listing time** (the task brief's
+    own "obvious answer"), and it is a single `exists_fn` call per entry
+    against that entry's OWN already-known path -- never a directory scan
+    (`os.listdir`), so a large (up to `history.MAX_HISTORY_ENTRIES`) history
+    costs at most that many cheap stat calls, not one scan whose cost grows
+    with how much *else* is in the output/temp directory. `output_dir_fn`/
+    `temp_dir_fn`/`exists_fn` are dependency-injected (this module's existing
+    convention, matching `save_now`'s own parameters) so a test can point
+    this at a real temp directory without needing a live `folder_paths`.
+    """
+    target = store if store is not None else _HISTORY_STORE
+    get_output_dir = output_dir_fn if output_dir_fn is not None else _real_output_dir
+    get_temp_dir = temp_dir_fn if temp_dir_fn is not None else _real_temp_dir
+    exists = exists_fn if exists_fn is not None else _os_path_isfile
+
+    out: List[Dict[str, Any]] = []
+    for entry in target.list_entries():
+        root = get_output_dir() if entry.get("type") == "output" else get_temp_dir()
+        path = _join_path(root, entry.get("subfolder") or "", entry.get("filename") or "")
+        try:
+            expired = not exists(path)
+        except Exception:
+            # A hostile/garbage entry (shouldn't happen -- `HistoryStore.
+            # record` already coerces every field) is reported expired
+            # rather than crashing the whole listing over one bad row.
+            expired = True
+        out.append({**entry, "expired": expired})
+    return out
+
+
+def _os_path_isfile(path: str) -> bool:
+    import os
+
+    return os.path.isfile(path)
+
+
+def _join_path(root: str, subfolder: str, filename: str) -> str:
+    import os
+
+    return os.path.join(root, subfolder or "", filename or "")
 
 
 # ---------------------------------------------------------------------------

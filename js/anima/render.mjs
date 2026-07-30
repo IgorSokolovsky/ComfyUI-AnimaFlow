@@ -607,6 +607,24 @@ function buildCss() {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .wtn-an-savenow-status.wtn-an-savenow-err { color: var(--wtn-bad, ${TOKENS.bad}); }
 
+/* ── the "History" button (owner-requested generation-history feature) --
+   the THIRD child of \`.wtn-an-saverow\` (\`interaction.mjs\`'s
+   \`buildHistoryButton\`, appended after the Save card): always visible
+   (not conditioned on \`save.enabled\`, unlike "Save now"), \`flex: none\`
+   like "Save now" itself, so \`.wtn-an-saverow > .wtn-an-shead\`'s own
+   \`flex: 1 1 auto\` (the Save card) is the only thing in the row that
+   grows -- this button and "Save now" both keep their own intrinsic
+   button width and end up pinned at the row's two ends. Same
+   height-pinning trick as \`.wtn-an-savenow-btn\` right above (\`SHEAD_H\`
+   via \`SAVE_NOW_BTN_H\`, \`.wtn-btn\`'s shared vertical padding zeroed so
+   the override actually lands) -- reuses the SAME constant rather than a
+   second one, since both buttons live in the same row and must match its
+   height exactly. \`.wtn-btn--ghost\` (theme.css) is the plain outlined
+   variant -- this is a secondary action beside "Save now"'s primary CTA,
+   not a second primary button competing for attention. ── */
+.wtn-an-histbtn.wtn-btn { height: ${SAVE_NOW_BTN_H}px; padding-top: 0; padding-bottom: 0;
+  display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; flex: none; }
+
 /* ── the Compare CARD (2026-07-29, replaces the old bottom \`.wtn-an-pvbar\`
    row entirely) -- SAME chrome as a section card: it's a plain
    \`.wtn-an-shead\` (\`buildSectionHeader({hasChevron: false, hasGear: false,

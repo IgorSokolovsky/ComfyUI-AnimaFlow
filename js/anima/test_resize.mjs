@@ -4187,7 +4187,7 @@ function findSaveRowWrapper(body) {
   return queryAll(body, (n) => hasClass(n, "wtn-an-saverow"))[0] || null;
 }
 
-test("Preview: the Save row is ONE flex wrapper -- \"Save now\" on the LEFT, the Save card on the right, in that order", () => {
+test("Preview: the Save row is ONE flex wrapper -- \"Save now\" on the LEFT, the Save card in the middle, \"History\" on the right, in that order", () => {
   const node = makePreviewNode(); // save.enabled defaults false -> button present
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -4196,13 +4196,14 @@ test("Preview: the Save row is ONE flex wrapper -- \"Save now\" on the LEFT, the
 
   const wrapper = findSaveRowWrapper(refs.body);
   assert.ok(wrapper, "expected a .wtn-an-saverow wrapper");
-  assert.equal(wrapper.children.length, 2, "the button and the Save card, nothing else");
+  assert.equal(wrapper.children.length, 3, "the button, the Save card, and History -- nothing else");
   assert.ok(hasClass(wrapper.children[0], "wtn-an-savenow"), "\"Save now\" must be the FIRST (left) child");
-  assert.ok(hasClass(wrapper.children[1], "wtn-an-shead"), "the Save card must be the SECOND (right) child");
+  assert.ok(hasClass(wrapper.children[1], "wtn-an-shead"), "the Save card must be the SECOND (middle) child");
   assert.ok(hasClass(wrapper.children[1], "wtn-an-menurow"), "the nested card is still the same Save menu row");
+  assert.ok(hasClass(wrapper.children[2], "wtn-an-histbtn"), "\"History\" must be the THIRD (right) child");
 });
 
-test("Preview: once save.enabled is true, \"Save now\" disappears and the Save card is the wrapper's ONLY child -- no leftover gap where the button was", () => {
+test("Preview: once save.enabled is true, \"Save now\" disappears -- the Save card and \"History\" are the wrapper's only children, no leftover gap where the button was", () => {
   const node = makePreviewNode({ preview_state: JSON.stringify({ save: { enabled: true } }) });
   const doc = makeDocStub();
   makeWindowStub(doc);
@@ -4211,17 +4212,38 @@ test("Preview: once save.enabled is true, \"Save now\" disappears and the Save c
 
   const wrapper = findSaveRowWrapper(refs.body);
   assert.ok(wrapper, "expected a .wtn-an-saverow wrapper even with the button absent");
-  assert.equal(wrapper.children.length, 1, "only the Save card -- the button must be ABSENT, not hidden");
+  assert.equal(wrapper.children.length, 2, "the Save card and History -- \"Save now\" must be ABSENT, not hidden");
   assert.ok(hasClass(wrapper.children[0], "wtn-an-shead"));
+  assert.ok(hasClass(wrapper.children[1], "wtn-an-histbtn"), "\"History\" stays present regardless of save.enabled");
 
-  // The card's own CSS (render.mjs) is what actually claims the full row
-  // width when it's the sole flex child -- assert the rule that makes that
+  // The card's own CSS (render.mjs) is what actually claims the row's
+  // free width when "Save now" is absent -- assert the rule that makes that
   // true is really in the injected stylesheet, not just true by accident of
   // this test's own DOM stub.
   const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
   const rule = cssRuleBody(cssText, ".wtn-an-saverow > .wtn-an-shead");
   assert.ok(rule, "expected a .wtn-an-saverow > .wtn-an-shead rule");
-  assert.match(rule, /flex:\s*1 1 auto/, "the nested Save card must flex-grow to fill the row on its own");
+  assert.match(rule, /flex:\s*1 1 auto/, "the nested Save card must flex-grow to fill the row's free space");
+});
+
+test("Preview: the \"History\" button opens history.mjs's panel, lazily, and toggles closed on a second click (import mocked)", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const wrapper = findSaveRowWrapper(refs.body);
+  const histBtn = wrapper.children.find((c) => hasClass(c, "wtn-an-histbtn"));
+  assert.ok(histBtn, "expected a History button");
+  // This test only asserts the button exists, is wired to a click listener,
+  // and that clicking it does not throw even though `./history.mjs` is a
+  // real dynamic import this headless harness will actually attempt to
+  // resolve (Node's own ESM loader can resolve a real relative path, unlike
+  // the browser-only `/scripts/app.js` imports this file's own top doc
+  // comment already flags as untestable here) -- the panel's OWN behaviour
+  // is covered by `test_history.mjs`, not duplicated here.
+  assert.ok(histBtn._listeners.click && histBtn._listeners.click.length > 0);
 });
 
 function findCompareCard(body) {

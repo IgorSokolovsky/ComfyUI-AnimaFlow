@@ -127,6 +127,49 @@ def resolve_run_stage_labels(image_count: int, metadata_json: Any) -> List[str]:
     return labels
 
 
+def resolve_history_settings_snapshot(metadata_json: Any) -> Optional[Dict[str, Any]]:
+    """The generation-settings snapshot a history entry stores (owner-
+    requested feature) -- parses the Generator's own `metadata_json` (the
+    SAME string `resolve_run_stage_labels` above already parses for
+    `stage_labels`; this is the "keep the label mapping in exactly one pure
+    place" module's other read of that string, not a second copy of ITS
+    parsing -- both simply call `json.loads` on their own, since neither
+    needs the other's result). Returns `None` for anything that doesn't
+    parse to a JSON object (missing/garbage `metadata_json`, a producer
+    that isn't `AnimaGenerator`) -- a history entry with no settings snapshot
+    is a normal, honestly-reported state (`js/anima/`'s panel shows "not
+    available"), never a crash.
+
+    **Defensively re-stringifies `sampler.seed` if present.** `pipeline.
+    run_generator`'s own `metadata` dict stores the RESOLVED seed as a
+    Python `int` (arbitrary precision) before `json.dumps`-ing it -- fine
+    for a same-process read, but this snapshot is stored here for a LATER
+    trip through a JSON HTTP response and a browser's own `JSON.parse`,
+    which loses precision past `Number.MAX_SAFE_INTEGER` for a real 20-digit
+    seed. Converting it to a decimal STRING before it ever reaches that
+    boundary is the same "seed is a string on the wire" discipline design
+    doc §8 already applies to `generation_settings.sampler.seed` and
+    `preview.py`'s own `anima_seed` ui payload -- applied here too, on a
+    COPY (never mutates a dict some other caller might still hold).
+    """
+    if not isinstance(metadata_json, str) or not metadata_json:
+        return None
+    try:
+        parsed = json.loads(metadata_json)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    snapshot = dict(parsed)
+    sampler = snapshot.get("sampler")
+    if isinstance(sampler, dict) and "seed" in sampler:
+        sampler = dict(sampler)
+        sampler["seed"] = str(sampler["seed"]) if sampler["seed"] is not None else None
+        snapshot["sampler"] = sampler
+    return snapshot
+
+
 def resolve_wired_stages(wired: Dict[str, Any]) -> List[str]:
     """Every stage actually present in `wired` (a `{stage: tensor}` dict,
     already built from this run's `images` list + its stage labels), in
