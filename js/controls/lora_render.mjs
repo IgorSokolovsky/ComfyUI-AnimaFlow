@@ -104,20 +104,39 @@
  *     conclusion from that saga generalizes here rather than being
  *     re-litigated per node.
  *
- * ## Icons: CSS-mask glyphs, not emoji (`.claude/CLAUDE.md`,
- * `js/prompt_rules/rule_builder/index.js:44-92`'s precedent)
+ * ## Icons: 🔍 is a CSS-mask glyph, ⚙ is the pack's plain glyph (BUG 19,
+ * 2026-07-29 owner report)
  *
- * The header's 🔍/⚙ placeholders are drawn as `mask-image` data-URI SVGs
- * tinted via `currentColor`, matching the Rule Builder's own toolbar-icon
- * technique, rather than the literal emoji characters the mockup uses as
- * placeholders. Hand-rolled geometry (a ring+handle for search, a hub+8 teeth
- * for the gear) — not lifted from a named icon set, so there is nothing to
- * attribute. `⚙` is wired (Slice 5); `🔍` (search/browse) is rendered
- * **visibly disabled** (BUG 6, 2026-07-29 owner report: it "looks live but
- * does nothing") — dimmed, `cursor: default`, and a `title` naming search as
- * a later milestone — because M2 (Civitai search) hasn't landed yet, and a
- * normal-looking, silently-inert button reads as broken rather than
- * "not yet available".
+ * `🔍` is still drawn as a `mask-image` data-URI SVG tinted via `currentColor`
+ * (`.claude/CLAUDE.md`, `js/prompt_rules/rule_builder/index.js:44-92`'s
+ * precedent) — hand-rolled ring+handle geometry, not lifted from a named icon
+ * set, so there is nothing to attribute. It is rendered **visibly disabled**
+ * (BUG 6, 2026-07-29 owner report: it "looks live but does nothing") —
+ * dimmed, `cursor: default`, and a `title` naming search as a later milestone
+ * — because M2 (Civitai search) hasn't landed yet, and a normal-looking,
+ * silently-inert button reads as broken rather than "not yet available".
+ *
+ * `⚙` used to be a SECOND hand-rolled mask SVG (`GEAR_ICON_SVG`, BUG 12) —
+ * owner, 2026-07-29: "the settings icon is not good, it's not the same one we
+ * use in our rows and other nodes." The actual problem BUG 12 didn't fix was
+ * maintaining a second gear at all: the pack already has one, the plain `⚙`
+ * textContent glyph `js/controls/render.mjs`'s own `.wtn-ctl-gear` (row
+ * settings) and `js/shared/fields.mjs:822`'s `buildGearIcon` (Anima track)
+ * both use. `js/controls/` deliberately does not import `js/shared/
+ * fields.mjs` (an established layering rule for this track — see this file's
+ * "Vocabulary" doc comment above for the matching `.wtn-ctl-*` rule), so this
+ * header's `.wtn-lora-gear` matches `render.mjs`'s OWN plain-glyph CSS
+ * directly (`icon.textContent = "⚙"` + font-size/color, no mask, no SVG)
+ * rather than importing that dependency. `js/shared/fields.mjs:240-241`'s own
+ * comment is why the size differs from the ⓘ/body text at all: the ⚙ glyph
+ * renders with heavy internal whitespace inside its own em box, so a size
+ * that reads correctly for other text reads "small" for this one glyph —
+ * `render.mjs`'s row gear answers that at 14px in an 18px box; this header's
+ * `.wtn-lora-icon` box is the SAME 18px used by the 🔍 beside it, so the gear
+ * reuses that box rather than a new size, differing from `render.mjs` only
+ * in needing explicit `display:flex`/centering (a row's gear is centred by
+ * its OWN row's `align-items: center`; this header icon has no such parent
+ * rule, so it centres itself).
  */
 
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
@@ -181,16 +200,31 @@ export const ROW_H = 30;
 // strip -> rows-card) the owner did NOT ask to change.
 export const ROW_GAP = 4;
 export const HEADER_H = 30;
-// BUG 10 (2026-07-29 owner report): the node's own outer padding -- this is
-// what actually creates "the gap between the node's border and the card's
-// border" the owner asked for, since the header AND the rows-card are both
-// direct children of `.wtn-lora-root`, which is what carries this padding
-// on every side. Was an asymmetric `9px 9px 10px` (top/right/left 9, bottom
-// 10 -- a pre-existing 1px drift never driven by this constant at all, the
-// CSS used to hardcode its own literal instead of interpolating this one);
-// now a single uniform number, interpolated into the CSS below so the two
-// can never drift apart again, matching the owner's explicit "8px, on all
-// sides".
+// BUG 10 (2026-07-29 owner report) established this as "the gap between the
+// node's border and the card's border, 8px on all sides" -- but BUG 18
+// (2026-07-29 owner report, screenshots) found BUG 10's own mechanism wrong:
+// putting this on `.wtn-lora-root` AS PADDING meant left/right came out
+// "roughly double" (root's own padding stacking with something else giving
+// the card an additional offset) while the BOTTOM came out flush (0, not 8)
+// against the node's own border. Root cause: a flex COLUMN container's
+// `padding` is one box surrounding BOTH children at once, so root's own
+// padding can only ever describe "the same inset on every side" as a single
+// number -- it can't be the thing that's ALSO supposed to independently gap
+// the header from the top and the card from the bottom AND both from the
+// sides, once something else (BUG 18 never pinned down a live-DOM cause
+// beyond the owner's own screenshots -- see this file's `applyNodeChrome`-
+// adjacent comment below) already contributes its own inset on top of it.
+// BUG 18's fix: `.wtn-lora-root` carries NO padding of its own anymore (the
+// owner's own suggested fix, taken as-is) -- this constant now names a
+// MARGIN each of root's two direct children (the header, the rows-card)
+// carries on whichever of its own four sides face the node's edge (header:
+// top+left+right; card: left+right+bottom -- the header-to-card gap in
+// between is `HEADER_GAP`'s own job, unchanged, via root's own flex `gap`).
+// That is the ONLY layer contributing this inset now, on every side, so it
+// cannot double: there is nothing left inside this file's own CSS for it to
+// stack with. `contentHeight()`'s formula is unchanged in VALUE (re-derived,
+// below) -- moving a fixed amount from one child's padding to two children's
+// margins contributes the identical total to the flex column's own height.
 export const BODY_PAD = 8;
 // The gap between the header row and the rows-card below it (BUG 7's new
 // card wrapper) -- kept at the ORIGINAL 7px `ROW_GAP` used to share with
@@ -276,16 +310,19 @@ export const NAME_MIN_W = 130;
 // One stepper cell, no tag: value + gap + spinner.
 export const STEPPER_W = STR_VAL_W + STR_CELL_GAP + STR_SPIN_W; // 48
 
-// BUG 10 fix to BUG 7's own derivation: the row's available width is NOT
-// the node's full width -- it's the node's width MINUS every layer of
-// chrome between the node's outer edge and the row itself: the ROOT's own
-// left+right padding (`BODY_PAD`, BUG 10), then the CARD's left+right
-// padding (`CARD_PAD`) AND its left+right border (`CARD_BORDER`). BUG 7's
-// original MIN_W/MIN_W_SEP derivation only ever counted the ROW's OWN
-// internal padding (`ROW_PAD_L`/`ROW_PAD_R`) and silently omitted all three
-// of these -- meaning the floor it computed was already too narrow for the
-// row to actually fit in, even before BUG 10's card-gap request added any
-// NEW chrome. Fixed here rather than carried forward.
+// BUG 10 fix to BUG 7's own derivation, RE-DERIVED again for BUG 18
+// (2026-07-29 owner report): the row's available width is NOT the node's
+// full width -- it's the node's width MINUS every layer of chrome between
+// the node's outer edge and the row itself: the node-edge gap (`BODY_PAD` --
+// BUG 18 moved this from the ROOT's own left+right padding to the CARD's own
+// left+right MARGIN, but it is still exactly one `BODY_PAD` per side, so
+// this sum is UNCHANGED in value), then the CARD's own left+right padding
+// (`CARD_PAD`) AND its left+right border (`CARD_BORDER`). BUG 7's original
+// MIN_W/MIN_W_SEP derivation only ever counted the ROW's OWN internal
+// padding (`ROW_PAD_L`/`ROW_PAD_R`) and silently omitted all three of
+// these -- meaning the floor it computed was already too narrow for the row
+// to actually fit in, even before BUG 10's card-gap request added any NEW
+// chrome. Fixed here rather than carried forward.
 const OUTER_CHROME_W = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
 
 // grip · gap · name · gap · ONE stepper · gap · ⓘ · gap · switch, plus the
@@ -313,7 +350,9 @@ export const DEFAULT_W = 340;
 export const ADD_MIN_W = 112;
 
 // ---------------------------------------------------------------------------
-// Icons — CSS mask-image data URIs (see this module's top doc comment).
+// Icons — CSS mask-image data URI (see this module's top doc comment; ⚙ is
+// no longer one of these, BUG 19 -- it's the pack's plain textContent glyph,
+// styled in the CSS below next to `.wtn-lora-search`).
 // `<`/`>` percent-encoded (`%3C`/`%3E`) so the URL survives being embedded in
 // a CSS `url(...)`, matching `js/prompt_rules/rule_builder/index.js`'s own
 // `TOOLBAR_ICON_SVG` convention. Default SVG fill is black -- opaque enough
@@ -323,35 +362,30 @@ export const ADD_MIN_W = 112;
 const SEARCH_ICON_SVG =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M11 4a7 7 0 104.418 12.44l4.571 4.571 1.415-1.415-4.572-4.572A7 7 0 0011 4zm-5 7a5 5 0 1110 0 5 5 0 01-10 0z'/%3E%3C/svg%3E";
 
-// BUG 12 (2026-07-29 owner report): "the settings icon is incorrect" -- the
-// PREVIOUS geometry (body radius 3.6/hole 1.8, teeth spanning outer radius
-// 11 down to inner radius 7.4) left a ~3.8px empty ring between the body
-// and every tooth -- eight detached spokes around a small dot renders as a
-// sunburst/asterisk, not a gear, exactly as reported. Verified by RENDERING
-// (`.claude/skills/css-layout-diagnose-headless/SKILL.md` -- headless
-// Chrome, the icon masked at its real 18px `.wtn-lora-icon` size, not just
-// judged from the path numbers): the fix below reads as a gear at 18px.
-// New geometry -- body outer radius 7.2, hole radius 2.8 (still the SAME
-// `evenodd` two-circle-path technique, so the hole still comes from
-// `fill-rule='evenodd'`, not a lighter fill -- `mask-image` unions shapes
-// and discards colour, so a "hole" can ONLY ever be evenodd, never colour),
-// teeth spanning outer radius 11 down to INNER radius 6.8 -- inside the
-// body's own 7.2 radius, so they fuse into the rim with overlap to spare
-// instead of floating off it (mask overlaps are free, they union).
-const GEAR_ICON_SVG =
-  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M4.8 12a7.2 7.2 0 1 0 14.4 0a7.2 7.2 0 1 0 -14.4 0zM9.2 12a2.8 2.8 0 1 0 5.6 0a2.8 2.8 0 1 0 -5.6 0z'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(45 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(90 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(135 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(180 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(225 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(270 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(315 12 12)'/%3E%3C/svg%3E";
-
 const CSS = `
+/* BUG 18 (2026-07-29 owner report): NO padding here anymore -- see
+   'BODY_PAD''s own comment above for why root's own padding was the wrong
+   place for "gap from the node's border" (it doubled left/right, went flush
+   at the bottom). 'gap' stays -- that's the header-to-card gap
+   ('HEADER_GAP'), never the node-edge one, so it is unaffected by this fix. */
 .wtn-lora-root {
   display: flex; flex-direction: column; gap: ${HEADER_GAP}px; width: 100%; box-sizing: border-box;
-  padding: ${BODY_PAD}px; font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
 }
 
 /* ── header strip: ＋ Add LoRA · slack · master switch · N/M · 🔍 · ⚙ ──
    the slack itself is .wtn-lora-master's own margin-left: auto rule,
-   below -- this row is a plain flex container with no justify-content. */
-.wtn-lora-header { display: flex; align-items: center; gap: 8px; height: 30px; flex: none; }
+   below -- this row is a plain flex container with no justify-content.
+   BUG 18: 'margin' (top+left+right, no bottom -- root's own 'gap' above
+   already provides the header-to-card gap) is what now carries the node-
+   edge inset root's padding used to, so the header stays visually aligned
+   with the card below it rather than sitting flush against the node's own
+   left/right/top border once root's own padding was removed. */
+.wtn-lora-header {
+  display: flex; align-items: center; gap: 8px; height: 30px; flex: none;
+  margin: ${BODY_PAD}px ${BODY_PAD}px 0 ${BODY_PAD}px;
+}
 
 /* Content + padding, capped at 30% of the node -- must NOT flex, or it grows
    without limit on a wide node while the switch/counter/icons stay fixed
@@ -401,36 +435,59 @@ const CSS = `
   font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
 }
 
-/* 🔍 / ⚙ placeholders -- CSS-mask glyphs (see this module's top doc
-   comment). Reuses '.wtn-ctl-gear''s box (18px, centered, ink-faint ->
-   accent on hover) so the two icon buttons sit in the exact same slot a
-   Control/Loader Panel row's own ⚙ would. */
-.wtn-lora-icon {
-  flex: none; width: 18px; height: 18px; cursor: pointer;
+/* 🔍 / ⚙ -- shared 18px box only (this module's top doc comment: 🔍 stays a
+   CSS-mask glyph, ⚙ is now the pack's plain '⚙' textContent glyph, BUG 19 --
+   so the two no longer share a single "mask, tinted via background-color"
+   rule; each gets its OWN look below, in the SAME box). */
+.wtn-lora-icon { flex: none; width: 18px; height: 18px; cursor: pointer; }
+
+/* 🔍 -- CSS-mask glyph, tinted via background-color (only alpha survives a
+   mask, so "colour" here means "which solid colour paints the shape"). */
+.wtn-lora-icon.wtn-lora-search {
   background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
   mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat;
   mask-position: center; -webkit-mask-position: center;
+  mask-image: url("${SEARCH_ICON_SVG}"); -webkit-mask-image: url("${SEARCH_ICON_SVG}");
 }
-.wtn-lora-icon:hover { background-color: var(--wtn-accent, ${TOKENS.accent}); }
-.wtn-lora-icon.wtn-lora-search { mask-image: url("${SEARCH_ICON_SVG}"); -webkit-mask-image: url("${SEARCH_ICON_SVG}"); }
-.wtn-lora-icon.wtn-lora-gear { mask-image: url("${GEAR_ICON_SVG}"); -webkit-mask-image: url("${GEAR_ICON_SVG}"); }
+.wtn-lora-icon.wtn-lora-search:hover { background-color: var(--wtn-accent, ${TOKENS.accent}); }
 /* BUG 6 (2026-07-29 owner report): Civitai search/browse is M2, unbuilt --
    render this button VISIBLY disabled rather than a normal-looking control
    that silently does nothing on click. 'cursor: default' and a dimmed fill
-   (no hover accent at all -- the two rules below win on specificity over
-   the plain '.wtn-lora-icon'/':hover' rules above, regardless of source
-   order, since both carry an extra class). */
+   (no hover accent at all). Search-only -- ⚙ never carries this class. */
 .wtn-lora-icon.wtn-lora-icon-disabled { cursor: default; opacity: .45; }
 .wtn-lora-icon.wtn-lora-icon-disabled:hover { background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+
+/* ⚙ -- BUG 19 (2026-07-29 owner report: "the settings icon is not good,
+   it's not the same one we use in our rows and other nodes") -- the pack's
+   plain '⚙' textContent glyph, matching 'js/controls/render.mjs''s own
+   '.wtn-ctl-gear' colour/hover treatment exactly (ink-faint -> accent),
+   rather than importing 'js/shared/fields.mjs''s 'buildGearIcon' (this
+   track deliberately does not depend on that file -- see this module's top
+   doc comment). 'display:flex' + centering is the one thing this header's
+   version needs that a row's gear doesn't: a row centres its gear via the
+   ROW's own 'align-items: center'; this icon has no such parent rule of its
+   own, so it centres itself in its 18px box instead -- same glyph, same
+   size, only the centering mechanism differs (this file's own top doc
+   comment: "adjust the sizing, not the glyph"). */
+.wtn-lora-icon.wtn-lora-gear {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
+}
+.wtn-lora-icon.wtn-lora-gear:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
 
 /* ── rows-CARD (BUG 7, owner request, 2026-07-29): wraps the rows host +
    empty state in the pack's '.wtn-card' idiom ('js/shared/theme.css'), but
    with a PLAIN '--wtn-line-soft' border, never an accent -- see this file's
-   top doc comment for why that's settled rather than a fresh choice. ── */
+   top doc comment for why that's settled rather than a fresh choice.
+   BUG 18: 'margin' (left+right+bottom -- no top; the header-to-card gap is
+   root's own 'gap', HEADER_GAP, unchanged) is the card's own share of the
+   node-edge inset root's padding used to carry -- see 'BODY_PAD''s own
+   comment above for the full BUG 18 derivation. ── */
 .wtn-lora-rows-card {
   border: ${CARD_BORDER}px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   border-radius: var(--wtn-radius, 10px); background: var(--wtn-surface, ${TOKENS.surface});
   padding: ${CARD_PAD}px; box-sizing: border-box;
+  margin: 0 ${BODY_PAD}px ${BODY_PAD}px ${BODY_PAD}px;
 }
 
 /* ── rows host + empty state ── */
@@ -739,6 +796,9 @@ export function buildRoot(doc) {
   // presenting it as live.
   searchBtn.title = "Browse Civitai — arrives with search, not built yet";
   const settingsBtn = el(doc, "span", "wtn-lora-icon wtn-lora-gear");
+  // BUG 19 (2026-07-29 owner report): the pack's own plain '⚙' glyph, not a
+  // second hand-rolled mask SVG -- see this file's top doc comment.
+  settingsBtn.textContent = "⚙";
   settingsBtn.title = "LoRA Loader settings";
   header.appendChild(addBtn);
   header.appendChild(master);
@@ -1085,11 +1145,15 @@ export function buildSettingsPanel(doc) {
 // module's top doc comment.
 // ---------------------------------------------------------------------------
 
-/** Total node-body height for `rowCount` rows: top/bottom padding + the
- * header + one inter-block gap + the rows-CARD (BUG 7: border + padding on
- * both axes) wrapping either the rows themselves or the single empty-state
- * line (which occupies exactly one row's height, so the arithmetic never
- * branches on a DIFFERENT constant for the empty case).
+/** Total node-body height for `rowCount` rows: the top+bottom node-edge gap
+ * (`BODY_PAD` -- BUG 18 moved this from root's own padding to the header's/
+ * card's own margin, see `BODY_PAD`'s comment above; the TOTAL it contributes
+ * to this sum is unchanged, since `header.margin-top + card.margin-bottom`
+ * still sums to exactly `BODY_PAD * 2`, the same as `root`'s old top+bottom
+ * padding did) + the header + one inter-block gap + the rows-CARD (BUG 7:
+ * border + padding on both axes) wrapping either the rows themselves or the
+ * single empty-state line (which occupies exactly one row's height, so the
+ * arithmetic never branches on a DIFFERENT constant for the empty case).
  *
  * This is the WIDGET's own box height -- it deliberately does NOT include
  * `WIDGETS_START_Y` (the fixed output-socket column reserved above the

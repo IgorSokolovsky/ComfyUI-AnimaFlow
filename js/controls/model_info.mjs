@@ -61,6 +61,28 @@
  * no longer governs whether OPENING reaches the network -- opening never
  * does, either way.
  *
+ * **BUG 20 (2026-07-29 owner report) found the request BUG 13 left behind.**
+ * BUG 13 made opening this panel a `cached_only` read of the ComfyUI SERVER's
+ * OWN `.civitai.info` sidecar (never Civitai itself) -- correct, but every
+ * open still POSTed to that route again, even for a `(kind, name)` this
+ * session had already asked. `runLookup(false)` now checks
+ * `civitai_api.mjs`'s own client-side `cachedInfo(kind, name)` FIRST: a hit
+ * (found OR a remembered "nothing cached" miss -- both are real answers, see
+ * `cachedInfo`'s own doc comment) renders straight from it with no request at
+ * all; only a genuine miss (nothing asked yet, this session) reaches
+ * `lookupInfo` at all. `lookupInfo` already writes every resolved response
+ * (a `found`, a `notfound`, or the `cached_only` miss's own `offline`/
+ * `civitai_disabled` shape) into that same cache, so there is nothing new to
+ * maintain here -- reusing it is the whole fix, not a second, parallel memo.
+ *
+ * `runLookup(true)` (`↻ Civitai`/`Retry`/`check`, the ONLY path that ever
+ * performs a real Civitai lookup) explicitly `invalidateInfo`s first, ahead
+ * of the fetch, so a forced re-fetch always REPLACES whatever this session
+ * already believed, even on a failure `lookupInfo`'s own catch block would
+ * otherwise leave silently in place (belt-and-braces: a successful response
+ * already overwrites the cache on its own, this just makes "force always
+ * replaces" true regardless of how the fetch resolves).
+ *
  * ## ⚠ Untrusted text — textContent, never innerHTML
  *
  * A custom trigger word is arbitrary user text, and a Civitai description
@@ -74,7 +96,7 @@
  * where the two could ever be confused.
  */
 
-import { lookupInfo, forgetInfo, thumbUrl } from "./civitai_api.mjs";
+import { lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo } from "./civitai_api.mjs";
 import {
   openOverlayWithZoom,
   closeOverlayIfOwnedBy,
@@ -1069,29 +1091,61 @@ export function openModelInfo({
    * The `searching` phase is ONLY ever shown for a real, forced lookup now
    * -- there is nothing to "search" during a local cache read, so showing
    * it there would itself be a small version of the same lie.
+   *
+   * BUG 20 (2026-07-29 owner report): `!force` no longer means "always ask
+   * the cached_only route" -- it means "ask it AT MOST ONCE per `(kind,
+   * name)` per session." `civitai_api.mjs`'s `cachedInfo` is checked FIRST
+   * (see this file's top doc comment); only a genuine miss reaches
+   * `lookupInfo` at all.
    */
-  async function runLookup(force) {
-    cancelled = false;
-    const cachedOnly = !force;
-    if (force) {
-      status = { phase: "searching" };
-      renderStatus();
-    }
-    const response = await lookupInfo(kind, name, { force: !!force, cachedOnly });
-    if (cancelled) {
-      return;
-    }
+  function applyLookupResponse(response) {
     if (response.reason === "found" && response.data) {
       applyFoundRecord(response.data);
     }
-    if (cachedOnly && response.reason === "offline" && response.offline_reason === "civitai_disabled") {
+    if (response.reason === "offline" && response.offline_reason === "civitai_disabled") {
       // A cache-only read that found nothing -- never actually asked
       // Civitai anything, so this is the resting "not looked up yet" state,
-      // not a failure and not `notfound`.
+      // not a failure and not `notfound`. This shape ONLY ever comes from a
+      // `cached_only` request (`src/model_browser/lookup.py`'s own doc
+      // comment), whether that request happened just now or in an earlier
+      // open this session (a replayed `cachedInfo` hit) -- so checking the
+      // response's OWN shape here, rather than threading a separate
+      // "was this call cache-only" flag through, is enough either way.
       status = { phase: "unchecked" };
     } else {
       status = { phase: "result", response };
     }
+  }
+
+  async function runLookup(force) {
+    cancelled = false;
+    if (!force) {
+      // BUG 20: a hit here -- found OR a remembered miss -- answers this
+      // open with NO request at all (see this file's top doc comment).
+      const cached = cachedInfo(kind, name);
+      if (cached) {
+        applyLookupResponse(cached);
+        renderStatus();
+        renderIdentity();
+        renderTriggers();
+        renderNotes();
+        return;
+      }
+    } else {
+      // An explicit refetch/retry/check MUST replace whatever this session
+      // already believed, even across a fetch that then fails -- see this
+      // file's top doc comment for why this is belt-and-braces rather than
+      // load-bearing on the success path (which already overwrites the
+      // cache on its own via `lookupInfo`).
+      invalidateInfo(kind, name);
+      status = { phase: "searching" };
+      renderStatus();
+    }
+    const response = await lookupInfo(kind, name, { force: !!force, cachedOnly: !force });
+    if (cancelled) {
+      return;
+    }
+    applyLookupResponse(response);
     renderStatus();
     renderIdentity();
     renderTriggers();

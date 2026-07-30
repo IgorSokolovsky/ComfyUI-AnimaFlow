@@ -858,6 +858,216 @@ await asyncTest("BUG 13: clicking the unchecked state's own '↻ Civitai' action
   }
 });
 
+// ---------------------------------------------------------------------------
+// BUG 20 (2026-07-29 owner report): "lookup still fires when the lora info
+// menu is open" -- traced to a real request (BUG 13's cached_only:true read
+// of the SERVER's own sidecar, never Civitai) firing on EVERY open of the
+// SAME (kind, name), even when this session had already asked. Owner's
+// chosen fix: read the sidecar at most ONCE per (kind, name) per session,
+// then serve from the client-side (civitai_api.mjs) cache -- memoization,
+// not removal (cached notes/triggers must still appear immediately on open).
+// ---------------------------------------------------------------------------
+
+await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE request -- the second open renders instantly from the client cache", async () => {
+  const kind = "loras";
+  const name = "info-bug20-twice.safetensors";
+  invalidateInfo(kind, name);
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return {
+      json: async () => ({
+        reason: "found",
+        offline_reason: null,
+        message: "",
+        data: { name: "Bug20 Twice", triggers: ["bug20-word"], model_id: 1, version_id: 2 },
+      }),
+    };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle1 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 1, "the first open issues exactly one request");
+    assert.equal(findAll(handle1.overlay, "wtn-mi-title")[0].textContent, "Bug20 Twice");
+    handle1.close();
+
+    const handle2 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 1, "the SECOND open of the same (kind, name) must issue NO new request");
+    // Cached notes/triggers still appear immediately -- memoization, not removal.
+    assert.equal(findAll(handle2.overlay, "wtn-mi-title")[0].textContent, "Bug20 Twice");
+    assert.equal(findAll(handle2.overlay, "wtn-mi-status-compact").length, 1, "the found compact row renders straight from cache");
+    handle2.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("BUG 20: a cache-MISS LoRA also issues exactly ONE request across repeated opens -- the 'nothing cached' answer is remembered too, not just a hit", async () => {
+  const kind = "loras";
+  const name = "info-bug20-miss.safetensors";
+  invalidateInfo(kind, name);
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle1 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 1);
+    assert.ok(findAll(handle1.overlay, "wtn-mi-status-unchecked").length, "renders the unchecked resting state");
+    handle1.close();
+
+    const handle2 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 1, "a remembered MISS must not re-request on a later open either -- that was the worse case in the owner's own report");
+    assert.ok(findAll(handle2.overlay, "wtn-mi-status-unchecked").length, "still reads as unchecked, replayed from the client cache");
+    handle2.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("BUG 20: '↻ Civitai' always forces a REAL request (cached_only:false) even with a cached record already in hand, and the fresh record is what a later open replays", async () => {
+  const kind = "loras";
+  const name = "info-bug20-refetch.safetensors";
+  invalidateInfo(kind, name);
+  const bodies = [];
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    if (!body.force_refresh) {
+      return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "Refetched", model_id: 9, version_id: 9 } }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle1 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].cached_only, true, "the open call is still cache-only");
+
+    const checkBtn = findAll(findAll(handle1.overlay, "wtn-mi-status")[0], "wtn-mi-status-actions")[0].children[0];
+    checkBtn.click();
+    await settle();
+    assert.equal(bodies.length, 2, "the explicit click must force a SECOND, real request");
+    assert.equal(bodies[1].cached_only, false, "the explicit click is the ONLY thing allowed to send cached_only:false");
+    assert.equal(bodies[1].force_refresh, true);
+    assert.equal(findAll(handle1.overlay, "wtn-mi-title")[0].textContent, "Refetched");
+    handle1.close();
+
+    // A later open replays the FRESH record -- no third request, and no
+    // stale "unchecked" left over from before the click.
+    const handle2 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(bodies.length, 2, "the later open must reuse the record the forced click just cached -- no third request");
+    assert.equal(findAll(handle2.overlay, "wtn-mi-title")[0].textContent, "Refetched");
+    handle2.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("BUG 20: 'Clear cache' evicts the CLIENT-side record too -- a subsequent open re-asks the server rather than keep showing the deleted data", async () => {
+  const kind = "loras";
+  const name = "info-bug20-clear.safetensors";
+  invalidateInfo(kind, name);
+  let fetchCalls = 0;
+  let deleted = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/forget")) {
+      deleted = true;
+      return { json: async () => ({ reason: "ok", deleted: true }) };
+    }
+    fetchCalls += 1;
+    // Simulates the sidecar genuinely being gone the SECOND time this is
+    // actually asked (post-delete) -- if the client cache were NOT evicted,
+    // this branch would never be reached at all, since the stale "found"
+    // record would keep answering opens with no request whatsoever.
+    if (deleted) {
+      return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { model_id: 1, version_id: 2 } }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle1 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 1);
+    const clearBtn = findAll(handle1.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
+    assert.ok(clearBtn);
+    clearBtn.click();
+    await settle();
+    assert.ok(deleted, "Clear cache must call the /forget route");
+    handle1.close();
+
+    const handle2 = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(fetchCalls, 2, "a subsequent open must re-ask the server -- the client-side record was evicted along with the sidecar");
+    assert.equal(findAll(handle2.overlay, "wtn-mi-status-compact").length, 0, "must NOT keep showing the just-deleted 'found' record");
+    assert.ok(findAll(handle2.overlay, "wtn-mi-status-unchecked").length, "reflects the deletion -- reads as unchecked, not stale found");
+    handle2.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
 await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- notes/title/Civitai trigger candidates still display (§7d)", async () => {
   const kind = "loras";
   const name = "info-dom-cached-off.safetensors";

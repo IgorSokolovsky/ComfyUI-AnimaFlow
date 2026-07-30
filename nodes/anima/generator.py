@@ -52,8 +52,8 @@ class AnimaGenerator:
     slice lands)."""
 
     DESCRIPTION = (
-        "Runs the whole txt2img pipeline -- first pass, highres, detailer, "
-        "upscale, postprocess -- behind one node. Takes a single context "
+        "Runs first pass, highres, detailer, upscale and postprocess "
+        "behind one node. Takes a single context "
         "input from an Anima Context Bridge instead of separate model/"
         "CLIP/sampler sockets. The detailer deliberately runs before the "
         "upscale, so faces get fixed at generation resolution and only "

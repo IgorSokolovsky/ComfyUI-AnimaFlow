@@ -46,8 +46,8 @@ class PromptRulesText:
     """`Prompt Rules` (text) — resolves + applies rulesets, returns strings."""
 
     DESCRIPTION = (
-        "Applies your character-sheet prompt rules to the positive/negative "
-        "prompt, then returns plain text. Use this variant when the next "
+        "Applies your character-sheet prompt rules to positive/negative, "
+        "then returns plain text. Use this variant when the next "
         "node needs strings, not conditioning -- for conditioning straight "
         "out, use Prompt Rules (CLIP) instead. Which sheets apply is picked "
         "by the sheets field, and a per-node ruleset from the Rule Builder "
@@ -79,12 +79,11 @@ class PromptRulesClip:
     """`Prompt Rules (CLIP)` — resolves + applies rulesets, then CLIP-encodes."""
 
     DESCRIPTION = (
-        "Applies your character-sheet prompt rules to the positive/negative "
-        "prompt, then CLIP-encodes the result straight to conditioning. "
-        "Wire clip in from your checkpoint (or LoRA loader) so this node "
-        "can encode -- if you just want the resolved strings instead (for "
-        "example, ahead of a natural-language encoder), use the Prompt "
-        "Rules (text) variant instead."
+        "Applies your character-sheet prompt rules to positive/negative, "
+        "then CLIP-encodes it. Wire clip in from your checkpoint (or LoRA "
+        "loader) so this node can encode -- if you just want the resolved "
+        "strings instead (for example, ahead of a natural-language "
+        "encoder), use the Prompt Rules (text) variant instead."
     )
 
     CATEGORY = _CATEGORY

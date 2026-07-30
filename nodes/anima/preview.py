@@ -116,7 +116,7 @@ class AnimaPreview:
 
     DESCRIPTION = (
         "Compares two of the Generator's stage images with a hover wipe, "
-        "and owns saving them to disk. Wire the Generator's images and "
+        "and owns saving to disk. Wire the Generator's images and "
         "metadata_json outputs here directly -- base, mid and final can "
         "each be saved under their own filename via the %stage% token. "
         "This is the terminal node of the pipeline: nothing runs if a "

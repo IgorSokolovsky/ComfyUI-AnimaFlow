@@ -18,7 +18,23 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-*Now is empty.*
+### 🐛 Control Panel's drag-to-reorder ignores the canvas zoom scale (found 2026-07-30)
+
+`js/controls/interaction.mjs:1044-1045`'s `wireGrip` computes
+`delta = Math.round((ev.clientY - startY) / step)` — a **screen-pixel** pointer delta divided by a row
+pitch in **node units**. At zoom `z`, one row of visual movement is `pitch × z` screen pixels, so it
+reorders **`z` rows instead of 1**: two rows at 2× zoom, three at 3×.
+
+Found because the LoRA Loader inherited this gesture verbatim and the owner hit it there immediately
+(fixed there in `ae7cd38` by dividing by `getCanvasScale()` first). **The Control Panel has therefore been
+overshooting on any zoomed canvas since it shipped** — plausibly never reported because it reads as
+clumsiness rather than a bug.
+
+**Deliberately not fixed in `ae7cd38`**: that is a change to a shipped, working node and it deserves its
+own scoped pass rather than riding along in a LoRA bugfix. The fix is known and small — `getCanvasScale`
+already exists in `js/controls/index.js`, wired into `buildLoraCtx` only; this needs it in `buildCtx` too,
+plus the scale-1-and-scale-2 regression tests that now exist on the LoRA side. **Confirmed real by an
+independent reviewer, 2026-07-30.**
 
 > ### ✅ Resolved 2026-07-29 — the Class A height bug, on the third attempt
 >
@@ -101,34 +117,45 @@ rename all five together, or not at all.**
 | **ResShift as a second Upscale backend** | Needs `ComfyUI-Distilled-ResShift`, which isn't installed. A Mode dropdown offering one usable option is worse than no dropdown. Full detail in [`BACKLOG.md`](BACKLOG.md) §1b-0. |
 | **`.claude/` staying out of the repo** | Owner's call (2026-07-29). Consequence to keep in view: the skills — including the ComfyUI findings from that session — live on one machine only and don't travel with a clone. |
 | **The reuse-last-seed (↺) button on the Generator** | Control-Panel-only today. Not asked for on the Generator; noted so it isn't mistaken for an oversight. |
+| **Renaming `offline_reason: "civitai_disabled"`** (`src/model_browser/lookup.py`) | The name is stale — since BUG 13 it is returned on **every** cache-miss open, not only when the Civitai setting is off, because `cached_only` is driven by `!force` rather than the setting. But it is **not** a private label: `js/controls/model_info.mjs:1087` branches on the exact literal to pick the "not checked yet" UI state, so the value crosses the HTTP boundary as live control flow. A reviewer called it "not user-facing, a doc nit"; that was true of the `message` text and wrong about the *value*, and a Python-only rename would silently break that detection. **Trigger: a coordinated Python + JS + tests pass** — cheap, but it must move `lookup.py`, `model_info.mjs`, `civitai_api.mjs`'s doc comment and both test files together. No user-visible impact until something else renders that reason. |
 
 ## Done (unverified in a live ComfyUI)
 
 Shipped and green, not yet exercised against a running ComfyUI.
 
-> ### 🎨 LoRA Loader M1 — `815c286`, built and pushed 2026-07-29, **NOT yet run in a live ComfyUI**
+> ### 🎨 LoRA Loader M1 — `815c286` · `0ed9bd0` · `9a3b132` · `ae7cd38`, **partly confirmed live**
 >
-> Pushed, so a `git pull` + restart will pick it up. **Everything below is unverified against a running
-> ComfyUI** — that is what keeps this in *unverified* rather than *confirmed by use*.
+> Built 2026-07-29, exercised in a real ComfyUI 2026-07-30. That session found **17 bugs in two rounds**
+> — every one by *using* the node, none by the suites, which stayed green throughout. Worth remembering
+> when weighing a test count against a live pass.
+>
+> **Confirmed working by use (2026-07-30):** the node loads and appears under `AnimaFlow/Controls`; the
+> picker (groups, local thumbnails, size/base-model line); the ⓘ panel and the Civitai by-hash lookup
+> reaching `found` with a sidecar; the ⚙ dialog and its settings; per-node `DESCRIPTION` in the picker.
+>
+> **Fixed after live report, NOT yet re-tested** (`ae7cd38`): the lookup no longer fires on panel open
+> (a genuine §9 violation — every open hashed the whole file and hit the network); drag no longer
+> overshoots on a zoomed canvas; a new row no longer overflows the node until the mouse leaves; author's
+> notes fetch the real model description and render as text not raw HTML; the gear reads as a gear;
+> strength is typeable.
 >
 > **What shipped:** `AnimaLoraLoader` (8th node) · `src/model_browser/` (kind whitelist, chunked SHA256,
-> safetensors header-only metadata, Civitai client on stdlib `urllib`, sidecar cache, four guarded
+> safetensors header-only metadata, Civitai client on stdlib `urllib`, sidecar cache, guarded
 > executor-offloaded routes) · the picker · the ⓘ panel + the four lookup states · the ⚙ dialog's eight
 > settings · FLIP drag-reorder · the Rule Builder rename.
-> **Suites at completion: Python 647, JS 1093, 5 auto-loaded `.js`, 8 nodes.** Five slices, each
-> built → independently reviewed → fixed → re-verified; three reviews returned NEEDS_CHANGES.
+> **Suites: Python 672, JS 1182, 5 auto-loaded `.js`, 8 nodes.**
 >
-> **Verify in a live ComfyUI, in this order — nothing below is confirmed:**
-> 1. Restart. Node appears under `AnimaFlow/Controls`. Add it, add 3 LoRAs.
-> 2. **The image actually changes**, and routing the **patched** CLIP onward matters (wire the raw one
->    and the model effect still lands while the CLIP effect silently vanishes — §4).
-> 3. **Drag a row: the node height must not move, even transiently.** This is the one Class A behaviour
->    still unconfirmed from the 2026-07-29 sizing work, and now there's a FLIP animation over it.
-> 4. Save + reload: rows, trigger selections and node **width** survive; a clean workflow does not open
+> **STILL UNVERIFIED — this is the remaining list:**
+> 1. **The image actually changes**, and routing the **patched** CLIP onward matters (wire the raw one
+>    and the model effect still lands while the CLIP effect silently vanishes — §4). **Nothing has yet
+>    confirmed this node affects a generation at all** — every live check so far has been UI.
+> 2. **Drag a row: the node height must not move, even transiently.** The one Class A behaviour still
+>    unconfirmed from the 2026-07-29 sizing work, now with a FLIP animation over it.
+> 3. Save + reload: rows, trigger selections and node **width** survive; a clean workflow does not open
 >    as "modified".
-> 5. ⓘ on a LoRA that IS on Civitai (expect `found` + sidecar), and one that isn't (expect `notfound`
->    explaining the hash — not a bare dead end).
-> 6. Turn **Settings → AnimaFlow → Civitai** off: no network affordance renders anywhere, **and
+> 4. `notfound` — ⓘ on a LoRA that ISN'T on Civitai should explain the hash, not dead-end. (`found` is
+>    confirmed; this branch is not.)
+> 5. Turn **Settings → AnimaFlow → Civitai** off: no network affordance renders anywhere, **and
 >    already-cached notes/trigger words still display** (that combination is the whole point of §7d).
 > 7. **Subgraph recursion** (the one gap no headless test can reach): put an `AnimaLoraLoader` **inside
 >    a subgraph**, make one row's file missing, press `R` — the red mark must re-check. `findLoraNodes`

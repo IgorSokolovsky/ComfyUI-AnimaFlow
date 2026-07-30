@@ -1866,52 +1866,22 @@ test("BUG 6: the header's search/browse button is rendered visibly disabled with
   assert.match(css, /\.wtn-lora-icon\.wtn-lora-icon-disabled\s*\{[^}]*cursor:\s*default/);
 });
 
-// -- BUG 12: the ⚙ gear icon reads as a gear, not a sunburst -- teeth must
-// OVERLAP the body's rim, never float off it with a gap ---------------------
+// -- BUG 19 (2026-07-29 owner report): the ⚙ is the pack's plain glyph, not a
+// second hand-rolled mask SVG (BUG 12's own fix is retired along with it --
+// there is no more gear geometry to assert a relationship about) ------------
 
-test("BUG 12: the ⚙ gear's mask URL is a well-formed inline SVG on '.wtn-lora-gear'", () => {
+test("BUG 19: the settings button renders the pack's plain '⚙' textContent glyph, matching js/controls/render.mjs's own row gear -- no mask-image at all", () => {
   const doc = makeDocStub();
+  const refs = buildRoot(doc);
+  assert.equal(refs.settingsBtn.textContent, "⚙");
+  assert.ok(refs.settingsBtn.classList.contains("wtn-lora-gear"));
+
   injectStyles(doc);
   const css = doc.head.children.find((e) => e.tagName === "style").textContent;
-  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{[^}]*mask-image:\s*url\("([^"]+)"\)/);
-  assert.ok(gearRuleMatch, "the gear icon's mask-image rule must exist on '.wtn-lora-icon.wtn-lora-gear'");
-  const dataUrl = gearRuleMatch[1];
-  assert.match(dataUrl, /^data:image\/svg\+xml;utf8,/, "must be a well-formed inline SVG data URI, not an external asset reference");
-  const svgText = dataUrl.replace(/^data:image\/svg\+xml;utf8,/, "").replace(/%3C/g, "<").replace(/%3E/g, ">");
-  assert.match(svgText, /^<svg[^>]*>[\s\S]*<\/svg>$/, "must decode to a real, well-formed <svg>...</svg> document");
-});
-
-test("BUG 12: the gear's teeth OVERLAP the body's own rim -- fused, not floating off it as a sunburst (the actual root cause of the owner's report)", () => {
-  const doc = makeDocStub();
-  injectStyles(doc);
-  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
-  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{[^}]*mask-image:\s*url\("([^"]+)"\)/);
-  const svgText = gearRuleMatch[1].replace(/%3C/g, "<").replace(/%3E/g, ">");
-
-  // Body circle: 'M{cx-R} {cy}a{R} {R} 0 1 0 {2R} 0...' -- the arc's own
-  // radius parameters ARE the body's outer radius (both must agree, a
-  // circle not an ellipse).
-  const bodyMatch = svgText.match(/M[\d.]+ 12a([\d.]+) ([\d.]+) 0 1 0/);
-  assert.ok(bodyMatch, "must find the body circle's own arc command");
-  const bodyOuterR = Number(bodyMatch[1]);
-  assert.equal(bodyOuterR, Number(bodyMatch[2]), "the body must be a circle, not an ellipse");
-  assert.ok(bodyOuterR > 0);
-
-  // One tooth: '<rect x='11' y='1' width='2' height='H' rx='1' .../>' --
-  // centred at (12,12), a vertical bar from y=1 (its OUTER end, radius
-  // 12-1=11 from centre) down to y=1+H (its INNER end, closer to centre).
-  const toothMatch = svgText.match(/<rect x='11' y='1' width='2' height='([\d.]+)'/);
-  assert.ok(toothMatch, "must find a tooth rect");
-  const toothHeight = Number(toothMatch[1]);
-  const toothInnerR = 11 - toothHeight; // 12 (centre) - 1 (y start) = 11; inner end is `height` further in
-  assert.ok(
-    toothInnerR < bodyOuterR,
-    `teeth must OVERLAP the body -- inner radius (${toothInnerR}) must be LESS than the body's outer radius (${bodyOuterR}); BUG 12's actual defect was teeth stopping OUTSIDE the body (inner r≈7.4 vs body r≈3.6), an empty ring that renders as detached spokes`,
-  );
-
-  // All eight teeth exist (0/45/90/135/180/225/270/315).
-  const toothCount = (svgText.match(/<rect x='11' y='1'/g) || []).length;
-  assert.equal(toothCount, 8, "a gear needs all eight teeth, not fewer");
+  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{([^}]*)\}/);
+  assert.ok(gearRuleMatch, "a plain-glyph rule for '.wtn-lora-icon.wtn-lora-gear' must exist");
+  assert.doesNotMatch(gearRuleMatch[1], /mask-image/, "the gear must not be a CSS-mask SVG any more");
+  assert.match(gearRuleMatch[1], /font-size:\s*14px/, "matches render.mjs's own .wtn-ctl-gear glyph size");
 });
 
 // -- BUG 7: the row floor, sepStrengths' own higher floor, the rows-card,
@@ -2067,15 +2037,30 @@ test("BUG 9: the memory-mode segmented buttons share the row's width evenly, SCO
   assert.equal(bareRuleCount, 0, "must never define a bare, unscoped '.wtn-seg button {' rule");
 });
 
-// -- BUG 10: 8px outer gap (node border -> card border), 8px inner padding --
+// -- BUG 10/18: 8px outer gap (node border -> card border), 8px inner padding --
 
-test("BUG 10: the node's own outer padding (header/card gap from the node border) is a UNIFORM 8px on every side", () => {
+test("BUG 18: '.wtn-lora-root' carries NO padding of its own any more -- the node-edge gap moved onto the header's/card's own margin, so it can no longer stack with anything else", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  const rootRuleMatch = css.match(/\.wtn-lora-root\s*\{([^}]*)\}/);
+  assert.ok(rootRuleMatch, "the root rule must exist");
+  assert.doesNotMatch(rootRuleMatch[1], /padding:/, "root must not carry any padding -- BUG 18's fix (owner's own suggestion)");
+});
+
+test("BUG 18: the header carries an 8px margin on top+left+right (no bottom -- the header-to-card gap is still root's own flex 'gap', HEADER_GAP, untouched)", () => {
   assert.equal(BODY_PAD, 8);
   const doc = makeDocStub();
   injectStyles(doc);
   const css = doc.head.children.find((e) => e.tagName === "style").textContent;
-  assert.match(css, /\.wtn-lora-root\s*\{[^}]*padding:\s*8px/, "must be a single uniform 8px, not the old asymmetric 9px 9px 10px");
-  assert.doesNotMatch(css, /\.wtn-lora-root\s*\{[^}]*padding:\s*9px/, "the old value must be fully gone");
+  assert.match(css, /\.wtn-lora-header\s*\{[^}]*margin:\s*8px 8px 0 8px/, "top+left+right 8px, explicit 0 bottom");
+});
+
+test("BUG 18: the rows-card carries an 8px margin on left+right+bottom (no top -- same reasoning as the header)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-rows-card\s*\{[^}]*margin:\s*0 8px 8px 8px/, "explicit 0 top, then left/right/bottom 8px");
 });
 
 test("BUG 10: the card's OWN inner padding is 8px (confirmed, not lowered further -- it was never larger)", () => {
@@ -2086,16 +2071,19 @@ test("BUG 10: the card's OWN inner padding is 8px (confirmed, not lowered furthe
   assert.match(css, /\.wtn-lora-rows-card\s*\{[^}]*padding:\s*8px/);
 });
 
-test("BUG 10: contentHeight reflects the uniform 8px outer padding exactly -- pure arithmetic, no drift from the CSS", () => {
+test("BUG 10/18: contentHeight reflects the uniform 8px outer gap exactly -- pure arithmetic, no drift from the CSS, and UNCHANGED in value across the padding->margin move (header.margin-top + card.margin-bottom still sum to BODY_PAD * 2)", () => {
   const cardHeight = (rowsBlockH) => rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
   assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(ROW_H));
   assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(3 * ROW_H + 2 * ROW_GAP));
 });
 
-test("BUG 10: MIN_W/MIN_W_SEP now account for EVERY layer of chrome between the node's edge and the row -- root padding, card padding, card border, not just the row's own internal padding", () => {
+test("BUG 10/18: MIN_W/MIN_W_SEP account for EVERY layer of chrome between the node's edge and the row -- the node-edge gap (now the card's own margin, BUG 18), card padding, card border, not just the row's own internal padding", () => {
   // Re-derive independently from the exported constants (never a hardcoded
   // number) -- this is the same sum BUG 7 should have included from the
-  // start (root/card chrome), now fixed by BUG 10's explicit outer-gap ask.
+  // start (root/card chrome), fixed by BUG 10's explicit outer-gap ask and
+  // RE-VERIFIED unchanged by BUG 18's padding->margin move (same BODY_PAD
+  // per side, just carried by the card's margin instead of the root's
+  // padding).
   const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
   const singleFixedW = outerChromeW + GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
   assert.equal(MIN_W, NAME_MIN_W + singleFixedW);
@@ -2103,7 +2091,7 @@ test("BUG 10: MIN_W/MIN_W_SEP now account for EVERY layer of chrome between the 
   assert.equal(MIN_W_SEP, NAME_MIN_W + sepFixedW);
 });
 
-test("BUG 10: at the MIN_W floor, the row's own content (grip+name+stepper+info+switch) genuinely fits within what's left after ALL outer chrome -- not just an internal-padding check", () => {
+test("BUG 10/18: at the MIN_W floor, the row's own content (grip+name+stepper+info+switch) genuinely fits within what's left after ALL outer chrome -- not just an internal-padding check", () => {
   const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
   const rowAvailableW = MIN_W - outerChromeW; // what's actually left for '.wtn-ctl-row' itself
   const rowOwnFixedW = GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;

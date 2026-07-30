@@ -85,8 +85,8 @@ class AnimaContextBridge:
 
     DESCRIPTION = (
         "Bundles the model, CLIP, VAE, conditioning, latent and sampler "
-        "values Anima Generator needs into one wire. It exists because the "
-        "Generator collapsed nine separate sockets down to this single "
+        "values into one wire. It exists because Anima Generator "
+        "collapsed nine separate sockets down to this single "
         "context input -- wire whatever you have here instead of looking "
         "for those sockets on the Generator itself. Every input is "
         "optional; the Generator reports exactly what's missing when it "
