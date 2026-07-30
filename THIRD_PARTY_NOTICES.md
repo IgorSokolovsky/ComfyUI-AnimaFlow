@@ -139,3 +139,68 @@ SOFTWARE.
 > engine is an independent implementation rather than a derivative work, AnimaFlow
 > remains MIT. Please preserve that boundary — do not copy code from that project into
 > this one.
+
+---
+
+## Civicomfy
+
+- **Upstream:** https://github.com/MoonGoblinDev/Civicomfy
+- **License:** MIT
+- **Relationship:** the 2026-07-30 "no info sidecar, no preview image" fix's interop
+  read side (`src/model_browser/interop.py`) reads Civicomfy's own on-disk sidecar
+  format so a model that tool already downloaded shows real info in our UI too. No
+  code was copied — only two VERIFIED FACTS, read live from the upstream source before
+  writing anything: its sidecar filename (`config.py`'s `METADATA_SUFFIX =
+  ".cminfo.json"` — not the hyphenated `.cm-info.json` a prior recollection assumed)
+  and its field names (`downloader/manager.py`'s `_save_metadata`, the flat
+  PascalCase `ModelId`/`ModelName`/`VersionId`/`BaseModel`/`TrainedWords`/... shape).
+  `interop.py`'s own `translate_cminfo` is an independent reimplementation matching
+  that field-name *fact*, not a copy of Civicomfy's code — matching a JSON schema is
+  not copying, but lifting code would be, and none was lifted.
+- **What is derived from it:** `src/model_browser/interop.py`'s `CMINFO_SUFFIX`
+  constant and `translate_cminfo`'s field-name mapping (see the module's own
+  docstring for the full citation, including its preview-file convention already
+  being compatible with `local._PREVIEW_EXTS` with no change needed).
+
+```
+MIT License
+
+Copyright (c) 2025 MoonGoblin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## ComfyUI Model Manager
+
+- **Upstream:** https://github.com/hayden-cn/ComfyUI-Model-Manager
+- **License:** GPL-3.0
+- **Relationship:** consulted (read-only, via the GitHub API) as the SECOND tool the
+  2026-07-30 interop fix's owner named, to check whether it shares Civicomfy's
+  `.cminfo.json` sidecar convention. It does not: its own model-info write path
+  (`py/information.py`'s `CivitaiModelSearcher`) produces a `<base>.md` file with a
+  YAML-frontmatter block — an entirely different serialisation (Markdown+YAML prose,
+  not JSON), not a variant of the same schema. Because the two tools the owner named
+  disagree with each other on this format, this package's fix writes and reads
+  `.cminfo.json` (Civicomfy's, verified above) and otherwise sticks to its own
+  `.civitai.info` — per the owner's own explicit fallback instruction. **No code, and
+  no format, was copied from this GPL-3.0 project** — its preview-file naming
+  (`<base>.preview.<ext>`) happened to already match this package's own convention,
+  independently, with nothing new added on that side either.

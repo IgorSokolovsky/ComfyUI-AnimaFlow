@@ -66,7 +66,9 @@ import urllib.request
 from typing import Any, Callable, Dict, Optional
 
 from . import civitai_client
+from . import civitai_parse
 from . import local
+from . import sidecar
 from .kinds import folder_for_kind
 
 # Real LoRAs are tens-hundreds of MB; a checkpoint (M3's eventual `kind`) can
@@ -749,6 +751,168 @@ def stream_download(
 
 
 # ---------------------------------------------------------------------------
+# 2026-07-30 "no info sidecar, no preview image" fix -- a model downloaded
+# through the search panel used to arrive with NEITHER: `stream_download`
+# above writes only the model file. These two additions run ONLY after
+# `stream_download` has ALREADY reached `"ok"` (the atomic rename already
+# happened) -- see `finalize_successful_download`, `DownloadManager`'s own
+# hook point below.
+# ---------------------------------------------------------------------------
+
+# A preview is a picture, not a model -- its own, deliberately small cap
+# (8 MiB is generous for even an uncompressed PNG thumbnail), distinct from
+# `DEFAULT_MAX_DOWNLOAD_BYTES` above.
+DEFAULT_MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+
+# Only these three -- matching `local._PREVIEW_EXTS`'s dedicated
+# `.preview.<ext>` slots exactly (`.preview.jpg` is that same set's bare
+# `image/jpeg` alternate spelling; `.preview.jpeg` already covers it, so
+# there's no reason to ever choose `.jpg` here). A response whose
+# `Content-Type` isn't one of these three -- including no header at all --
+# is refused: the extension is chosen from what the server SAID it sent,
+# never guessed from the URL's own trailing characters (a URL is not a
+# trustworthy signal for what bytes actually came back).
+_PREVIEW_CONTENT_TYPES: Dict[str, str] = {
+    "image/png": ".preview.png",
+    "image/jpeg": ".preview.jpeg",
+    "image/webp": ".preview.webp",
+}
+
+
+def _preview_extension_for_content_type(content_type: Any) -> Optional[str]:
+    """A response's `Content-Type` header -> the matching `local.
+    _PREVIEW_EXTS`-compatible extension, or `None` for anything else
+    (missing header, or a media type we don't recognise as an image this
+    package already knows how to find again). Parses the MEDIA TYPE only
+    (split on the first `;`), same convention as `download.
+    _is_html_content_type` above -- a trailing `charset=...` doesn't matter
+    here either, though a real image response is not expected to carry one.
+    """
+    if not isinstance(content_type, str):
+        return None
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return _PREVIEW_CONTENT_TYPES.get(media_type)
+
+
+def fetch_preview_image(
+    url: Any,
+    dest_model_path: str,
+    *,
+    max_bytes: int = DEFAULT_MAX_PREVIEW_BYTES,
+    timeout: float = 30.0,
+    opener: Optional[Callable[[str, float], Any]] = None,
+) -> Optional[str]:
+    """Best-effort: fetch `url` (a community-image URL the caller already
+    holds from an earlier `/search` response -- see `civitai_search.py`'s
+    `preview_url`/`civitai_parse.pick_gallery_image_url` -- NEVER a fresh
+    API call made here) and save it as `<base>.preview.<ext>` next to
+    `dest_model_path`, `ext` chosen from the response's own `Content-Type`
+    (`local._PREVIEW_EXTS`-compatible). Returns the path written, or `None`
+    for ANY failure -- never raises, and never leaves a partial file behind:
+    this is a nice-to-have, never a second thing that can turn a successful
+    model download into a reported failure (task's own "must never fail or
+    delay the model download").
+
+    `timeout` reuses `stream_download`'s own existing 30s default (a
+    preview fetch getting the SAME patience Civitai's other endpoints get,
+    not a shorter one invented for this) -- only `max_bytes` is a new,
+    deliberately small cap of its own (a preview is not a model).
+
+    SSRF guards: the INITIAL url is checked with `_is_safe_redirect` (HTTPS
+    + a resolved address that isn't private/loopback/link-local/reserved/
+    multicast/unspecified) rather than `is_allowed_download_url`'s tighter
+    Civitai-API-host allowlist -- deliberately, because a community image is
+    legitimately served from Civitai's own image CDN, a genuinely different
+    host than the two API hosts (`civitai.com`/`civitai.red`) that allowlist
+    exists to pin the MODEL download's initial URL to. This is exactly the
+    same reasoning `_is_safe_redirect`'s own docstring already gives for why
+    a REDIRECT target gets the looser check instead of the host allowlist --
+    applied here one layer earlier, to the initial request, since this
+    initial URL is itself a third-party CDN host by design, not a client-
+    supplied one to pin down. `opener` (default `_default_download_opener`,
+    the SAME one `stream_download` uses) installs the identical
+    `_SafeRedirectHandler` for any redirect hop, so `_is_safe_redirect`/
+    `_unsafe_ip` guard every hop of this fetch, not just the first one.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    if not _is_safe_redirect(url):
+        return None
+
+    opener = opener or _default_download_opener
+    try:
+        with opener(url, timeout) as response:
+            try:
+                headers = response.headers
+                content_type = headers.get("Content-Type") if headers is not None else None
+            except AttributeError:
+                content_type = None
+            ext = _preview_extension_for_content_type(content_type)
+            if ext is None:
+                return None
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                return None
+    except Exception:  # noqa: BLE001 - best-effort only, must never raise or block the download
+        return None
+
+    preview_path = os.path.splitext(dest_model_path)[0] + ext
+    try:
+        with open(preview_path, "wb") as fh:
+            fh.write(body)
+    except OSError:
+        return None
+    return preview_path
+
+
+def finalize_successful_download(
+    dest_path: str,
+    *,
+    civitai_meta: Optional[Dict[str, Any]] = None,
+    preview_url: Optional[str] = None,
+    civitai_enabled: bool = True,
+    preview_opener: Optional[Callable[[str, float], Any]] = None,
+) -> None:
+    """Best-effort finishing touches run ONLY after `stream_download` has
+    ALREADY reached `"ok"` (the atomic rename already happened) -- writes
+    the `.civitai.info` sidecar from data the caller already held (no
+    network at all for this part), then fetches the community preview image
+    the caller already has a URL for (one guarded network call, ONLY if
+    `civitai_enabled`). Never raises, and never turns a successful download
+    into a reported failure -- every step here is independently best-effort.
+
+    Overwrite policy (decided deliberately, not left implicit):
+      - `.civitai.info` -- ALWAYS (over)written when `civitai_meta`
+        translates to something non-empty
+        (`civitai_parse.civitai_shape_from_search_meta`). This is our OWN
+        exclusive file format -- no other tool writes `.civitai.info` (see
+        `interop.py`) -- so there is no cross-tool ownership question, and
+        data from a download the user just triggered is the freshest
+        information available for this exact file.
+      - the preview image -- ONLY written if NO preview already sits next
+        to `dest_path` (`local.find_preview_path`, the SAME lookup the
+        picker itself uses). Covers both "this is a re-download and we (or
+        the user) already have one" and "another tool already dropped one
+        there" (Civicomfy and ComfyUI Model Manager both use the identical
+        `<base>.preview.<ext>` convention this package already reads, per
+        `interop.py`'s own verification) -- never silently replace a file
+        whose origin isn't known.
+    """
+    if civitai_meta:
+        translated = civitai_parse.civitai_shape_from_search_meta(civitai_meta)
+        if translated:
+            sidecar.write_sidecar(dest_path, translated)
+
+    if not civitai_enabled:
+        return
+    if not preview_url:
+        return
+    if local.find_preview_path(dest_path) is not None:
+        return  # something's already there -- ours or another tool's, never clobber it
+    fetch_preview_image(preview_url, dest_path, opener=preview_opener)
+
+
+# ---------------------------------------------------------------------------
 # Serial one-at-a-time queue, with progress + cancel (§9).
 # ---------------------------------------------------------------------------
 
@@ -767,9 +931,19 @@ class DownloadManager:
     the SAME in-flight job by `job_id`.
     """
 
-    def __init__(self, *, stream_fn: Callable[..., Dict[str, Any]] = stream_download):
+    def __init__(
+        self,
+        *,
+        stream_fn: Callable[..., Dict[str, Any]] = stream_download,
+        preview_opener: Optional[Callable[[str, float], Any]] = None,
+    ):
         self._lock = threading.Lock()
         self._stream_fn = stream_fn
+        # The one seam a test injects a fake image-fetch opener through
+        # (`finalize_successful_download`'s own `preview_opener` param) --
+        # `None` (the default, same as everywhere else in this module) means
+        # "use the real network", via `fetch_preview_image`'s own default.
+        self._preview_opener = preview_opener
         self._thread: Optional[threading.Thread] = None
         self._cancel_event: Optional[threading.Event] = None
         self._job: Optional[Dict[str, Any]] = None
@@ -782,10 +956,30 @@ class DownloadManager:
         *,
         max_size_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
         timeout: float = 30.0,
+        civitai_meta: Optional[Dict[str, Any]] = None,
+        preview_url: Optional[str] = None,
+        civitai_enabled: bool = True,
     ) -> Dict[str, Any]:
         """Launch a new download as `job_id`, or refuse with `"busy"` if one
         is already running -- the serial-queue rule. Never blocks on the
-        transfer itself."""
+        transfer itself.
+
+        `civitai_meta`/`preview_url`/`civitai_enabled` (2026-07-30 "no info
+        sidecar, no preview image" fix) are threaded straight through to
+        `finalize_successful_download`, run on this SAME background thread
+        immediately after `stream_fn` reports `"ok"` -- never for any other
+        outcome (`api.py`'s `download_start_impl` docstring has the full
+        payload-level contract). Running the finalize step on this thread
+        (rather than the aiohttp event loop) means it can never stall
+        ComfyUI's HTTP/WS server the way an inline call would -- the same
+        `run_in_executor`-adjacent reasoning `api.py`'s own module docstring
+        gives for every route in this package; it does mean a poll of
+        `/download/progress` can see `"downloading"` for a little longer
+        than the bytes-on-disk moment while the (timeout-bounded, best-
+        effort) finalize step runs -- the MODEL file itself is already
+        complete and correct at that point, which is what "never delay the
+        download" is actually about.
+        """
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return {"reason": "busy", "message": "Another download is already in progress.", "job_id": None}
@@ -809,6 +1003,27 @@ class DownloadManager:
                     progress_cb=progress_cb,
                     should_cancel=cancel_event.is_set,
                 )
+                if result.get("reason") == "ok":
+                    # `finalize_successful_download` is itself designed to
+                    # never raise (see its own docstring -- every step
+                    # inside it is independently best-effort). This
+                    # `try/except` is defense-in-depth ON TOP of that, not a
+                    # substitute for it: a latent bug escaping here must
+                    # still never stop `job["status"]` below from being set
+                    # to the download's own real outcome -- a successful
+                    # download must NEVER be left stuck reporting
+                    # `"downloading"` forever because of a finishing-touches
+                    # bug that has nothing to do with the download itself.
+                    try:
+                        finalize_successful_download(
+                            dest_path,
+                            civitai_meta=civitai_meta,
+                            preview_url=preview_url,
+                            civitai_enabled=civitai_enabled,
+                            preview_opener=self._preview_opener,
+                        )
+                    except Exception:  # noqa: BLE001 - never let this affect the download's own reported outcome
+                        pass
                 with self._lock:
                     if self._job is job:
                         job["status"] = result["reason"]
@@ -857,5 +1072,8 @@ __all__ = (
     "part_path_for",
     "is_allowed_download_url",
     "stream_download",
+    "DEFAULT_MAX_PREVIEW_BYTES",
+    "fetch_preview_image",
+    "finalize_successful_download",
     "DownloadManager",
 )

@@ -222,6 +222,14 @@ def _annotate_search_results(results: list, kind: object) -> list:
         # first-class outcomes computed here, not inferred client-side.
         result["gated"] = bool(primary_file.get("gated")) if primary_file else False
         result["installed"] = bool(primary_file.get("installed")) if primary_file else False
+        # 2026-07-30 "no info sidecar, no preview image" fix: flattened onto
+        # the result the SAME way `base_model`/`file_name`/`download_url`
+        # already are, so the frontend can hand them straight back on
+        # `/download/start` (`civitai_meta`/`preview_url` below) with no
+        # second lookup -- "the search result we already hold carries image
+        # URLs -- reuse them rather than making a fresh API call".
+        result["triggers"] = primary_version.get("triggers", []) if primary_version else []
+        result["preview_url"] = primary_version.get("preview_url") if primary_version else None
     return results
 
 
@@ -333,6 +341,28 @@ def download_start_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     fetch starts -- never returned in this function's own result, and
     `civitai_search.search_models`'s docstring has the same "never logged"
     note for the identical technique used there.
+
+    Three further OPTIONAL fields feed the 2026-07-30 "no info sidecar, no
+    preview image" fix -- all best-effort, none of them can turn a
+    successful download into a reported failure (`download.
+    finalize_successful_download`'s own docstring has the full contract):
+
+      - `civitai_meta`  -- whatever OUR OWN normalized search-result fields
+        (`model_id`, `version_id`, `name`, `type`, `base_model`, `tags`,
+        `triggers` -- exactly `_annotate_search_results`'/`civitai_search.
+        parse_search_response`'s own shape) the caller already holds from
+        the `/search` response for this exact result, so the `.civitai.info`
+        sidecar can be written from data already in hand, with NO fresh
+        hash/fetch. Non-dict is treated as absent.
+      - `preview_url`   -- the community image URL `_annotate_search_
+        results` already flattened onto the search result -- reused as-is
+        for the local preview save, never a fresh API call for it.
+      - `civitai_enabled` (default `True`, matching "no flag sent" = the
+        behaviour before this fix existed) -- mirrors `lookup_impl`'s own
+        `cached_only` convention: an explicit `False` (the "Civitai" ⚙/
+        Settings switch being off) makes the preview-image FETCH
+        unreachable, never merely unused -- writing the sidecar from data
+        already held is not a network call, so it is not gated by this flag.
     """
     payload = payload or {}
     kind = payload.get("kind")
@@ -364,8 +394,16 @@ def download_start_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         separator = "&" if "?" in fetch_url else "?"
         fetch_url = f"{fetch_url}{separator}token={urllib.parse.quote(resolved_key.api_key)}"
 
+    civitai_meta = payload.get("civitai_meta")
+    preview_url = payload.get("preview_url")
+
     job_id = uuid.uuid4().hex
-    start_result = _DOWNLOAD_MANAGER.start(job_id, fetch_url, dest_path, max_size_bytes=max_bytes)
+    start_result = _DOWNLOAD_MANAGER.start(
+        job_id, fetch_url, dest_path, max_size_bytes=max_bytes,
+        civitai_meta=civitai_meta if isinstance(civitai_meta, dict) else None,
+        preview_url=preview_url if isinstance(preview_url, str) and preview_url else None,
+        civitai_enabled=bool(payload.get("civitai_enabled", True)),
+    )
     if start_result["reason"] != "started":
         return {**start_result, "job_id": None}
     return {"reason": "started", "message": "", "job_id": job_id}

@@ -41,8 +41,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.model_browser import api as mb_api
 from src.model_browser import (
-    civitai_client, civitai_parse, civitai_search, download, hashing, keys,
-    kinds, local, lookup, rate_limit, sidecar,
+    civitai_client, civitai_parse, civitai_search, download, hashing, interop,
+    keys, kinds, local, lookup, rate_limit, sidecar,
 )
 
 # ---------------------------------------------------------------------------
@@ -360,6 +360,124 @@ def test_sidecar_round_trip_and_forget():
 
 
 # ---------------------------------------------------------------------------
+# interop.py -- reading Civicomfy's VERIFIED `.cminfo.json` (2026-07-30
+# "no info sidecar" fix's reverse-direction half). No code was copied from
+# Civicomfy -- only its verified filename constant and field names (see
+# `interop.py`'s own module docstring + THIRD_PARTY_NOTICES.md).
+# ---------------------------------------------------------------------------
+
+# A realistic `.cminfo.json` payload, shaped exactly like Civicomfy's own
+# `downloader/manager.py`'s `_save_metadata` (verified live, 2026-07-30) --
+# PascalCase, flat, no gallery images (its preview is a separate file).
+_CMINFO_FIXTURE = {
+    "ModelId": 999, "ModelName": "My Character LoRA", "ModelDescription": "The author's write-up.",
+    "CreatorUsername": "someartist", "Tags": ["character", "anime"], "ModelType": "LORA",
+    "VersionId": 12345, "VersionName": "v1.0", "VersionDescription": "Trained on preview3.",
+    "BaseModel": "Illustrious", "TrainedWords": ["mychar", "blue hair"],
+    "Hashes": {"SHA256": "deadbeef"}, "DownloadUrlUsed": "https://civitai.com/api/download/models/12345",
+}
+
+
+def test_interop_cminfo_path_is_the_verified_civicomfy_suffix():
+    assert interop.CMINFO_SUFFIX == ".cminfo.json"
+    assert interop.cminfo_path("/models/loras/a.safetensors") == "/models/loras/a.cminfo.json"
+
+
+def test_interop_translate_cminfo_typical_fixture_feeds_parse_model_version():
+    shape = interop.translate_cminfo(_CMINFO_FIXTURE)
+    parsed = civitai_parse.parse_model_version(shape)
+    assert parsed["model_id"] == 999
+    assert parsed["version_id"] == 12345
+    assert parsed["name"] == "My Character LoRA"
+    assert parsed["type"] == "LORA"
+    assert parsed["base_model"] == "Illustrious"
+    assert parsed["tags"] == ["character", "anime"]
+    assert parsed["triggers"] == ["mychar", "blue hair"]
+    assert parsed["model_description"] == "The author's write-up."
+    assert parsed["version_description"] == "Trained on preview3."
+    # Civicomfy stores no gallery images in this file (its preview is a
+    # SEPARATE download) -- never invent a thumbnail from nothing.
+    assert "thumbnail" not in parsed
+
+
+def test_interop_translate_cminfo_never_raises_on_malformed_input():
+    assert interop.translate_cminfo(None) == {}
+    assert interop.translate_cminfo("not-a-dict") == {}
+    assert interop.translate_cminfo({}) == {}
+    assert interop.translate_cminfo({"ModelId": "not-an-int"}) == {}
+
+
+def test_interop_read_cminfo_as_civitai_shape_missing_file_is_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        assert interop.read_cminfo_as_civitai_shape(model_path) is None
+
+
+def test_interop_read_cminfo_as_civitai_shape_real_file_round_trip():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        with open(interop.cminfo_path(model_path), "w", encoding="utf-8") as fh:
+            json.dump(_CMINFO_FIXTURE, fh)
+        shape = interop.read_cminfo_as_civitai_shape(model_path)
+        assert shape is not None
+        assert civitai_parse.parse_model_version(shape)["name"] == "My Character LoRA"
+
+
+def test_interop_read_cminfo_unreadable_json_returns_none_never_raises():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        with open(interop.cminfo_path(model_path), "w", encoding="utf-8") as fh:
+            fh.write("not valid json {{{")
+        assert interop.read_cminfo_as_civitai_shape(model_path) is None
+
+
+# ---------------------------------------------------------------------------
+# sidecar.read_sidecar's interop fallback (2026-07-30): prefers OUR OWN
+# `.civitai.info` when present; falls back to Civicomfy's `.cminfo.json`
+# (translated) only when ours is genuinely absent.
+# ---------------------------------------------------------------------------
+
+
+def test_read_sidecar_falls_back_to_cminfo_when_our_own_sidecar_is_absent():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        # No `.civitai.info` at all -- only a `.cminfo.json`, as if
+        # Civicomfy (not us) had downloaded this exact file.
+        with open(interop.cminfo_path(model_path), "w", encoding="utf-8") as fh:
+            json.dump(_CMINFO_FIXTURE, fh)
+
+        cached = sidecar.read_sidecar(model_path)
+        assert cached is not None
+        parsed = civitai_parse.parse_model_version(cached)
+        assert parsed["name"] == "My Character LoRA"
+        assert parsed["base_model"] == "Illustrious"
+
+
+def test_read_sidecar_prefers_our_own_civitai_info_when_both_exist():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        # BOTH files exist, disagreeing on purpose -- `.civitai.info` must win.
+        sidecar.write_sidecar(model_path, {"modelId": 1, "id": 2, "baseModel": "Ours-Wins"})
+        with open(interop.cminfo_path(model_path), "w", encoding="utf-8") as fh:
+            json.dump({**_CMINFO_FIXTURE, "BaseModel": "Cminfo-Should-Lose"}, fh)
+
+        cached = sidecar.read_sidecar(model_path)
+        assert cached == {"modelId": 1, "id": 2, "baseModel": "Ours-Wins"}
+
+
+def test_read_sidecar_neither_file_present_is_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        assert sidecar.read_sidecar(model_path) is None
+
+
+# ---------------------------------------------------------------------------
 # civitai_parse.py -- pure, from recorded-shape JSON.
 # ---------------------------------------------------------------------------
 
@@ -434,6 +552,68 @@ def test_parse_model_version_explicit_gallery_falls_back_to_non_adult():
 def test_parse_model_version_all_explicit_gallery_yields_no_thumbnail():
     obj = {"images": [{"url": "https://example.com/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}]}
     assert "thumbnail" not in civitai_parse.parse_model_version(obj)
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-30 "no info sidecar, no preview image" fix: `pick_gallery_image_url`
+# (the UNTRANSFORMED variant `_pick_thumbnail` above now shares its adult-
+# filtering loop with) and `civitai_shape_from_search_meta` (the download-
+# time sidecar seed, built from OUR OWN normalized search-result fields).
+# ---------------------------------------------------------------------------
+
+
+def test_pick_gallery_image_url_prefers_explicitly_safe_and_is_untransformed():
+    images = [
+        {"url": "https://example.com/explicit.jpg", "nsfw": "X", "nsfwLevel": 8},
+        {"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1},
+    ]
+    # UNTRANSFORMED -- no `_thumb_url` width=256 rewrite, unlike `_pick_thumbnail`.
+    assert civitai_parse.pick_gallery_image_url(images) == "https://example.com/original=true/safe.jpg"
+
+
+def test_pick_gallery_image_url_all_explicit_yields_none():
+    images = [{"url": "https://example.com/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}]
+    assert civitai_parse.pick_gallery_image_url(images) is None
+    assert civitai_parse.pick_gallery_image_url(None) is None
+    assert civitai_parse.pick_gallery_image_url("not-a-list") is None
+
+
+def test_pick_thumbnail_still_transforms_its_own_result():
+    # `_pick_thumbnail` is now a thin wrapper over `pick_gallery_image_url` --
+    # confirm it still applies the width=256 rewrite (regression guard for
+    # the refactor, on top of the existing dedicated thumbnail tests above).
+    images = [{"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1}]
+    assert civitai_parse._pick_thumbnail(images) == "https://example.com/width=256/safe.jpg"
+
+
+def test_civitai_shape_from_search_meta_typical_fields():
+    meta = {
+        "model_id": 999, "version_id": 12345, "name": "My Character LoRA",
+        "type": "LORA", "base_model": "Illustrious",
+        "tags": ["character", "anime"], "triggers": ["mychar", "blue hair"],
+    }
+    shape = civitai_parse.civitai_shape_from_search_meta(meta)
+    # Fed straight into the SAME parser a live by-hash lookup's response
+    # goes through -- no second parser to keep in sync.
+    parsed = civitai_parse.parse_model_version(shape)
+    assert parsed["model_id"] == 999
+    assert parsed["version_id"] == 12345
+    assert parsed["name"] == "My Character LoRA"
+    assert parsed["type"] == "LORA"
+    assert parsed["base_model"] == "Illustrious"
+    assert parsed["tags"] == ["character", "anime"]
+    assert parsed["triggers"] == ["mychar", "blue hair"]
+    # A search result never carries description text -- omitted, not invented.
+    assert "model_description" not in parsed
+    assert "version_description" not in parsed
+
+
+def test_civitai_shape_from_search_meta_never_raises_on_malformed_input():
+    assert civitai_parse.civitai_shape_from_search_meta(None) == {}
+    assert civitai_parse.civitai_shape_from_search_meta("not-a-dict") == {}
+    assert civitai_parse.civitai_shape_from_search_meta({}) == {}
+    # Garbage-typed fields are simply dropped, never crash the build.
+    assert civitai_parse.civitai_shape_from_search_meta({"model_id": "not-an-int", "tags": "not-a-list"}) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1835,6 +2015,49 @@ def test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first():
 
 
 # ---------------------------------------------------------------------------
+# 2026-07-30 "no info sidecar, no preview image" fix: a search result's
+# per-version `triggers`/`preview_url` -- the fields the download-time
+# sidecar/preview-save reuse rather than a fresh API call.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_search_response_carries_triggers_and_preview_url_per_version():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL", "trainedWords": ["mychar", "  ", "blue hair"],
+                "images": [
+                    {"url": "https://image.civitai.com/explicit.jpg", "nsfw": "X", "nsfwLevel": 8},
+                    {"url": "https://image.civitai.com/safe.jpg", "nsfw": False, "nsfwLevel": 1},
+                ],
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["triggers"] == ["mychar", "blue hair"]
+    # UNTRANSFORMED -- no width=256 rewrite (that's only `_pick_thumbnail`'s
+    # own live-thumbnail use, never this download-time preview save).
+    assert version["preview_url"] == "https://image.civitai.com/safe.jpg"
+
+
+def test_parse_search_response_no_trigger_words_or_images_omits_neither_field_but_they_stay_empty_none():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["triggers"] == []
+    assert version["preview_url"] is None
+
+
+# ---------------------------------------------------------------------------
 # M2 -- download.py: sanitisation, destination resolution, the streamed
 # downloader, and the serial DownloadManager.
 # ---------------------------------------------------------------------------
@@ -2678,6 +2901,311 @@ def test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_sta
 
 
 # ---------------------------------------------------------------------------
+# 2026-07-30 "no info sidecar, no preview image" fix: `fetch_preview_image`,
+# `finalize_successful_download`, and the `DownloadManager` wiring that runs
+# it ONLY after a real download reaches `"ok"`.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_extension_for_content_type_maps_known_types_and_rejects_unknown():
+    assert download._preview_extension_for_content_type("image/png") == ".preview.png"
+    assert download._preview_extension_for_content_type("image/jpeg; charset=binary") == ".preview.jpeg"
+    assert download._preview_extension_for_content_type("image/webp") == ".preview.webp"
+    assert download._preview_extension_for_content_type("image/gif") is None
+    assert download._preview_extension_for_content_type("text/html") is None
+    assert download._preview_extension_for_content_type(None) is None
+    assert download._preview_extension_for_content_type(123) is None
+
+
+def test_fetch_preview_image_success_writes_file_with_correct_extension():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        payload = b"\x89PNG-fake-bytes"
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={"Content-Type": "image/png"})
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result == os.path.join(tmp, "a.preview.png")
+        assert os.path.isfile(result)
+        with open(result, "rb") as fh:
+            assert fh.read() == payload
+        # `local.find_preview_path` -- our own reader -- finds it too.
+        assert local.find_preview_path(dest_model) == result
+
+
+def test_fetch_preview_image_rejects_non_https_url_without_calling_opener():
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("a non-HTTPS preview url must never reach the opener")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        result = download.fetch_preview_image("http://image.civitai.com/x.png", dest_model, opener=_must_not_be_called)
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_fetch_preview_image_is_safe_redirect_refusal_never_calls_the_opener():
+    # Same SSRF guard `stream_download`'s redirect handling uses
+    # (`_is_safe_redirect`) -- gates the INITIAL preview url too (see
+    # `fetch_preview_image`'s own docstring for why this, not
+    # `is_allowed_download_url`, is the right analogue here).
+    previous = download._is_safe_redirect
+    download._is_safe_redirect = lambda url: False
+    try:
+        calls = []
+
+        def opener(url, timeout):
+            calls.append(url)
+            raise AssertionError("must never be called once _is_safe_redirect refuses")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest_model = os.path.join(tmp, "a.safetensors")
+            open(dest_model, "wb").close()
+            result = download.fetch_preview_image("https://evil.example.com/x.png", dest_model, opener=opener)
+            assert result is None
+            assert calls == []
+    finally:
+        download._is_safe_redirect = previous
+
+
+def test_fetch_preview_image_unknown_content_type_is_rejected_body_never_written():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"<html>not an image</html>", headers={"Content-Type": "text/html"})
+
+        result = download.fetch_preview_image("https://image.civitai.com/x", dest_model, opener=opener)
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_fetch_preview_image_oversized_body_is_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"x" * 4096, headers={"Content-Type": "image/png"})
+
+        result = download.fetch_preview_image(
+            "https://image.civitai.com/x.png", dest_model, opener=opener, max_bytes=1024,
+        )
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_fetch_preview_image_opener_raising_returns_none_never_raises():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            raise urllib.error.URLError(OSError("connection reset"))
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+
+
+# --- finalize_successful_download -------------------------------------------
+
+
+def test_finalize_successful_download_writes_sidecar_and_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        civitai_meta = {"model_id": 1, "version_id": 2, "name": "X", "base_model": "SDXL", "tags": ["character"], "triggers": ["mytrigger"]}
+        opener_calls = []
+
+        def preview_opener(url, timeout):
+            opener_calls.append(url)
+            return _FakeDownloadResponse(b"imgbytes", headers={"Content-Type": "image/jpeg"})
+
+        download.finalize_successful_download(
+            dest_model, civitai_meta=civitai_meta, preview_url="https://image.civitai.com/x.jpg",
+            preview_opener=preview_opener,
+        )
+
+        cached = sidecar.read_sidecar(dest_model)
+        assert cached is not None
+        parsed = civitai_parse.parse_model_version(cached)
+        assert parsed["name"] == "X"
+        assert parsed["base_model"] == "SDXL"
+        assert parsed["triggers"] == ["mytrigger"]
+
+        preview_path = local.find_preview_path(dest_model)
+        assert preview_path == os.path.join(tmp, "a.preview.jpeg")
+        assert opener_calls == ["https://image.civitai.com/x.jpg"]
+
+
+def test_finalize_successful_download_no_civitai_meta_or_preview_url_is_a_no_op():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def _must_not_be_called(*args, **kwargs):
+            raise AssertionError("no preview_url was given -- the opener must never be reached")
+
+        download.finalize_successful_download(dest_model, preview_opener=_must_not_be_called)
+        assert sidecar.read_sidecar(dest_model) is None
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_finalize_successful_download_civitai_enabled_false_skips_the_preview_fetch_but_still_writes_sidecar():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def _must_not_be_called(*args, **kwargs):
+            raise AssertionError("civitai_enabled=False -- the preview opener must never be called at all")
+
+        download.finalize_successful_download(
+            dest_model,
+            civitai_meta={"model_id": 1, "name": "X"},
+            preview_url="https://image.civitai.com/x.jpg",
+            civitai_enabled=False,
+            preview_opener=_must_not_be_called,
+        )
+        # The sidecar write is NOT a network call -- unaffected by the flag.
+        cached = sidecar.read_sidecar(dest_model)
+        assert cached is not None
+        assert civitai_parse.parse_model_version(cached)["name"] == "X"
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_finalize_successful_download_preview_fetch_failure_never_raises_and_sidecar_still_written():
+    # THE explicit regression this task's correction asked for: "a preview
+    # fetch that raises/times out ⇒ the model download still reports ok,
+    # sidecar still written, no preview file."
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def raising_preview_opener(url, timeout):
+            raise socket.timeout("timed out")
+
+        # Must not raise.
+        download.finalize_successful_download(
+            dest_model,
+            civitai_meta={"model_id": 1, "name": "X"},
+            preview_url="https://image.civitai.com/x.jpg",
+            preview_opener=raising_preview_opener,
+        )
+        cached = sidecar.read_sidecar(dest_model)
+        assert cached is not None
+        assert civitai_parse.parse_model_version(cached)["name"] == "X"
+        assert local.find_preview_path(dest_model) is None
+
+
+def test_finalize_successful_download_overwrite_policy_sidecar_always_preview_never_when_one_exists():
+    # Overwrite policy, pinned: `.civitai.info` is ALWAYS refreshed; an
+    # EXISTING preview (ours or another tool's) is NEVER clobbered.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        # A stale sidecar already exists -- must be overwritten with fresh data.
+        sidecar.write_sidecar(dest_model, {"modelId": 1, "id": 1, "baseModel": "Stale"})
+        # A preview already exists (simulating another tool's file, or an
+        # earlier download) -- must be left untouched.
+        existing_preview = os.path.join(tmp, "a.preview.webp")
+        with open(existing_preview, "wb") as fh:
+            fh.write(b"already-here")
+
+        def _must_not_be_called(*args, **kwargs):
+            raise AssertionError("a preview already exists -- the opener must never be called")
+
+        download.finalize_successful_download(
+            dest_model,
+            civitai_meta={"model_id": 2, "version_id": 3, "name": "Fresh", "base_model": "SDXL"},
+            preview_url="https://image.civitai.com/x.jpg",
+            preview_opener=_must_not_be_called,
+        )
+
+        cached = sidecar.read_sidecar(dest_model)
+        parsed = civitai_parse.parse_model_version(cached)
+        assert parsed["name"] == "Fresh"  # overwritten, stale data gone
+        assert parsed["base_model"] == "SDXL"
+
+        # The pre-existing preview is exactly as it was -- never touched.
+        assert local.find_preview_path(dest_model) == existing_preview
+        with open(existing_preview, "rb") as fh:
+            assert fh.read() == b"already-here"
+
+
+# --- DownloadManager wiring: finalize runs ONLY on a real "ok" -------------
+
+
+def test_download_manager_start_runs_finalize_on_ok_writing_sidecar_and_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "ok.safetensors")
+
+        def fake_stream(url, dest_path, *, max_size_bytes, timeout, progress_cb, should_cancel):
+            open(dest_path, "wb").close()  # simulate the atomic rename already having happened
+            return {"reason": "ok", "message": "", "bytes_written": 0}
+
+        preview_calls = []
+
+        def preview_opener(url, timeout):
+            preview_calls.append(url)
+            return _FakeDownloadResponse(b"imgbytes", headers={"Content-Type": "image/png"})
+
+        manager = download.DownloadManager(stream_fn=fake_stream, preview_opener=preview_opener)
+        manager.start(
+            "job-ok", "https://civitai.com/x", dest_model,
+            civitai_meta={"model_id": 1, "name": "X"},
+            preview_url="https://image.civitai.com/x.png",
+        )
+        for _ in range(200):
+            progress = manager.progress("job-ok")
+            if progress["status"] != "downloading":
+                break
+            time.sleep(0.005)
+        assert progress["status"] == "ok"  # the download itself still reports ok
+        assert sidecar.read_sidecar(dest_model) is not None
+        assert local.find_preview_path(dest_model) == os.path.join(tmp, "ok.preview.png")
+        assert preview_calls == ["https://image.civitai.com/x.png"]
+
+
+def test_download_manager_start_never_finalizes_on_a_failed_download_directory_stays_clean():
+    # "A failed/short/HTML download writes no sidecar and no preview --
+    # assert the directory is clean" -- exercised here at the FULL manager
+    # level, `civitai_meta`/`preview_url` supplied exactly as a real caller
+    # would, on a download that does NOT reach `"ok"`.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "failed.safetensors")
+
+        def fake_stream(url, dest_path, *, max_size_bytes, timeout, progress_cb, should_cancel):
+            # No file written -- matches a real failed/incomplete/corrupt
+            # `stream_download` outcome (dest_path never touched).
+            return {"reason": "corrupt", "message": "not a valid file", "bytes_written": 0}
+
+        def _must_not_be_called(*args, **kwargs):
+            raise AssertionError("finalize must never run for a non-ok result")
+
+        manager = download.DownloadManager(stream_fn=fake_stream, preview_opener=_must_not_be_called)
+        manager.start(
+            "job-bad", "https://civitai.com/x", dest_model,
+            civitai_meta={"model_id": 1, "name": "X"},
+            preview_url="https://image.civitai.com/x.png",
+        )
+        for _ in range(200):
+            progress = manager.progress("job-bad")
+            if progress["status"] != "downloading":
+                break
+            time.sleep(0.005)
+        assert progress["status"] == "corrupt"
+        assert not os.path.isfile(dest_model)
+        assert sidecar.read_sidecar(dest_model) is None
+        assert local.find_preview_path(dest_model) is None
+        assert os.listdir(tmp) == []  # the directory is genuinely clean
+
+
+# ---------------------------------------------------------------------------
 # M2 -- keys.py: the §8 resolution ladder.
 # ---------------------------------------------------------------------------
 
@@ -2827,6 +3355,46 @@ def test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public
             restore_limiter()
 
 
+def test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result():
+    # 2026-07-30 "no info sidecar, no preview image" fix: these are exactly
+    # the two fields `download_start_impl`'s own `civitai_meta`/`preview_url`
+    # payload fields expect the frontend to hand straight back.
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {
+                "items": [{
+                    "id": 1, "name": "Skin Detail XL", "type": "LORA",
+                    "modelVersions": [{
+                        "id": 10, "baseModel": "SDXL", "trainedWords": ["mytrigger"],
+                        "images": [{"url": "https://image.civitai.com/safe.jpg", "nsfw": False, "nsfwLevel": 1}],
+                        "files": [{"name": "skin.safetensors", "sizeKB": 1000,
+                                   "downloadUrl": "https://civitai.com/x", "primary": True}],
+                    }],
+                }],
+                "metadata": {},
+            },
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "skin"})
+            card = result["results"][0]
+            assert card["triggers"] == ["mytrigger"]
+            assert card["preview_url"] == "https://image.civitai.com/safe.jpg"
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
 def test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk():
     restore_limiter = _install_permissive_search_limiter()
     previous_search_models = civitai_search.search_models
@@ -2934,14 +3502,20 @@ class _FakeDownloadManager:
 
     def __init__(self, start_result=None, progress_result=None, cancel_result=None):
         self.start_calls = []
+        # Recorded SEPARATELY from `start_calls` (kept a plain 4-tuple, same
+        # as before this fix, so the one existing test that unpacks it
+        # positionally never needed to change) -- the three new 2026-07-30
+        # "no info sidecar, no preview image" kwargs, one dict per call.
+        self.start_kwargs = []
         self.progress_calls = []
         self.cancel_calls = []
         self._start_result = start_result or {"reason": "started", "job_id": "job-x"}
         self._progress_result = progress_result or {"reason": "ok", "status": "downloading", "bytes": 0, "total": None, "message": ""}
         self._cancel_result = cancel_result or {"reason": "cancelling", "message": "Cancelling…"}
 
-    def start(self, job_id, url, dest_path, *, max_size_bytes):
+    def start(self, job_id, url, dest_path, *, max_size_bytes, civitai_meta=None, preview_url=None, civitai_enabled=True):
         self.start_calls.append((job_id, url, dest_path, max_size_bytes))
+        self.start_kwargs.append({"civitai_meta": civitai_meta, "preview_url": preview_url, "civitai_enabled": civitai_enabled})
         return dict(self._start_result)
 
     def progress(self, job_id):
@@ -3101,6 +3675,55 @@ def test_download_start_impl_happy_path_starts_a_job_and_never_returns_the_api_k
             restore()
 
 
+def test_download_start_impl_threads_civitai_meta_and_preview_url_through_to_the_manager():
+    # 2026-07-30 "no info sidecar, no preview image" fix: the payload-level
+    # contract `download_start_impl`'s own docstring describes.
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x",
+                "civitai_meta": {"model_id": 1, "name": "X"},
+                "preview_url": "https://image.civitai.com/x.jpg",
+                "civitai_enabled": False,
+            })
+            assert result["reason"] == "started"
+            assert fake.start_kwargs[-1] == {
+                "civitai_meta": {"model_id": 1, "name": "X"},
+                "preview_url": "https://image.civitai.com/x.jpg",
+                "civitai_enabled": False,
+            }
+        finally:
+            restore_fp()
+            restore()
+
+
+def test_download_start_impl_defaults_civitai_enabled_true_and_tolerates_a_non_dict_meta():
+    # No `civitai_meta`/`preview_url`/`civitai_enabled` at all in the
+    # payload -- matches the behaviour before this fix existed, and a
+    # hostile/malformed `civitai_meta` degrades to `None` rather than being
+    # passed through raw.
+    fake, restore = _install_fake_download_manager()
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.download_start_impl({
+                "kind": "loras", "filename": "new.safetensors", "subfolder": "",
+                "download_url": "https://civitai.com/x", "civitai_meta": "not-a-dict", "preview_url": 12345,
+            })
+            assert result["reason"] == "started"
+            assert fake.start_kwargs[-1] == {"civitai_meta": None, "preview_url": None, "civitai_enabled": True}
+        finally:
+            restore_fp()
+            restore()
+
+
 def test_download_start_impl_propagates_busy_from_the_manager():
     fake, restore = _install_fake_download_manager(start_result={"reason": "busy", "message": "Another download is already in progress.", "job_id": None})
     with tempfile.TemporaryDirectory() as tmp:
@@ -3155,6 +3778,15 @@ ALL_TESTS = [
     test_list_models_groups_by_subfolder_and_reads_metadata,
     test_list_models_unwhitelisted_kind_returns_empty_without_folder_paths,
     test_sidecar_round_trip_and_forget,
+    test_interop_cminfo_path_is_the_verified_civicomfy_suffix,
+    test_interop_translate_cminfo_typical_fixture_feeds_parse_model_version,
+    test_interop_translate_cminfo_never_raises_on_malformed_input,
+    test_interop_read_cminfo_as_civitai_shape_missing_file_is_none,
+    test_interop_read_cminfo_as_civitai_shape_real_file_round_trip,
+    test_interop_read_cminfo_unreadable_json_returns_none_never_raises,
+    test_read_sidecar_falls_back_to_cminfo_when_our_own_sidecar_is_absent,
+    test_read_sidecar_prefers_our_own_civitai_info_when_both_exist,
+    test_read_sidecar_neither_file_present_is_none,
     test_parse_model_version_typical_response,
     test_parse_model_version_no_trainedwords_no_model_name_still_found,
     test_parse_model_version_genuinely_empty_response_parses_to_nothing,
@@ -3162,6 +3794,11 @@ ALL_TESTS = [
     test_parse_model_version_tags_as_dicts_are_tolerated,
     test_parse_model_version_explicit_gallery_falls_back_to_non_adult,
     test_parse_model_version_all_explicit_gallery_yields_no_thumbnail,
+    test_pick_gallery_image_url_prefers_explicitly_safe_and_is_untransformed,
+    test_pick_gallery_image_url_all_explicit_yields_none,
+    test_pick_thumbnail_still_transforms_its_own_result,
+    test_civitai_shape_from_search_meta_typical_fields,
+    test_civitai_shape_from_search_meta_never_raises_on_malformed_input,
     test_parse_model_version_both_descriptions_present_are_returned_distinctly,
     test_parse_model_version_only_version_description_leaves_model_description_absent,
     test_parse_model_version_only_model_description_leaves_version_description_absent,
@@ -3243,6 +3880,8 @@ ALL_TESTS = [
     test_parse_search_response_multi_version_flattens_the_primary_ones_base_model_not_a_later_versions,
     test_parse_search_response_malformed_shapes_never_raise,
     test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first,
+    test_parse_search_response_carries_triggers_and_preview_url_per_version,
+    test_parse_search_response_no_trigger_words_or_images_omits_neither_field_but_they_stay_empty_none,
     test_sanitize_filename_accepts_normal_names,
     test_sanitize_filename_rejects_hostile_values,
     test_sanitize_filename_rejects_an_embedded_nul_byte,
@@ -3291,6 +3930,20 @@ ALL_TESTS = [
     test_download_manager_unknown_job_id,
     test_download_manager_busy_while_a_download_is_in_flight,
     test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_status,
+    test_preview_extension_for_content_type_maps_known_types_and_rejects_unknown,
+    test_fetch_preview_image_success_writes_file_with_correct_extension,
+    test_fetch_preview_image_rejects_non_https_url_without_calling_opener,
+    test_fetch_preview_image_is_safe_redirect_refusal_never_calls_the_opener,
+    test_fetch_preview_image_unknown_content_type_is_rejected_body_never_written,
+    test_fetch_preview_image_oversized_body_is_rejected,
+    test_fetch_preview_image_opener_raising_returns_none_never_raises,
+    test_finalize_successful_download_writes_sidecar_and_preview,
+    test_finalize_successful_download_no_civitai_meta_or_preview_url_is_a_no_op,
+    test_finalize_successful_download_civitai_enabled_false_skips_the_preview_fetch_but_still_writes_sidecar,
+    test_finalize_successful_download_preview_fetch_failure_never_raises_and_sidecar_still_written,
+    test_finalize_successful_download_overwrite_policy_sidecar_always_preview_never_when_one_exists,
+    test_download_manager_start_runs_finalize_on_ok_writing_sidecar_and_preview,
+    test_download_manager_start_never_finalizes_on_a_failed_download_directory_stays_clean,
     test_resolve_api_key_setting_wins_over_env,
     test_resolve_api_key_falls_back_to_env_when_no_setting,
     test_resolve_api_key_public_only_when_neither_is_set,
@@ -3299,6 +3952,7 @@ ALL_TESTS = [
     test_min_interval_limiter_seconds_until_allowed,
     test_search_impl_rejects_unwhitelisted_kind_without_any_network,
     test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
+    test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result,
     test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk,
     test_search_impl_marks_a_gated_result_before_any_download_attempt,
     test_search_impl_passes_through_offline_reason_and_still_reports_public_only,
@@ -3310,6 +3964,8 @@ ALL_TESTS = [
     test_download_start_impl_rejects_an_untrusted_download_url,
     test_download_start_impl_rejects_an_advisory_size_over_the_cap,
     test_download_start_impl_happy_path_starts_a_job_and_never_returns_the_api_key,
+    test_download_start_impl_threads_civitai_meta_and_preview_url_through_to_the_manager,
+    test_download_start_impl_defaults_civitai_enabled_true_and_tolerates_a_non_dict_meta,
     test_download_start_impl_propagates_busy_from_the_manager,
     test_download_progress_impl_and_cancel_impl_delegate_to_the_manager,
 ]

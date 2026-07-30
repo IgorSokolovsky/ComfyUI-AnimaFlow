@@ -247,14 +247,17 @@ def _is_adult_image(nsfw: Any, level: Any) -> bool:
     return False
 
 
-def _pick_thumbnail(images: Any) -> Optional[str]:
-    """The first non-adult image's URL (thumbnail-sized), preferring one
-    explicitly marked safe over merely "not obviously adult" -- same
-    two-tier fallback as the thumbnail-selection loop inside
-    `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:401-419`'s
-    `parse_civitai_modelversion` (MIT, THIRD_PARTY_NOTICES.md), so a model
-    whose gallery is entirely explicit ends up with NO thumbnail rather than
-    an explicit one.
+def pick_gallery_image_url(images: Any) -> Optional[str]:
+    """The first non-adult image's URL, UNTRANSFORMED (no thumbnail-size
+    rewrite) -- the shared adult-filtering selection `_pick_thumbnail` below
+    builds on (running this result through `_thumb_url`), and also what
+    `civitai_search.py`'s own per-version preview-image selection reuses
+    directly (docs task, 2026-07-30 "no preview image" fix: a download-time
+    preview save wants the image roughly as Civitai served it in the search
+    result, not deliberately downsized to a 256px live-thumbnail size) --
+    same two-tier "prefer explicitly safe, then merely not-adult" fallback
+    as `_pick_thumbnail`, factored out so the adult-filtering RULE lives in
+    exactly one place rather than two copies of this loop.
     """
     if not isinstance(images, list):
         return None
@@ -265,10 +268,23 @@ def _pick_thumbnail(images: Any) -> Optional[str]:
         nsfw = image.get("nsfw")
         level = image.get("nsfwLevel")
         if nsfw in (None, False, "None", "Soft") and level in (None, 0, 1, 2):
-            return _thumb_url(image["url"])
+            return image["url"]
         if fallback is None and not _is_adult_image(nsfw, level):
             fallback = image["url"]
-    return _thumb_url(fallback) if fallback else None
+    return fallback
+
+
+def _pick_thumbnail(images: Any) -> Optional[str]:
+    """The first non-adult image's URL, THUMBNAIL-sized (`_thumb_url`'s
+    width-256 rewrite) -- same two-tier fallback as the thumbnail-selection
+    loop inside `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:401-419`'s
+    `parse_civitai_modelversion` (MIT, THIRD_PARTY_NOTICES.md), so a model
+    whose gallery is entirely explicit ends up with NO thumbnail rather than
+    an explicit one. A thin wrapper over `pick_gallery_image_url` (above),
+    which now holds the actual selection loop.
+    """
+    url = pick_gallery_image_url(images)
+    return _thumb_url(url) if url else None
 
 
 def parse_model_description(obj: Any) -> Optional[str]:
@@ -303,4 +319,66 @@ def parse_model_description(obj: Any) -> Optional[str]:
     return None
 
 
-__all__ = ("parse_model_version", "parse_model_description", "html_to_text")
+def civitai_shape_from_search_meta(meta: Any) -> Dict[str, Any]:
+    """Reshape OUR OWN normalized search-result metadata (`model_id`,
+    `version_id`, `name`, `type`, `base_model`, `tags`, `triggers` -- exactly
+    what `civitai_search.parse_search_response`'s per-result/per-version
+    dicts already carry, per that module's own docstring) into the SAME
+    raw-Civitai-response shape `parse_model_version` reads -- so a value
+    written this way at download time (the "no info sidecar" fix, 2026-07-30:
+    the search result the user already saw is reused rather than re-hashing
+    the file / re-fetching Civitai the first time the ⓘ panel opens) is read
+    back through the EXACT same parser as a live by-hash lookup's response,
+    with no second parser to keep in sync.
+
+    Deliberately NOT `parse_model_version` run in reverse: a SEARCH result
+    never carries `description` text at all (Civitai's search endpoint
+    doesn't return it -- see `civitai_search.py`'s own per-item parse), so
+    `model_description`/`version_description` are simply never set here --
+    "omit rather than invent" (docs/lora-loader-design.md §1a-vi), not a
+    placeholder.
+
+    Never raises: non-dict input, or a `meta` with nothing usable at all,
+    returns `{}` (mirrors `parse_model_version`'s own "nothing usable"
+    contract, so a caller's "did this produce anything?" check is the same
+    `if translated:` either way).
+    """
+    if not isinstance(meta, dict):
+        return {}
+    out: Dict[str, Any] = {}
+
+    version_id = meta.get("version_id")
+    if isinstance(version_id, int) and not isinstance(version_id, bool):
+        out["id"] = version_id
+    model_id = meta.get("model_id")
+    if isinstance(model_id, int) and not isinstance(model_id, bool):
+        out["modelId"] = model_id
+    if meta.get("base_model"):
+        out["baseModel"] = str(meta["base_model"])
+    triggers = meta.get("triggers")
+    if isinstance(triggers, list):
+        cleaned_triggers = [str(t) for t in triggers if isinstance(t, str) and t.strip()]
+        if cleaned_triggers:
+            out["trainedWords"] = cleaned_triggers
+
+    model_obj: Dict[str, Any] = {}
+    if meta.get("name"):
+        model_obj["name"] = str(meta["name"])
+    if meta.get("type"):
+        model_obj["type"] = str(meta["type"])
+    tags = meta.get("tags")
+    if isinstance(tags, list):
+        cleaned_tags = [str(t) for t in tags if isinstance(t, str) and t.strip()]
+        if cleaned_tags:
+            model_obj["tags"] = cleaned_tags
+            out["tags"] = cleaned_tags
+    if model_obj:
+        out["model"] = model_obj
+
+    return out
+
+
+__all__ = (
+    "parse_model_version", "parse_model_description", "html_to_text",
+    "pick_gallery_image_url", "civitai_shape_from_search_meta",
+)

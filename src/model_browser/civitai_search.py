@@ -26,6 +26,7 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import civitai_client
+from . import civitai_parse
 from .kinds import folder_for_kind
 
 # kind -> Civitai's own `types` filter value (§7a's table, extended to the
@@ -283,6 +284,19 @@ def _parse_version(v: Any) -> Optional[Dict[str, Any]]:
         "published_at": v.get("publishedAt") if isinstance(v.get("publishedAt"), str) else None,
         "gated": gated,
         "files": _parse_files(v.get("files"), gated=gated),
+        # `trainedWords` -- Civitai's search endpoint DOES carry this
+        # per-version (2026-07-30, the "no info sidecar" fix's own download-
+        # time metadata reuse: `api.py`'s `_annotate_search_results`/
+        # `civitai_parse.civitai_shape_from_search_meta` need it to seed a
+        # `.civitai.info` sidecar without a fresh lookup).
+        "triggers": _clean_string_list(v.get("trainedWords")),
+        # The first non-adult gallery image's URL, UNTRANSFORMED (never the
+        # 256px `_thumb_url` rewrite `civitai_parse._pick_thumbnail` applies
+        # for a LIVE in-browser thumbnail -- this one is reused, as-is, to
+        # SAVE a local preview file at download time, so a higher-fidelity
+        # image is worth keeping). `None` when the gallery has no usable
+        # (non-adult) image -- never invent one.
+        "preview_url": civitai_parse.pick_gallery_image_url(v.get("images")),
     }
 
 
@@ -352,8 +366,9 @@ def parse_search_response(raw: Any) -> Dict[str, Any]:
 
     Each result: `{model_id, name, type, creator, tags, nsfw, base_model?,
     stats: {downloads, favorites, rating}, versions: [{version_id, name,
-    base_model, published_at, gated, files: [{name, size_kb, download_url,
-    primary, sha256, gated}]}]}`. `versions` keeps EVERY version Civitai
+    base_model, published_at, gated, triggers, preview_url, files: [{name,
+    size_kb, download_url, primary, sha256, gated}]}]}`. `versions` keeps
+    EVERY version Civitai
     returned (a future version-selector/detail view needs all of them, not
     just the newest) -- a result with no usable version at all (every
     version failed to parse, or the list was empty/absent) is DROPPED
