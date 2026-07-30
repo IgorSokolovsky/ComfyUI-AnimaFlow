@@ -81,6 +81,28 @@
  * `AnimaGenerator`'s Python side along with `use_internal_loaders` mode
  * itself (`docs/generator-design.md` §3/§5) — there is nothing left to hide
  * for them here.
+ *
+ * **2026-07-30 (state-input link guard, the bug's PRIMARY fix): hiding the
+ * WIDGET was never enough on its own.** Every declared widget already has a
+ * coexisting real socket in `node.inputs` (litegraph's own
+ * `convertToInput` is a no-op deprecation shim now — "widget to socket
+ * conversion is no longer necessary, as they co-exist now"), so
+ * `generation_settings`/`preview_state` could always accept a link, hidden
+ * widget row or not. A wire that doesn't land exactly on its intended
+ * socket falls back to litegraph's type-scanned "dropped on node
+ * background" path, which hands the connection to the FIRST FREE INPUT OF
+ * MATCHING TYPE in `node.inputs` array order — `preview_state` (`STRING`,
+ * index 0) silently won a wire the user visibly aimed at `metadata_json`
+ * (`STRING`, index 2) this way (live bug, `AnimaPreview` node #748).
+ * `installStateInputGuard` (below) patches `onConnectInput` — litegraph's
+ * own "return false to block this connection" hook, checked on EVERY
+ * interactive connect path — so a new wire can never land on either hidden
+ * state input at all, whatever index it sits at. See
+ * `interaction.mjs`'s `describeStateInputConnectionAttempt` for the full
+ * citation trail and the two alternatives (`forceInput`, a pack-private
+ * type) that were evaluated and rejected. This never affects loading an
+ * already-saved workflow — litegraph rebuilds saved links directly from
+ * JSON, never through the connect path this hook guards.
  */
 import { app } from "/scripts/app.js";
 // `isGraphLoading` -- the ONE exception to this file's "everything past
@@ -211,6 +233,56 @@ function hideNativeWidgets(node) {
   HIDDEN_STATE_WIDGETS.forEach((name) => {
     hideWidget((node.widgets || []).find((w) => w.name === name));
   });
+}
+
+// ---------------------------------------------------------------------------
+// State-input link guard -- the PRIMARY fix (2026-07-30) for a hidden state
+// widget stealing a wire visibly aimed elsewhere. See this file's own top
+// doc comment ("2026-07-30 state-input link guard") and
+// `interaction.mjs`'s `describeStateInputConnectionAttempt` for the full
+// mechanism/citation; this is just the thin litegraph-hook glue.
+// ---------------------------------------------------------------------------
+
+/** Patches `nodeType.prototype.onConnectInput` -- litegraph's own "return
+ * false to block this connection" hook, invoked by `LGraphNode.connectSlots`
+ * on EVERY interactive connect path (a precise slot drop AND the
+ * type-scanned "dropped on node background" fallback) before any link is
+ * created. Chains any pre-existing handler (none currently exists on these
+ * classes, but never assume that stays true) and respects its own veto.
+ *
+ * `this._anMods` not being loaded yet is a vanishingly narrow race (this
+ * node was JUST created and `loadMods()` -- kicked off from its own
+ * `onNodeCreated` -- hasn't resolved its microtask): a human dragging a wire
+ * always takes far longer than that, so failing OPEN in that window (don't
+ * block) is the same tolerance this file already gives `onConnectionsChange`/
+ * `onExecuted` for `_anMods`/`_anRefs` not being ready yet ("never a crash,
+ * just a one-frame-late" -- see those hooks' own comments below). */
+function installStateInputGuard(nodeType) {
+  const _connectInput = nodeType.prototype.onConnectInput;
+  nodeType.prototype.onConnectInput = function (targetSlot, outputType, output, outputNode, outputSlot) {
+    if (_connectInput && _connectInput.apply(this, arguments) === false) {
+      return false;
+    }
+    if (!this._anMods) {
+      return undefined;
+    }
+    const decision = this._anMods.interaction.describeStateInputConnectionAttempt(
+      this,
+      targetSlot,
+      HIDDEN_STATE_WIDGETS,
+    );
+    if (!decision.blocked) {
+      return undefined;
+    }
+    const fromLabel = (outputNode && (outputNode.type || outputNode.comfyClass)) || "?";
+    const fromId = outputNode ? outputNode.id : "?";
+    console.warn(
+      `[AnimaFlow Anima] refused a link onto "${this.type || this.comfyClass}" #${this.id}'s hidden ` +
+      `"${decision.inputName}" input -- this input is settings-only JSON and must stay unwired. The ` +
+      `wire from "${fromLabel}" #${fromId} output #${outputSlot} was refused, not connected.`,
+    );
+    return false;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +821,15 @@ app.registerExtension({
     // anything beyond the socket-healing `onConfigure` patch every one of
     // the three classes gets.
     const mountsUi = isGenerator || nodeData.name === "AnimaPreview";
+
+    // Only the two classes with a hidden state widget need the guard --
+    // `AnimaContextBridge` declares neither `generation_settings` nor
+    // `preview_state`, so `describeStateInputConnectionAttempt` would just
+    // be a permanent no-op for it (this file's own top doc comment has the
+    // full mechanism).
+    if (mountsUi) {
+      installStateInputGuard(nodeType);
+    }
 
     if (mountsUi) {
       const _created = nodeType.prototype.onNodeCreated;

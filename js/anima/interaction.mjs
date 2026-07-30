@@ -282,6 +282,66 @@ export function isInputWired(node, name) {
   return !!(input && input.link != null);
 }
 
+/** Pure predicate for `index.js`'s `onConnectInput` guard -- the PRIMARY fix
+ * for the 2026-07-30 "hidden state widget stole a wire" bug (`AnimaPreview`
+ * node #748, live: the Generator's `metadata_json` output landed on
+ * `preview_state` instead, both `STRING`, both free, with `preview_state`
+ * sitting at a LOWER index).
+ *
+ * **The mechanism, read off the installed `comfyui_frontend_package`'s own
+ * shipped TS source (its bundled source maps), not guessed:** every declared
+ * widget ALREADY has a coexisting real socket in `node.inputs` --
+ * `LGraphNode.prototype.convertToInput` is now a no-op deprecation shim
+ * (`"Please remove call to convertToInput. Widget to socket conversion is no
+ * longer necessary, as they co-exist now."`), so there is no "convert to
+ * input" step left to prevent; the socket was ALWAYS live, on legacy canvas
+ * too. A dropped wire that doesn't land EXACTLY on one input's own rendered
+ * slot (e.g. because the widget it belongs to is hidden, or the drop is a
+ * little off) falls back to `LinkConnector.connectToNode`, which calls
+ * `node.findInputByType(type)` -- and THAT returns the FIRST free input of
+ * matching type in `node.inputs` ARRAY ORDER, with no notion of which widget
+ * the user was actually aiming at. `preview_state` (index 0) beats
+ * `metadata_json` (index 2) for exactly that reason; `images` was never at
+ * risk only because `IMAGE` is unique on that node.
+ *
+ * `LGraphNode.connectSlots` (the ONE place every interactive connect path
+ * funnels through -- both a precise slot drop and the type-scanned fallback
+ * above) checks `inputNode.onConnectInput?.(...) === false` and aborts the
+ * connection right there, before any `LLink` is created, if so -- this is
+ * litegraph's own documented "allow nodes to block connection" hook.
+ * `index.js`'s `onConnectInput` patch calls this function to decide whether
+ * to return `false` from that hook for one of THIS pack's own hidden state
+ * widgets (`generation_settings`, `preview_state`).
+ *
+ * Two alternatives evaluated and rejected (recorded here so they aren't
+ * re-tried): `forceInput` strips the widget's own default and makes wiring
+ * MANDATORY, breaking the "must carry a live default, must never require a
+ * wire" contract every one of these state widgets has; retyping to a
+ * pack-private type would close it at the type system, but every one of
+ * these is a persistence key in every saved workflow, several JS sites
+ * hardcode `"STRING"` for them, and an unrecognised type may stop ComfyUI
+ * rendering a default widget at all -- that one is the owner's call, not
+ * this pack's.
+ *
+ * **Never runs during a graph LOAD/`configure()`** -- litegraph rebuilds a
+ * saved workflow's `LLink`s directly from the serialized JSON and never
+ * routes that through `connectSlots`, so an existing (even a previously
+ * mis-wired) workflow keeps loading exactly as it always has; this only
+ * blocks a NEW interactive drag-drop from ever landing here.
+ *
+ * Pure: takes the already-resolved input list (or a stub of it) and the
+ * accompanying hidden-widget-name list, and returns a plain descriptor
+ * rather than doing anything itself -- `index.js`'s hook is the one call
+ * site that acts on it (returns `false` to litegraph and logs why). */
+export function describeStateInputConnectionAttempt(node, targetSlot, hiddenWidgetNames) {
+  const inputs = (node && node.inputs) || [];
+  const input = inputs[targetSlot];
+  if (!input || !Array.isArray(hiddenWidgetNames) || !hiddenWidgetNames.includes(input.name)) {
+    return { blocked: false };
+  }
+  return { blocked: true, inputName: input.name };
+}
+
 // ---------------------------------------------------------------------------
 // Socket self-healing (`AnimaGenerator`'s Python surface changed under it --
 // `d021c09`; an ALREADY-PLACED node keeps every old socket AND gains the new

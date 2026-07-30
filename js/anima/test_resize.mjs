@@ -231,6 +231,7 @@ import {
   teardownNode,
   computeNodeDefinition,
   healNodeSockets,
+  describeStateInputConnectionAttempt,
 } from "./interaction.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -5740,6 +5741,97 @@ test("index.js: triggerQueueProbe is a guarded DYNAMIC import of ../shared/queue
   assert.ok(setupIdx >= 0 && restoreIdx > setupIdx);
   const setupBody = indexSource.slice(setupIdx, restoreIdx);
   assert.match(setupBody, /triggerQueueProbe\(\)/, "setupNode must call triggerQueueProbe()");
+});
+
+// ===========================================================================
+// I. State-input link guard (2026-07-30, the bug's PRIMARY fix) --
+//    `describeStateInputConnectionAttempt` (pure, `interaction.mjs`) and
+//    `index.js`'s `installStateInputGuard`/`onConnectInput` glue. See
+//    `interaction.mjs`'s own doc comment on the former for the full
+//    mechanism/citation trail (litegraph's `connectSlots`/`onConnectInput`/
+//    `findInputByType`).
+// ===========================================================================
+
+test("describeStateInputConnectionAttempt: a drop landing on the hidden preview_state slot (index 0) is blocked, even though metadata_json (index 2, same STRING type) was the visible target", () => {
+  const node = {
+    inputs: [
+      { name: "preview_state", type: "STRING", link: null },
+      { name: "images", type: "IMAGE", link: 20400 },
+      { name: "metadata_json", type: "STRING", link: null },
+    ],
+  };
+  const decision = describeStateInputConnectionAttempt(node, 0, ["generation_settings", "preview_state"]);
+  assert.deepEqual(decision, { blocked: true, inputName: "preview_state" });
+});
+
+test("describeStateInputConnectionAttempt: generation_settings (whatever its index) is blocked on the Generator", () => {
+  const node = {
+    inputs: [
+      { name: "context", type: "ANIMA_CONTEXT", link: null },
+      { name: "generation_settings", type: "STRING", link: null },
+    ],
+  };
+  const decision = describeStateInputConnectionAttempt(node, 1, ["generation_settings", "preview_state"]);
+  assert.deepEqual(decision, { blocked: true, inputName: "generation_settings" });
+});
+
+test("describeStateInputConnectionAttempt: a real socket (images) is never blocked, even though it shares the hidden-widget-name LIST's array (it just isn't a member)", () => {
+  const node = {
+    inputs: [
+      { name: "preview_state", type: "STRING", link: null },
+      { name: "images", type: "IMAGE", link: null },
+      { name: "metadata_json", type: "STRING", link: null },
+    ],
+  };
+  assert.deepEqual(
+    describeStateInputConnectionAttempt(node, 1, ["generation_settings", "preview_state"]),
+    { blocked: false },
+  );
+  // metadata_json is a real, connectable socket too -- it must stay open
+  // even though its TYPE matches the hidden preview_state's.
+  assert.deepEqual(
+    describeStateInputConnectionAttempt(node, 2, ["generation_settings", "preview_state"]),
+    { blocked: false },
+  );
+});
+
+test("describeStateInputConnectionAttempt: an out-of-range slot, a node with no inputs at all, and a missing/non-array hidden-name list all resolve to not-blocked rather than throwing", () => {
+  const node = { inputs: [{ name: "preview_state", type: "STRING", link: null }] };
+  assert.deepEqual(describeStateInputConnectionAttempt(node, 5, ["preview_state"]), { blocked: false });
+  assert.deepEqual(describeStateInputConnectionAttempt({}, 0, ["preview_state"]), { blocked: false });
+  assert.deepEqual(describeStateInputConnectionAttempt(null, 0, ["preview_state"]), { blocked: false });
+  assert.deepEqual(describeStateInputConnectionAttempt(node, 0, undefined), { blocked: false });
+});
+
+test("index.js: installStateInputGuard patches onConnectInput and is called for AnimaGenerator/AnimaPreview (mountsUi), reached before the onNodeCreated patch", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function installStateInputGuard(nodeType)");
+  assert.ok(fnIdx >= 0, "installStateInputGuard must exist");
+  const fnEndIdx = indexSource.indexOf("\n// ---", fnIdx);
+  const fnBody = indexSource.slice(fnIdx, fnEndIdx > fnIdx ? fnEndIdx : undefined);
+  assert.match(fnBody, /nodeType\.prototype\.onConnectInput\s*=\s*function/, "must patch onConnectInput");
+  assert.match(
+    fnBody,
+    /_connectInput\.apply\(this,\s*arguments\)\s*===\s*false/,
+    "must chain and respect any PRE-EXISTING onConnectInput's own veto",
+  );
+  assert.match(
+    fnBody,
+    /describeStateInputConnectionAttempt/,
+    "must delegate the actual decision to interaction.mjs's pure predicate, not re-derive it inline",
+  );
+
+  const callIdx = indexSource.indexOf("installStateInputGuard(nodeType)", fnEndIdx);
+  const mountsUiIdx = indexSource.indexOf("const mountsUi = isGenerator", fnEndIdx);
+  const createdIdx = indexSource.indexOf("nodeType.prototype.onNodeCreated = function", fnEndIdx);
+  assert.ok(callIdx > mountsUiIdx, "the call site must come after mountsUi is computed");
+  assert.ok(callIdx < createdIdx, "must be installed before onNodeCreated, not deferred to it");
+  // Must be gated on `mountsUi` (only Generator/Preview declare a hidden
+  // state widget) -- assert the call sits inside an `if (mountsUi)` block,
+  // by checking the nearest preceding `if (mountsUi)` is closer than any
+  // unrelated `if (` that isn't it.
+  const guardIfIdx = indexSource.lastIndexOf("if (mountsUi)", callIdx);
+  assert.ok(guardIfIdx > mountsUiIdx && guardIfIdx < callIdx, "the call must be gated on mountsUi");
 });
 
 await Promise.all(pendingAsync);
