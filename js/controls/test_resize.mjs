@@ -4388,6 +4388,81 @@ test("add menu: exactly one add-menu element in the DOM at a time; no orphan lef
 
 // =========================================================================
 
+// ---------------------------------------------------------------------------
+// hideStateWidget's Nodes 2.0 half (`.claude/CLAUDE.md` Task 1, 2026-07-30):
+// Vue's own widget renderer ignores `w.hidden`/`computeSize`/`inputEl`
+// entirely and derives visibility purely from `widget.options.hidden`
+// (`isWidgetVisible` in the installed `comfyui_frontend_package`'s
+// `assets/promotionUtils-*.js` -- see `hideStateWidget`'s own updated doc
+// comment for the full derivation). `hideStateWidget` is an un-exported glue
+// function inside `index.js` (which carries a top-level `/scripts/app.js`
+// import this suite deliberately never imports directly, same reasoning as
+// this file's own import-allowlist test above), so this is a source-scan
+// check, not a behavioural one.
+// ---------------------------------------------------------------------------
+
+test("index.js: hideStateWidget ALSO sets widget.options.hidden = true (not just w.hidden) -- the Nodes 2.0 half of hiding panel_state", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function hideStateWidget(node, mods)");
+  assert.ok(fnIdx >= 0, "hideStateWidget must exist");
+  const nextFnIdx = indexSource.indexOf("function ", fnIdx + 1);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx > fnIdx ? nextFnIdx : undefined);
+
+  assert.match(fnBody, /w\.hidden\s*=\s*true/, "must still set the legacy-litegraph w.hidden = true");
+  assert.match(
+    fnBody,
+    /w\.options\.hidden\s*=\s*true/,
+    "must ALSO set widget.options.hidden = true -- the ONLY signal Nodes 2.0's isWidgetVisible actually reads",
+  );
+  assert.match(
+    fnBody,
+    /if\s*\(\s*!w\.options\s*\)\s*\{\s*w\.options\s*=\s*\{\s*\}\s*;?\s*\}/,
+    "must create widget.options first when a widget declared none at all, never throw on a bare widget",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The queue-time state probe's trigger wiring (`.claude/CLAUDE.md` Task 2,
+// 2026-07-30) -- `triggerQueueProbe` must be a guarded DYNAMIC import (never
+// added to the static allowlist above), and must actually be called from
+// BOTH instance-creation paths this file owns (Control/Loader Panel's own
+// `setupNode`, and `AnimaLoraLoader`'s `onNodeCreated`) -- source-scan only,
+// same reasoning as every other `index.js`-internal check in this file.
+// ---------------------------------------------------------------------------
+
+test("index.js: triggerQueueProbe is a guarded DYNAMIC import of ../shared/queue_probe.mjs -- never a static one (would violate the allowlist test above)", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\("\.\.\/shared\/queue_probe\.mjs"\)/,
+    "must dynamically import ../shared/queue_probe.mjs",
+  );
+  assert.doesNotMatch(
+    indexSource,
+    /^import\s+.*from\s*"\.\.\/shared\/queue_probe\.mjs"/m,
+    "must NEVER be a static top-level import -- see this file's own allowlist test",
+  );
+});
+
+test("index.js: setupNode (Control/Loader Panel) and AnimaLoraLoader's onNodeCreated BOTH call triggerQueueProbe -- every stateful Controls-track node instance can bring the probe online", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+
+  const setupIdx = indexSource.indexOf("function setupNode(node, panelConfig, mods)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  assert.ok(setupIdx >= 0 && restoreIdx > setupIdx);
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+  assert.match(setupBody, /triggerQueueProbe\(\)/, "setupNode must call triggerQueueProbe()");
+
+  const registerLoraIdx = indexSource.indexOf("function registerLoraNodeType(nodeType)");
+  assert.ok(registerLoraIdx >= 0, "registerLoraNodeType must exist");
+  const loraBody = indexSource.slice(registerLoraIdx);
+  const createdIdx = loraBody.indexOf("nodeType.prototype.onNodeCreated = function");
+  const configureIdx = loraBody.indexOf("nodeType.prototype.onConfigure = function");
+  assert.ok(createdIdx >= 0 && configureIdx > createdIdx);
+  const createdBody = loraBody.slice(createdIdx, configureIdx);
+  assert.match(createdBody, /triggerQueueProbe\(\)/, "AnimaLoraLoader's onNodeCreated must call triggerQueueProbe()");
+});
+
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exitCode = 1;

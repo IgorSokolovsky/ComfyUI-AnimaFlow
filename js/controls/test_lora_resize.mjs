@@ -636,6 +636,37 @@ test("hideStateWidget: hidden for rendering, but never serialize = false", () =>
   assert.notEqual(w.serialize, false, "must NEVER set serialize = false -- it must keep reaching the backend");
 });
 
+// Nodes 2.0 reads NEITHER `w.hidden` NOR `computeSize`/`inputEl` -- it
+// derives widget visibility purely from `widget.options.hidden`
+// (`isWidgetVisible` in the installed `comfyui_frontend_package`'s
+// `assets/promotionUtils-*.js`; see this function's own updated doc
+// comment for the full derivation). Without this, `lora_state` renders as
+// a raw JSON text widget under V2 even though legacy litegraph hides it
+// correctly.
+test("hideStateWidget: ALSO sets widget.options.hidden = true, so Nodes 2.0 (which ignores w.hidden entirely) hides the raw blob too", () => {
+  const node = makeFakeNode();
+  const w = getStateWidget(node);
+  hideStateWidget(node);
+  assert.equal(w.options.hidden, true);
+});
+
+test("hideStateWidget: creates widget.options when the widget declared none at all -- never throws on a bare widget", () => {
+  const node = makeFakeNode();
+  const w = getStateWidget(node);
+  delete w.options;
+  hideStateWidget(node);
+  assert.equal(w.options.hidden, true);
+});
+
+test("hideStateWidget: preserves any OTHER existing widget.options keys -- never replaces the options object wholesale", () => {
+  const node = makeFakeNode();
+  const w = getStateWidget(node);
+  w.options = { multiline: true };
+  hideStateWidget(node);
+  assert.equal(w.options.hidden, true);
+  assert.equal(w.options.multiline, true);
+});
+
 test("ensureState: a brand-new node (widget value literal '{}') gets a materialized default written BACK to the widget", () => {
   const node = makeFakeNode("{}");
   const ctx = makeCtx(makeDocStub());

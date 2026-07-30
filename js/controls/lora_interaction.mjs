@@ -174,7 +174,16 @@ export function getStateWidget(node) {
 /** Hide `lora_state` from RENDERING only -- it keeps serializing normally
  * (never `w.serialize = false` here; see the dynamic-node-frontend skill's
  * "hide a declared widget that must still serialize" pattern, and
- * `js/controls/index.js`'s identically-shaped `hideStateWidget`). */
+ * `js/controls/index.js`'s identically-shaped `hideStateWidget`).
+ *
+ * `w.options.hidden = true` is the Nodes 2.0 half of this -- Vue's widget
+ * renderer never looks at `w.hidden`/`computeSize`/`inputEl` (all legacy-
+ * litegraph-canvas concepts); it derives visibility purely from
+ * `widget.options.hidden` (`isWidgetVisible` in the installed
+ * `comfyui_frontend_package`'s `assets/promotionUtils-*.js` --
+ * `js/controls/index.js`'s own `hideStateWidget` doc comment has the full
+ * derivation). Harmless under legacy litegraph, which never reads
+ * `options.hidden` for this purpose. */
 export function hideStateWidget(node) {
   const w = getStateWidget(node);
   if (!w) {
@@ -185,6 +194,10 @@ export function hideStateWidget(node) {
   if (w.inputEl && w.inputEl.style) {
     w.inputEl.style.display = "none";
   }
+  if (!w.options) {
+    w.options = {};
+  }
+  w.options.hidden = true;
 }
 
 function parseWidgetValue(node) {

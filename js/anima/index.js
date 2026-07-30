@@ -154,10 +154,44 @@ function loadMods() {
   return _modsPromise;
 }
 
+// The queue-time state probe (`.claude/CLAUDE.md` Task 2, 2026-07-30) --
+// its own cached, guarded dynamic import, entirely separate from
+// `loadMods()` above for the same "don't pay a fetch cost a page with none
+// of our nodes will never need" reason (`js/controls/index.js`'s identical
+// `triggerQueueProbe`, which this mirrors -- `js/shared/queue_probe.mjs` is
+// ONE singleton module regardless of which track's entry point triggers
+// it, since ES modules cache by resolved URL, and its own
+// `installQueueProbeHook` is internally guarded against a second install).
+// Triggered from `setupNode` below (the first real Generator/Preview
+// instance), not `beforeRegisterNodeDef` (fires on every page with this
+// pack installed, whether or not the user ever places one).
+let _queueProbePromise = null;
+function triggerQueueProbe() {
+  if (!_queueProbePromise) {
+    _queueProbePromise = import("../shared/queue_probe.mjs")
+      .then((mod) => mod.installQueueProbeHook())
+      .catch((err) => {
+        console.error("[AnimaFlow] failed to load js/shared/queue_probe.mjs:", err);
+      });
+  }
+  return _queueProbePromise;
+}
+
 /** Hide a declared widget from RENDERING only -- it keeps serializing
  * normally (the frontend skill's "hide a declared widget that must still
  * serialize" pattern; matches `js/controls/index.js`'s `hideStateWidget`).
- * Never `w.serialize = false` here. */
+ * Never `w.serialize = false` here.
+ *
+ * `w.options.hidden = true` is the Nodes 2.0 half -- Vue's own widget
+ * renderer ignores `w.hidden`/`computeSize`/`inputEl` entirely (all legacy-
+ * litegraph-canvas concepts) and derives visibility purely from
+ * `widget.options.hidden` (`isWidgetVisible`, read off the installed
+ * `comfyui_frontend_package`'s `assets/promotionUtils-*.js` -- see
+ * `js/controls/index.js`'s identically-shaped `hideStateWidget` doc comment
+ * for the full derivation). Harmless under legacy litegraph, which never
+ * reads `options.hidden` for this purpose -- this is what keeps
+ * `generation_settings`/`preview_state`'s raw blob off the node body under
+ * V2 too. */
 function hideWidget(w) {
   if (!w) {
     return;
@@ -167,6 +201,10 @@ function hideWidget(w) {
   if (w.inputEl && w.inputEl.style) {
     w.inputEl.style.display = "none";
   }
+  if (!w.options) {
+    w.options = {};
+  }
+  w.options.hidden = true;
 }
 
 function hideNativeWidgets(node) {
@@ -427,6 +465,12 @@ function mountNode(node, mods, isGenerator) {
 }
 
 function setupNode(node, mods, isGenerator) {
+  // First real Generator/Preview instance on this page -- see
+  // `triggerQueueProbe`'s own doc comment for why this timing (not
+  // `beforeRegisterNodeDef`) is what keeps the probe's fetch cost tied to
+  // actual node placement.
+  triggerQueueProbe();
+
   mountNode(node, mods, isGenerator);
 
   // Paint the node's own litegraph chrome (body/title strip) in our theme --

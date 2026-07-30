@@ -161,6 +161,33 @@ function loadLoraMods() {
   return _loraModsPromise;
 }
 
+// The queue-time state probe (`.claude/CLAUDE.md` Task 2, 2026-07-30) --
+// its own cached, guarded dynamic import, entirely separate from
+// `loadMods()`/`loadLoraMods()` above for the SAME "don't pay a fetch cost
+// a page with none of our nodes will never need" reason. `js/shared/
+// queue_probe.mjs` is a plain relative specifier, deliberately NOT added to
+// this file's static import list (the HARD constraint this file's own top
+// doc comment/`test_resize.mjs`'s allowlist test enforce) -- triggered from
+// the first ACTUAL instance of any of our five stateful node classes
+// (`setupNode` below, and `registerLoraNodeType`'s own `onNodeCreated`), the
+// same timing `loadMods()`/`loadLoraMods()` already use, not from
+// `beforeRegisterNodeDef` (which fires for a class's mere REGISTRATION, on
+// every page that has this pack installed, whether or not the user ever
+// places one). Safe to trigger from multiple call sites -- `queue_probe.mjs`
+// is one singleton module (ES modules cache by resolved URL) with its own
+// `installQueueProbeHook` guard, so a second/third call here is a no-op.
+let _queueProbePromise = null;
+function triggerQueueProbe() {
+  if (!_queueProbePromise) {
+    _queueProbePromise = import("../shared/queue_probe.mjs")
+      .then((mod) => mod.installQueueProbeHook())
+      .catch((err) => {
+        console.error("[AnimaFlow] failed to load js/shared/queue_probe.mjs:", err);
+      });
+  }
+  return _queueProbePromise;
+}
+
 /** `AnimaLoraLoader`'s ctx -- see `lora_interaction.mjs`'s own top doc
  * comment for why this is so much smaller than `buildCtx` above (no combo
  * option lists, no link-target inspection, no confirm dialog: this node has
@@ -182,7 +209,21 @@ function buildLoraCtx() {
 
 /** Hide `panel_state` from RENDERING only -- it keeps serializing normally
  * (dynamic-node-frontend skill's "hide a declared widget that must still
- * serialize" pattern). Never `w.serialize = false` here. */
+ * serialize" pattern). Never `w.serialize = false` here.
+ *
+ * **Nodes 2.0 (Vue widget rendering) ignores every one of the three lines
+ * above** -- `w.hidden`/`computeSize`/`inputEl` are all LEGACY-litegraph-
+ * canvas concepts; Vue never reads them. Read off the installed
+ * `comfyui_frontend_package` (1.47.10, `assets/promotionUtils-*.js`):
+ * `computeProcessedWidgets` builds each widget's merged options as
+ * `{...widget.options, ...widgetState?.options}` and feeds that into
+ * `isWidgetVisible(mergedOptions, showAdvanced, linked)`, whose entire body
+ * is `!mergedOptions.hidden && (!mergedOptions.advanced || showAdvanced ||
+ * linked)` -- so Vue's ONLY signal for "don't show this widget" is
+ * `widget.options.hidden` being truthy. Setting it here is additive and
+ * harmless under legacy litegraph (which never reads `options.hidden` for
+ * this purpose), and is what actually keeps the raw `panel_state` blob off
+ * the node body under V2. */
 function hideStateWidget(node, mods) {
   const w = mods.interaction.getStateWidget(node);
   if (!w) {
@@ -193,6 +234,10 @@ function hideStateWidget(node, mods) {
   if (w.inputEl && w.inputEl.style) {
     w.inputEl.style.display = "none";
   }
+  if (!w.options) {
+    w.options = {};
+  }
+  w.options.hidden = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +401,12 @@ function setupNode(node, panelConfig, mods) {
   node._ctrlMods = mods;
   const ctx = buildCtx(panelConfig, mods);
   node._ctrlCtx = ctx;
+
+  // First real instance of either panel class on this page -- see
+  // `triggerQueueProbe`'s own doc comment for why this timing (not
+  // `beforeRegisterNodeDef`) is what keeps the probe's fetch cost tied to
+  // actual node placement.
+  triggerQueueProbe();
 
   hideStateWidget(node, mods);
   mods.interaction.ensureState(node, ctx);
@@ -910,6 +961,9 @@ function registerLoraNodeType(nodeType) {
   nodeType.prototype.onNodeCreated = function (...args) {
     const result = _created ? _created.apply(this, args) : undefined;
     const node = this;
+    // First real AnimaLoraLoader instance -- same trigger, same reasoning
+    // as `setupNode`'s own call (`triggerQueueProbe`'s doc comment).
+    triggerQueueProbe();
     const ctx = buildLoraCtx();
     node._lrCtx = ctx;
     loadLoraMods()

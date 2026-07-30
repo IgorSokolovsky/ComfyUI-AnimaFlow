@@ -5681,6 +5681,67 @@ test("injectStyles with no live setting (fallback) scales to the 14px default --
   }
 });
 
+// ---------------------------------------------------------------------------
+// hideWidget's Nodes 2.0 half (`.claude/CLAUDE.md` Task 1, 2026-07-30): Vue's
+// own widget renderer ignores `w.hidden`/`computeSize`/`inputEl` entirely and
+// derives visibility purely from `widget.options.hidden` (`isWidgetVisible`
+// in the installed `comfyui_frontend_package`'s `assets/promotionUtils-*.js`
+// -- see `hideWidget`'s own updated doc comment for the full derivation).
+// `hideWidget` is an un-exported glue function inside `index.js` (which
+// carries a top-level `/scripts/app.js` import, so this suite deliberately
+// never imports that file directly -- same reasoning as every other
+// `index.js` source-scan test in this file), so this is a source-scan check,
+// not a behavioural one.
+// ---------------------------------------------------------------------------
+
+test("index.js: hideWidget ALSO sets widget.options.hidden = true (not just w.hidden) -- the Nodes 2.0 half of hiding generation_settings/preview_state", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const fnIdx = indexSource.indexOf("function hideWidget(w)");
+  assert.ok(fnIdx >= 0, "hideWidget must exist");
+  const nextFnIdx = indexSource.indexOf("function ", fnIdx + 1);
+  const fnBody = indexSource.slice(fnIdx, nextFnIdx > fnIdx ? nextFnIdx : undefined);
+
+  assert.match(fnBody, /w\.hidden\s*=\s*true/, "must still set the legacy-litegraph w.hidden = true");
+  assert.match(
+    fnBody,
+    /w\.options\.hidden\s*=\s*true/,
+    "must ALSO set widget.options.hidden = true -- the ONLY signal Nodes 2.0's isWidgetVisible actually reads",
+  );
+  assert.match(
+    fnBody,
+    /if\s*\(\s*!w\.options\s*\)\s*\{\s*w\.options\s*=\s*\{\s*\}\s*;?\s*\}/,
+    "must create widget.options first when a widget declared none at all, never throw on a bare widget",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The queue-time state probe's trigger wiring (`.claude/CLAUDE.md` Task 2,
+// 2026-07-30) -- `triggerQueueProbe` must be a guarded DYNAMIC import,
+// called from `setupNode` (the Generator/Preview instance-creation path).
+// Source-scan only, same reasoning as this file's own `hideWidget` check
+// above.
+// ---------------------------------------------------------------------------
+
+test("index.js: triggerQueueProbe is a guarded DYNAMIC import of ../shared/queue_probe.mjs, called from setupNode", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  assert.match(
+    indexSource,
+    /import\("\.\.\/shared\/queue_probe\.mjs"\)/,
+    "must dynamically import ../shared/queue_probe.mjs",
+  );
+  assert.doesNotMatch(
+    indexSource,
+    /^import\s+.*from\s*"\.\.\/shared\/queue_probe\.mjs"/m,
+    "must NEVER be a static top-level import",
+  );
+
+  const setupIdx = indexSource.indexOf("function setupNode(node, mods, isGenerator)");
+  const restoreIdx = indexSource.indexOf("function restoreNode(");
+  assert.ok(setupIdx >= 0 && restoreIdx > setupIdx);
+  const setupBody = indexSource.slice(setupIdx, restoreIdx);
+  assert.match(setupBody, /triggerQueueProbe\(\)/, "setupNode must call triggerQueueProbe()");
+});
+
 await Promise.all(pendingAsync);
 
 console.log(`\n${count - failures}/${count} passed`);
