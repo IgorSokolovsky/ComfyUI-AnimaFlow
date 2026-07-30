@@ -569,7 +569,21 @@ await asyncTest("openModelPicker: showThumbnails === false suppresses the thumbn
 // `js/shared/test_overlay.mjs`).
 // ---------------------------------------------------------------------------
 
-await asyncTest("openModelPicker: an anchor near the BOTTOM of the viewport gets a real, clamped inline max-height -- never the untouched CSS 62vh fallback", async () => {
+// ---------------------------------------------------------------------------
+// Side + height are ONE decision now, owned by `overlay.mjs`'s own
+// `reposition()` (owner-reported bug, 2026-07-30: sizing the panel to fit
+// BELOW the anchor first silently decided the side, so the panel never got
+// the chance to flip ABOVE the way the ⚙ settings dialog already does). This
+// stub's `getBoundingClientRect()` returns a fixed `_rect` regardless of
+// style (mirrors every sibling doc stub in this pack), so a test that wants
+// to control what `reposition()` measures as the panel's OWN natural height
+// overrides `panel._rect` directly, then calls `handle.reposition()` again
+// to observe the fresh decision against it -- `model_picker.mjs`'s own
+// internal call already ran once (with the stub's tiny default rect) by the
+// time `openModelPicker` returns, so these tests deliberately re-run it.
+// ---------------------------------------------------------------------------
+
+await asyncTest("openModelPicker: an anchor near the BOTTOM of the viewport FLIPS ABOVE, uncapped, when the panel's real content fits there (THE reported bug)", async () => {
   const kind = "picker-kind-lowanchor";
   invalidateList(kind);
   globalThis.fetch = async () => ({
@@ -581,7 +595,8 @@ await asyncTest("openModelPicker: an anchor near the BOTTOM of the viewport gets
   try {
     const doc = makeDocStub(); // win.innerHeight === 800
     const anchor = doc.createElement("button");
-    // Near the bottom of an 800px-tall viewport.
+    // Near the bottom of an 800px-tall viewport -- negative room below,
+    // plenty of room above.
     anchor._rect = { left: 10, top: 770, right: 200, bottom: 790, width: 190, height: 20 };
     const handle = openModelPicker({
       ctx: { doc, getCanvasEl: () => null },
@@ -591,17 +606,19 @@ await asyncTest("openModelPicker: an anchor near the BOTTOM of the viewport gets
     });
     const panel = findAll(handle.overlay, "wtn-mp-panel")[0];
     assert.ok(panel, "the panel root must exist");
-    assert.match(panel.style.maxHeight, /^\d+px$/, "a real computed pixel value must be set, overriding the CSS 62vh fallback");
-    const px = parseInt(panel.style.maxHeight, 10);
-    assert.ok(px > 0, "must never be zero or negative even when the anchor sits right at the bottom edge");
-    assert.ok(px < 800, "must be clamped well below the FULL viewport height, not just left at the untouched fallback");
+    // The panel's own real (natural) content height -- taller than a sliver,
+    // but still comfortably shorter than the room ABOVE this low anchor.
+    panel._rect = { left: 10, top: 10, right: 326, bottom: 310, width: 316, height: 300 };
+    handle.reposition();
+    assert.equal(panel.style.maxHeight, "", "fits above uncapped -- must NOT be squashed to whatever sliver was left below (the reported bug)");
+    assert.equal(handle.overlay.style.top, "464px", "770(anchor top) - 300(natural height) - 6(gap)");
   } finally {
     globalThis.fetch = _origFetchForPicker;
     invalidateList(kind);
   }
 });
 
-await asyncTest("openModelPicker: plenty of room below the anchor -- inline max-height reflects the real available space (no behaviour change vs. the old fallback's intent)", async () => {
+await asyncTest("openModelPicker: plenty of room below the anchor -- stays below, uncapped (no behaviour change vs. the old fallback's intent)", async () => {
   const kind = "picker-kind-highanchor";
   invalidateList(kind);
   globalThis.fetch = async () => ({
@@ -622,8 +639,48 @@ await asyncTest("openModelPicker: plenty of room below the anchor -- inline max-
       onPick: () => {},
     });
     const panel = findAll(handle.overlay, "wtn-mp-panel")[0];
-    const px = parseInt(panel.style.maxHeight, 10);
-    assert.ok(px > 600, "an anchor near the top should reserve the large majority of the viewport for the panel");
+    panel._rect = { left: 10, top: 10, right: 326, bottom: 310, width: 316, height: 300 };
+    handle.reposition();
+    assert.equal(panel.style.maxHeight, "", "plenty of room below -- no cap needed at all, not even a generous computed one");
+    assert.equal(handle.overlay.style.top, "66px", "60(anchor bottom) + 6(gap) -- unflipped");
+  } finally {
+    globalThis.fetch = _origFetchForPicker;
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelPicker: neither side has room for the real content -- capped to whichever side has MORE room, never below the caller's own floor", async () => {
+  const kind = "picker-kind-tightanchor";
+  invalidateList(kind);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "top.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  try {
+    const doc = makeDocStub(); // win.innerHeight === 800
+    const anchor = doc.createElement("button");
+    // Dead center of the viewport -- equal (moderate) room on both sides.
+    anchor._rect = { left: 10, top: 390, right: 200, bottom: 410, width: 190, height: 20 };
+    const handle = openModelPicker({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      onPick: () => {},
+    });
+    const panel = findAll(handle.overlay, "wtn-mp-panel")[0];
+    // Real content far taller than either side's room (372px each). This
+    // stub's `_rect` is a fixed fixture (unlike a real browser, it doesn't
+    // shrink on its own once `max-height` is applied), so only the CAP
+    // decision is asserted here -- the exact final `top` after the last-pass
+    // viewport clamp (which, given this same fixed-and-still-1000px-tall
+    // `_rect`, correctly still sees an overflow and pulls it back up) is
+    // covered by the OTHER two tests above, which don't hit that clamp.
+    panel._rect = { left: 10, top: 10, right: 326, bottom: 1010, width: 316, height: 1000 };
+    handle.reposition({ minHeight: 400 }); // floor bigger than the raw available room on either side
+    assert.equal(panel.style.maxHeight, "400px", "floored to the caller's own minHeight, not the smaller raw available room (372px)");
+    assert.ok(Number.isFinite(parseFloat(handle.overlay.style.top)) && parseFloat(handle.overlay.style.top) >= 0, "never a negative/NaN top");
   } finally {
     globalThis.fetch = _origFetchForPicker;
     invalidateList(kind);

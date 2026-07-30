@@ -1411,30 +1411,26 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   renderStatus();
   renderList(); // initial "Searching…" paint
 
-  // ---- height: computed from the space actually available BELOW the
-  // anchor (task brief), never a fixed vh/px constant -- a no-op with no real
-  // live `window` to measure (every headless test with no `defaultView`),
-  // matching `overlay.mjs`'s own "`null` means never adjust" convention. ----
+  // ---- height + side: `overlay.mjs`'s own `reposition()` decides both
+  // together now (that module's own top doc comment, owner-reported bug
+  // 2026-07-30) -- this file's job is only to hand it this panel's own floor
+  // (chrome + the results area's own minimum), never to pre-shrink the panel
+  // and hope the flip agrees. A no-op with no real live `window` to measure
+  // (every headless test with no `defaultView`), matching `overlay.mjs`'s own
+  // "`null` means never adjust" convention (`reposition()` itself degrades to
+  // its no-vh fallback in that case). ----
   const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
 
-  function applyMaxHeight() {
-    if (!win || typeof win.innerHeight !== "number") {
-      return;
-    }
-    const anchorRect = typeof anchorEl.getBoundingClientRect === "function" ? anchorEl.getBoundingClientRect() : null;
-    if (!anchorRect) {
-      return;
-    }
+  function resultsFloorPx() {
     // The head + pinned controls + footer's own REAL rendered height --
     // measured live rather than assumed, so a taller filter row (a longer
-    // base-model list wrapping, say) is accounted for automatically.
-    const chromeHeight = head.getBoundingClientRect().height
+    // base-model list wrapping, say) is accounted for automatically --
+    // plus the results area's own minimum (`MIN_RESULTS_HEIGHT_PX`), matching
+    // `computeSearchPanelMaxHeight`'s old `minContentHeight` argument.
+    return head.getBoundingClientRect().height
       + pinned.getBoundingClientRect().height
-      + footerHint.getBoundingClientRect().height;
-    const maxH = computeSearchPanelMaxHeight({ anchorBottom: anchorRect.bottom, viewportHeight: win.innerHeight, chromeHeight });
-    if (maxH != null) {
-      panel.style.maxHeight = `${Math.round(maxH)}px`;
-    }
+      + footerHint.getBoundingClientRect().height
+      + MIN_RESULTS_HEIGHT_PX;
   }
 
   let onWindowResize = null;
@@ -1464,22 +1460,18 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
 
-  // Now that the panel is actually attached to `doc.body`, size it for real
-  // (the CSS `max-height: 76vh` fallback painted for one frame at most), then
-  // re-run `overlay.mjs`'s own flip decision against the corrected height --
-  // reusing that mechanism rather than a second one here (task brief).
-  applyMaxHeight();
-  if (typeof handle.reposition === "function") {
-    handle.reposition();
+  // Now that the panel is actually attached to `doc.body`, re-run
+  // `reposition()` with this panel's own floor -- side and height are decided
+  // together, in `overlay.mjs`, not pre-shrunk here first.
+  function resize() {
+    if (typeof handle.reposition === "function") {
+      handle.reposition({ minHeight: resultsFloorPx() });
+    }
   }
+  resize();
 
   // Recompute trigger 1/2: window resize.
-  onWindowResize = () => {
-    applyMaxHeight();
-    if (typeof handle.reposition === "function") {
-      handle.reposition();
-    }
-  };
+  onWindowResize = () => resize();
   if (win && typeof win.addEventListener === "function") {
     win.addEventListener("resize", onWindowResize);
   }
@@ -1499,10 +1491,7 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     const sig = anchorSig();
     if (sig !== null && sig !== lastAnchorSig) {
       lastAnchorSig = sig;
-      applyMaxHeight();
-      if (typeof handle.reposition === "function") {
-        handle.reposition();
-      }
+      resize();
     }
     anchorPollHandle = requestAnimationFrame(pollAnchorMove);
   }

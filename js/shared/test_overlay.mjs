@@ -356,7 +356,19 @@ function makeLayoutElement(tag) {
         node = node.parentNode;
       }
       const width = e.style.width ? parseFloat(e.style.width) : e._size.width;
-      const height = e.style.height ? parseFloat(e.style.height) : e._size.height;
+      let height = e.style.height ? parseFloat(e.style.height) : e._size.height;
+      // A real `max-height` genuinely constrains rendered height -- model
+      // that here so a test can tell "the natural size was correctly
+      // measured, THEN capped" apart from "a stale cap got read back as if
+      // it were the natural size" (overlay.mjs's own reposition() must clear
+      // any max-height it PREVIOUSLY applied before re-measuring on a second
+      // call -- see the "re-opening/re-positioning twice" test below).
+      if (e.style.maxHeight && e.style.maxHeight !== "none") {
+        const mh = parseFloat(e.style.maxHeight);
+        if (Number.isFinite(mh)) {
+          height = Math.min(height, mh);
+        }
+      }
       return { left, top, right: left + width, bottom: top + height, width, height };
     },
   };
@@ -472,9 +484,119 @@ test("a popover taller/wider than the whole viewport is pinned to the TOP-LEFT m
   const content = doc.createElement("div");
   content._size = { width: 3000, height: 2000 }; // bigger than the viewport on both axes
   const handle = openOverlay(doc, anchor, content, "below");
+  // A floor bigger than the whole viewport -- `reposition()`'s own "neither
+  // side fits, cap to the bigger room, but never below the floor" branch
+  // (this module's own top doc comment) can still hand back a height that's
+  // genuinely too tall for the page, exactly like this content's own true
+  // 2000px would be if `reposition()` didn't otherwise cap it to whatever
+  // room the anchor actually has -- this is what still needs the emergency
+  // top-left pin below, not a merely-tall-but-cappable popover.
+  handle.reposition({ minHeight: 5000 });
   try {
     assert.equal(handle.overlay.style.left, `${OVERLAY_EDGE_MARGIN_PX}px`, "far-edge-then-near-edge clamping must settle on the LEFT margin");
     assert.equal(handle.overlay.style.top, `${OVERLAY_EDGE_MARGIN_PX}px`, "...and the TOP margin -- the start of the content stays visible, not its end");
+  } finally {
+    handle.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// "below"'s side AND height are ONE decision (owner-reported bug,
+// 2026-07-30): `reposition()` must decide which side to open on from the
+// content's OWN natural (uncapped) size, THEN cap height only if neither
+// side actually has room for it -- never the other way around (sizing to
+// fit below first, which silently decided the side by construction). See
+// this module's own top doc comment for the full writeup.
+// ---------------------------------------------------------------------------
+
+test("\"below\": anchor low on screen, content taller than the room below but fitting above -- placed ABOVE, NOT capped (THE reported bug)", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  // roomBelow = 800 - 730 - 6 - 12 = 52 (tiny); roomAbove = 700 - 6 - 12 = 682 (plenty).
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 700, right: 170, bottom: 730, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 300 }; // doesn't fit below (52px), fits above (682px) easily
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(content.style.maxHeight, "", "fits above uncapped -- must NOT be squashed to whatever sliver was left below");
+    assert.equal(handle.overlay.style.top, "394px", "700(anchor top) - 300(natural height) - 6(gap) -- flipped above, at FULL height");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"below\": anchor low on screen, content taller than BOTH sides -- placed on the side with MORE room, capped to it", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  // Same anchor as above: roomBelow = 52, roomAbove = 682.
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 700, right: 170, bottom: 730, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 900 }; // doesn't fit either side naturally
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(content.style.maxHeight, "682px", "capped to roomAbove -- the bigger of the two, not roomBelow");
+    assert.equal(handle.overlay.style.top, "12px", "700(anchor top) - 682(capped height) - 6(gap)");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"below\": anchor near the TOP, plenty of room below -- unchanged: below, uncapped", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 300 }; // room below (702px) is abundant
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(content.style.maxHeight, "", "plenty of room below -- no cap needed at all");
+    assert.equal(handle.overlay.style.top, "86px", "80(anchor bottom) + 6(gap) -- unflipped");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"below\": content that fits below EXACTLY -- below, no flip (the boundary case)", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  // roomBelow = 800 - 80 - 6 - 12 = 702, exactly.
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 702 }; // fits with nothing to spare
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    assert.equal(content.style.maxHeight, "", "fits exactly -- still uncapped, not flipped");
+    assert.equal(handle.overlay.style.top, "86px");
+  } finally {
+    handle.close();
+  }
+});
+
+test("\"below\": re-opening/re-positioning the same overlay TWICE never reads a previously-applied max-height back as the natural size", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  const anchor = makeLayoutElement("button");
+  // First position: roomBelow = 800 - 682 - 6 - 12 = 100, roomAbove = 318 - 6 - 12 = 300.
+  anchor.getBoundingClientRect = () => ({ left: 10, top: 318, right: 100, bottom: 682, width: 90, height: 364 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 500 }; // doesn't fit either side the first time
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    // Neither side fits (500 > 100, 500 > 300) -- roomAbove is bigger, so it
+    // caps to 300 and flips above.
+    assert.equal(content.style.maxHeight, "300px");
+    assert.equal(handle.overlay.style.top, "12px", "318(anchor top) - 300(capped height) - 6(gap)");
+
+    // The anchor moves: now roomBelow = 800 - 472 - 6 - 12 = 310, roomAbove =
+    // 68 - 6 - 12 = 50. The content's own TRUE size never changed (still
+    // 500) -- but if `reposition()` failed to clear the STALE 300px cap
+    // before re-measuring, it would read back 300 (< the new 310px room
+    // below) as if that were the content's natural size, wrongly conclude
+    // "fits below, no cap needed" and clear the cap entirely -- silently
+    // overflowing the (real, still-too-small-for-500) 310px room below.
+    anchor.getBoundingClientRect = () => ({ left: 10, top: 68, right: 100, bottom: 472, width: 90, height: 404 });
+    handle.reposition();
+    assert.equal(content.style.maxHeight, "310px", "re-derived from the TRUE 500px natural size, not the stale 300px cap from the first call");
+    assert.equal(handle.overlay.style.top, "478px", "472(anchor bottom) + 6(gap) -- now BELOW, since roomBelow(310) > roomAbove(50)");
   } finally {
     handle.close();
   }

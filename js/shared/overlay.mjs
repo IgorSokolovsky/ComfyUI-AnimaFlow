@@ -152,6 +152,47 @@ function clampOverlayToViewport(overlay, contentEl, vw, vh) {
  * its own outside-pointerdown/Escape listeners. Only ever call this through
  * `openOverlayWithZoom` below in real node code (it adds wheel-zoom
  * passthrough); tests exercise this bare form directly.
+ *
+ * ## `"below"`'s side AND height are ONE decision, not two (owner-reported
+ * bug, 2026-07-30)
+ *
+ * Before this fix, a "below" popover's vertical FLIP (this function, right
+ * below) and its height CAP (`computeAnchoredMaxHeight`, at the bottom of
+ * this file) were computed independently by different code -- the flip here
+ * measured whatever height the popover currently rendered at, while
+ * `civitai_search.mjs`/`model_picker.mjs` pre-shrank that same popover to
+ * whatever room existed BELOW the anchor before ever calling this function
+ * again. A popover shrunk to exactly fit below will, tautologically, always
+ * "fit below" -- so the flip never fired, even though the ⚙ settings dialog's
+ * OWN flip (which has no such pre-shrink -- a static CSS `max-height` is the
+ * only cap it ever had) proved the flip mechanism itself was fine. Sizing to
+ * one side had silently decided the side.
+ *
+ * The fix: `reposition()`'s own `"below"` branch now owns BOTH. On every
+ * call, it (1) clears any `max-height` a PREVIOUS call of this same
+ * `reposition()` applied to `contentEl` -- never re-reads its own earlier cap
+ * as if it were the content's natural size (the subtle part on a SECOND
+ * open/reposition), (2) measures `contentEl`'s natural height with that
+ * cleared (any static CSS `max-height` a caller's own stylesheet applies,
+ * e.g. `.wtn-lora-set`'s 78vh, is untouched and still bounds this -- clearing
+ * only removes what THIS mechanism itself applied), (3) decides: fits below
+ * as-is -> below, uncapped; else fits above as-is -> above, uncapped (this is
+ * the ⚙ dialog's own case, and the reported bug -- a popover that genuinely
+ * doesn't fit below must be judged against its real desired size, not a
+ * pre-shrunk one); else -> whichever side has more room, capped to that room
+ * (never below `minHeight`, an optional per-call floor -- see `reposition`'s
+ * own param doc below), (4) applies the resulting `top` and `max-height`
+ * together, so a caller genuinely too tall for the whole viewport still gets
+ * a floor-respecting cap on whichever side is less bad, rather than
+ * `computeAnchoredMaxHeight`'s old "below-only" answer.
+ *
+ * `computeAnchoredMaxHeight` (bottom of this file) is kept, unchanged, for
+ * any caller that only ever wants a bare "how much room below" number and
+ * doesn't open through `reposition()`'s own flip at all -- but
+ * `civitai_search.mjs`/`model_picker.mjs` no longer call it themselves for
+ * their popover's own max-height; they hand their floor to `reposition()`
+ * via its `minHeight` option instead, so this decision lives in exactly one
+ * place rather than being computed once here and once per caller.
  */
 export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName) {
   const win = winOf(doc);
@@ -171,7 +212,17 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
   const body = doc.body || doc;
   body.appendChild(overlay);
 
-  const reposition = () => {
+  /**
+   * `sizeOpts` (optional) -- `{ minHeight }`: a per-call floor beneath which
+   * the `"below"` branch's own squeeze-cap (case 3 of this module's own top
+   * doc comment: "neither side fits naturally") must never shrink
+   * `contentEl`, mirroring `computeAnchoredMaxHeight`'s `Math.max(minTotal,
+   * available)`. Ignored for `"right"` (no height decision happens there)
+   * and safe to omit entirely -- every existing call site that never passed
+   * anything (the ⚙ dialog, row/option menus, the ⓘ panel) keeps floor `0`,
+   * unchanged from before this option existed.
+   */
+  const reposition = (sizeOpts) => {
     const rect = typeof anchorEl.getBoundingClientRect === "function"
       ? anchorEl.getBoundingClientRect()
       : { left: 0, top: 0, right: 0, bottom: 0, width: 240 };
@@ -179,17 +230,65 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
 
     if (placement === "below") {
       overlay.style.left = `${rect.left}px`;
-      overlay.style.top = `${rect.bottom + 6}px`;
       overlay.style.width = `${Math.max(120, rect.width)}px`;
       if (vh != null) {
-        // Measure AFTER width is set, so a wrapped-text height is real —
-        // the overlay is already attached to `body`, so this reflects
-        // actual layout in a live browser.
-        const box = measureBox(overlay);
-        const boxH = box ? box.height : 0;
-        if (boxH && rect.bottom + 6 + boxH > vh) {
-          overlay.style.top = `${rect.top - boxH - 6}px`; // flip: open ABOVE instead (final clamp below catches any residual overflow)
+        const gap = POPOVER_ANCHOR_GAP_PX;
+        const margin = POPOVER_VIEWPORT_MARGIN_PX;
+        // Clear any max-height a PREVIOUS reposition() call applied to
+        // `contentEl` before measuring -- otherwise that stale cap gets read
+        // back as this call's "natural" size (see this module's own top doc
+        // comment: "the subtle part on a SECOND open/reposition"). Any
+        // static CSS max-height a caller's own stylesheet applies (the ⚙
+        // dialog's 78vh, the search panel's 76vh, the picker's 62vh) is
+        // untouched by this -- it's an inline-style clear, not a class
+        // override, so those still bound the "natural" measurement below,
+        // exactly like today.
+        if (contentEl && contentEl.style) {
+          contentEl.style.maxHeight = "";
         }
+        const naturalBox = measureBox(contentEl) || measureBox(overlay);
+        const naturalHeight = naturalBox ? naturalBox.height : 0;
+
+        const roomBelow = vh - rect.bottom - gap - margin;
+        const roomAbove = rect.top - gap - margin;
+        const minTotal = sizeOpts && Number.isFinite(sizeOpts.minHeight) && sizeOpts.minHeight >= 0
+          ? sizeOpts.minHeight
+          : 0;
+
+        let side;
+        let capHeight = null;
+        if (naturalHeight <= 0) {
+          // No real measurement to decide from (e.g. `contentEl` hasn't
+          // rendered any box yet) -- default to below, uncapped, matching
+          // this function's own pre-fix behaviour for a falsy `boxH`.
+          side = "below";
+        } else if (naturalHeight <= roomBelow) {
+          side = "below"; // fits as-is -- no flip, no cap (case 4 of the top doc comment)
+        } else if (naturalHeight <= roomAbove) {
+          side = "above"; // doesn't fit below but DOES fit above, uncapped -- THE reported bug
+        } else if (roomAbove > roomBelow) {
+          side = "above"; // neither side fits naturally -- pick the side with more room
+          capHeight = Math.max(minTotal, roomAbove);
+        } else {
+          side = "below";
+          capHeight = Math.max(minTotal, roomBelow);
+        }
+
+        if (capHeight != null && contentEl && contentEl.style) {
+          contentEl.style.maxHeight = `${Math.round(capHeight)}px`;
+        }
+
+        if (side === "above") {
+          // Re-measure: `contentEl` may just have been capped above, so its
+          // rendered height can differ from `naturalHeight`.
+          const finalBox = measureBox(contentEl) || measureBox(overlay);
+          const finalH = finalBox ? finalBox.height : naturalHeight;
+          overlay.style.top = `${rect.top - finalH - gap}px`;
+        } else {
+          overlay.style.top = `${rect.bottom + gap}px`;
+        }
+      } else {
+        overlay.style.top = `${rect.bottom + 6}px`; // no real viewport -- unchanged fallback
       }
     } else {
       // "right"

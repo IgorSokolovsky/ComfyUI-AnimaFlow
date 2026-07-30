@@ -1238,7 +1238,20 @@ await asyncTest("openCivitaiSearch: only .wtn-cs-scroll wraps the results list -
   }
 });
 
-await asyncTest("openCivitaiSearch: max-height is a real computed pixel value (not the CSS 76vh fallback), recomputes on window resize, and the listener is removed on close", async () => {
+// ---------------------------------------------------------------------------
+// Side + height are ONE decision now, owned by `overlay.mjs`'s own
+// `reposition()` (owner-reported bug, 2026-07-30: sizing the panel to fit
+// BELOW the anchor first silently decided the side, so a search panel opened
+// low on screen never got the chance to flip ABOVE, the way the ⚙ settings
+// dialog already does). This stub's `getBoundingClientRect()` returns a
+// fixed `_rect` regardless of style (mirrors every sibling doc stub in this
+// pack), so a test that wants to control what `reposition()` measures as the
+// panel's OWN natural height overrides `panel._rect` directly, then fires
+// the SAME window-resize listener `openCivitaiSearch` already registers to
+// force a fresh recompute against it.
+// ---------------------------------------------------------------------------
+
+await asyncTest("openCivitaiSearch: a real computed pixel max-height only when the (real, natural) content actually needs one, recomputes on window resize, and the listener is removed on close", async () => {
   _resetDownloadStateForTests();
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
   try {
@@ -1248,11 +1261,18 @@ await asyncTest("openCivitaiSearch: max-height is a real computed pixel value (n
     await settle();
 
     const panel = findAll(handle.overlay, "wtn-cs-panel")[0];
-    const initialMaxHeight = panel.style.maxHeight;
-    assert.match(initialMaxHeight, /^\d+px$/, "a real computed pixel max-height, not the CSS 76vh fallback string");
-
     const listenersBeforeClose = doc.defaultView._listeners.resize.length;
     assert.ok(listenersBeforeClose >= 1, "opening the panel must register its own resize listener");
+
+    // Real content taller than the room actually available below the
+    // default (near-top) anchor at the stub's 800px viewport height (742px)
+    // -- forces a genuine cap, rather than staying naturally uncapped the
+    // way a short result list would (that case is covered by the "flips
+    // above" test below).
+    panel._rect = { left: 10, top: 10, right: 356, bottom: 1010, width: 346, height: 1000 };
+    doc.defaultView._listeners.resize.forEach((fn) => fn());
+    const initialMaxHeight = panel.style.maxHeight;
+    assert.match(initialMaxHeight, /^\d+px$/, "a real computed pixel max-height, not the CSS 76vh fallback string");
 
     // Shrink the viewport -- the panel's own max-height must shrink to match.
     doc.defaultView.innerHeight = 300;
@@ -1269,20 +1289,48 @@ await asyncTest("openCivitaiSearch: max-height is a real computed pixel value (n
   }
 });
 
-await asyncTest("openCivitaiSearch: an anchor pinned near the bottom edge still gets a usable (floored) max-height, not a sliver", async () => {
+await asyncTest("openCivitaiSearch: an anchor pinned near the bottom edge FLIPS ABOVE, uncapped, when the panel's real content fits there (THE reported bug)", async () => {
   _resetDownloadStateForTests();
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
   try {
     const doc = makeDocStub();
     const anchor = doc.createElement("button");
     // Anchor sits almost at the bottom of an 800px viewport -- almost no
-    // room below it at all.
+    // room below it at all, plenty of room above.
     anchor._rect = { left: 10, top: 770, right: 240, bottom: 790, width: 230, height: 20 };
     const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
     await settle();
     const panel = findAll(handle.overlay, "wtn-cs-panel")[0];
-    const px = Number(panel.style.maxHeight.replace("px", ""));
-    assert.ok(px >= MIN_RESULTS_HEIGHT_PX, "the panel still reserves at least the results floor even with almost no room below the anchor");
+    // The panel's own real content height -- taller than a sliver, but still
+    // comfortably shorter than the room ABOVE this low anchor.
+    panel._rect = { left: 10, top: 10, right: 356, bottom: 310, width: 346, height: 300 };
+    doc.defaultView._listeners.resize.forEach((fn) => fn());
+    assert.equal(panel.style.maxHeight, "", "fits above uncapped -- must NOT be squashed to whatever sliver was left below (the reported bug)");
+    assert.equal(handle.overlay.style.top, "464px", "770(anchor top) - 300(natural height) - 6(gap)");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: neither side has room for the real content -- capped to whichever side has MORE room, never below the results floor", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    // An unusually tall anchor straddling most of the viewport -- both above
+    // and below it have LESS room (100px / 182px) than the results floor
+    // (head+pinned+footerHint's own default 30px each, +MIN_RESULTS_HEIGHT_PX
+    // = 210px).
+    anchor._rect = { left: 10, top: 200, right: 240, bottom: 682, width: 230, height: 482 };
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    const panel = findAll(handle.overlay, "wtn-cs-panel")[0];
+    panel._rect = { left: 10, top: 10, right: 356, bottom: 1010, width: 346, height: 1000 };
+    doc.defaultView._listeners.resize.forEach((fn) => fn());
+    assert.equal(panel.style.maxHeight, "210px", "floored to the results area's own minimum, not the smaller raw available room (182px above)");
     handle.close();
   } finally {
     restoreFetch();

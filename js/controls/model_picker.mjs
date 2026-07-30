@@ -52,7 +52,6 @@ import {
   closeOverlayIfOwnedBy,
   closeOverlaysNotAncestorOf,
   activeOverlayRef,
-  computeAnchoredMaxHeight,
 } from "../shared/overlay.mjs";
 import { listModels, thumbUrl, cachedCategoryTag } from "./civitai_api.mjs";
 
@@ -510,35 +509,19 @@ export function openModelPicker({
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
 
-  // Size the panel for real (owner-reported overflow bug, 2026-07-30): the
-  // CSS `max-height: 62vh` fallback above is a fraction of the WHOLE
-  // viewport, which says nothing about how much room actually exists below
-  // THIS anchor -- a picker opened from a row near the bottom of the screen
-  // ran the panel straight off the bottom. Computed from the space actually
-  // available below the anchor instead (`../shared/overlay.mjs`'s
-  // `computeAnchoredMaxHeight`, the same fix already applied to
-  // `civitai_search.mjs`'s panel), then re-run `reposition()` so the
-  // above/below flip decision sees the corrected height. A no-op (leaves the
-  // CSS fallback in place) with no real live `window` to measure -- every
-  // headless test with no `defaultView`.
-  const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
-  if (win && typeof win.innerHeight === "number") {
-    const anchorRect = typeof anchorEl.getBoundingClientRect === "function" ? anchorEl.getBoundingClientRect() : null;
-    if (anchorRect) {
-      const chromeHeight = searchWrap.getBoundingClientRect().height;
-      const maxH = computeAnchoredMaxHeight({
-        anchorBottom: anchorRect.bottom,
-        viewportHeight: win.innerHeight,
-        chromeHeight,
-        minContentHeight: MIN_LIST_HEIGHT_PX,
-      });
-      if (maxH != null) {
-        panel.style.maxHeight = `${Math.round(maxH)}px`;
-        if (typeof handle.reposition === "function") {
-          handle.reposition();
-        }
-      }
-    }
+  // Size the panel for real (owner-reported overflow bug, 2026-07-30, and its
+  // own follow-up: sizing the panel to fit BELOW silently decided the side
+  // too, and never let it flip ABOVE a low anchor the way the ⚙ dialog does).
+  // `../shared/overlay.mjs`'s own `reposition()` now decides side and height
+  // TOGETHER (that module's own top doc comment) -- this file's job is only
+  // to hand it this panel's own floor (the search box's real height + the
+  // list's own minimum), never to pre-shrink the panel and hope the flip
+  // agrees. A no-op (leaves the CSS `62vh` fallback in place, `reposition()`
+  // degrades to its own no-vh fallback) with no real live `window` to
+  // measure -- every headless test with no `defaultView`.
+  if (typeof handle.reposition === "function") {
+    const chromeHeight = searchWrap.getBoundingClientRect().height;
+    handle.reposition({ minHeight: chromeHeight + MIN_LIST_HEIGHT_PX });
   }
 
   if (typeof search.focus === "function") {
