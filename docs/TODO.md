@@ -108,6 +108,24 @@ It is a shared convention and a per-extension enable/disable persistence key; re
 create the inconsistency the rename was meant to remove, and would silently reset that choice. **Trigger:
 rename all five together, or not at all.**
 
+### 🧩 Nodes 2.0 (V2) — our DOM UI should render there too (owner, deferred 2026-07-30)
+
+Owner enabled V2 and found the node **works but falls back**: every DOM/sizing path bails on
+`isVueNodes()`, so ComfyUI's native widgets take over — combo pickers per row, a plain `+ Add loader`.
+Functional, but none of our UI. **Owner wants real V2 support, explicitly deferred to later.**
+
+Being honest about the size: this is a milestone, not a fix. Everything the Controls and Anima tracks do
+visually is legacy-litegraph-specific — the four Class A sizing layers, `getMaxHeight` as the only real
+height lock, `onResize` never firing on the drag path, `node.size` being a `Float64Array`, the DOM-widget
+mount, drag-reorder, the overlay/anchor mechanism. `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md`
+is a catalogue of **measured legacy behaviour**; under Vue rendering essentially none of it transfers, and
+`computeLayoutSize`/`minWidth:1` (kept for forward-compat) has never been exercised.
+
+**Done meanwhile:** the raw `panel_state` blob no longer renders in V2 — that leak made the fallback look
+broken rather than degraded.
+
+**Trigger:** the owner switching to V2 as their daily renderer, or ComfyUI defaulting to it.
+
 ## Deferred — with the reason
 
 | Item | Why it's deferred |
