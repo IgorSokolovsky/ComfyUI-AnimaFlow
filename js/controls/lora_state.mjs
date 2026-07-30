@@ -129,6 +129,42 @@ export function clampStrength(value) {
   return Math.round(clamped * 100) / 100;
 }
 
+// BUG 17 (2026-07-29 owner report): `STRENGTH_MIN` is `0`, NOT negative --
+// checked deliberately before adding the typed-input feature, per the
+// owner's own explicit worry ("negative strengths are legitimate... check
+// that's deliberate before preserving it"). It is NOT deliberate as a
+// design choice for negative LoRA weights specifically -- it's inherited
+// from upstream Pixaroma's own range (ported wholesale, no negative-weight
+// use case considered either way) -- but changing the clamp range is a
+// bigger, separate decision than "make the value typeable", and is not
+// asked for here. Filed rather than silently widened: `docs/BACKLOG.md`
+// should get a line if negative LoRA weights are wanted later. Typed input
+// clamps through this SAME range, unchanged.
+
+/** Parses a user-TYPED strength string (BUG 17's editable strength field)
+ * into a finite `number`, or `null` for anything that isn't genuinely one --
+ * empty/whitespace-only, `"abc"`, `"--1"`, `"1e999"` (a real number token
+ * that OVERFLOWS to `Infinity`), `"NaN"` (the literal three-letter string),
+ * a pasted newline/multi-line blob. Deliberately stricter than a bare
+ * `Number(...)` call: `Number("")` is `0`, a real number that would let an
+ * emptied field silently commit as zero rather than being treated as
+ * "nothing usable was typed" -- reverting to the row's own current value on
+ * a `null` here is `lora_interaction.mjs`'s job, not this function's.
+ * Never clamps or rounds -- that stays `clampStrength`'s ONE job, so a
+ * typed value and an arrow-bumped value are guaranteed to land on IDENTICAL
+ * stored numbers (both eventually pass through the exact same function). */
+export function parseTypedStrength(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Clamp/round a "Strength step (arrows)" value into
  * `[STRENGTH_STEP_MIN, STRENGTH_STEP_MAX]` -- same rounding reasoning as
  * `clampStrength` above. Non-finite, zero, or negative input falls back to
@@ -372,6 +408,30 @@ export function bumpRowStrength(state, rowId, delta, field = "sm") {
   const next = clampStrength(row.sm + delta);
   row.sm = next;
   row.sc = next;
+  return true;
+}
+
+/** BUG 17's typed-strength counterpart to `bumpRowStrength` above -- SAME
+ * lockstep rule (both fields move together while `sepStrengths` is off;
+ * only `field` moves once it's on), reusing it rather than re-deriving a
+ * second copy, so a typed value and an arrow-bumped value are guaranteed to
+ * land on the identical stored number. `value` is clamped/rounded through
+ * the SAME `clampStrength` every other strength write already goes
+ * through. Returns `false` (and mutates nothing) if `rowId` doesn't
+ * resolve to a real row, matching `bumpRowStrength`'s own contract. */
+export function setRowStrength(state, rowId, field, value) {
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return false;
+  }
+  const key = field === "sc" ? "sc" : "sm";
+  const clamped = clampStrength(value);
+  if (state && state.sepStrengths) {
+    row[key] = clamped;
+    return true;
+  }
+  row.sm = clamped;
+  row.sc = clamped;
   return true;
 }
 

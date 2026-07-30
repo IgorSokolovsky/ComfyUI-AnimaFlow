@@ -39,6 +39,8 @@ import {
   removeRow,
   setRowOn,
   bumpRowStrength,
+  setRowStrength,
+  parseTypedStrength,
   setSepStrengths,
   setCacheMode,
   setSep,
@@ -397,6 +399,77 @@ test("bumpRowStrength: an unrecognised field defaults to 'sm'", () => {
   bumpRowStrength(state, a.id, STRENGTH_STEP, "bogus");
   assert.equal(a.sm, clampStrength(DEFAULT_STRENGTH + STRENGTH_STEP));
   assert.equal(a.sc, DEFAULT_STRENGTH);
+});
+
+// =========================================================================
+// BUG 17 (2026-07-29 owner report) -- the typed-strength field: parsing
+// user text and the absolute-set counterpart to bumpRowStrength.
+// =========================================================================
+
+test("parseTypedStrength: a plain finite number string parses through", () => {
+  assert.equal(parseTypedStrength("0.65"), 0.65);
+  assert.equal(parseTypedStrength("  1.2  "), 1.2); // surrounding whitespace tolerated
+  assert.equal(parseTypedStrength("-0.5"), -0.5); // a single leading '-' IS a valid number
+  assert.equal(parseTypedStrength("2"), 2);
+});
+
+test("parseTypedStrength: every garbage case from the owner's own list returns null, never a number", () => {
+  assert.equal(parseTypedStrength(""), null);
+  assert.equal(parseTypedStrength("   "), null);
+  assert.equal(parseTypedStrength("abc"), null);
+  assert.equal(parseTypedStrength("--1"), null); // not a valid numeric token
+  assert.equal(parseTypedStrength("1e999"), null); // overflows to Infinity -- NOT finite
+  assert.equal(parseTypedStrength("NaN"), null); // the literal string "NaN"
+  assert.equal(parseTypedStrength("0.5\nDROP TABLE"), null); // pasted multi-line blob
+  assert.equal(parseTypedStrength(null), null);
+  assert.equal(parseTypedStrength(undefined), null);
+  assert.equal(parseTypedStrength(NaN), null);
+});
+
+test("parseTypedStrength: never clamps/rounds itself -- that stays clampStrength's ONE job", () => {
+  assert.equal(parseTypedStrength("500"), 500); // NOT clamped here -- the caller clamps
+  assert.equal(parseTypedStrength("-50"), -50);
+});
+
+test("setRowStrength: single-strength mode -- sets sm AND sc together, clamped/rounded through clampStrength", () => {
+  const state = defaultState();
+  const a = addRow(state);
+  assert.equal(setRowStrength(state, a.id, "sm", 0.6543), true);
+  assert.equal(a.sm, clampStrength(0.6543));
+  assert.equal(a.sc, a.sm, "sc must move in lockstep when sepStrengths is off, exactly like bumpRowStrength");
+  assert.equal(setRowStrength(state, 999999, "sm", 1), false);
+});
+
+test("setRowStrength: sepStrengths true -- only the named field moves, the other stays put", () => {
+  const state = defaultState();
+  setSepStrengths(state, true);
+  const a = addRow(state); // sm = sc = DEFAULT_STRENGTH
+  setRowStrength(state, a.id, "sm", 1.5);
+  assert.equal(a.sm, 1.5);
+  assert.equal(a.sc, DEFAULT_STRENGTH, "sc must NOT move when only sm was set, in two-strength mode");
+  setRowStrength(state, a.id, "sc", 0.3);
+  assert.equal(a.sc, 0.3);
+  assert.equal(a.sm, 1.5, "sm must NOT move when only sc was set");
+});
+
+test("setRowStrength: clamps out-of-range input through the SAME range as bumpRowStrength (STRENGTH_MIN=0, no negative clamp floor beyond that)", () => {
+  const state = defaultState();
+  const a = addRow(state);
+  setRowStrength(state, a.id, "sm", -50);
+  assert.equal(a.sm, STRENGTH_MIN, "STRENGTH_MIN is 0 -- inherited from upstream's range, not a deliberate negative-LoRA-weight decision (see lora_state.mjs's own BUG 17 comment)");
+  setRowStrength(state, a.id, "sm", 500);
+  assert.equal(a.sm, STRENGTH_MAX);
+});
+
+test("setRowStrength + bumpRowStrength: a typed value and an arrow-bumped value land on the IDENTICAL stored number for the same target", () => {
+  const state = defaultState();
+  const a = addRow(state); // 0.8
+  const b = addRow(state); // 0.8
+  // Row a: bump by +STRENGTH_STEP*3 via the arrows.
+  bumpRowStrength(state, a.id, STRENGTH_STEP * 3);
+  // Row b: type the SAME resulting target value directly.
+  setRowStrength(state, b.id, "sm", DEFAULT_STRENGTH + STRENGTH_STEP * 3);
+  assert.equal(a.sm, b.sm, "typed and arrow-bumped paths must agree, since both funnel through clampStrength");
 });
 
 test("bumpRowStrength: with sepStrengths false (the default), the field argument is IGNORED -- both fields always stay locked together", () => {

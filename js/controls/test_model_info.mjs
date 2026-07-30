@@ -194,6 +194,14 @@ test("lookupStateView: rate_limited names the key ladder", () => {
   assert.match(view.why, /API key/);
 });
 
+test("lookupStateView: unchecked (BUG 13) -- 'Not checked yet', one action ('check' -> ↻ Civitai), distinct from notfound/searching", () => {
+  const view = lookupStateView({ phase: "unchecked" });
+  assert.equal(view.cssState, "unchecked");
+  assert.equal(view.headline, "Not checked yet");
+  assert.deepEqual(view.actions.map((a) => a.id), ["check"]);
+  assert.equal(view.actions[0].label, "↻ Civitai");
+});
+
 test("lookupStateView: missing_file -- a distinct, honest 'nothing to hash' message, no action", () => {
   const view = lookupStateView({ phase: "result", response: { reason: "offline", offline_reason: "missing_file" } });
   assert.equal(view.headline, "Can't check Civitai");
@@ -721,6 +729,127 @@ await asyncTest("openModelInfo: civitaiEnabled=false always requests cached_only
     assert.equal(findAll(handle.overlay, "wtn-mi-refetch").length, 0, "no ↻ Civitai footer button -- it would force a LIVE lookup");
     // File-derived words still work -- the whole point of "degradation, not failure".
     assert.equal(findAll(handle.overlay, "wtn-mi-chip").length, 1);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// BUG 13 (2026-07-29 owner report, HIGH PRIORITY): opening the ⓘ panel used
+// to hash the whole file and hit Civitai over the network EVERY time,
+// whenever Civitai was ON (the default) -- exactly the §9 violation the
+// owner caught. Opening must ALWAYS be cached_only:true regardless of the
+// setting; only an explicit '↻ Civitai' click may ever send cached_only:false.
+// ---------------------------------------------------------------------------
+
+await asyncTest("BUG 13: opening the panel with Civitai ON still sends cached_only:true -- fails loudly if runLookup ever reverts to cachedOnly:!civitaiEnabled", async () => {
+  const kind = "loras";
+  const name = "info-bug13-open-on.safetensors";
+  invalidateInfo(kind, name);
+  let lastBody = null;
+  globalThis.fetch = async (url, opts) => {
+    lastBody = JSON.parse(opts.body);
+    return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true, // the previous bug ONLY manifested here -- Civitai ON is the default
+    });
+    await settle();
+
+    assert.ok(lastBody, "opening the panel does call the lookup route");
+    assert.equal(lastBody.cached_only, true, "opening must ALWAYS be cached_only:true -- civitaiEnabled must never flip this to false");
+    assert.equal(lastBody.force_refresh, false, "opening must never pass force_refresh either");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("BUG 13: a cache MISS on open renders the 'unchecked' resting state -- never 'searching', never notfound's hash-changed explanation", async () => {
+  const kind = "loras";
+  const name = "info-bug13-unchecked.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    const box = findAll(handle.overlay, "wtn-mi-status")[0];
+    assert.ok(box, "the unchecked state DOES render a status box");
+    assert.ok(box.classList.contains("wtn-mi-status-unchecked"), "must carry the unchecked cssState, not notfound/offline/searching");
+    assert.equal(box.classList.contains("wtn-mi-status-notfound"), false, "must NOT read as notfound -- we never asked Civitai anything");
+    assert.equal(box.classList.contains("wtn-mi-status-searching"), false);
+    const headRow = findAll(box, "wtn-mi-status-head")[0];
+    const headline = headRow.children[1]; // [icon, <b>headline]
+    assert.equal(headline.textContent, "Not checked yet");
+    const actionBtn = findAll(box, "wtn-mi-status-actions")[0].children[0];
+    assert.equal(actionBtn.textContent, "↻ Civitai");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("BUG 13: clicking the unchecked state's own '↻ Civitai' action performs a REAL forced lookup (cached_only:false), and transitions to found", async () => {
+  const kind = "loras";
+  const name = "info-bug13-check-click.safetensors";
+  invalidateInfo(kind, name);
+  const bodies = [];
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    if (!body.force_refresh) {
+      return { json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) };
+    }
+    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "X", model_id: 1, version_id: 2 } }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].cached_only, true, "the OPEN call stays cached_only:true");
+
+    const box = findAll(handle.overlay, "wtn-mi-status")[0];
+    const checkBtn = findAll(box, "wtn-mi-status-actions")[0].children[0];
+    checkBtn.click();
+    await settle();
+
+    assert.equal(bodies.length, 2, "the click must issue a SECOND request");
+    assert.equal(bodies[1].cached_only, false, "the explicit click is the ONLY thing allowed to send cached_only:false");
+    assert.equal(bodies[1].force_refresh, true);
+
+    // Transitioned to found -- the compact row (BUG 8), not the unchecked box.
+    assert.equal(findAll(handle.overlay, "wtn-mi-status-unchecked").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-status-compact").length, 1);
 
     handle.close();
   } finally {

@@ -41,27 +41,25 @@
  * takes settings as data, it doesn't reach into `../shared/settings.mjs`
  * itself).
  *
- * With it `false`, this panel still calls `lookupInfo`, but with
- * `{ cachedOnly: true }` -- never a bare skip. `civitai_api.mjs`'s
- * `lookupInfo`/`src/model_browser/lookup.py`'s `lookup_model_info` make that
- * flag's cache-miss path return `offline`/`civitai_disabled` from server-side
- * control flow that NEVER reaches `hashing.sha256_file`/
- * `civitai_client.lookup_by_hash` at all (see either function's own doc
- * comment) -- so calling this at all with the setting off does not violate
- * §7b decision 20's "no path left from which a request could originate": the
- * network-reaching code is unreachable for this call, not merely unused.
- * That is what makes §7d's "cached sidecar info still displays" true
- * simultaneously with decision 20 rather than in tension with it (the design
- * doc states both as its final word on the subject, not as a contradiction
- * to pick one side of) -- a cache HIT still populates the identity title,
- * the author's notes, and the Civitai trigger candidates exactly as if the
- * setting were on. What genuinely disappears with the setting off is only
- * "the way out" (§7d's own words): the lookup STATUS block (searching/found/
- * notfound/offline messaging, which would misrepresent a cached-only read as
- * a live one), the `View on Civitai ↗` link, and the `↻ Civitai` footer
- * button (which would force a real, live lookup) -- `renderStatus`/
- * `renderIdentity`'s own `civitaiEnabled` guards below render none of those
- * regardless of what the cached-only call found.
+ * With it `false`, the ⚙/Settings switch hides every network AFFORDANCE
+ * (`View on Civitai ↗`, the `↻ Civitai` footer button, and the whole lookup
+ * status block) -- `renderStatus`/`renderIdentity`'s own `civitaiEnabled`
+ * guards below. Cached sidecar info still displays regardless (§7d) --
+ * identity title, author's notes, and Civitai trigger candidates, exactly
+ * as if the setting were on.
+ *
+ * **BUG 13 (2026-07-29 owner report, HIGH PRIORITY) settled where the ACTUAL
+ * network boundary is, and it is NOT `civitaiEnabled` any more.** OPENING
+ * this panel is ALWAYS a cache-only read now, regardless of the setting --
+ * see `runLookup`'s own doc comment for the full "why" and the §9 violation
+ * it fixes (merely opening the panel used to hash the whole file and hit
+ * Civitai over the network on every open, whenever Civitai was on -- the
+ * default). The ONLY thing that ever performs a REAL lookup is an explicit
+ * click: the footer's `↻ Civitai` button, or the `unchecked`/`offline`
+ * status block's own action. `civitaiEnabled` still governs everything it
+ * did before (whether those clickable affordances render at all), it just
+ * no longer governs whether OPENING reaches the network -- opening never
+ * does, either way.
  *
  * ## ⚠ Untrusted text — textContent, never innerHTML
  *
@@ -208,6 +206,10 @@ const CSS = `
 .wtn-mi-status-found .wtn-mi-status-icon { color: var(--wtn-ok, ${TOKENS.ok}); }
 .wtn-mi-status-notfound .wtn-mi-status-icon { color: var(--wtn-warn, ${TOKENS.warn}); }
 .wtn-mi-status-offline .wtn-mi-status-icon { color: var(--wtn-bad, ${TOKENS.bad}); }
+/* BUG 13: a resting "not looked up yet" state -- deliberately NEUTRAL, not a
+   warning or a failure colour (this isn't an error, nothing was even
+   attempted). */
+.wtn-mi-status-unchecked .wtn-mi-status-icon { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-mi-status-why { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); line-height: 1.4; }
 .wtn-mi-status-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .wtn-mi-status-actions button {
@@ -422,6 +424,20 @@ export function lookupStateView(status) {
       actions: [{ id: "cancel", label: "Cancel" }],
     };
   }
+  // BUG 13 (2026-07-29 owner report): opening the panel is now ALWAYS a
+  // cache-only read (`runLookup`'s own doc comment) -- a miss on THAT read
+  // is a resting state, not a failure and not `notfound` (both of those
+  // would imply Civitai was actually asked something). This is the ONLY
+  // state whose single action performs the first REAL network lookup.
+  if (status.phase === "unchecked") {
+    return {
+      cssState: "unchecked",
+      icon: "○",
+      headline: "Not checked yet",
+      why: "Opening this panel never contacts Civitai on its own — click to check. Your file's own words are still shown.",
+      actions: [{ id: "check", label: "↻ Civitai" }],
+    };
+  }
 
   const r = (status.response && typeof status.response === "object") ? status.response : {};
 
@@ -564,10 +580,15 @@ export function openModelInfo({
   let sourceTouched = false; // did the USER click the pill? gates the one-time auto-switch below.
   let civitaiTriggers = [];
   let civitaiRecord = null; // last "found" response's `data`
-  // Always "searching" at construction -- `runLookup` is always called
-  // (below), cached-only or not; `renderStatus`'s own `civitaiEnabled` guard
-  // is what actually keeps this invisible while the setting is off.
-  let status = { phase: "searching" };
+  // BUG 13 (2026-07-29 owner report): OPENING this panel never means
+  // "checking is in progress" any more -- it's a fast, LOCAL, cache-only
+  // read (see `runLookup`'s own doc comment), so there is nothing to show
+  // as "searching" until the user actually clicks `↻ Civitai`. Starts idle
+  // (renders nothing); `runLookup(false)`'s own result updates it to
+  // `found` or `unchecked` before the panel's first real render, so a user
+  // watching the open never sees a "searching…" flash for a call that was
+  // never going anywhere near Civitai.
+  let status = { phase: "idle" };
   let cancelled = false;
   let notesOpen = true;
 
@@ -881,7 +902,9 @@ export function openModelInfo({
       renderStatus();
       return;
     }
-    if (id === "refetch" || id === "retry") {
+    if (id === "refetch" || id === "retry" || id === "check") {
+      // "check" is the `unchecked` resting state's own action (BUG 13) --
+      // same real, forced lookup as `retry`/the footer's `↻ Civitai`.
       runLookup(true);
       return;
     }
@@ -1012,28 +1035,63 @@ export function openModelInfo({
   }
 
   /**
-   * ALWAYS calls `lookupInfo` -- with `cachedOnly: true` whenever
-   * `civitaiEnabled` is `false` (this file's own top doc comment explains why
-   * that's safe: the flag makes the network-reaching code unreachable
-   * server-side, not merely skipped here). `force` (an explicit "Re-fetch"/
-   * "Retry" click) is only ever passed `true` from the status block's own
-   * actions, which render only when `civitaiEnabled` -- so `force && !
-   * civitaiEnabled` can't actually happen through this panel's own UI, and
-   * `cachedOnly` wins over it regardless (matching `lookup.py`'s own
-   * `cached_only` docs).
+   * BUG 13 (2026-07-29 owner report, HIGH PRIORITY): "each time i open the
+   * lora info there is a lookup request to Civitai, it should happen only
+   * if we click on the Civitai button" -- correct, and the previous shape
+   * (Slice 4) was a real §9 violation: it called `cachedOnly: !civitaiEnabled`,
+   * so with Civitai on (the default) merely OPENING this panel hashed the
+   * whole file and hit Civitai over the network, every single time.
+   *
+   * `cachedOnly` is now `!force`, full stop -- `civitaiEnabled` never enters
+   * this decision at all. Opening the panel (`force` unset/false) is ALWAYS
+   * a cache-only read: `src/model_browser/lookup.py`'s `lookup_model_info(
+   * cached_only=True)` makes `hashing.sha256_file`/`civitai_client.
+   * lookup_by_hash` UNREACHABLE from its own control flow (see that
+   * function's own doc comment) -- a server-side guarantee, not a frontend
+   * promise, so this is airtight even if a caller ever passed the wrong
+   * `civitaiEnabled`. The ONLY way to reach a real network call from this
+   * panel is `force: true`, which only ever comes from an explicit click:
+   * the footer's `↻ Civitai` button, or the `unchecked`/`offline` status
+   * actions below (`retry`/`check`) -- never from opening the panel itself.
+   * BUG 11's model-id description fallback is gated the SAME way
+   * server-side (`_augment_with_model_description` bails on `cached_only`),
+   * so it inherits this fix for free: it cannot fire on open either.
+   *
+   * A cache MISS on a cache-only read is NOT `notfound` -- `notfound` means
+   * "we asked Civitai and this hash isn't there", and asserting that when
+   * we never asked would be a lie (and would show §7e's hash-changed
+   * explanation for a question that was never posed). It resolves to the
+   * `unchecked` phase instead -- "not looked up yet", whose one action is
+   * `↻ Civitai` -- mirroring the same "not checked yet" vs "confirmed
+   * absent" distinction this file's own `renderNotes` already draws for
+   * BUG 11's author's-notes wording.
+   *
+   * The `searching` phase is ONLY ever shown for a real, forced lookup now
+   * -- there is nothing to "search" during a local cache read, so showing
+   * it there would itself be a small version of the same lie.
    */
   async function runLookup(force) {
     cancelled = false;
-    status = { phase: "searching" };
-    renderStatus(); // no-op while !civitaiEnabled -- see that function's own guard
-    const response = await lookupInfo(kind, name, { force: !!force, cachedOnly: !civitaiEnabled });
+    const cachedOnly = !force;
+    if (force) {
+      status = { phase: "searching" };
+      renderStatus();
+    }
+    const response = await lookupInfo(kind, name, { force: !!force, cachedOnly });
     if (cancelled) {
       return;
     }
     if (response.reason === "found" && response.data) {
       applyFoundRecord(response.data);
     }
-    status = { phase: "result", response };
+    if (cachedOnly && response.reason === "offline" && response.offline_reason === "civitai_disabled") {
+      // A cache-only read that found nothing -- never actually asked
+      // Civitai anything, so this is the resting "not looked up yet" state,
+      // not a failure and not `notfound`.
+      status = { phase: "unchecked" };
+    } else {
+      status = { phase: "result", response };
+    }
     renderStatus();
     renderIdentity();
     renderTriggers();
@@ -1072,12 +1130,14 @@ export function openModelInfo({
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
 
-  // The lookup itself is triggered by OPENING this panel -- an explicit user
-  // click (the ⓘ button/"More info"), matching §9's "only on an explicit
-  // click" rule; never called from anywhere that isn't a direct response to
-  // that click. ALWAYS called, even with Civitai off -- `runLookup`'s own
-  // doc comment explains why that's still §7b decision 20-safe (`cachedOnly`
-  // makes the network path unreachable, not merely unused).
+  // BUG 13: this is a CACHE-ONLY read (`force` unset -> `cachedOnly: true`
+  // inside `runLookup`), never a real Civitai lookup -- opening the panel is
+  // an explicit user action (the ⓘ button/"More info"), but per §9 that
+  // only licenses a REAL network call on an explicit click of `↻ Civitai`
+  // itself, not on opening the panel that contains it. Always called
+  // (`civitaiEnabled` on or off) -- `runLookup`'s own doc comment covers why
+  // that's always safe: `cached_only` makes the network path unreachable in
+  // `lookup.py`'s own control flow, not merely unused here.
   runLookup(false);
 
   return handle;

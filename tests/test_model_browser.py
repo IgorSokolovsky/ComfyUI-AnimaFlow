@@ -373,7 +373,12 @@ def test_parse_model_version_typical_response():
     assert parsed["model_id"] == 999
     assert parsed["version_id"] == 12345
     assert parsed["thumbnail"] == "https://example.com/img/width=256/x.jpg"
-    assert parsed["description"] == "Use at 0.8 strength."
+    # BUG 11b: the version's own description is a LAST RESORT now, not a
+    # reason to skip the model-id fetch -- it surfaces as `_version_description`,
+    # never as `description` (see the dedicated BUG 11b tests below for the
+    # full precedence).
+    assert "description" not in parsed
+    assert parsed["_version_description"] == "Use at 0.8 strength."
 
 
 def test_parse_model_version_no_trainedwords_no_model_name_still_found():
@@ -437,20 +442,84 @@ def test_parse_model_version_prefers_model_description_over_version_description(
     assert civitai_parse.parse_model_version(obj)["description"] == "The author's real write-up."
 
 
-def test_parse_model_version_falls_back_to_version_description_when_model_has_none():
-    # The REAL by-hash shape (verified live, 2026-07-29): `model` is
-    # `{name, type, nsfw, poi}` -- no `description` at all.
+def test_parse_model_version_version_description_is_a_last_resort_not_description():
+    # BUG 11b (2026-07-29 owner report): the version's own description must
+    # NEVER populate `description` directly any more -- that used to make
+    # `lookup.py`'s model-id fallback fetch skip itself whenever a version
+    # description existed (the common case), which is exactly how a
+    # changelog note ("Trained on preview3.") ended up standing in for the
+    # author's real write-up. The REAL by-hash shape (verified live,
+    # 2026-07-29): `model` is `{name, type, nsfw, poi}` -- no `description`
+    # at all.
     obj = {"description": "Use at 0.8 strength.", "model": {"name": "X", "type": "LORA", "nsfw": False, "poi": False}}
-    assert civitai_parse.parse_model_version(obj)["description"] == "Use at 0.8 strength."
+    parsed = civitai_parse.parse_model_version(obj)
+    assert "description" not in parsed
+    assert parsed["_version_description"] == "Use at 0.8 strength."
 
 
 def test_parse_model_version_no_description_anywhere_is_simply_absent():
     obj = {"model": {"name": "X"}}
-    assert "description" not in civitai_parse.parse_model_version(obj)
+    parsed = civitai_parse.parse_model_version(obj)
+    assert "description" not in parsed
+    assert "_version_description" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# BUG 11a (2026-07-29 owner report): Civitai descriptions are HTML, and the
+# author's notes rendered as literal raw markup ("<p>Trained on
+# preview3.</p>") because we correctly write with textContent (never
+# innerHTML -- that's the XSS boundary and stays put). `html_to_text` is the
+# fix: convert to plain text BEFORE it ever reaches `out["description"]`.
+# ---------------------------------------------------------------------------
+
+
+def test_html_to_text_owners_exact_example():
+    assert civitai_parse.html_to_text("<p>Trained on preview3.</p>") == "Trained on preview3."
+
+
+def test_html_to_text_multi_paragraph_stays_readable():
+    html = "<h1>DreamShaper - V∞!</h1><p>Please check out my other <a href=\"x\">base models</a>.</p>"
+    text = civitai_parse.html_to_text(html)
+    assert "<" not in text and ">" not in text
+    assert "DreamShaper - V∞!" in text
+    assert "Please check out my other base models." in text
+
+
+def test_html_to_text_br_becomes_newline():
+    assert civitai_parse.html_to_text("line one<br>line two<br/>line three") == "line one\nline two\nline three"
+
+
+def test_html_to_text_list_items_get_their_own_line():
+    html = "<ul><li>Better at photorealism</li><li>Better at NSFW</li></ul>"
+    assert civitai_parse.html_to_text(html) == "Better at photorealism\nBetter at NSFW"
+
+
+def test_html_to_text_decodes_entities_after_stripping_real_tags():
+    # A literal '&lt;script&gt;' the AUTHOR typed must survive as literal
+    # text ("<script>"), not be caught by the tag-stripper meant for real
+    # tags -- entities decode LAST, after real-tag stripping.
+    assert civitai_parse.html_to_text("Use &lt;script&gt; tags &amp; quotes &quot;like this&quot;.") == \
+        'Use <script> tags & quotes "like this".'
+
+
+def test_html_to_text_collapses_excess_blank_lines_and_trims():
+    html = "<p>First.</p>\n\n\n<p>Second.</p>   "
+    assert civitai_parse.html_to_text(html) == "First.\n\nSecond."
+
+
+def test_html_to_text_blank_or_non_string_is_empty_string_never_raises():
+    assert civitai_parse.html_to_text("") == ""
+    assert civitai_parse.html_to_text("   ") == ""
+    assert civitai_parse.html_to_text(None) == ""
+    assert civitai_parse.html_to_text(123) == ""
 
 
 def test_parse_model_description_extracts_top_level_field():
     assert civitai_parse.parse_model_description({"id": 1, "description": "Full write-up."}) == "Full write-up."
+
+
+def test_parse_model_description_converts_html_to_plain_text():
+    assert civitai_parse.parse_model_description({"description": "<p>Full write-up.</p>"}) == "Full write-up."
 
 
 def test_parse_model_description_blank_or_missing_is_none():
@@ -847,6 +916,104 @@ def test_lookup_model_info_fetches_model_description_fallback_when_missing_and_c
             restore()
 
 
+# ---------------------------------------------------------------------------
+# BUG 11b (2026-07-29 owner report): a VERSION description existing must NOT
+# skip the model-id fallback fetch any more -- that was the actual root
+# cause of author's-notes showing a changelog note ("Trained on preview3.")
+# instead of the real write-up.
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_model_info_fetches_fallback_even_when_a_version_description_already_exists():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        # A version-level description IS present (a changelog note, like the
+        # owner's real "Trained on preview3." example) -- and, per the real
+        # by-hash shape, `model` has no `description` of its own.
+        sidecar.write_sidecar(model_path, {
+            "modelId": 42, "id": 1, "baseModel": "SDXL",
+            "description": "Trained on preview3.",
+            "model": {"name": "X", "type": "LORA", "nsfw": False, "poi": False},
+        })
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_by_id = civitai_client.lookup_model_by_id
+        seen_ids = []
+
+        def fake_by_id(model_id, **kwargs):
+            seen_ids.append(model_id)
+            return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 42, "description": "The author's real write-up."}}
+
+        lookup.civitai_client.lookup_model_by_id = fake_by_id
+        try:
+            result = lookup.lookup_model_info("loras", "a.safetensors")
+            assert seen_ids == [42], "the fallback fetch MUST run even though a version description already exists"
+            assert result["data"]["description"] == "The author's real write-up.", "the REAL write-up must win, not the version's changelog note"
+            assert "_version_description" not in result["data"], "the scratch key must never leak into the public shape"
+        finally:
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
+            restore()
+
+
+def test_lookup_model_info_falls_back_to_version_description_only_once_the_fetch_genuinely_found_nothing():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {
+            "modelId": 42, "id": 1, "baseModel": "SDXL",
+            "description": "Trained on preview3.",
+            "model": {"name": "X", "type": "LORA", "nsfw": False, "poi": False},
+        })
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_by_id = civitai_client.lookup_model_by_id
+
+        # The fetch runs (it must, per the test above) but genuinely finds
+        # nothing usable -- a definitive miss, not a transient failure.
+        def fake_by_id(model_id, **kwargs):
+            return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 42}}  # no description field
+
+        lookup.civitai_client.lookup_model_by_id = fake_by_id
+        try:
+            result = lookup.lookup_model_info("loras", "a.safetensors")
+            assert result["data"]["description"] == "Trained on preview3.", "last resort: the version's own note, only once the fetch came back empty"
+        finally:
+            lookup.civitai_client.lookup_model_by_id = previous_by_id
+            restore()
+
+
+def test_lookup_model_info_version_description_last_resort_also_applies_when_no_model_id_at_all():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        # No modelId at all -- nothing to fetch by -- the version's own note
+        # is the only thing there is.
+        sidecar.write_sidecar(model_path, {"id": 1, "baseModel": "SDXL", "description": "Trained on preview3."})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = lookup.lookup_model_info("loras", "a.safetensors")
+            assert result["data"]["description"] == "Trained on preview3."
+        finally:
+            restore()
+
+
 def test_lookup_model_info_description_fallback_skipped_when_cached_only():
     with tempfile.TemporaryDirectory() as tmp:
         loras_root = os.path.join(tmp, "loras")
@@ -1209,9 +1376,17 @@ ALL_TESTS = [
     test_parse_model_version_explicit_gallery_falls_back_to_non_adult,
     test_parse_model_version_all_explicit_gallery_yields_no_thumbnail,
     test_parse_model_version_prefers_model_description_over_version_description,
-    test_parse_model_version_falls_back_to_version_description_when_model_has_none,
+    test_parse_model_version_version_description_is_a_last_resort_not_description,
     test_parse_model_version_no_description_anywhere_is_simply_absent,
+    test_html_to_text_owners_exact_example,
+    test_html_to_text_multi_paragraph_stays_readable,
+    test_html_to_text_br_becomes_newline,
+    test_html_to_text_list_items_get_their_own_line,
+    test_html_to_text_decodes_entities_after_stripping_real_tags,
+    test_html_to_text_collapses_excess_blank_lines_and_trims,
+    test_html_to_text_blank_or_non_string_is_empty_string_never_raises,
     test_parse_model_description_extracts_top_level_field,
+    test_parse_model_description_converts_html_to_plain_text,
     test_parse_model_description_blank_or_missing_is_none,
     test_lookup_by_hash_success_on_first_host,
     test_lookup_by_hash_404_is_definitive_and_never_tries_backup_host,
@@ -1232,6 +1407,9 @@ ALL_TESTS = [
     test_lookup_model_info_offline_and_notfound_pass_through,
     test_lookup_model_info_found_but_unparseable_degrades_to_notfound,
     test_lookup_model_info_fetches_model_description_fallback_when_missing_and_caches_it,
+    test_lookup_model_info_fetches_fallback_even_when_a_version_description_already_exists,
+    test_lookup_model_info_falls_back_to_version_description_only_once_the_fetch_genuinely_found_nothing,
+    test_lookup_model_info_version_description_last_resort_also_applies_when_no_model_id_at_all,
     test_lookup_model_info_description_fallback_skipped_when_cached_only,
     test_lookup_model_info_description_fallback_transient_offline_does_not_mark_checked,
     test_lookup_model_info_cached_only_with_a_sidecar_returns_found_and_never_touches_network,

@@ -181,20 +181,32 @@ export const ROW_H = 30;
 // strip -> rows-card) the owner did NOT ask to change.
 export const ROW_GAP = 4;
 export const HEADER_H = 30;
-export const BODY_PAD = 9;
+// BUG 10 (2026-07-29 owner report): the node's own outer padding -- this is
+// what actually creates "the gap between the node's border and the card's
+// border" the owner asked for, since the header AND the rows-card are both
+// direct children of `.wtn-lora-root`, which is what carries this padding
+// on every side. Was an asymmetric `9px 9px 10px` (top/right/left 9, bottom
+// 10 -- a pre-existing 1px drift never driven by this constant at all, the
+// CSS used to hardcode its own literal instead of interpolating this one);
+// now a single uniform number, interpolated into the CSS below so the two
+// can never drift apart again, matching the owner's explicit "8px, on all
+// sides".
+export const BODY_PAD = 8;
 // The gap between the header row and the rows-card below it (BUG 7's new
 // card wrapper) -- kept at the ORIGINAL 7px `ROW_GAP` used to share with
 // `ROW_GAP` above before the owner asked for the between-rows gap
 // specifically to tighten to 4.
 export const HEADER_GAP = 7;
 
-// -- BUG 7: the rows-card wrapper -----------------------------------------
+// -- BUG 7/10: the rows-card wrapper -----------------------------------------
 // Plain `--wtn-line-soft` border, per `98d0fe5`/`a6478f0`'s own hard-won
 // conclusion (three live rounds on the Control Panel's enabled-section
 // border: full accent too glaring, a dimmed accent still too light, plain
 // `--wtn-line-soft` was the answer that stuck) -- this card never needed its
 // own round of that argument because that lesson already generalizes.
 export const CARD_BORDER = 1;
+// BUG 10: "8px padding inside the card" -- already 8 (unchanged; confirmed,
+// not lowered, since it was never larger than that in the first place).
 export const CARD_PAD = 8;
 
 // -- BUG 3: the fixed output-socket column ----------------------------------
@@ -228,6 +240,17 @@ export const INFO_W = 18;
 export const SWITCH_W = 30;
 export const STR_VAL_W = 34;
 export const STR_SPIN_W = 9;
+// BUG 16 (2026-07-29 owner report): the vertical gap BETWEEN the ▲ and ▼
+// glyphs themselves -- was 1px, read as cramped and made them an easy
+// mis-tap (two adjacent click targets nearly flush). Owner's own range was
+// 4-6px; 5 is the middle of it. Vertical-only, and comfortably clear of
+// `ROW_H` (the spin column's own total height only grows from 11px to
+// 15px -- arrow(5) + gap(5) + arrow(5) -- against a 30px row), so `ROW_H`/
+// `contentHeight`/the width floors/BUG 15's drag pitch are all UNCHANGED --
+// none of them derive from this number. The extra space goes entirely to
+// separation between the two triangles -- their own border-drawn size
+// (5px tall each) is untouched, so this doesn't shrink either click target.
+export const SPIN_GAP = 5;
 // Gap INSIDE one stepper cell, between its value and its ▲▼ -- the "M"/"C"
 // tag that used to occupy this slot is GONE (BUG 7); the cell's `title`
 // ("Model strength"/"Clip strength") carries that naming now.
@@ -253,16 +276,29 @@ export const NAME_MIN_W = 130;
 // One stepper cell, no tag: value + gap + spinner.
 export const STEPPER_W = STR_VAL_W + STR_CELL_GAP + STR_SPIN_W; // 48
 
+// BUG 10 fix to BUG 7's own derivation: the row's available width is NOT
+// the node's full width -- it's the node's width MINUS every layer of
+// chrome between the node's outer edge and the row itself: the ROOT's own
+// left+right padding (`BODY_PAD`, BUG 10), then the CARD's left+right
+// padding (`CARD_PAD`) AND its left+right border (`CARD_BORDER`). BUG 7's
+// original MIN_W/MIN_W_SEP derivation only ever counted the ROW's OWN
+// internal padding (`ROW_PAD_L`/`ROW_PAD_R`) and silently omitted all three
+// of these -- meaning the floor it computed was already too narrow for the
+// row to actually fit in, even before BUG 10's card-gap request added any
+// NEW chrome. Fixed here rather than carried forward.
+const OUTER_CHROME_W = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
+
 // grip · gap · name · gap · ONE stepper · gap · ⓘ · gap · switch, plus the
-// row's own left/right padding (4 gaps total between 5 children).
-const SINGLE_FIXED_W = GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
-export const MIN_W = NAME_MIN_W + SINGLE_FIXED_W; // 289
+// row's own left/right padding (4 gaps total between 5 children), plus
+// every layer of surrounding chrome above.
+const SINGLE_FIXED_W = OUTER_CHROME_W + GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
+export const MIN_W = NAME_MIN_W + SINGLE_FIXED_W;
 
 // `sepStrengths` on (§7b "Show two strengths per row") adds a SECOND
 // stepper cell plus the gap between the two -- BUG 7's "two floors, not
 // one".
 const SEP_FIXED_W = SINGLE_FIXED_W + STEPPER_W + CTRL_GAP;
-export const MIN_W_SEP = NAME_MIN_W + SEP_FIXED_W; // 345
+export const MIN_W_SEP = NAME_MIN_W + SEP_FIXED_W;
 
 export const DEFAULT_W = 340;
 
@@ -287,13 +323,28 @@ export const ADD_MIN_W = 112;
 const SEARCH_ICON_SVG =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M11 4a7 7 0 104.418 12.44l4.571 4.571 1.415-1.415-4.572-4.572A7 7 0 0011 4zm-5 7a5 5 0 1110 0 5 5 0 01-10 0z'/%3E%3C/svg%3E";
 
+// BUG 12 (2026-07-29 owner report): "the settings icon is incorrect" -- the
+// PREVIOUS geometry (body radius 3.6/hole 1.8, teeth spanning outer radius
+// 11 down to inner radius 7.4) left a ~3.8px empty ring between the body
+// and every tooth -- eight detached spokes around a small dot renders as a
+// sunburst/asterisk, not a gear, exactly as reported. Verified by RENDERING
+// (`.claude/skills/css-layout-diagnose-headless/SKILL.md` -- headless
+// Chrome, the icon masked at its real 18px `.wtn-lora-icon` size, not just
+// judged from the path numbers): the fix below reads as a gear at 18px.
+// New geometry -- body outer radius 7.2, hole radius 2.8 (still the SAME
+// `evenodd` two-circle-path technique, so the hole still comes from
+// `fill-rule='evenodd'`, not a lighter fill -- `mask-image` unions shapes
+// and discards colour, so a "hole" can ONLY ever be evenodd, never colour),
+// teeth spanning outer radius 11 down to INNER radius 6.8 -- inside the
+// body's own 7.2 radius, so they fuse into the rim with overlap to spare
+// instead of floating off it (mask overlaps are free, they union).
 const GEAR_ICON_SVG =
-  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M12 8.4a3.6 3.6 0 100 7.2 3.6 3.6 0 000-7.2zm-1.8 3.6a1.8 1.8 0 113.6 0 1.8 1.8 0 01-3.6 0z'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(45 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(90 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(135 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(180 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(225 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(270 12 12)'/%3E%3Crect x='11' y='1' width='2' height='3.6' rx='1' transform='rotate(315 12 12)'/%3E%3C/svg%3E";
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M4.8 12a7.2 7.2 0 1 0 14.4 0a7.2 7.2 0 1 0 -14.4 0zM9.2 12a2.8 2.8 0 1 0 5.6 0a2.8 2.8 0 1 0 -5.6 0z'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(45 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(90 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(135 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(180 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(225 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(270 12 12)'/%3E%3Crect x='11' y='1' width='2' height='4.2' rx='1' transform='rotate(315 12 12)'/%3E%3C/svg%3E";
 
 const CSS = `
 .wtn-lora-root {
   display: flex; flex-direction: column; gap: ${HEADER_GAP}px; width: 100%; box-sizing: border-box;
-  padding: 9px 9px 10px; font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: ${BODY_PAD}px; font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--wtn-ink, ${TOKENS.ink});
 }
 
@@ -482,11 +533,25 @@ const CSS = `
 .wtn-lora-str-cell { display: flex; align-items: center; gap: ${STR_CELL_GAP}px; }
 .wtn-lora-str-clip { display: none; }
 .wtn-lora-str.wtn-lora-two .wtn-lora-str-clip { display: flex; }
+/* BUG 17 (2026-07-29 owner report): the strength value is now a real
+   editable '<input>', not a static span -- the ▲▼ arrows alone meant
+   changing 0.80 to 0.65 took seven clicks. 'box-sizing: border-box' keeps
+   the OUTER width at the same ${STR_VAL_W}px the arithmetic in this file's
+   own MIN_W/MIN_W_SEP derivation already assumes -- border+padding eat into
+   the box's OWN content area, they don't add to its footprint, so neither
+   floor needs to move. Blends in as plain text at rest (transparent
+   background, transparent border) and only reveals itself as editable on
+   hover/focus, so the row's at-rest look is unchanged from the old span. */
 .wtn-lora-str-val {
   font-family: var(--wtn-font-mono, monospace); font-size: 11.5px; font-weight: 640;
   color: var(--wtn-ink, ${TOKENS.ink}); width: ${STR_VAL_W}px; text-align: right;
+  box-sizing: border-box; background: transparent; border: 1px solid transparent;
+  border-radius: 3px; padding: 0 2px; cursor: text; outline: none;
 }
-.wtn-lora-spin { display: flex; flex-direction: column; gap: 1px; width: ${STR_SPIN_W}px; align-items: center; }
+.wtn-lora-str-val:hover, .wtn-lora-str-val:focus {
+  border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); background: var(--wtn-console, ${TOKENS.console});
+}
+.wtn-lora-spin { display: flex; flex-direction: column; gap: ${SPIN_GAP}px; width: ${STR_SPIN_W}px; align-items: center; }
 .wtn-lora-arrow { width: 0; height: 0; cursor: pointer; opacity: .85; }
 .wtn-lora-arrow:hover { opacity: 1; }
 .wtn-lora-arrow.wtn-lora-up {
@@ -555,6 +620,24 @@ const CSS = `
    Lowest segmented control. This modifier stacks label-then-control
    instead, so the label gets the row's FULL width to lay out in. */
 .wtn-lora-set-fld.wtn-lora-set-fld-stack { flex-direction: column; align-items: stretch; gap: 5px; }
+/* BUG 9 (2026-07-29 owner report): with the stacked layout above, '.wtn-seg'
+   itself already stretches to the row's full width ('align-items: stretch'
+   on the row, no width of its own) -- but the THREE BUTTONS inside kept
+   their own content widths (theme.css's shared '.wtn-seg button' rule is
+   content-sized, by design -- see below), so "Standard" read wide, "Fast"/
+   "Lowest" narrow, with dead space at the right. 'flex: 1 1 0' makes the
+   three share the group's width evenly, so it reads as ONE control.
+   SCOPED to this dialog's memory-mode row only ('.wtn-lora-set-fld-stack
+   .wtn-seg', never a bare '.wtn-seg' rule) -- '.wtn-seg' is the pack's
+   SHARED segmented-group class ('js/shared/theme.css'), also used by the
+   Rule Builder's mode/profile tablists and the autocomplete picker's
+   positive/negative tablist ('js/prompt_rules/rule_builder/overlay.mjs',
+   'js/prompt_rules/node/picker.mjs') -- both of THOSE sit inline in a
+   header row next to a title/other controls and rely on staying
+   content-sized; changing the shared rule globally would have stretched
+   them too. */
+.wtn-lora-set-fld-stack .wtn-seg { display: flex; }
+.wtn-lora-set-fld-stack .wtn-seg button { flex: 1 1 0; text-align: center; }
 .wtn-lora-set-label { flex: 1 1 auto; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-lora-set-hint { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; margin-top: 1px; line-height: 1.35; }
 .wtn-lora-set-num {
@@ -678,18 +761,34 @@ export function buildRoot(doc) {
   return { root, header, addBtn, master, count, searchBtn, settingsBtn, card, rowsHost, empty };
 }
 
-/** Builds ONE strength cell (a value + ▲▼ stepper) -- shared shape for the
- * model and clip cells `buildRowElement` builds below. `cellTitle` ("Model
- * strength"/"Clip strength") is the cell's OWN identity now that the "M"/"C"
- * letter tag is gone (BUG 7, 2026-07-29) -- the up/down arrows carry their
- * own, more specific titles too ("Increase/decrease model strength" etc),
- * so hovering ANY part of the control names what it does. The clip cell is
- * hidden by default (single-strength mode); `.wtn-lora-str.wtn-lora-two`
- * (toggled by `paintRow`) reveals it. */
+/** Builds ONE strength cell (an editable value + ▲▼ stepper) -- shared
+ * shape for the model and clip cells `buildRowElement` builds below.
+ * `cellTitle` ("Model strength"/"Clip strength") is the cell's OWN identity
+ * now that the "M"/"C" letter tag is gone (BUG 7, 2026-07-29) -- the
+ * up/down arrows carry their own, more specific titles too ("Increase/
+ * decrease model strength" etc), so hovering ANY part of the control names
+ * what it does. The clip cell is hidden by default (single-strength mode);
+ * `.wtn-lora-str.wtn-lora-two` (toggled by `paintRow`) reveals it.
+ *
+ * BUG 17 (2026-07-29 owner report): `val` is a real `<input>` now, not a
+ * static span -- `lora_interaction.mjs`'s `wireRow` owns commit-on-blur/
+ * Enter, Escape-to-revert, and `stopPropagation` (this module builds DOM
+ * only, no listeners -- see this file's own top doc comment). `type="text"`
+ * deliberately, not `type="number"`: a native number input can hide the RAW
+ * typed string from JS entirely (browsers keep `.value` empty for genuinely
+ * invalid text, so "abc"/"--1" would never even reach our own validation),
+ * and this pack's own garbage-input contract (`lora_state.mjs`'s
+ * `parseTypedStrength`) needs to see and handle that text itself rather
+ * than trusting native number-input coercion. `inputmode="decimal"` still
+ * hints a numeric keyboard on mobile/tablet despite `type="text"`. */
 function buildStrCell(doc, cellTitle, extraClass, upTitle, downTitle) {
   const cell = el(doc, "div", `wtn-lora-str-cell${extraClass ? ` ${extraClass}` : ""}`);
   cell.title = cellTitle;
-  const val = el(doc, "span", "wtn-lora-str-val");
+  const val = el(doc, "input", "wtn-lora-str-val");
+  val.type = "text";
+  val.inputMode = "decimal";
+  val.spellcheck = false;
+  val.title = cellTitle;
   const spin = el(doc, "div", "wtn-lora-spin");
   const up = el(doc, "span", "wtn-lora-arrow wtn-lora-up");
   up.title = upTitle;
@@ -789,9 +888,17 @@ export function paintRow(refs, row, sepStrengths) {
     ? `Missing file: ${row.name} -- pick another LoRA`
     : row.name || "Click to pick a LoRA";
   refs.nameBtn.classList.toggle("wtn-lora-missing", missing);
-  refs.strVal.textContent = row.sm.toFixed(2);
+  // BUG 17: `.value`, not `.textContent` -- the stepper's value is a real
+  // `<input>` now. Repainting overwrites whatever the user may be mid-typing
+  // (matches every other Class A repaint in this pack, e.g. the ⚙ dialog's
+  // own numeric inputs -- there is no dedicated guard for "don't clobber a
+  // focused field" anywhere else in this file either); a genuinely
+  // mid-edit field is only ever repainted by an UNRELATED action elsewhere
+  // triggering a full `syncRows`, not by anything the edit itself does
+  // (typing never calls this function -- only commit/blur/Enter/Escape do).
+  refs.strVal.value = row.sm.toFixed(2);
   if (refs.strValClip) {
-    refs.strValClip.textContent = Number.isFinite(row.sc) ? row.sc.toFixed(2) : row.sm.toFixed(2);
+    refs.strValClip.value = Number.isFinite(row.sc) ? row.sc.toFixed(2) : row.sm.toFixed(2);
   }
   if (refs.str && refs.str.classList) {
     refs.str.classList.toggle("wtn-lora-two", !!sepStrengths);

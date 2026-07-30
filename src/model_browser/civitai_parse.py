@@ -19,6 +19,7 @@ near-verbatim ports of that same upstream file's `:361-374`/`:346-358`/
 """
 from __future__ import annotations
 
+import html as _html
 import re
 from typing import Any, Dict, List, Optional
 
@@ -58,12 +59,63 @@ def _clean_strings(value: Any) -> List[str]:
     return out
 
 
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+# Paragraph-level closers get a BLANK line (a real paragraph break); list/row
+# closers get a single line -- a bullet list reads as consecutive lines, not
+# as separate paragraphs with gaps between every item.
+_PARA_CLOSE_RE = re.compile(r"</\s*(p|div|h[1-6]|blockquote)\s*>", re.IGNORECASE)
+_LINE_CLOSE_RE = re.compile(r"</\s*(li|tr)\s*>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
+
+def html_to_text(value: Any) -> str:
+    """BUG 11a (2026-07-29 owner report): a Civitai description is HTML, and
+    we correctly write it with `textContent` -- never `innerHTML`, that is
+    the XSS boundary and must not change -- so left as-is the raw tags
+    showed up as literal text (`<p>Trained on preview3.</p>`). This converts
+    HTML to READABLE PLAIN TEXT before it ever reaches `out["description"]`:
+    tags stripped, entities decoded, block-level closers turned into real
+    newlines so a multi-paragraph write-up stays readable: `<br>` and a
+    paragraph closer (`</p>`, `</div>`, `</h1>`-`</h6>`, `</blockquote>`) get
+    a BLANK line (a real paragraph break), while a list/row closer (`</li>`,
+    `</tr>`) gets a single line, since a bullet list reads as consecutive
+    lines, not as separate paragraphs with a gap between every item.
+    Everything else collapses to plain inline text (an inline `<a>`/`</a>`
+    just disappears, its own text staying inline -- correct for a link that
+    isn't block-level).
+
+    Order matters: block/`<br>` tags are converted to newlines FIRST (real
+    tags, real `<`/`>`), remaining tags are stripped SECOND, and HTML
+    entities are decoded LAST -- so a literal `&lt;script&gt;` an author
+    typed decodes to the literal text `<script>` (still perfectly safe
+    written via `textContent`, never re-interpreted as markup) instead of
+    being caught by the tag-stripping pass meant for REAL tags.
+
+    Pure, offline-testable, no network. Never raises: non-string/blank input
+    returns `""`.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    text = _BR_RE.sub("\n", value)
+    text = _PARA_CLOSE_RE.sub("\n\n", text)
+    text = _LINE_CLOSE_RE.sub("\n", text)
+    text = _TAG_RE.sub("", text)
+    text = _html.unescape(text)
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    text = _BLANK_RUN_RE.sub("\n\n", text)
+    return text.strip()
+
+
 def parse_model_version(obj: Any) -> Dict[str, Any]:
     """A Civitai model-version-by-hash response -> `{name?, type?,
-    base_model?, triggers?, tags?, description?, thumbnail?, model_id?,
-    version_id?}` -- only the keys actually present in the source are set,
-    so an empty return genuinely means "nothing usable was in this response
-    at all", not "every field happened to be absent".
+    base_model?, triggers?, tags?, description?, _version_description?,
+    thumbnail?, model_id?, version_id?}` -- only the keys actually present in
+    the source are set, so an empty return genuinely means "nothing usable
+    was in this response at all", not "every field happened to be absent".
+    `description` and `_version_description` are MUTUALLY EXCLUSIVE (BUG
+    11b, see below) -- never both set on the same result.
 
     **A response with no `trainedWords` and no `model.name` still counts as
     a usable record** (§2b) as long as ANYTHING else identifying comes back
@@ -101,7 +153,7 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
         if model_tags:
             out["tags"] = model_tags
         if model.get("description"):
-            model_description = str(model["description"])
+            model_description = html_to_text(str(model["description"]))
 
     top_tags = _clean_strings(obj.get("tags"))
     if top_tags:
@@ -118,12 +170,29 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
     # fallback that actually supplies it most of the time, by fetching
     # `/api/v1/models/{id}` once and caching the result back into this same
     # shape (so a future parse of the cached sidecar finds it right here,
-    # with no second fetch). This branch exists for whichever endpoint DOES
-    # embed it, and to keep the priority order correct if Civitai's response
-    # shape ever changes.
-    description = model_description or (str(obj["description"]) if obj.get("description") else None)
-    if description:
-        out["description"] = description
+    # with no second fetch).
+    #
+    # BUG 11b (2026-07-29 owner report): the FIRST version of this fix set
+    # `out["description"]` from the version's own text whenever the model
+    # had none -- which meant `lookup.py`'s augmentation (gated on
+    # `parsed.get("description")` already being truthy) never even TRIED the
+    # model-id fetch whenever a version description existed, which is most
+    # of the time. A per-VERSION description reads like a changelog
+    # ("Trained on preview3.") verified live, 2026-07-29 (see this module's
+    # own `parse_model_description` doc comment for the sibling model-id
+    # response, which carries the real author write-up as a multi-paragraph
+    # intro) -- NOT the author's write-up, so it must not stand in the way of
+    # fetching the real one. It's kept here ONLY as `_version_description`,
+    # a last-resort candidate `lookup.py`'s `_finalize_description` uses
+    # ONLY once every real attempt at the author's own description (model-
+    # level here, or the model-id fallback fetch) has come back empty --
+    # never as a reason to skip that attempt in the first place.
+    if model_description:
+        out["description"] = model_description
+    elif obj.get("description"):
+        version_description = html_to_text(str(obj["description"]))
+        if version_description:
+            out["_version_description"] = version_description
 
     mid = _clean_id(obj.get("modelId"))
     if mid is not None:
@@ -198,22 +267,34 @@ def _pick_thumbnail(images: Any) -> Optional[str]:
 
 def parse_model_description(obj: Any) -> Optional[str]:
     """A Civitai `GET /api/v1/models/{id}` response -> its own top-level
-    `description` (the author's main write-up for the WHOLE model, as
-    opposed to `parse_model_version`'s per-VERSION one) -- `None` if the
-    field is missing, blank, or `obj` isn't a dict at all. Pure, offline-
-    testable against recorded JSON (verified live against a real response,
-    2026-07-29 -- the field is a plain top-level string, HTML-flavoured
-    text). `lookup.py`'s `_augment_with_model_description` is the only
-    caller -- BUG 2's fallback fetch for the case (the common one) where the
-    by-hash endpoint's embedded `model` object didn't carry a description at
-    all.
+    `description`, converted to plain text (BUG 11a's `html_to_text`) --
+    the author's main write-up for the WHOLE model, as opposed to
+    `parse_model_version`'s per-VERSION one. `None` if the field is
+    missing, blank, or `obj` isn't a dict at all.
+
+    Confirmed live, 2026-07-29 (BUG 2, re-confirmed for BUG 11b): a real
+    `/api/v1/models/{id}` response's `description` is a genuine multi-
+    paragraph author intro (e.g. "<h1>DreamShaper - V∞!</h1><h3>Please check
+    out my other base models...</h3>...") -- categorically different from
+    that SAME model's by-hash version-level `description`, which read like a
+    changelog ("Better at handling Character LoRA", "Better at photorealism
+    ...") for the very same model. That is the real-world evidence behind
+    BUG 11b's precedence fix: the version's own description is not a
+    lower-fidelity copy of the author write-up, it is a DIFFERENT kind of
+    text entirely, and only this endpoint carries the one users actually
+    mean by "author's notes".
+
+    Pure, offline-testable against recorded JSON. `lookup.py`'s
+    `_augment_with_model_description` is the only caller -- BUG 2's fallback
+    fetch for the case (the common one) where the by-hash endpoint's
+    embedded `model` object didn't carry a description at all.
     """
     if not isinstance(obj, dict):
         return None
     description = obj.get("description")
     if isinstance(description, str) and description.strip():
-        return description
+        return html_to_text(description)
     return None
 
 
-__all__ = ("parse_model_version", "parse_model_description")
+__all__ = ("parse_model_version", "parse_model_description", "html_to_text")

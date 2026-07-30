@@ -11,6 +11,8 @@
  *
  *   { doc: document (or a stub, under test),
  *     getCanvasEl(): the live LiteGraph canvas element (or undefined),
+ *     getCanvasScale(): the live canvas zoom factor, default 1 if absent
+ *                       (BUG 15 -- `wireGrip`'s own doc comment below),
  *     isGraphLoading(): boolean }
  *
  * Much smaller than Control's `ctx` (no `panelConfig`/`getKnownLists`/
@@ -89,6 +91,8 @@ import {
   removeRow,
   setRowOn,
   bumpRowStrength,
+  setRowStrength,
+  parseTypedStrength,
   toggleMaster,
   allRowsOn,
   onCounts,
@@ -389,6 +393,40 @@ export function flipRows(node, beforeTops) {
   }
 }
 
+/**
+ * BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
+ * multiple rows on a small mouse movement" -- confirmed root cause is
+ * exactly the owner's hypothesis A, not B:
+ *
+ *   - `step` (below) IS `ROW_H + ROW_GAP` -- the SAME two constants
+ *     `contentHeight()` (`lora_render.mjs`) sums for its own row pitch, so
+ *     there is no second, stale copy of the pitch to drift (hypothesis B
+ *     does not apply here).
+ *   - The actual bug: `ev.clientY` is a SCREEN pixel coordinate, but `step`
+ *     is a NODE/graph-space measurement. At any canvas zoom other than
+ *     1:1, one row's worth of on-screen pointer movement is `step * scale`
+ *     screen pixels -- dividing the raw screen delta by the un-scaled
+ *     `step` therefore answers in `scale` rows per row of real movement (2
+ *     rows per row at 2x zoom, 3 at 3x). `ctx.getCanvasScale()` (BUG 15's
+ *     own new ctx accessor, `js/controls/index.js`) converts the screen
+ *     delta into node space FIRST, by dividing it out, before the row-pitch
+ *     division happens.
+ *
+ * **`js/controls/interaction.mjs`'s OWN `wireGrip` (Control Panel) has this
+ * EXACT SAME defect** -- it's where this gesture pattern was ported from,
+ * and it has the identical `Math.round((ev.clientY - startY) / step)` with
+ * no scale division anywhere. Confirmed by reading, not fixed here --
+ * that's a separate, scoped change for its own review, not smuggled into
+ * this LoRA bugfix pass.
+ *
+ * The FLIP animation (`flipRows`, called from `onMove` below) is
+ * confirmed presentational-only and NOT a contributor: the reorder index
+ * (`delta`/`newOrder`) is computed ENTIRELY from `ev.clientY` (pointer
+ * geometry) before `syncRows`/`flipRows` ever run: `flipRows` reads
+ * `getBoundingClientRect()` only to compute a COSMETIC `transform`, never
+ * to decide WHICH rows swap -- so an in-flight FLIP transition can't feed
+ * back into the drag math.
+ */
 function wireGrip(node, ctx, rowId, refs) {
   refs.grip.addEventListener("pointerdown", (e) => {
     const win = winOf(ctx);
@@ -415,7 +453,12 @@ function wireGrip(node, ctx, rowId, refs) {
     refs.root.classList.add("wtn-lora-dragging");
 
     const onMove = (ev) => {
-      const delta = Math.round((ev.clientY - startY) / step);
+      // Live-read, not captured once at drag-start -- matches this pack's
+      // own "read live, never cache" convention for anything the user could
+      // change mid-gesture (a wheel-zoom is technically possible mid-drag).
+      const scale = typeof ctx.getCanvasScale === "function" ? ctx.getCanvasScale() : 1;
+      const scaleFactor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      const delta = Math.round((ev.clientY - startY) / (step * scaleFactor));
       const newOrder = reorderRows(snapshot, fromIndex, fromIndex + delta);
       if (newOrder.some((r, i) => r !== state.rows[i])) {
         // FLIP: measure BEFORE mutating/repainting (design doc §1a-iii,
@@ -666,6 +709,75 @@ function wireRow(node, ctx, rowId, refs) {
       bump("sc", -1);
     });
   }
+
+  // BUG 17 (2026-07-29 owner report): the strength value is now typeable,
+  // not just arrow-nudgeable ("changing 0.80 to 0.65 took seven clicks").
+  // Commits on blur AND Enter; Escape reverts. Never writes on every
+  // keystroke -- persisting a half-typed "0." on each character would dirty
+  // the workflow constantly, and typing is not itself a commit. Garbage
+  // (empty, "abc", "--1", "1e999", "NaN", a pasted newline/blob) parses to
+  // `null` via `lora_state.mjs`'s own `parseTypedStrength` and reverts to
+  // whatever the row's CURRENT value already is -- never written anywhere.
+  // A valid typed value goes through `setRowStrength`, the exact SAME
+  // clamp/round + sepStrengths-lockstep rule `bump` above already uses (via
+  // `bumpRowStrength`) -- so a typed 5 and an arrow-bumped-to-5 land on the
+  // IDENTICAL stored number, never a second copy of that logic.
+  function commitTyped(field, inputEl) {
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return;
+    }
+    const parsed = parseTypedStrength(inputEl.value);
+    if (parsed === null) {
+      repaintOne(node, ctx, rowId); // revert -- never write garbage anywhere
+      return;
+    }
+    setRowStrength(state, rowId, field, parsed);
+    persistState(node, ctx);
+    repaintOne(node, ctx, rowId);
+  }
+
+  function wireStrengthInput(inputEl, field) {
+    if (!inputEl) {
+      return;
+    }
+    // Litegraph binds keyboard shortcuts on the canvas (Delete removes the
+    // selected node, etc.) and steals pointer gestures for node drag/select
+    // -- same reasoning `wireGrip`'s own `pointerdown` handler documents.
+    // Without these, a keystroke typed here could reach the canvas instead
+    // of the field, which -- with a node selected -- can do real damage.
+    inputEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+    inputEl.addEventListener("click", (e) => e.stopPropagation());
+    inputEl.addEventListener("blur", () => commitTyped(field, inputEl));
+    inputEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitTyped(field, inputEl);
+        if (typeof inputEl.blur === "function") {
+          inputEl.blur();
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        repaintOne(node, ctx, rowId); // revert to the row's current value, discard the edit
+        if (typeof inputEl.blur === "function") {
+          inputEl.blur();
+        }
+      }
+    });
+  }
+
+  wireStrengthInput(refs.strVal, "sm");
+  wireStrengthInput(refs.strValClip, "sc");
+  // VERIFY-IN-COMFYUI: "the grip still drags cleanly with the field
+  // focused" -- the grip's own `pointerdown` handler (`wireGrip`, above) is
+  // wired independently of this input and never reads focus state, so
+  // there is no code-level interaction between the two to find; this is a
+  // genuine real-browser focus/pointer-capture question a headless DOM
+  // stub (no real focus/blur semantics) cannot answer. Check live: focus a
+  // row's strength field, then drag that SAME row by its grip without
+  // clicking away first.
 
   refs.sw.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -927,6 +1039,58 @@ export function syncRows(node, ctx) {
     ? ""
     : "none";
 
+  // BUG 14 (2026-07-29 owner report): "when adding a new row it is
+  // overflowing over the node until my mouse is moved outside of the node,
+  // then the node grows." `syncRows` is the ONE function every row-count-
+  // changing mutation calls (Add, Duplicate, Remove, and the initial mount
+  // of a restored workflow) -- the DOM widget above grows to its new
+  // content height IMMEDIATELY (it's a real DOM element, reflowed
+  // synchronously), but `node.size[1]` (what the canvas actually draws the
+  // node's border at) used to only catch up on the NEXT `onDrawForeground`
+  // -- litegraph's own per-frame draw hook, which measurably does NOT fire
+  // on every state change, only on an actual redraw (a mouse-driven one,
+  // per the bug report). That gap is the overflow: DOM already tall,
+  // border still short, for however many frames it takes something else to
+  // dirty the canvas.
+  //
+  // `fitNodeH` is pure arithmetic (`contentHeight` has no DOM measurement,
+  // `.claude/skills/comfyui-litegraph-node-sizing/SKILL.md`) -- there is no
+  // reason to wait for a measure pass at all. Apply it HERE, synchronously,
+  // in the same turn as the state mutation that got us here, mutating
+  // `node.size[1]` IN PLACE (never reassign `node.size` -- it may be a
+  // `Float64Array` view over a `Rectangle` backing store, same rule as
+  // every other Class A layer in this file). `setDirtyCanvas` right after
+  // is what actually paints the corrected border on the very next frame
+  // instead of whichever later frame the mouse happens to move on.
+  //
+  // VERIFY-IN-COMFYUI: this fixes the canvas-drawn BORDER's own timing
+  // (`node.size[1]`, proven synchronous by the tests below). The DOM
+  // widget's OWN internal height (litegraph's `arrange()`/`_arrangeWidgets`
+  // re-measuring `getMinHeight`/`getMaxHeight`) is a SEPARATE mechanism this
+  // headless suite cannot observe at all -- there is no real litegraph
+  // layout pass to run against a fake node. It SHOULD already be correct
+  // (those getters are live closures, re-read on every call, per the
+  // `mountLoraNode`-level tests), and `setDirtyCanvas(true, true)` here is
+  // what should prompt litegraph to actually re-invoke them promptly -- but
+  // confirm live that the DOM body's own rendered height keeps pace with
+  // the corrected border, not just that the border itself is now correct.
+  //
+  // Width is deliberately untouched here -- only row COUNT invalidates
+  // height; reordering/toggling sepStrengths call this same function too,
+  // but `fitNodeH`'s answer is unchanged when only order or mode changes
+  // (verified by `test_lora_resize.mjs`'s own "FLIP mid-drag" test), so this
+  // is a harmless no-op on those calls, not a special case to guard against.
+  //
+  // Same load-path bail as every other Class A layer: `syncRows` also runs
+  // from `mountLoraNode`, which `setupLoraNode`/`restoreLoraNode` call WHILE
+  // `node._lrConfiguring` may still be true (a restore in flight) -- writing
+  // a synchronous height here in that window would stamp over a still-
+  // restoring size before `restoreStateFromWidget` has even run, the exact
+  // race `setupLoraNode`'s own doc comment describes.
+  if (isSizeLike(node.size) && !node._lrConfiguring && !(ctx && typeof ctx.isGraphLoading === "function" && ctx.isGraphLoading())) {
+    node.size[1] = fitNodeH(node, ctx);
+  }
+
   if (typeof node.setDirtyCanvas === "function") {
     node.setDirtyCanvas(true, true);
   }
@@ -1024,7 +1188,7 @@ export function teardownLoraNode(node) {
 // Class A sizing -- content-fixed height, width resizable with a floor
 // (design doc §6: "Class A, but for a different reason than the panels" --
 // this node COULD scroll, since it has no per-row sockets, but the owner's
-// policy is content-fixed regardless). Five layers total:
+// policy is content-fixed regardless). Six layers total:
 //
 //   1. addDOMWidget getMinHeight === getMaxHeight   (mountLoraNode, above)
 //   2. setSize wrap                                 (wrapSetSizeLora)
@@ -1032,6 +1196,9 @@ export function teardownLoraNode(node) {
 //   4. load-path correction                          (applyContentHeightLora)
 //   5. onResize (fires on some paths, never sufficient alone)
 //                                                     (onResizeLora)
+//   6. synchronous row-count-change apply (BUG 14 -- the only layer that
+//      runs in the SAME turn as the mutation, not on a later frame)
+//                                                     (syncRows, above)
 //
 // Every mechanism, and the ordering/authority rules between them, mirrors
 // `js/controls/interaction.mjs`'s own Class A section (`onResizeControls`

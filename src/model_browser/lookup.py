@@ -52,6 +52,21 @@ def _augment_with_model_description(
     has no description is never re-asked on every panel open. A transient
     failure (timeout/DNS/rate-limit) does NOT set it, so a later open tries
     again instead of being stuck.
+
+    BUG 11b (2026-07-29 owner report): the gate below reads
+    `parsed.get("description")` -- and, since BUG 11b's fix to
+    `civitai_parse.parse_model_version`, that key is populated ONLY by the
+    MODEL's own description (or a PREVIOUS successful call to this very
+    function, which caches its find under that same key -- see below). It is
+    deliberately never populated by the version's own description, which
+    `parse_model_version` now exposes separately as `_version_description` --
+    a last resort `_finalize_description` (this module) applies only once
+    this function has had its chance to run. Before this fix, `parsed[
+    "description"]` was ALSO set from the version's text, which meant this
+    function's very first line returned early -- skipping the model-id fetch
+    -- every time a version description existed, which is most of the time.
+    That produced author's-notes that were actually a per-version changelog
+    note ("Trained on preview3.") instead of the real write-up.
     """
     if parsed.get("description") or cached_only:
         return parsed, False
@@ -79,6 +94,25 @@ def _augment_with_model_description(
                 raw["model"] = model_obj
             model_obj["description"] = description
     return parsed, True
+
+
+def _finalize_description(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """BUG 11b's last resort: if NOTHING better ever turned up -- no
+    `model.description`, and the model-id fallback fetch (above) either
+    never ran (no `model_id`, offline, `cached_only`) or ran and genuinely
+    found nothing -- fall back to the version's own `_version_description`
+    (a changelog-style note, not the author's write-up, but still better
+    than showing nothing at all). Always called, on every code path,
+    AFTER `_augment_with_model_description` has had its one chance to
+    supply the real thing, so the fallback can never pre-empt the fetch.
+    `_version_description` never survives into the returned `parsed` either
+    way -- it is scratch state for this function alone, not part of the
+    public shape `parse_model_version`'s docstring promises.
+    """
+    if not parsed.get("description") and parsed.get("_version_description"):
+        parsed["description"] = parsed["_version_description"]
+    parsed.pop("_version_description", None)
+    return parsed
 
 
 def lookup_model_info(
@@ -147,7 +181,7 @@ def lookup_model_info(
                     "reason": "found",
                     "offline_reason": None,
                     "message": "",
-                    "data": parsed,
+                    "data": _finalize_description(parsed),
                     "source": "sidecar",
                 }
 
@@ -197,7 +231,7 @@ def lookup_model_info(
     # earlier when it's set), passed through for defensiveness only.
     parsed, _ = _augment_with_model_description(parsed, result["data"], cached_only=cached_only)
     sidecar.write_sidecar(path, result["data"])
-    return {"reason": "found", "offline_reason": None, "message": "", "data": parsed, "source": "civitai"}
+    return {"reason": "found", "offline_reason": None, "message": "", "data": _finalize_description(parsed), "source": "civitai"}
 
 
 def forget_cached(kind: object, name: Any) -> bool:

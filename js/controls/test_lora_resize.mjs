@@ -86,7 +86,15 @@ import {
   SLOT_HEADER_H,
   STEPPER_W,
   CTRL_GAP,
+  STR_CELL_GAP,
   ADD_MIN_W,
+  SPIN_GAP,
+  NAME_MIN_W,
+  ROW_PAD_L,
+  ROW_PAD_R,
+  GRIP_W,
+  INFO_W,
+  SWITCH_W,
   buildRoot,
   buildRowElement,
   buildSettingsPanel,
@@ -351,6 +359,9 @@ function makeCtx(doc, overrides = {}) {
   return {
     doc,
     getCanvasEl: overrides.getCanvasEl || (() => null),
+    // BUG 15 -- defaults to scale 1 (unzoomed), matching every pre-existing
+    // drag test's own assumption; only the dedicated BUG 15 tests override it.
+    getCanvasScale: overrides.getCanvasScale || (() => 1),
     isGraphLoading: overrides.isGraphLoading || (() => false),
   };
 }
@@ -496,13 +507,13 @@ test("paintRow: name falls back to a placeholder when empty; strength formatted 
   const refs = buildRowElement(doc);
   paintRow(refs, mkStateRow({ name: "", sm: 0.8 }));
   assert.equal(refs.nameLabel.textContent, "(pick a LoRA)");
-  assert.equal(refs.strVal.textContent, "0.80");
+  assert.equal(refs.strVal.value, "0.80");
   assert.equal(refs.root.classList.contains("wtn-lora-off"), false);
   assert.equal(refs.sw.classList.contains("wtn-lora-on"), true);
 
   paintRow(refs, mkStateRow({ name: "a.safetensors", sm: 1.005, on: false }));
   assert.equal(refs.nameLabel.textContent, "a.safetensors");
-  assert.equal(refs.strVal.textContent, "1.00"); // toFixed(2) formatting, not a raw float string
+  assert.equal(refs.strVal.value, "1.00"); // toFixed(2) formatting, not a raw float string
   assert.equal(refs.root.classList.contains("wtn-lora-off"), true);
   assert.equal(refs.sw.classList.contains("wtn-lora-on"), false);
 });
@@ -573,13 +584,13 @@ test("paintRow: sepStrengths (§7b 'Show two strengths per row') reveals the cli
 
   // Default (sepStrengths omitted/falsy) -- unchanged from every pre-Slice-5 caller.
   paintRow(refs, mkStateRow({ sm: 0.8, sc: 0.5 }));
-  assert.equal(refs.strVal.textContent, "0.80");
+  assert.equal(refs.strVal.value, "0.80");
   assert.equal(refs.str.classList.contains("wtn-lora-two"), false);
 
   // sepStrengths true -- BOTH values paint, and the group carries the reveal class.
   paintRow(refs, mkStateRow({ sm: 0.8, sc: 0.5 }), true);
-  assert.equal(refs.strVal.textContent, "0.80");
-  assert.equal(refs.strValClip.textContent, "0.50");
+  assert.equal(refs.strVal.value, "0.80");
+  assert.equal(refs.strValClip.value, "0.50");
   assert.equal(refs.str.classList.contains("wtn-lora-two"), true);
 
   // Toggling back off removes the reveal class again (no residual state).
@@ -918,7 +929,7 @@ test("strength ▲▼: bumps sm/sc together, persists, and repaints only that ro
   const state = ensureState(node, ctx);
   assert.equal(state.rows[0].sm, 0.85);
   assert.equal(state.rows[0].sc, 0.85);
-  assert.equal(entry.refs.strVal.textContent, "0.85");
+  assert.equal(entry.refs.strVal.value, "0.85");
   const w = getStateWidget(node);
   assert.equal(JSON.parse(w.value).rows[0].sm, 0.85, "must persist after every mutation");
 
@@ -947,17 +958,146 @@ test("strength ▲▼: with sepStrengths on, the model and clip steppers diverge
   let state = ensureState(node, ctx);
   assert.equal(state.rows[0].sm, 0.85);
   assert.equal(state.rows[0].sc, 0.8, "sc must not move when the MODEL stepper was clicked, in two-strength mode");
-  assert.equal(entry.refs.strValClip.textContent, "0.80");
+  assert.equal(entry.refs.strValClip.value, "0.80");
 
   fire(entry.refs.upClip, "click"); // clip only
   state = ensureState(node, ctx);
   assert.equal(state.rows[0].sc, 0.85);
   assert.equal(state.rows[0].sm, 0.85, "sm must not move when the CLIP stepper was clicked");
-  assert.equal(entry.refs.strValClip.textContent, "0.85");
+  assert.equal(entry.refs.strValClip.value, "0.85");
 
   fire(entry.refs.downClip, "click");
   assert.equal(ensureState(node, ctx).rows[0].sc, 0.8);
   assert.equal(ensureState(node, ctx).rows[0].sm, 0.85);
+});
+
+// ---------------------------------------------------------------------------
+// BUG 17 (2026-07-29 owner report): the strength value is a real editable
+// `<input>` now, commit-on-blur/Enter, Escape reverts, garbage never
+// written.
+// ---------------------------------------------------------------------------
+
+test("BUG 17: typing a valid value commits on BLUR", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  entry.refs.strVal.value = "0.65";
+  fire(entry.refs.strVal, "blur");
+  assert.equal(ensureState(node, ctx).rows[0].sm, 0.65);
+  const w = getStateWidget(node);
+  assert.equal(JSON.parse(w.value).rows[0].sm, 0.65, "must persist -- blur is a real commit");
+});
+
+test("BUG 17: typing a valid value and pressing Enter commits immediately (not merely on a later blur)", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  entry.refs.strVal.value = "1.25";
+  fire(entry.refs.strVal, "keydown", { key: "Enter" });
+  assert.equal(ensureState(node, ctx).rows[0].sm, 1.25);
+});
+
+test("BUG 17: Escape reverts to the row's CURRENT value -- discards the edit, never commits it", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  entry.refs.strVal.value = "1.99";
+  fire(entry.refs.strVal, "keydown", { key: "Escape" });
+  assert.equal(ensureState(node, ctx).rows[0].sm, 0.8, "the state must be untouched");
+  assert.equal(entry.refs.strVal.value, "0.80", "the field itself must revert to the stored value, not stay at the discarded text");
+});
+
+test("BUG 17: never writes on every keystroke -- an 'input' event alone (no blur/Enter) must not touch state", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  entry.refs.strVal.value = "0.";
+  fire(entry.refs.strVal, "input"); // no listener wired for this -- confirms nothing commits from typing alone
+  assert.equal(ensureState(node, ctx).rows[0].sm, 0.8, "a half-typed value must never reach the state blob");
+});
+
+for (const garbage of ["", "   ", "abc", "--1", "1e999", "NaN", "0.5\nDROP TABLE"]) {
+  test(`BUG 17: garbage input (${JSON.stringify(garbage)}) on blur reverts to the row's CURRENT value, never writes NaN or anything else`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const entry = node._lrRows[0];
+    entry.refs.strVal.value = garbage;
+    fire(entry.refs.strVal, "blur");
+    const sm = ensureState(node, ctx).rows[0].sm;
+    assert.equal(sm, 0.8, "must revert to the previous stored value");
+    assert.ok(Number.isFinite(sm), "must NEVER end up NaN in the state blob");
+    assert.equal(entry.refs.strVal.value, "0.80", "the field must repaint back to the stored value too");
+  });
+}
+
+test("BUG 17: a typed value and an arrow-bumped value round IDENTICALLY (same clamp/round pipeline)", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  entry.refs.strVal.value = "0.95000001"; // more precision than the 2-decimal round supports
+  fire(entry.refs.strVal, "blur");
+  assert.equal(ensureState(node, ctx).rows[0].sm, 0.95, "must round to 2 decimals, exactly like bumpRowStrength/clampStrength");
+});
+
+test("BUG 17: typed edits stay INDEPENDENT per cell when sepStrengths is on, and LOCKSTEP when it's off", () => {
+  // sepStrengths ON -- editing the clip cell must not move the model cell.
+  const nodeSep = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })], { sepStrengths: true }));
+  const docSep = makeDocStub();
+  const ctxSep = makeCtx(docSep);
+  mountLoraNode(nodeSep, ctxSep);
+  const entrySep = nodeSep._lrRows[0];
+  entrySep.refs.strValClip.value = "0.3";
+  fire(entrySep.refs.strValClip, "blur");
+  assert.equal(ensureState(nodeSep, ctxSep).rows[0].sc, 0.3);
+  assert.equal(ensureState(nodeSep, ctxSep).rows[0].sm, 0.8, "sm must not move -- sepStrengths on");
+
+  // sepStrengths OFF (default) -- editing either cell moves BOTH.
+  const nodeLock = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const docLock = makeDocStub();
+  const ctxLock = makeCtx(docLock);
+  mountLoraNode(nodeLock, ctxLock);
+  const entryLock = nodeLock._lrRows[0];
+  entryLock.refs.strVal.value = "1.1";
+  fire(entryLock.refs.strVal, "blur");
+  assert.equal(ensureState(nodeLock, ctxLock).rows[0].sm, 1.1);
+  assert.equal(ensureState(nodeLock, ctxLock).rows[0].sc, 1.1, "sc must follow sm in lockstep -- sepStrengths off");
+});
+
+test("BUG 17: the strength input stops propagation on pointerdown/keydown -- litegraph must never see these", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, sm: 0.8, sc: 0.8 })]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+  let pointerdownPropagated = false;
+  let keydownPropagated = false;
+  entry.refs.body.addEventListener("pointerdown", () => { pointerdownPropagated = true; });
+  entry.refs.body.addEventListener("keydown", () => { keydownPropagated = true; });
+  // This suite's own `fire` helper calls listeners directly rather than
+  // truly bubbling -- so this test instead confirms EACH listener calls
+  // `stopPropagation` on the event it receives, which is what actually
+  // prevents real-DOM bubbling to an ancestor (litegraph's own canvas-level
+  // handlers included).
+  let stoppedPointer = false;
+  let stoppedKey = false;
+  fire(entry.refs.strVal, "pointerdown", { stopPropagation: () => { stoppedPointer = true; } });
+  fire(entry.refs.strVal, "keydown", { key: "a", stopPropagation: () => { stoppedKey = true; } });
+  assert.ok(stoppedPointer, "pointerdown must call stopPropagation");
+  assert.ok(stoppedKey, "keydown must call stopPropagation");
+  assert.equal(pointerdownPropagated, false);
+  assert.equal(keydownPropagated, false);
 });
 
 test("row switch: toggles just that row's `on`, and updates the header counter/master switch", () => {
@@ -1230,6 +1370,92 @@ test("grip drag: reorders rows WITHOUT recreating the dragged row's own DOM elem
   assert.equal(draggedEl.classList.contains("wtn-lora-dragging"), false);
   const w = getStateWidget(node);
   assert.deepEqual(JSON.parse(w.value).rows.map((r) => r.name), ["b", "c", "a"], "persisted only on release");
+});
+
+// ---------------------------------------------------------------------------
+// BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
+// multiple rows on a small mouse movement" -- the drag math must convert
+// the SCREEN-pixel pointer delta into node space via the canvas zoom scale
+// BEFORE dividing by the row pitch, or a zoomed canvas overshoots by
+// exactly the zoom factor.
+// ---------------------------------------------------------------------------
+
+test("BUG 15: a pointer delta of exactly one row pitch moves exactly ONE position at scale 1", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" }), mkStateRow({ id: 3, name: "c" })]));
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getCanvasScale: () => 1 });
+  mountLoraNode(node, ctx);
+  const draggedEntry = node._lrRows[0];
+  const step = ROW_H + ROW_GAP;
+
+  fire(draggedEntry.refs.grip, "pointerdown", { clientY: 0 });
+  fireWin(win, "pointermove", { clientY: step + 1 }); // one row pitch of REAL screen movement
+  assert.deepEqual(ensureState(node, ctx).rows.map((r) => r.name), ["b", "a", "c"], "must move exactly ONE position, not two or three");
+  fireWin(win, "pointerup");
+});
+
+test("BUG 15 (the actual regression guard): the SAME one-row-pitch SCREEN movement moves exactly ONE position at scale 2 too -- not two", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" }), mkStateRow({ id: 3, name: "c" })]));
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, { getCanvasScale: () => 2 });
+  mountLoraNode(node, ctx);
+  const draggedEntry = node._lrRows[0];
+  const step = ROW_H + ROW_GAP;
+
+  fire(draggedEntry.refs.grip, "pointerdown", { clientY: 0 });
+  // At 2x zoom, ONE row of on-screen movement is `step * 2` screen pixels --
+  // the pre-fix math (`delta = round(screenDelta / step)`, no scale
+  // division) would read this as delta=2 and jump TWO rows instead of one.
+  fireWin(win, "pointermove", { clientY: step * 2 + 1 });
+  assert.deepEqual(ensureState(node, ctx).rows.map((r) => r.name), ["b", "a", "c"], "must STILL move exactly one position -- the screen delta must be divided by scale before the row-pitch division");
+  fireWin(win, "pointerup");
+});
+
+test("BUG 15: a sub-pitch movement (at any scale) moves nothing", () => {
+  for (const scale of [1, 2, 3]) {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" }), mkStateRow({ id: 3, name: "c" })]));
+    const doc = makeDocStub();
+    const win = makeWindowStub(doc);
+    const ctx = makeCtx(doc, { getCanvasScale: () => scale });
+    mountLoraNode(node, ctx);
+    const draggedEntry = node._lrRows[0];
+    const step = ROW_H + ROW_GAP;
+
+    fire(draggedEntry.refs.grip, "pointerdown", { clientY: 0 });
+    // A THIRD of a row pitch's worth of on-screen movement, scaled --
+    // unambiguously rounds to zero rows at every scale (avoids the exact
+    // half-pitch boundary, where `Math.round` itself rounds up).
+    fireWin(win, "pointermove", { clientY: Math.floor((step * scale) / 3) });
+    assert.deepEqual(ensureState(node, ctx).rows.map((r) => r.name), ["a", "b", "c"], `must not move at all (scale ${scale})`);
+    fireWin(win, "pointerup");
+  }
+});
+
+test("BUG 15: falls back to scale 1 when ctx.getCanvasScale is absent (older/partial ctx) -- never divides by zero/NaN", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" })]));
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = { doc, getCanvasEl: () => null, isGraphLoading: () => false }; // no getCanvasScale at all
+  mountLoraNode(node, ctx);
+  const draggedEntry = node._lrRows[0];
+  const step = ROW_H + ROW_GAP;
+
+  fire(draggedEntry.refs.grip, "pointerdown", { clientY: 0 });
+  fireWin(win, "pointermove", { clientY: step + 1 });
+  assert.deepEqual(ensureState(node, ctx).rows.map((r) => r.name), ["b", "a"], "must behave as scale 1 when the accessor is missing");
+  fireWin(win, "pointerup");
+});
+
+test("BUG 15: the drag's row pitch is derived from the SAME ROW_H/ROW_GAP constants contentHeight() uses -- not a second, hand-kept copy", () => {
+  // Pure arithmetic check: if `wireGrip`'s own `step` ever diverged from
+  // `ROW_H + ROW_GAP`, this would be the only place that could notice
+  // without a live drag -- both this file and lora_interaction.mjs import
+  // the SAME two constants from lora_render.mjs, so there is only one
+  // place either could be edited.
+  assert.equal(ROW_H + ROW_GAP, 34, "sanity: the pitch this suite assumes throughout every drag test above");
+  assert.ok(contentHeight(2) - contentHeight(1) === ROW_H + ROW_GAP, "one more row must cost EXACTLY one row pitch -- the same number the drag math divides by");
 });
 
 test("FLIP mid-drag: row COUNT (and therefore Class A content height) never changes across a reorder -- verified, not assumed (§1a-iii)", () => {
@@ -1640,6 +1866,54 @@ test("BUG 6: the header's search/browse button is rendered visibly disabled with
   assert.match(css, /\.wtn-lora-icon\.wtn-lora-icon-disabled\s*\{[^}]*cursor:\s*default/);
 });
 
+// -- BUG 12: the ⚙ gear icon reads as a gear, not a sunburst -- teeth must
+// OVERLAP the body's rim, never float off it with a gap ---------------------
+
+test("BUG 12: the ⚙ gear's mask URL is a well-formed inline SVG on '.wtn-lora-gear'", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{[^}]*mask-image:\s*url\("([^"]+)"\)/);
+  assert.ok(gearRuleMatch, "the gear icon's mask-image rule must exist on '.wtn-lora-icon.wtn-lora-gear'");
+  const dataUrl = gearRuleMatch[1];
+  assert.match(dataUrl, /^data:image\/svg\+xml;utf8,/, "must be a well-formed inline SVG data URI, not an external asset reference");
+  const svgText = dataUrl.replace(/^data:image\/svg\+xml;utf8,/, "").replace(/%3C/g, "<").replace(/%3E/g, ">");
+  assert.match(svgText, /^<svg[^>]*>[\s\S]*<\/svg>$/, "must decode to a real, well-formed <svg>...</svg> document");
+});
+
+test("BUG 12: the gear's teeth OVERLAP the body's own rim -- fused, not floating off it as a sunburst (the actual root cause of the owner's report)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{[^}]*mask-image:\s*url\("([^"]+)"\)/);
+  const svgText = gearRuleMatch[1].replace(/%3C/g, "<").replace(/%3E/g, ">");
+
+  // Body circle: 'M{cx-R} {cy}a{R} {R} 0 1 0 {2R} 0...' -- the arc's own
+  // radius parameters ARE the body's outer radius (both must agree, a
+  // circle not an ellipse).
+  const bodyMatch = svgText.match(/M[\d.]+ 12a([\d.]+) ([\d.]+) 0 1 0/);
+  assert.ok(bodyMatch, "must find the body circle's own arc command");
+  const bodyOuterR = Number(bodyMatch[1]);
+  assert.equal(bodyOuterR, Number(bodyMatch[2]), "the body must be a circle, not an ellipse");
+  assert.ok(bodyOuterR > 0);
+
+  // One tooth: '<rect x='11' y='1' width='2' height='H' rx='1' .../>' --
+  // centred at (12,12), a vertical bar from y=1 (its OUTER end, radius
+  // 12-1=11 from centre) down to y=1+H (its INNER end, closer to centre).
+  const toothMatch = svgText.match(/<rect x='11' y='1' width='2' height='([\d.]+)'/);
+  assert.ok(toothMatch, "must find a tooth rect");
+  const toothHeight = Number(toothMatch[1]);
+  const toothInnerR = 11 - toothHeight; // 12 (centre) - 1 (y start) = 11; inner end is `height` further in
+  assert.ok(
+    toothInnerR < bodyOuterR,
+    `teeth must OVERLAP the body -- inner radius (${toothInnerR}) must be LESS than the body's outer radius (${bodyOuterR}); BUG 12's actual defect was teeth stopping OUTSIDE the body (inner r≈7.4 vs body r≈3.6), an empty ring that renders as detached spokes`,
+  );
+
+  // All eight teeth exist (0/45/90/135/180/225/270/315).
+  const toothCount = (svgText.match(/<rect x='11' y='1'/g) || []).length;
+  assert.equal(toothCount, 8, "a gear needs all eight teeth, not fewer");
+});
+
 // -- BUG 7: the row floor, sepStrengths' own higher floor, the rows-card,
 // and the M/C letters -> title tooltips --------------------------------------
 
@@ -1760,6 +2034,202 @@ await asyncTest("BUG 7: toggling 'Separate model / clip strength' ON widens a to
   fire(sw, "click"); // turn sepStrengths back OFF
   assert.equal(node.size[0], 500, "must NOT shrink back down just because the setting turned off");
 });
+
+// =========================================================================
+// H. Owner bug-fix pass round 2 (2026-07-30) -- BUG 9 (segmented buttons
+// don't share width evenly), BUG 10 (rows card flush against the node
+// border; floors must account for the new outer/inner chrome).
+// =========================================================================
+
+// -- BUG 9: Standard/Fast/Lowest share the row evenly, scoped to THIS dialog -
+
+test("BUG 9: the memory-mode segmented buttons share the row's width evenly, SCOPED to the LoRA settings dialog only", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((e) => e.id === "wtn-lora-style");
+  assert.ok(styleEl, "the equal-width rule must live in THIS node's own <style>, never js/shared/theme.css");
+  const css = styleEl.textContent;
+
+  assert.match(
+    css,
+    /\.wtn-lora-set-fld-stack\s+\.wtn-seg\s+button\s*\{[^}]*flex:\s*1 1 0/,
+    "the three buttons must share the row's width evenly (equal flex basis)",
+  );
+  // SCOPED -- '.wtn-seg' is the pack-wide segmented-group class
+  // (js/shared/theme.css), also used by the Rule Builder's mode/profile
+  // tablists and the autocomplete picker's positive/negative tablist, both
+  // of which rely on staying content-sized -- a BARE, unscoped
+  // '.wtn-seg button { ... }' rule in THIS file's own stylesheet would be
+  // harmless on its own (theme.css is a separate file) but is exactly the
+  // kind of rule that's easy to widen-by-accident later, so this asserts
+  // the selector is never the start of its own top-level rule.
+  const bareRuleCount = (css.match(/(^|\})\s*\.wtn-seg\s+button\s*\{/g) || []).length;
+  assert.equal(bareRuleCount, 0, "must never define a bare, unscoped '.wtn-seg button {' rule");
+});
+
+// -- BUG 10: 8px outer gap (node border -> card border), 8px inner padding --
+
+test("BUG 10: the node's own outer padding (header/card gap from the node border) is a UNIFORM 8px on every side", () => {
+  assert.equal(BODY_PAD, 8);
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-root\s*\{[^}]*padding:\s*8px/, "must be a single uniform 8px, not the old asymmetric 9px 9px 10px");
+  assert.doesNotMatch(css, /\.wtn-lora-root\s*\{[^}]*padding:\s*9px/, "the old value must be fully gone");
+});
+
+test("BUG 10: the card's OWN inner padding is 8px (confirmed, not lowered further -- it was never larger)", () => {
+  assert.equal(CARD_PAD, 8);
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, /\.wtn-lora-rows-card\s*\{[^}]*padding:\s*8px/);
+});
+
+test("BUG 10: contentHeight reflects the uniform 8px outer padding exactly -- pure arithmetic, no drift from the CSS", () => {
+  const cardHeight = (rowsBlockH) => rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
+  assert.equal(contentHeight(0), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(ROW_H));
+  assert.equal(contentHeight(3), BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardHeight(3 * ROW_H + 2 * ROW_GAP));
+});
+
+test("BUG 10: MIN_W/MIN_W_SEP now account for EVERY layer of chrome between the node's edge and the row -- root padding, card padding, card border, not just the row's own internal padding", () => {
+  // Re-derive independently from the exported constants (never a hardcoded
+  // number) -- this is the same sum BUG 7 should have included from the
+  // start (root/card chrome), now fixed by BUG 10's explicit outer-gap ask.
+  const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
+  const singleFixedW = outerChromeW + GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
+  assert.equal(MIN_W, NAME_MIN_W + singleFixedW);
+  const sepFixedW = singleFixedW + STEPPER_W + CTRL_GAP;
+  assert.equal(MIN_W_SEP, NAME_MIN_W + sepFixedW);
+});
+
+test("BUG 10: at the MIN_W floor, the row's own content (grip+name+stepper+info+switch) genuinely fits within what's left after ALL outer chrome -- not just an internal-padding check", () => {
+  const outerChromeW = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
+  const rowAvailableW = MIN_W - outerChromeW; // what's actually left for '.wtn-ctl-row' itself
+  const rowOwnFixedW = GRIP_W + CTRL_GAP * 4 + STEPPER_W + INFO_W + SWITCH_W + ROW_PAD_L + ROW_PAD_R;
+  assert.ok(rowAvailableW >= rowOwnFixedW + NAME_MIN_W, "the row must fit ENTIRELY inside the space left after root+card chrome, at the exact floor");
+});
+
+// -- BUG 16: the ▲▼ arrows get real breathing room, without touching ROW_H --
+
+test("BUG 16: the ▲▼ arrows are separated by 4-6px (owner's own range), and ROW_H is UNCHANGED -- the spin column comfortably fits within it", () => {
+  assert.ok(SPIN_GAP >= 4 && SPIN_GAP <= 6, "must land inside the owner's requested 4-6px range");
+  assert.equal(ROW_H, 30, "ROW_H must stay put -- the spin column's own total height (arrow+gap+arrow) is nowhere near it");
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+  assert.match(css, new RegExp(`\\.wtn-lora-spin\\s*\\{[^}]*gap:\\s*${SPIN_GAP}px`));
+});
+
+test("BUG 16: the value<->spin gap (STR_CELL_GAP) is a DIFFERENT number and is untouched", () => {
+  assert.equal(STR_CELL_GAP, 5, "the cell's value<->spin gap must not be conflated with the arrow<->arrow gap");
+});
+
+// =========================================================================
+// I. BUG 14 (2026-07-30 owner report) -- a row-count change (Add/Duplicate/
+// Remove) must apply the new node.size[1] SYNCHRONOUSLY, in the same turn
+// as the state mutation -- never waiting on a later onDrawForeground/rAF
+// tick, which is what let the DOM widget visibly overflow the node's own
+// canvas-drawn border until something else (a mouse move) dirtied the
+// canvas. Parametrised over [Array, Float64Array] like every other Class A
+// test in this file (`.claude/skills/comfyui-litegraph-node-sizing/SKILL.md`).
+// =========================================================================
+
+for (const SizeCtor of [Array, Float64Array]) {
+  test(`BUG 14: '+ Add LoRA' applies the new node.size[1] SYNCHRONOUSLY -- no await, no rAF tick needed (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const before = node._dirty;
+
+    fire(node._lrRefs.addBtn, "click");
+
+    // Read node.size[1] IMMEDIATELY, in the same synchronous call stack as
+    // the click -- if this were only corrected on a later onDrawForeground/
+    // rAF tick, this assertion would see the STALE (pre-add) height.
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(1), "the border must already match the new content height by the time this line runs");
+    assert.ok(node._dirty > before, "must dirty the canvas in the same turn too, so the corrected border actually paints on the very next frame");
+  });
+
+  test(`BUG 14: row menu 'Duplicate' applies the new height synchronously too (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a.safetensors" })]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const entry = node._lrRows[0];
+
+    fire(entry.refs.root, "contextmenu");
+    const dup = findAllByClass(doc.body, "wtn-ctl-opt").find((o) => /Duplicate/.test(o.textContent));
+    fire(dup, "click");
+
+    assert.equal(ensureState(node, ctx).rows.length, 2);
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(2));
+  });
+
+  test(`BUG 14: row menu 'Remove' applies the SHRUNK height synchronously (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" })]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const entry = node._lrRows[0];
+
+    fire(entry.refs.root, "contextmenu");
+    const del = findAllByClass(doc.body, "wtn-ctl-opt").find((o) => /Remove/.test(o.textContent));
+    fire(del, "click");
+
+    assert.equal(ensureState(node, ctx).rows.length, 1);
+    assert.equal(node.size[1], WIDGETS_START_Y + contentHeight(1));
+  });
+
+  test(`BUG 14: the height LOCK (getMinHeight === getMaxHeight) reports the new content height immediately after a row-count change (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const widget = node._lrWidget;
+    fire(node._lrRefs.addBtn, "click");
+    fire(node._lrRefs.addBtn, "click");
+    // Both getters are LIVE closures (re-read `rowCountOf` on every call) --
+    // this pins that contract so a future change can't silently cache a
+    // stale value and re-pin the node to the OLD height (BUG 14's own
+    // warning: "a fix that repaints promptly but re-pins the stale height
+    // is worse than the current bug").
+    assert.equal(widget.options.getMinHeight(), contentHeight(2));
+    assert.equal(widget.options.getMaxHeight(), contentHeight(2));
+    assert.equal(widget.options.getMinHeight(), widget.options.getMaxHeight());
+  });
+
+  test(`BUG 14: reordering (row count UNCHANGED) leaves node.size[1] exactly as it was -- the synchronous apply must not fight the FLIP animation (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "a" }), mkStateRow({ id: 2, name: "b" })]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const win = makeWindowStub(doc);
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    const before = node.size[1];
+    const draggedEntry = node._lrRows[0];
+    fire(draggedEntry.refs.grip, "pointerdown", { clientY: 0 });
+    fireWin(win, "pointermove", { clientY: (ROW_H + ROW_GAP) + 1 });
+    assert.equal(node.size[1], before, "row count didn't change -- the synchronous apply must be a no-op here");
+    fireWin(win, "pointerup");
+  });
+
+  test(`BUG 14: syncRows' own synchronous height write bails during a restore in flight (node._lrConfiguring) -- pinned directly, not just through setupLoraNode (size ctor: ${SizeCtor.name})`, () => {
+    const node = makeFakeNode(stateJSON([mkStateRow({ id: 1 })]), { sizeCtor: SizeCtor });
+    const doc = makeDocStub();
+    const ctx = makeCtx(doc);
+    mountLoraNode(node, ctx);
+    node.size[0] = 777;
+    node.size[1] = 12345; // a deliberately wrong value a concurrent restore might be about to overwrite
+    node._lrConfiguring = true;
+    const state = ensureState(node, ctx);
+    addStateRow(state); // row count DOES change here
+    syncRows(node, ctx);
+    assert.equal(node.size[1], 12345, "must NOT stamp a synchronous height over a size a restore may still be setting");
+  });
+}
 
 // =========================================================================
 // Lifecycle -- setupLoraNode / restoreLoraNode, idempotency, teardown

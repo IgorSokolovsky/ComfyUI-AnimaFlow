@@ -171,6 +171,11 @@ function buildLoraCtx() {
   return {
     doc: typeof document !== "undefined" ? document : null,
     getCanvasEl,
+    // BUG 15's own scale accessor (see that function's doc comment) --
+    // `wireGrip`'s drag-to-reorder is the one consumer, converting a
+    // screen-pixel pointer delta into node-space before dividing by the
+    // row pitch.
+    getCanvasScale,
     isGraphLoading,
   };
 }
@@ -284,6 +289,25 @@ function confirmRemove(row) {
 // re-reads this on every wheel event and the canvas can be recreated.
 function getCanvasEl() {
   return (app.canvas && app.canvas.canvas) || null;
+}
+
+// BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
+// multiple rows on a small mouse movement" -- `app.canvas.ds.scale` is
+// LiteGraph's own live canvas zoom factor (`ds` = "drag/scale"), read fresh
+// on every call for the identical reason `getCanvasEl` above is (a live
+// pointer drag can, in principle, straddle a zoom change). `lora_
+// interaction.mjs`'s own `wireGrip` is the ONLY consumer -- a pointer-drag
+// delta is measured in SCREEN pixels (`ev.clientY`), but the row pitch it's
+// divided against is measured in NODE/graph units, so at any zoom other
+// than 1:1 that division silently answers in the WRONG unit (at 2x zoom,
+// one row's worth of on-screen movement is `pitch * 2` screen pixels, so
+// dividing by the un-scaled `pitch` yields 2 rows instead of 1). Falls back
+// to `1` (no scaling) if `app`/`app.canvas`/`app.canvas.ds` isn't there yet,
+// or `.scale` isn't a usable positive number -- never lets a broken/absent
+// value divide-by-zero or NaN the drag math.
+function getCanvasScale() {
+  const scale = app.canvas && app.canvas.ds && app.canvas.ds.scale;
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
 function buildCtx(panelConfig, mods) {
