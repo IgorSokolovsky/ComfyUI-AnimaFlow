@@ -90,17 +90,6 @@ import { getSetting, SETTING_IDS, SETTING_DEFAULTS, registerAnimaFlowSettings } 
 // fine (this file's own "lazy, not static" rule is about the HEAVY row-
 // catalog/DOM/CSS stack, not a two-function Set-based signal).
 import { onNodeDefsRefresh, installRefreshHook } from "../shared/refresh.mjs";
-// The stale-model queue-time diagnostic (task: "AnimaLoaderPanel generates
-// with a stale model"). `onGraphToPromptResult` is `submit_guard.mjs`'s own
-// tap on the ALREADY-wrapped `app.graphToPrompt` (see that module's own
-// "onGraphToPromptResult" doc comment for why this reuses its existing wrap
-// rather than adding a second one) -- both `submit_guard.mjs` and
-// `state_diagnostic.mjs` are tiny, zero-DOM/window-at-module-scope modules
-// (the latter has NO `/scripts/app.js` import at all, matching `settings.mjs`/
-// `refresh.mjs`'s own "cheap enough to import eagerly" precedent above), so
-// eager here, not folded into `loadMods()`'s heavy row-catalog/DOM/CSS stack.
-import { onGraphToPromptResult } from "../shared/submit_guard.mjs";
-import * as stateDiagnostic from "./state_diagnostic.mjs";
 
 // CATEGORY is Title Case ("AnimaFlow/Controls") on the Python side; nothing
 // here needs to know that string, only the two class names.
@@ -583,134 +572,6 @@ function installQueuePromptHook() {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Stale-state diagnostic ("AnimaLoaderPanel generates with a stale model" --
-// every simpler hypothesis (slot/row drift, the per-kind cache key, duplicate
-// slots, a `persistState` guard, `graphToPrompt` reading a stale value,
-// subgraph widget promotion) has been eliminated by evidence, so this is a
-// pure CAPTURE: at the exact moment a prompt is submitted, print whether each
-// relevant node's live widget value agrees with what actually reached the
-// outgoing payload. Debug-gated (`AnimaFlow.General.ConsoleLogging =
-// "debug"`, the pack's existing level -- no new setting) and silent
-// otherwise; see `state_diagnostic.mjs`'s own top doc comment for the pure
-// half of this mechanism.
-// ---------------------------------------------------------------------------
-
-/** Every live node whose class this diagnostic knows how to check
- * (`stateDiagnostic.DIAGNOSTIC_CLASSES` -- `AnimaControlPanel`/
- * `AnimaLoaderPanel`/`AnimaLoraLoader`), top-level and nested inside any
- * subgraph -- mirrors `findLoraNodes` above (itself mirroring
- * `../ComfyUI-Pixaroma/js/lora_loader/index.js`'s own `buildIndex`/`walk`
- * recursion, MIT, THIRD_PARTY_NOTICES.md). A subgraph walk isn't known to be
- * needed here (the owner confirmed the node under investigation is NOT
- * inside a Subgraph), but costs nothing and keeps this consistent with the
- * other node-finder in this file. */
-function findDiagnosticNodes() {
-  const found = [];
-  const walk = (g) => {
-    for (const n of (g && (g._nodes || g.nodes)) || []) {
-      const className = n && (n.comfyClass || n.type);
-      if (className && stateDiagnostic.STATE_WIDGET_NAME_BY_CLASS[className]) {
-        found.push(n);
-      }
-      const sub = n && (n.subgraph || n.graph || n._graph);
-      if (sub && sub !== g) {
-        walk(sub);
-      }
-    }
-  };
-  walk(app.graph);
-  return found;
-}
-
-/**
- * The `onGraphToPromptResult` listener itself -- runs once per submitted
- * prompt, entirely wrapped in its own try/catch (constraint: a diagnostic
- * bug must never be able to prevent a queue; `submit_guard.mjs`'s own
- * `notifyGraphToPromptListeners` ALREADY try/catches every listener call, so
- * this is belt-and-braces, not the only thing standing between a bug here
- * and a broken submit).
- *
- * Gated on the LIVE "Console logging" setting being exactly `"debug"` --
- * `"off"`/`"summary"` (and anything else unrecognised) stay completely
- * silent, checked FIRST so neither the graph walk nor any per-node work ever
- * runs at the pack's default logging level.
- */
-function runStateDiagnostic(resolved) {
-  try {
-    const level = getSetting(SETTING_IDS.CONSOLE_LOGGING, SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING], app);
-    if (level !== "debug") {
-      return;
-    }
-    const output = resolved && resolved.output;
-    const nodes = findDiagnosticNodes();
-    if (!nodes.length) {
-      return;
-    }
-    // `resolved` can be `undefined` here even on a genuine submit attempt --
-    // `submit_guard.mjs`'s listener fan-out fires from `Promise.resolve(result)`
-    // regardless of whether the original call actually produced a payload
-    // (see that module's own doc comment). Reporting every node as "missing
-    // from the payload" in that case would be actively misleading, so this
-    // is its own loud-but-distinct line instead.
-    if (!stateDiagnostic.hasComparablePayload(output)) {
-      console.warn(stateDiagnostic.formatNoPayloadLine());
-      return;
-    }
-    let mismatches = 0;
-    for (const node of nodes) {
-      try {
-        const className = node.comfyClass || node.type;
-        const widgetName = stateDiagnostic.STATE_WIDGET_NAME_BY_CLASS[className];
-        const widget = (node.widgets || []).find((w) => w.name === widgetName);
-        const liveValue = widget ? widget.value : undefined;
-        const nodeId = String(node.id);
-        const payloadInputs = output && output[nodeId] && output[nodeId].inputs;
-        const payloadHasInput = !!(payloadInputs && Object.prototype.hasOwnProperty.call(payloadInputs, widgetName));
-        const payloadValue = payloadHasInput ? payloadInputs[widgetName] : undefined;
-        const report = stateDiagnostic.buildNodeReport({
-          nodeId,
-          className,
-          widgetName,
-          liveValue,
-          payloadValue,
-          payloadHasInput,
-        });
-        if (!report.agree) {
-          mismatches += 1;
-        }
-        const { loud, lines } = stateDiagnostic.formatNodeReportLines(report);
-        for (const line of lines) {
-          if (loud) {
-            console.warn(line);
-          } else {
-            console.log(line);
-          }
-        }
-      } catch (err) {
-        console.error(`[AnimaFlow] state-diagnostic failed for node ${node && node.id}:`, err);
-      }
-    }
-    console.log(stateDiagnostic.formatSummaryLine(nodes.length, mismatches));
-  } catch (err) {
-    console.error("[AnimaFlow] state-diagnostic top-level failure (ignored):", err);
-  }
-}
-
-let _stateDiagnosticWrapped = false;
-
-/** Register `runStateDiagnostic` on `submit_guard.mjs`'s `onGraphToPromptResult`
- * exactly once -- module-level guard, same "cheap + internally guarded, fires
- * on the very first node type ComfyUI registers" placement as
- * `installQueuePromptHook`/`registerAnimaFlowSettings` below. */
-function installStateDiagnosticHook() {
-  if (_stateDiagnosticWrapped) {
-    return;
-  }
-  _stateDiagnosticWrapped = true;
-  onGraphToPromptResult(runStateDiagnostic);
-}
-
 function restoreNode(node, panelConfig, mods) {
   node._ctrlMods = mods;
   const ctx = node._ctrlCtx || buildCtx(panelConfig, mods);
@@ -750,10 +611,6 @@ app.registerExtension({
     // `js/anima/index.js` calls this too, so either track loading alone is
     // enough (`settings.mjs`'s own doc comment).
     registerAnimaFlowSettings(app);
-    // The stale-state diagnostic's `onGraphToPromptResult` registration --
-    // see that function's own doc comment. Cheap + internally guarded, same
-    // placement convention as the two calls above.
-    installStateDiagnosticHook();
 
     if (nodeData.name === "AnimaLoraLoader") {
       registerLoraNodeType(nodeType);

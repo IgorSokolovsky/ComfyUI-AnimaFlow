@@ -4940,22 +4940,6 @@ test("js/shared/submit_guard.mjs: wraps app.queuePrompt AND app.graphToPrompt (i
   assert.match(src, /export function isSubmitting/);
 });
 
-test("js/shared/submit_guard.mjs: onGraphToPromptResult taps the ALREADY-wrapped app.graphToPrompt (the stale-state diagnostic's hook point) rather than adding a second wrap, fires from a SEPARATE .then()/.catch() chain than the isSubmitting trailing window, and every listener call is individually try/caught", () => {
-  const src = readFileSync(path.join(__dirname, "..", "shared", "submit_guard.mjs"), "utf8");
-  assert.match(src, /export function onGraphToPromptResult\(fn\)/, "must export a registration entry point");
-  assert.match(src, /const _graphToPromptListeners = \[\]/, "listeners must be tracked in a plain array");
-  assert.match(
-    src,
-    /if \(fnName === "graphToPrompt"\)\s*\{\s*\/\/[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n\s*Promise\.resolve\(result\)\.then\(notifyGraphToPromptListeners\)\.catch\(\(\) => \{\}\);/,
-    "must fire the listener fan-out from its OWN .then()/.catch() chain, only for graphToPrompt, distinct from the isSubmitting trailing-window chain",
-  );
-  assert.match(
-    src,
-    /function notifyGraphToPromptListeners\(resolved\) \{\s*for \(const listener of _graphToPromptListeners\) \{\s*try \{\s*listener\(resolved\);\s*\} catch/,
-    "each listener call must be individually try/caught -- one bad listener must never stop the next, or ever propagate into graphToPrompt's own call chain",
-  );
-});
-
 test("index.js: BOTH onConnectionsChange hooks (the Bridge's forward-walk one, and the Generator's own) skip clearContextRun AND the repaint entirely while isSubmitting() -- the fix for post-run context-supplied values never appearing", () => {
   const src = readFileSync(path.join(__dirname, "index.js"), "utf8");
   assert.match(src, /import\s*\{\s*isSubmitting\s*\}\s*from\s*"\.\.\/shared\/submit_guard\.mjs"/, "must import isSubmitting eagerly (not through loadMods())");
