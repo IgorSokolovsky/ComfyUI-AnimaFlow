@@ -22,16 +22,15 @@ from typing import Mapping, NamedTuple, Optional
 
 from ..anima.frontend_settings import get_setting
 
-# `AnimaFlow.Controls.CivitaiApiKey` -- NOT yet added to `js/shared/
-# settings.mjs`'s `SETTING_IDS` map. This task's scope is `src/` and
-# `tests/` only (no `js/`), and adding a Settings-dialog control for it is a
-# later, frontend slice -- but per the owner's decision 3 ("wire it now,
-# read from Settings -> AnimaFlow"), the READ path is built here so the
-# setting starts working the INSTANT the frontend id is added, with no
-# further Python change. `get_setting` already degrades to `default` (here,
-# `None`) for a key that's absent from the persisted JSON blob, which is
-# exactly the state before that frontend addition lands -- same as any
-# other not-yet-surfaced AnimaFlow setting in this pack.
+# `AnimaFlow.Controls.CivitaiApiKey` -- now ALSO declared in `js/shared/
+# settings.mjs`'s `SETTING_IDS` map (a Settings-dialog "Civitai API key"
+# text field, docs/settings.md), landed with no change needed on this
+# side -- `get_setting` already reads whatever value ComfyUI's own
+# persisted `comfy.settings.json` holds for this exact id, and degrades to
+# `default` (here, `None`) if it's unset, same as before that frontend
+# control existed. `tests/test_model_browser_key_setting_id.py` pins the
+# two sides' literal against each other, since a rename on either end would
+# break this silently (the setting would just always resolve to "no key").
 SETTING_ID = "AnimaFlow.Controls.CivitaiApiKey"
 
 # Civicomfy's own env var name (docs/lora-loader-design.md §8) -- matching

@@ -1,6 +1,6 @@
 # Settings — the **AnimaFlow** section in ComfyUI's Settings dialog
 
-Ten knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
+Fifteen knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
 dialog, under an **AnimaFlow** entry in the sidebar — alongside EasyUseAnima, Pixaroma and Use
 Everywhere. Declared in [`js/shared/settings.mjs`](../js/shared/settings.mjs). (Count grows over
 time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number.)
@@ -17,6 +17,11 @@ time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number.)
 | Civitai | `AnimaFlow.Controls.CivitaiEnabled` | bool | **true** | `js/controls/lora_interaction.mjs`/`model_info.mjs` — off hides EVERY network affordance on `AnimaLoraLoader` (the ⓘ panel's lookup status, `↻ Civitai`, `View on Civitai ↗`), not just one button. Already-cached info (notes, trigger words, display name) still displays — it's read via `lookup.py`'s `cached_only` flag, whose cache-miss path is made unreachable to Civitai's network server-side, not merely unused client-side (`lora-loader-design.md` §7b decision 20/§7d) |
 | Hide file extension | `AnimaFlow.Controls.HideFileExtension` | bool | false | `js/controls/model_picker.mjs`'s `displayModelName` — strips the extension in the picker's list only; the row's own name label and the underlying file name are unaffected |
 | Show preview thumbnails | `AnimaFlow.Controls.ShowPreviewThumbnails` | bool | **true** | `js/controls/model_picker.mjs` (picker thumbnail column) and `model_info.mjs` (ⓘ panel identity thumbnail) |
+| Civitai API key | `AnimaFlow.Controls.CivitaiApiKey` | text | **empty** (public-only) | `src/model_browser/keys.py`'s `resolve_api_key` — tier 1 of `docs/lora-loader-design.md` §8's three-tier ladder (this setting, then the `CIVITAI_API_KEY` environment variable, then public-only mode) |
+| Civitai search: base model filter | `AnimaFlow.Controls.CivitaiSearchBaseModel` | combo | empty (any) | `js/controls/civitai_search.mjs`'s remembered base-model filter |
+| Civitai search: sort | `AnimaFlow.Controls.CivitaiSearchSort` | combo | `Highest Rated` | `js/controls/civitai_search.mjs`'s remembered sort order, matching `src/model_browser/civitai_search.py`'s `DEFAULT_SORT` |
+| Civitai search: period | `AnimaFlow.Controls.CivitaiSearchPeriod` | combo | `AllTime` | `js/controls/civitai_search.mjs`'s remembered time-period filter, matching `src/model_browser/civitai_search.py`'s `DEFAULT_PERIOD` |
+| Civitai search: show NSFW | `AnimaFlow.Controls.CivitaiSearchNsfw` | bool | false | `js/controls/civitai_search.mjs`'s remembered NSFW-results toggle; ships off, then follows whatever the user last picked (§7c-i) |
 
 **The ids are the persistence key, so that namespace is append-only.** Renaming one silently
 abandons whatever the user had set. Same discipline as node widget order.
@@ -39,12 +44,31 @@ them, set this to `summary`. `debug` adds the full 11-field context report and p
 sampler dicts. **`ANIMAFLOW_DEBUG` still works and forces `debug`**, which is what headless/API-only
 runs should use, since they have no browser to carry a setting.
 
-**A frontend setting reaching Python is not automatic.** The logging level is the only one that has
-to, and it does it *without* a custom route: `src/anima/frontend_settings.py` reads ComfyUI's own
-persisted `user/default/comfy.settings.json`, cached by mtime. That choice matters — it survives a
-server restart, and it still works for an API-only run with no browser attached, which an
-`onChange`-posts-to-our-route design would not. Missing, unreadable or malformed file all degrade to
-the documented default; it never raises.
+**A frontend setting reaching Python is not automatic — but two of these do, and both through the
+same one mechanism.** Console logging and the Civitai API key both need a live Python value, and
+both get it *without* a custom route: `src/anima/frontend_settings.py`'s `get_setting` reads
+ComfyUI's own persisted `user/default/comfy.settings.json` directly, cached by mtime
+(`src/model_browser/keys.py` imports the same function rather than duplicating the read). That
+choice matters — it survives a server restart, and it still works for an API-only run with no
+browser attached, which an `onChange`-posts-to-our-route design would not. Missing, unreadable or
+malformed file all degrade to the documented default; it never raises.
+
+**The Civitai API key is a secret, and this is the least-protected of the three tiers it can come
+from.** `docs/lora-loader-design.md` §8's ladder is: this setting, then the `CIVITAI_API_KEY`
+environment variable, then public-only mode. A ComfyUI setting lives in plain text in
+`comfy.settings.json` and is served to the browser by ComfyUI's own settings endpoint — so it is
+exactly as protected as any other ComfyUI setting, i.e. readable by anything that can reach the
+ComfyUI UI or that file on disk. That is inherent to what a tier-1 UI-editable setting *is*, not a
+defect introduced here, but don't assume it is encrypted, write-only, or hidden from anyone who can
+open the Settings dialog or the JSON file. **The Settings dialog has no masked/password input
+type** in the installed ComfyUI frontend (checked against `comfyui_frontend_package` 1.45.21/
+1.47.10's own `FormItem.vue`: its `type` switch covers `boolean` / `number` / `slider` / `knob` /
+`combo` / `radio` / `image` / `color` / `url` / `backgroundImage`, with anything else — including
+this setting's own `"text"` — falling through to a plain, unmasked `InputText`) — so this field is
+declared `type: "text"` and typed in plain view, same as any other short string setting here. If
+you'd rather the key never touch `comfy.settings.json` at all (a shared box, or a cloud instance),
+set the `CIVITAI_API_KEY` environment variable instead — the ladder's tier 2, checked whenever this
+setting is left blank.
 
 **Node panel type size needs a page refresh**, and its tooltip says so. The CSS is built once per
 page and the scale is applied atomically at that point, because the value drives not just

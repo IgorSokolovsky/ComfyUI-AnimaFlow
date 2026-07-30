@@ -9,12 +9,14 @@
 
 ## What's inside
 
-Seven nodes across three tracks:
+Eight nodes across three tracks:
 
 - **🎛️ Rule Builder** — a visual editor for **prompt-transform rules**. Define your character/outfit/scene logic as declarative rules; the engine rewrites your prompt before it's encoded. Works for **Anima labelled-prose** *and* **booru tags**. → [**docs/rule-builder.md**](docs/rule-builder.md)
   *`Prompt Rules`, `Prompt Rules (CLIP)`*
 - **🎚️ Control Panel + Loader Panel** — one node holding as many labelled controls as you want (seeds, ints, floats, samplers, schedulers, empty latents; UNET/VAE/CLIP loaders in the Loader variant), each with its own output socket parked on its own row. Drag to reorder, and a fresh row adopts the type, range and name of whatever you first plug it into. → [**docs/control-panel-design.md**](docs/control-panel-design.md)
   *`Anima Control Panel`, `Anima Loader Panel`*
+- **🧩 LoRA Loader** — stack as many LoRAs as you like in one node, each with its own switch, strength and trigger words. Trigger words are read straight out of the file, so it works offline; an optional Civitai lookup fetches the official words, a preview and the model's description when you ask for it, and a search panel downloads new LoRAs without leaving ComfyUI. → [**docs/lora-loader-design.md**](docs/lora-loader-design.md)
+  *`Anima LoRA Loader`*
 - **🖼️ Generator + Preview** — the whole txt2img pipeline (first pass → highres → detailer → upscale → postprocess) behind one node with inline settings sections, fed by a **Context Bridge** that bundles model/clip/vae/conditioning/sampler settings into one wire. The Preview node compares two stage images with a hover wipe and owns saving, so `base`/`mid`/`final` can be saved under different names. → [**docs/generator-design.md**](docs/generator-design.md)
   *`Anima Context Bridge`, `Anima Generator`, `Anima Preview`*
 - **⌨️ Tag autocomplete** — Gelbooru/Danbooru autocomplete wired into text widgets across the pack.
@@ -41,11 +43,12 @@ Nodes appear in the node picker under **`AnimaFlow/…`**, one sub-category per 
 | Group | Nodes |
 |---|---|
 | `AnimaFlow/Prompt` | Prompt Rules, Prompt Rules (CLIP) |
-| `AnimaFlow/Controls` | Anima Control Panel, Anima Loader Panel |
+| `AnimaFlow/Controls` | Anima Control Panel, Anima Loader Panel, Anima LoRA Loader |
 | `AnimaFlow/Anima` | Anima Context Bridge, Anima Generator, Anima Preview |
 
-Seven nodes in total (registered in [`__init__.py`](__init__.py)); all are catalogued with their
-inputs and outputs in [**docs/nodes.md**](docs/nodes.md).
+Eight nodes in total (registered in [`__init__.py`](__init__.py) — count the mappings there rather
+than trusting this line); all are catalogued with their inputs and outputs in
+[**docs/nodes.md**](docs/nodes.md).
 
 ---
 
@@ -118,7 +121,7 @@ Character sheets live as `rules/*.yaml` files (reusable) and/or embedded per-wor
 | [**docs/nodes.md**](docs/nodes.md) | Catalog of every node: inputs, outputs, and what it's for. |
 | [**docs/control-panel-design.md**](docs/control-panel-design.md) | The Control Panel + Loader Panel — why one node per many controls, per-row output typing, the design decisions and why several reversed. |
 | [**docs/generator-design.md**](docs/generator-design.md) | The Generator + Preview + Context Bridge — stage order, the settings blob, the hover-wipe compare, and where saving lives. |
-| [**docs/settings.md**](docs/settings.md) | The **AnimaFlow** section in ComfyUI's Settings dialog — all seven settings, what each one reaches, and why console logging defaults to off. |
+| [**docs/settings.md**](docs/settings.md) | The **AnimaFlow** section in ComfyUI's Settings dialog — all fifteen settings, what each one reaches, and why console logging defaults to off. |
 | [**docs/THEME.md**](docs/THEME.md) | The house theme: tokens, the `.wtn-*` class vocabulary, and the gotchas of styling a node UI inside ComfyUI. |
 | [`src/prompt_rules/schema/SCHEMA.md`](src/prompt_rules/schema/SCHEMA.md) | Deep spec of the ruleset format + Document model (for tinkerers). |
 
