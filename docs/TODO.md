@@ -18,21 +18,6 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 📋 Owner's check — does the LoRA Loader actually change the image? (open 2026-07-30)
-
-**The only behavioural gap left in the LoRA track.** Every live check so far has been UI — the picker,
-the ⓘ panel, the ⚙ dialog, the search panel, all confirmed. Nothing has confirmed the node affects a
-generation at all.
-
-Two things, one pass:
-
-1. Add a LoRA with an obvious visual effect at strength 1.0. Same seed, row on vs row off — the image
-   must change.
-2. Wire the node's **own `CLIP` output** onward, not the raw CLIP from the Loader Panel. With the raw
-   one the model effect still lands while the **CLIP effect silently vanishes** — no error, just a
-   weaker result (design doc §4). That is the failure mode most likely to go unnoticed, so check it
-   deliberately rather than assuming the wire is right.
-
 ### 📋 Owner's check — does a LoRA Loader inside a **subgraph** still self-heal? (open 2026-07-30)
 
 ComfyUI lets you select nodes and collapse them into a reusable **subgraph** node. Those nodes then
@@ -158,8 +143,18 @@ broken rather than degraded.
 
 ## Deferred — with the reason
 
+Six of these were found on 2026-07-30 by builders instructed to **report, not fix**, so the owner keeps
+the call on scope. They are small; none is forgotten, none was done by assumption.
+
 | Item | Why it's deferred |
 |---|---|
+| **The ⓘ info panel can still overflow the viewport** (`js/controls/model_info.mjs:149`, `max-height: 78vh`) | The same static-`vh` bug `a562811` just fixed on the picker, and **the highest-risk of the three remaining**: unlike the row context menu (`lora_render.mjs:637`) and the ⚙ dialog (`:661`), whose content is built synchronously before the overlay opens, this one renders and THEN populates asynchronously from the Civitai lookup — and never calls `reposition()` or re-clamps when that data lands. A long model description opened from a low row will run off screen. **Trigger: the owner seeing it, or any pass through `model_info.mjs`** — `computeAnchoredMaxHeight` now exists in `js/shared/overlay.mjs`, so it is a small fix. |
+| **`STRENGTH_STEP_MAX` is still `1`** (`js/controls/lora_state.mjs:113`) | Its justification was "`1` is the whole usable range in one bump" — true when strength was `[0, 2]`, meaningless now the range is `[-10, 10]`. The comment is corrected; the VALUE is the owner's call, since a faster ▲▼ step is a feel decision, not a correctness one. **Trigger: the arrows feeling too slow at the wider range.** |
+| **The strength input is 34px wide** (`lora_render.mjs:274`, `STR_VAL_W`) | Sized for `0.80`. `-10.00` is a longer string and may read tight. Cosmetic only, and it sits in sizing code that this pack treats as read-the-skill-first territory. **Trigger: it actually looking wrong with a negative value on screen.** |
+| **A downloaded result card's `installed` flag is sticky** (`js/controls/civitai_search.mjs:1287`) | After a download completes the client sets `finishedResult.installed = true` directly, so the card flips without waiting for a re-query. Nothing clears it if the file later leaves disk. A fresh search re-derives it correctly from the server (which checks the real filesystem per request), so this only affects an already-rendered card. Investigated 2026-07-30 on a suspected sighting that turned out to be a false alarm. **Trigger: a card disagreeing with disk in practice.** |
+| **We cannot tell a model is gated before the first download attempt** | `civitai_search.py:277` sets `gated = bool(v.get("earlyAccessEndsAt"))` — early access is the only gating flag Civitai publishes. A login-required model looks identical to a free one in the search response. This is not fixable from search data; the field does not exist. Mitigated instead by `_sessionGatedKeys`, which learns from a live failure and marks that card gated for the session — now fed by `d70942b`'s `key_required` classification too. **Trigger: Civitai exposing an auth-required flag.** |
+| **`LoraCache.note_used` is dead code** (`nodes/controls/_lora_helpers.py`) | Its only caller was the strength-0 shortcut `542a911` deleted. Left in place with a docstring saying so rather than removed, because the removal was not what was asked for. **Trigger: any pass through that class.** |
+| **The `web_cache` middleware reads files synchronously** (`src/web_cache/api.py`) | Deliberate parity with upstream Pixaroma's own middleware, which does the same. Our `.mjs` files are KB-scale, so the blocking read is negligible — but it diverges from this pack's `run_in_executor` convention in `src/anima/api.py` and `src/model_browser/api.py`. **Trigger: a measurable stall, or the served tree growing large.** |
 | **Layer 3 (socket rows) moving to `js/shared/`** | Its only two consumers, Control Panel and Loader Panel, already share it by sitting in the same folder. Moving it now buys nothing and touches the most fragile code in the pack (slots, sockets, hole compaction, load-race guards). The *contract* is written down instead — `control-panel-design.md` §6a — so the eventual move is a rename, not an untangling. **Trigger: a third socket-per-row node.** |
 | **`usefulRange` staying in `js/controls/rows.mjs`** | Pure enough to qualify for `field_logic.mjs`, but it has exactly one caller and no cross-track consumer. Promoting it now would be speculative generality. **Trigger: a second consumer.** |
 | **ResShift as a second Upscale backend** | Needs `ComfyUI-Distilled-ResShift`, which isn't installed. A Mode dropdown offering one usable option is worse than no dropdown. Full detail in [`BACKLOG.md`](BACKLOG.md) §1b-0. |
@@ -227,8 +222,27 @@ Shipped and green, not yet exercised against a running ComfyUI.
 
 ## Done (confirmed by use)
 
-**Suites as of 2026-07-30: Python 867 (1 skip), JS 1373, 5 auto-loaded `.js`, 8 nodes.** These only
+**Suites as of 2026-07-30: Python 907 (1 skip), JS 1380, 5 auto-loaded `.js`, 8 nodes.** These only
 ever grow — re-count rather than trusting the number.
+
+> ### ✅ The LoRA Loader really does change the image (owner, 2026-07-30)
+>
+> The last behavioural gap in the LoRA track, and it was closed the strongest way available: **an A/B
+> against `PixaromaLoraLoader`**, two full chains (`LoRA → Bridge → Generator → Preview`) sharing one
+> latent, one seed and one model, differing only in which loader applied the LoRA. **Same result.**
+> Not "it looks like it works" — it matches a known-good reference implementation.
+>
+> Everything M1 shipped is now confirmed by use. The remaining LoRA items are M2 onward.
+>
+> Two things learned while getting here, both worth keeping:
+> - **`applied N LoRA(s)` proves only that `load_lora_for_models` returned.** ComfyUI's own
+>   `comfy/sd.py` never raises when a LoRA's keys don't match the model — it returns a clone with zero
+>   patches and logs `NOT LOADED <key>` per key. So an SDXL/Illustrious LoRA on a Qwen-based Anima
+>   model applies nothing while our log says success. **Triage a no-effect LoRA by grepping the console
+>   for `NOT LOADED` first**, and check the ⓘ panel's base model before blaming the node.
+> - Two Generators can safely share ONE latent: `run_ksampler` (`src/anima/pipeline.py:248`) hands it
+>   to stock `KSampler`, which copies rather than mutates. Sharing the seed row too is what makes an
+>   A/B meaningful — the value is read at queue time, so both chains get the identical seed in one run.
 
 > ### 🐛 ROOT CAUSE — the Loader Panel loaded the wrong model (`4e2c3ac`, confirmed live 2026-07-30)
 >
@@ -265,6 +279,14 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
+| **Anima Control Panel leaves beta** — second graduation, on interface stability once the drag-zoom defect shipped | `92249fe` |
+| LoRA strength was capped at `[0, 2]`; now `[-10, 10]`. The `0` floor was never a decision — inherited from upstream Pixaroma. Python's own `±100` clamp is deliberately NOT harmonised: it guards a hand-edited API payload, not the UI | `0d86075` — **confirmed live** |
+| The switch alone decides whether a LoRA applies; a switched-on row at strength 0 is now loaded and applied like any other. Costs a disk read for a mathematically identical image — the tradeoff is stated, not hidden | `542a911` — **confirmed live** |
+| A short download was renamed over the real filename. `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates before the rename: length, and a safetensors-header check for `.safetensors` destinations | `68a2998` |
+| **Civitai's login page was saved as the model.** A gated download answers with HTML and a genuine `200`; we wrote it verbatim. The length gate was structurally incapable (the page's own `Content-Length` was correct). Now the `Content-Type` is parsed before a single byte is read, and an HTML body aborts as `key_required` | `d70942b` — evidence: `<title>Civitai Login</title>` in the 10 KB file |
+| **Our `.mjs` modules were never cache-busted.** ComfyUI core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`, so every lazily-imported module was cacheable forever — every JS fix looked undeployed. Two layers ported from Pixaroma: no-store headers, plus `?v=` stamping of relative `.mjs` imports | `31aaf90` — **needs a full restart** |
+| The LoRA picker ran off the bottom of the screen: `max-height: 62vh` is a fraction of the viewport, which says nothing about the room below the anchor. Anchor-aware computation moved to `js/shared/overlay.mjs` and shared with the search panel | `a562811` |
+| `docs/settings.md` documented 10 of 15 settings; README said "seven settings" and "Seven nodes", omitting `AnimaLoraLoader` though `__init__.py` has registered 8 since `815c286` | `8d3aa8d` |
 | A hidden state input refuses a dropped wire. `preview_state` (STRING, index 0) was beating `metadata_json` (STRING, index 2) in `findInputByType`'s first-free-match scan, so the Generator's metadata wire landed on an invisible input. Vetoed via `onConnectInput`; graph load never routes through `connectSlots`, so saved workflows still load | `de3dc23` — probe now reads `0 mismatch(es)` |
 | A state input receiving foreign data says so, loudly, on all five stateful nodes — absent (silent) / own state (silent) / present-but-foreign (names the node and the likely cause). Deliberately **not** gated behind Console logging: it is a correctness signal | `205d9fd` |
 | The loader model cache belongs to the node, not the module. `_CACHE` was module-level, so two Loader Panels with different UNETs evicted each other every run. One-entry-per-kind (the anti-VRAM-leak choice) preserved | `12625c0` |
