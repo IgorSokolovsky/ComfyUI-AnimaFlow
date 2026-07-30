@@ -296,8 +296,11 @@ function getCanvasEl() {
 // LiteGraph's own live canvas zoom factor (`ds` = "drag/scale"), read fresh
 // on every call for the identical reason `getCanvasEl` above is (a live
 // pointer drag can, in principle, straddle a zoom change). `lora_
-// interaction.mjs`'s own `wireGrip` is the ONLY consumer -- a pointer-drag
-// delta is measured in SCREEN pixels (`ev.clientY`), but the row pitch it's
+// interaction.mjs`'s own `wireGrip` was the FIRST consumer, and this file's
+// own `interaction.mjs`'s `wireGrip` (Control/Loader Panel reorder) now
+// shares the exact same accessor (BUG 15 was confirmed identical in both --
+// see that fix's own doc comment) -- a pointer-drag delta is measured in
+// SCREEN pixels (`ev.clientY`), but the row pitch it's
 // divided against is measured in NODE/graph units, so at any zoom other
 // than 1:1 that division silently answers in the WRONG unit (at 2x zoom,
 // one row's worth of on-screen movement is `pitch * 2` screen pixels, so
@@ -318,6 +321,13 @@ function buildCtx(panelConfig, mods) {
     describeLinkTarget,
     confirmRemove,
     getCanvasEl,
+    // BUG 15's own scale accessor (see its doc comment above, and
+    // `lora_interaction.mjs`'s `wireGrip`, the fix this ports from) --
+    // `interaction.mjs`'s own `wireGrip` is the one consumer, converting a
+    // screen-pixel pointer delta into node-space before dividing by the row
+    // pitch. Reused as-is, not a second accessor -- `buildLoraCtx` above and
+    // this `buildCtx` both just point at the same module-level function.
+    getCanvasScale,
     // Injectable, same reason `getCanvasEl` is (`js/shared/canvas_zoom.mjs`'s
     // own doc comment on that pattern): `interaction.mjs`'s `scheduleFit`
     // needs `isGraphLoading` too (this file's own eager top-level import),

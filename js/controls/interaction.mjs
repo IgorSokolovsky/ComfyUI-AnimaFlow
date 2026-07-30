@@ -1016,6 +1016,21 @@ function openContextMenuFor(node, ctx, row, refs) {
 // when `panelConfig.reorder` is true).
 // ---------------------------------------------------------------------------
 
+/**
+ * BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
+ * multiple rows on a small mouse movement" -- `ev.clientY` is a SCREEN pixel
+ * coordinate, but `step` (below) is a NODE/graph-space measurement. At any
+ * canvas zoom other than 1:1, one row's worth of on-screen pointer movement
+ * is `step * scale` screen pixels, so dividing the raw screen delta by the
+ * un-scaled `step` answers in `scale` rows per row of real movement (2 rows
+ * per row at 2x zoom, 3 at 3x). Ported from `lora_interaction.mjs`'s own
+ * `wireGrip`, where this exact defect was fixed first (`ae7cd38`) --
+ * `ctx.getCanvasScale` (`index.js`'s `getCanvasScale`, now wired into BOTH
+ * `buildCtx` and `buildLoraCtx`) converts the screen delta into node space
+ * FIRST, by dividing it out, before the row-pitch division happens. Falls
+ * back to scale `1` if `ctx.getCanvasScale` is missing or not a function
+ * (an older/partial ctx, or a test stub) -- never breaks under those.
+ */
 function wireGrip(node, ctx, row, refs) {
   if (!refs.grip) {
     return;
@@ -1042,7 +1057,12 @@ function wireGrip(node, ctx, row, refs) {
     refs.root.classList.add("wtn-ctl-dragging");
 
     const onMove = (ev) => {
-      const delta = Math.round((ev.clientY - startY) / step);
+      // Live-read, not captured once at drag-start -- matches this pack's
+      // own "read live, never cache" convention for anything the user could
+      // change mid-gesture (a wheel-zoom is technically possible mid-drag).
+      const scale = typeof ctx.getCanvasScale === "function" ? ctx.getCanvasScale() : 1;
+      const scaleFactor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      const delta = Math.round((ev.clientY - startY) / (step * scaleFactor));
       const newOrder = reorderRows(snapshot, fromIndex, fromIndex + delta);
       if (newOrder.some((r, i) => r !== state.rows[i])) {
         state.rows = newOrder;

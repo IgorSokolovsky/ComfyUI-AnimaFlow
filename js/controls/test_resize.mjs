@@ -462,6 +462,13 @@ function makeCtx(doc, panelConfig, overrides = {}) {
     // pre-existing behaviour (`scheduleFit`'s guard treats a non-function
     // `ctx.isGraphLoading` as "not loading").
     isGraphLoading: overrides.isGraphLoading,
+    // BUG 15's own scale accessor (`index.js`'s `getCanvasScale`, now wired
+    // into `buildCtx` too) -- left undefined by default, same reasoning as
+    // `isGraphLoading` above: `wireGrip`'s own fallback treats a missing/
+    // non-function `ctx.getCanvasScale` as scale 1, so every pre-existing
+    // drag test (which never passes this) keeps its exact prior behaviour.
+    // Only the dedicated BUG 15 tests below override it.
+    getCanvasScale: overrides.getCanvasScale,
   };
 }
 
@@ -2811,6 +2818,112 @@ test("grip drag-reorder: a full pointer sequence reorders rows WITHOUT rebuildin
   // State was persisted in the new order.
   const persisted = JSON.parse(getStateWidget(node).value);
   assert.deepEqual(persisted.rows.map((r) => r.id), newIds);
+});
+
+// ---------------------------------------------------------------------------
+// BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
+// multiple rows on a small mouse movement" -- the Control Panel's `wireGrip`
+// had the identical defect `lora_interaction.mjs`'s own `wireGrip` was fixed
+// for first (`ae7cd38`): the drag math must convert the SCREEN-pixel pointer
+// delta into node space via the canvas zoom scale BEFORE dividing by the row
+// pitch, or a zoomed canvas overshoots by exactly the zoom factor. Mirrors
+// `test_lora_resize.mjs`'s own BUG 15 suite.
+// ---------------------------------------------------------------------------
+
+test("BUG 15: a pointer delta of exactly one row pitch moves exactly ONE position at scale 1", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getCanvasScale: () => 1 });
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  addRowAndSync(node, ctx, "seed");
+  fakeArrange(node);
+  const draggedRefs = node._ctrlRows[0].refs;
+
+  fire(draggedRefs.grip, "pointerdown", { clientY: 0 });
+  fireWin(win, "pointermove", { clientY: ROW_H + ROW_GAP }); // one row pitch of REAL screen movement
+  fireWin(win, "pointerup");
+
+  assert.deepEqual(
+    node._ctrlRows.map((e) => e.refs.row.kind),
+    ["float", "int", "seed"],
+    "must move exactly ONE position, not two or three",
+  );
+});
+
+test("BUG 15 (the actual regression guard): the SAME one-row-pitch SCREEN movement moves exactly ONE position at scale 2 too -- not two", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getCanvasScale: () => 2 });
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  addRowAndSync(node, ctx, "seed");
+  fakeArrange(node);
+  const draggedRefs = node._ctrlRows[0].refs;
+
+  fire(draggedRefs.grip, "pointerdown", { clientY: 0 });
+  // At 2x zoom, ONE row of on-screen movement is `step * 2` screen pixels --
+  // the pre-fix math (`delta = round(screenDelta / step)`, no scale
+  // division) would read this as delta=2 and jump TWO rows instead of one.
+  fireWin(win, "pointermove", { clientY: 2 * (ROW_H + ROW_GAP) });
+  fireWin(win, "pointerup");
+
+  assert.deepEqual(
+    node._ctrlRows.map((e) => e.refs.row.kind),
+    ["float", "int", "seed"],
+    "must STILL move exactly one position -- the screen delta must be divided by scale before the row-pitch division",
+  );
+});
+
+test("BUG 15: a sub-pitch movement (at any scale) moves nothing", () => {
+  for (const scale of [1, 2, 3]) {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    const win = makeWindowStub(doc);
+    const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, { getCanvasScale: () => scale });
+    addRowAndSync(node, ctx, "int");
+    addRowAndSync(node, ctx, "float");
+    addRowAndSync(node, ctx, "seed");
+    fakeArrange(node);
+    const draggedRefs = node._ctrlRows[0].refs;
+    const step = ROW_H + ROW_GAP;
+
+    fire(draggedRefs.grip, "pointerdown", { clientY: 0 });
+    // A THIRD of a row pitch's worth of on-screen movement, scaled --
+    // unambiguously rounds to zero rows at every scale (avoids the exact
+    // half-pitch boundary, where `Math.round` itself rounds up).
+    fireWin(win, "pointermove", { clientY: Math.floor((step * scale) / 3) });
+    assert.deepEqual(
+      node._ctrlRows.map((e) => e.refs.row.kind),
+      ["int", "float", "seed"],
+      `must not move at all (scale ${scale})`,
+    );
+    fireWin(win, "pointerup");
+  }
+});
+
+test("BUG 15: falls back to scale 1 when ctx.getCanvasScale is absent (older/partial ctx) -- never divides by zero/NaN", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  // No getCanvasScale at all on this ctx -- default `makeCtx` behaviour.
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  fakeArrange(node);
+  const draggedRefs = node._ctrlRows[0].refs;
+
+  fire(draggedRefs.grip, "pointerdown", { clientY: 0 });
+  fireWin(win, "pointermove", { clientY: ROW_H + ROW_GAP });
+  fireWin(win, "pointerup");
+
+  assert.deepEqual(
+    node._ctrlRows.map((e) => e.refs.row.kind),
+    ["float", "int"],
+    "must behave as scale 1 when the accessor is missing",
+  );
 });
 
 // =========================================================================
