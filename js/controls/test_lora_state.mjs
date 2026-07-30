@@ -71,10 +71,15 @@ function test(name, fn) {
 // clampStrength
 // =========================================================================
 
-test("clampStrength: clamps into [STRENGTH_MIN, STRENGTH_MAX]", () => {
-  assert.equal(clampStrength(-5), STRENGTH_MIN);
-  assert.equal(clampStrength(50), STRENGTH_MAX);
+test("clampStrength: values inside [STRENGTH_MIN, STRENGTH_MAX] are preserved, not clamped", () => {
+  assert.equal(clampStrength(-5), -5); // negative strengths are a legitimate, real use (owner decision 2026-07-30)
+  assert.equal(clampStrength(7.5), 7.5);
   assert.equal(clampStrength(0.8), 0.8);
+});
+
+test("clampStrength: values outside [STRENGTH_MIN, STRENGTH_MAX] clamp to the nearer bound", () => {
+  assert.equal(clampStrength(-50), STRENGTH_MIN);
+  assert.equal(clampStrength(50), STRENGTH_MAX);
 });
 
 test("clampStrength: non-finite input falls back to DEFAULT_STRENGTH", () => {
@@ -452,11 +457,11 @@ test("setRowStrength: sepStrengths true -- only the named field moves, the other
   assert.equal(a.sm, 1.5, "sm must NOT move when only sc was set");
 });
 
-test("setRowStrength: clamps out-of-range input through the SAME range as bumpRowStrength (STRENGTH_MIN=0, no negative clamp floor beyond that)", () => {
+test("setRowStrength: clamps out-of-range input through the SAME range as bumpRowStrength ([-10, 10], owner decision 2026-07-30)", () => {
   const state = defaultState();
   const a = addRow(state);
   setRowStrength(state, a.id, "sm", -50);
-  assert.equal(a.sm, STRENGTH_MIN, "STRENGTH_MIN is 0 -- inherited from upstream's range, not a deliberate negative-LoRA-weight decision (see lora_state.mjs's own BUG 17 comment)");
+  assert.equal(a.sm, STRENGTH_MIN, "still clamps beyond the bound -- -50 is outside [-10, 10]");
   setRowStrength(state, a.id, "sm", 500);
   assert.equal(a.sm, STRENGTH_MAX);
 });

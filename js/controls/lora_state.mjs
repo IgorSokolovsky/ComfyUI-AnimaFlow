@@ -99,16 +99,20 @@ export function nextUid() {
 
 export const DEFAULT_STRENGTH = 0.8;
 export const STRENGTH_STEP = 0.05;
-export const STRENGTH_MIN = 0;
-export const STRENGTH_MAX = 2;
+export const STRENGTH_MIN = -10;
+export const STRENGTH_MAX = 10;
 
 // The ⚙ dialog's own "Strength step (arrows)" field (§7b) is itself a
 // number the user edits -- clamp IT to a sane range too, so a hand-edited
 // `0` (a step that would make the arrows do nothing, forever) or a
 // hostile `1e308` never reaches `bumpRowStrength`. `0.01` is the smallest
 // step worth having (the ▲▼ arrows would otherwise never visibly move
-// `clampStrength`'s own 2-decimal display); `1` is the whole usable range
-// in one bump.
+// `clampStrength`'s own 2-decimal display); `1` was picked when the range
+// was `[0, 2]` on the reasoning "the whole usable range in one bump" --
+// that reasoning no longer holds now that the range is `[-10, 10]`
+// (owner decision, 2026-07-30, see `STRENGTH_MIN`/`STRENGTH_MAX` above),
+// but `1` is still a perfectly usable single-bump step, so it is left as
+// a recommendation for the owner to revisit rather than changed here.
 export const STRENGTH_STEP_MIN = 0.01;
 export const STRENGTH_STEP_MAX = 1;
 
@@ -129,16 +133,12 @@ export function clampStrength(value) {
   return Math.round(clamped * 100) / 100;
 }
 
-// BUG 17 (2026-07-29 owner report): `STRENGTH_MIN` is `0`, NOT negative --
-// checked deliberately before adding the typed-input feature, per the
-// owner's own explicit worry ("negative strengths are legitimate... check
-// that's deliberate before preserving it"). It is NOT deliberate as a
-// design choice for negative LoRA weights specifically -- it's inherited
-// from upstream Pixaroma's own range (ported wholesale, no negative-weight
-// use case considered either way) -- but changing the clamp range is a
-// bigger, separate decision than "make the value typeable", and is not
-// asked for here. Filed rather than silently widened: `docs/BACKLOG.md`
-// should get a line if negative LoRA weights are wanted later. Typed input
+// Range widened 2026-07-30 (owner decision): `STRENGTH_MIN`/`STRENGTH_MAX`
+// were `[0, 2]` (inherited wholesale from upstream Pixaroma, no
+// negative-weight use case considered) until the owner reported that range
+// as wrong on two counts -- some LoRAs legitimately want strengths beyond
+// `2`, and applying a LoRA at a negative strength (e.g. `-5`) is a real,
+// intentional use, not an error. The range is now `[-10, 10]`. Typed input
 // clamps through this SAME range, unchanged.
 
 /** Parses a user-TYPED strength string (BUG 17's editable strength field)
