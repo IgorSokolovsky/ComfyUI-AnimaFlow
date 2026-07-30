@@ -13,18 +13,29 @@ all imported LAZILY, inside functions, so this module -- and
 importable with no ComfyUI installed (comfyui-pack-import-structure skill).
 
 Cache tradeoff (deliberate, read before "fixing" this into an LRU): the
-module-level `_CACHE` below holds exactly ONE entry PER ROW KIND
-("unet"/"vae"/"clip"), not one per distinct name ever seen. A loaded
-MODEL/CLIP/VAE keeps its weights resident (VRAM for a MODEL/CLIP, RAM/VRAM
-for a VAE) for as long as something still references it, so caching every
-name a user ever picked would be a slow leak across a session. Because
-there's only one slot per kind, changing a row's name simply overwrites that
-slot -- the old `(key, obj)` pair drops its only reference here and becomes
-freeable -- while an unrelated row changing (e.g. the VAE row) does NOT
-evict the UNET slot, so the "residual coupling" re-execution (ComfyUI
-re-running every row's load because the loader node object changed) still
-returns the SAME cached UNET/CLIP objects instead of re-reading them from
-disk.
+cache holds exactly ONE entry PER ROW KIND ("unet"/"vae"/"clip"), not one
+per distinct name ever seen. A loaded MODEL/CLIP/VAE keeps its weights
+resident (VRAM for a MODEL/CLIP, RAM/VRAM for a VAE) for as long as
+something still references it, so caching every name a user ever picked
+would be a slow leak across a session. Because there's only one slot per
+kind, changing a row's name simply overwrites that slot -- the old
+`(key, obj)` pair drops its only reference here and becomes freeable --
+while an unrelated row changing (e.g. the VAE row) does NOT evict the UNET
+slot, so the "residual coupling" re-execution (ComfyUI re-running every
+row's load because the loader node object changed) still returns the SAME
+cached UNET/CLIP objects instead of re-reading them from disk.
+
+The cache itself (`LoaderCache`, a plain dict) is owned by each
+`AnimaLoaderPanel` INSTANCE (`self._cache`, created in `loader_panel.py`'s
+`__init__`) and passed explicitly into `load_row_model`/`cache_probe` below
+-- deliberately NOT a module-level global (that was this module's shape
+until 2026-07-30: a global made every Loader Panel in the graph share one
+slot per kind, so two panels holding different UNETs evicted each other's
+model on every run). ComfyUI keeps one node instance alive across queue runs
+for the same node in the graph -- the same assumption `lora_loader.py`'s own
+`LoraCache` already relies on (see its `__init__`) -- so an instance-scoped
+cache still gets the cross-run reuse this mechanism needs; it just no
+longer leaks across UNRELATED Loader Panel instances.
 
 VRAM-skip scan (`referenced_slots`): loading a row is not free -- it pulls a
 MODEL/VAE/CLIP onto the GPU (the user's real constraint is a Colab GPU with
@@ -44,8 +55,11 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Set, Tuple
 
 # kind -> (cache_key, loaded_object). One entry per kind -- see module
-# docstring for why this must not grow into a dict keyed by name.
-_CACHE: Dict[str, Tuple[Tuple, Any]] = {}
+# docstring for why this must not grow into a dict keyed by name. Owned by
+# each `AnimaLoaderPanel` INSTANCE (`self._cache`), never a module global --
+# every function below that reads or writes one takes it as an explicit
+# `cache` parameter instead of reaching for a shared name.
+LoaderCache = Dict[str, Tuple[Tuple, Any]]
 
 # Row kind -> the folder_paths folder its filename list / validation lives
 # in, matching the ComfyUI loader node each kind delegates to (§3 table).
@@ -107,12 +121,16 @@ def _cache_key(kind: str, name: str, opts: Dict[str, Any]) -> Tuple:
     return (name,)  # vae has no extra options (§3 table)
 
 
-def load_row_model(row: Optional[Dict[str, Any]]) -> Any:
+def load_row_model(row: Optional[Dict[str, Any]], cache: LoaderCache) -> Any:
     """A loader-panel row -> a real MODEL/VAE/CLIP object, per its `kind`.
-    Returns `0` for a non-dict row or an unrecognized/garbage `kind` (the
-    same "kind-appropriate zero" an empty slot emits -- see
-    control_panel.py/_rows_helpers.py). Raises `LoaderRowError` -- a legible,
-    user-facing message -- when the row's saved filename can't be resolved.
+    `cache` is the CALLING `AnimaLoaderPanel` instance's own `self._cache`
+    (see module docstring) -- this function only reads/writes the dict it's
+    handed, never a shared one, so two callers with two different `cache`
+    dicts can never evict each other. Returns `0` for a non-dict row or an
+    unrecognized/garbage `kind` (the same "kind-appropriate zero" an empty
+    slot emits -- see control_panel.py/_rows_helpers.py). Raises
+    `LoaderRowError` -- a legible, user-facing message -- when the row's
+    saved filename can't be resolved.
     """
     if not isinstance(row, dict):
         return 0
@@ -126,14 +144,14 @@ def load_row_model(row: Optional[Dict[str, Any]]) -> Any:
     name = _validate_name(kind, row.get("value"))
 
     key = _cache_key(kind, name, opts)
-    cached = _CACHE.get(kind)
+    cached = cache.get(kind)
     if cached is not None and cached[0] == key:
         return cached[1]
 
     obj = _load(kind, name, opts)
-    # Overwriting (not merging into) `_CACHE[kind]` is the whole mechanism:
+    # Overwriting (not merging into) `cache[kind]` is the whole mechanism:
     # whatever was cached for this kind before is now unreferenced here.
-    _CACHE[kind] = (key, obj)
+    cache[kind] = (key, obj)
     return obj
 
 
@@ -224,35 +242,33 @@ def referenced_slots(prompt: Any, unique_id: Any, max_rows: int) -> Optional[Set
     return {slot for slot in referenced if 1 <= slot <= max_rows}
 
 
-def _reset_cache_for_tests() -> None:
-    """Test-only escape hatch: plain-script tests share one process, so
-    without this a later test would see an earlier test's cached object."""
-    _CACHE.clear()
-
-
 # ---------------------------------------------------------------------------
 # Diagnostic-only reads -- for the "which model did the Loader Panel
 # actually load" logging (`loader_panel.py`'s `_emit_loader_log`; see that
 # module's own docstring for the console-logging contract). Both functions
-# below are read-only: neither ever mutates `_CACHE`, and `resolve_full_path`
+# below are read-only: neither ever mutates `cache`, and `resolve_full_path`
 # never raises. Kept HERE (not in the new `_loader_log_helpers.py`) because
-# they need this module's own private state/constants (`_CACHE`, `_cache_key`,
-# `_FOLDER_FOR_KIND`) -- exporting a probe alongside the state it reads is
-# less error-prone than reaching into another module's privates.
+# they need this module's own private helpers/constants (`_cache_key`,
+# `_FOLDER_FOR_KIND`) and the SAME `cache` dict `load_row_model` reads/writes
+# -- exporting a probe alongside the state it reads is less error-prone than
+# reaching into another module's privates.
 # ---------------------------------------------------------------------------
 
 
-def cache_probe(kind: str, name: str, opts: Dict[str, Any]) -> Dict[str, Any]:
+def cache_probe(kind: str, name: str, opts: Dict[str, Any], cache: LoaderCache) -> Dict[str, Any]:
     """Would `load_row_model` hit the cache for this exact `(kind, name,
-    opts)` right now? Read-only: computes the same key `load_row_model`
-    itself would (`_cache_key`) and compares it against `_CACHE[kind]`
+    opts)` right now? `cache` must be the SAME dict (the calling panel's own
+    `self._cache`) the real `load_row_model` call will use -- otherwise the
+    hit/miss field in the debug log would describe a cache that isn't the
+    one actually deciding. Read-only: computes the same key `load_row_model`
+    itself would (`_cache_key`) and compares it against `cache[kind]`
     (`cached[0] == key`, the SAME comparison `load_row_model` makes) without
-    ever writing to `_CACHE` -- calling this before a real
-    `load_row_model(row)` cannot change what that call does or returns.
-    Returns `{"cache_key": key, "hit": bool}`.
+    ever writing to `cache` -- calling this before a real
+    `load_row_model(row, cache)` cannot change what that call does or
+    returns. Returns `{"cache_key": key, "hit": bool}`.
     """
     key = _cache_key(kind, name, opts)
-    cached = _CACHE.get(kind)
+    cached = cache.get(kind)
     hit = cached is not None and cached[0] == key
     return {"cache_key": key, "hit": hit}
 

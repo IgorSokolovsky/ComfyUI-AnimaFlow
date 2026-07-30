@@ -317,7 +317,6 @@ def _panel_state(rows):
 
 def test_off_produces_no_log_output_at_all():
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         state = _panel_state([{"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}}])
         prompt = {
@@ -337,7 +336,6 @@ def test_debug_shows_slot_vs_display_index_divergence_and_cache_hit_then_miss():
     # exact scenario the task brief describes ("the second row I see" vs
     # "output slot 2" are not the same thing).
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         rows = [
             {"slot": 3, "kind": "unet", "value": "unetA.safetensors", "opts": {}},  # display #1, slot 3
@@ -345,11 +343,16 @@ def test_debug_shows_slot_vs_display_index_divergence_and_cache_hit_then_miss():
             {"slot": 2, "kind": "clip", "value": "clipA.safetensors", "opts": {}},  # display #3, slot 2
         ]
         state = _panel_state(rows)
+        # Same panel INSTANCE for both runs -- the cache is per-instance now
+        # (see `_loaders_helpers.py`'s docstring), and ComfyUI itself keeps
+        # one node instance alive across queue runs, so this mirrors the real
+        # cross-run reuse rather than two unrelated instances.
+        panel = AnimaLoaderPanel()
         # No prompt/unique_id -- fails open, loads every row (simplest way to
         # exercise all three "loaded" events without hand-building a prompt
         # that wires all three slots).
         with _without_env_var(), _patched_get_setting("debug"), _CaptureLogs() as cap:
-            out = AnimaLoaderPanel().run(state)
+            out = panel.run(state)
         assert all(o != 0 for o in out[:3])
 
         summary = cap.records[0]
@@ -362,9 +365,10 @@ def test_debug_shows_slot_vs_display_index_divergence_and_cache_hit_then_miss():
         assert "/models/diffusion_models/unetA.safetensors" in unet_line
         assert "MISS" in unet_line  # first-ever load of this kind this test
 
-        # Re-run with the SAME state -- second run should hit cache for every kind.
+        # Re-run with the SAME state, on the SAME instance -- second run
+        # should hit cache for every kind.
         with _without_env_var(), _patched_get_setting("debug"), _CaptureLogs() as cap2:
-            AnimaLoaderPanel().run(state)
+            panel.run(state)
         unet_line_2 = next(l for l in cap2.records if "unet" in l and "unetA.safetensors" in l)
         assert "HIT" in unet_line_2
     finally:
@@ -373,7 +377,6 @@ def test_debug_shows_slot_vs_display_index_divergence_and_cache_hit_then_miss():
 
 def test_debug_shows_missing_file_before_the_error_propagates():
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         state = _panel_state([{"slot": 1, "kind": "unet", "value": "does-not-exist.safetensors", "opts": {}}])
         with _without_env_var(), _patched_get_setting("debug"), _CaptureLogs() as cap:
@@ -391,7 +394,6 @@ def test_debug_shows_missing_file_before_the_error_propagates():
 
 def test_debug_shows_duplicate_slot_collision_from_a_hand_edited_payload():
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         rows = [
             {"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}},
@@ -416,7 +418,6 @@ def test_debug_never_prints_a_per_slot_line_for_a_genuinely_empty_slot():
     # buried the 3 that mattered). The run summary's own "N slot(s) empty"
     # count still covers the rest.
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         rows = [
             {"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}},
@@ -438,7 +439,6 @@ def test_debug_never_prints_a_per_slot_line_for_a_genuinely_empty_slot():
 
 def test_summary_level_prints_exactly_one_line_even_with_a_collision():
     restore = _install_fake_comfy()
-    lh._reset_cache_for_tests()
     try:
         rows = [
             {"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}},

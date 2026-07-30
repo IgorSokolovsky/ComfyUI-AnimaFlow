@@ -94,8 +94,11 @@ def _install_fake_comfy():
     return calls, restore
 
 
-def _reset():
-    lh._reset_cache_for_tests()
+# The cache is no longer module-level (`_loaders_helpers.LoaderCache` is
+# owned per `AnimaLoaderPanel` instance -- see that module's docstring), so
+# every test below that exercises `load_row_model`/`cache_probe` directly
+# creates its OWN fresh `{}` and passes it in explicitly, exactly the way
+# `loader_panel.py` passes `self._cache`.
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +107,11 @@ def _reset():
 
 
 def test_load_row_model_missing_name_raises_legible_error():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         row = {"kind": "unet", "value": "does-not-exist.safetensors", "opts": {}}
         try:
-            lh.load_row_model(row)
+            lh.load_row_model(row, {})
             assert False, "expected LoaderRowError"
         except lh.LoaderRowError as exc:
             msg = str(exc)
@@ -124,12 +126,11 @@ def test_load_row_model_missing_name_raises_legible_error():
 
 
 def test_load_row_model_no_value_set_raises_legible_error():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         for bad_value in (None, "", 42, ["a", "list"]):
             try:
-                lh.load_row_model({"kind": "vae", "value": bad_value, "opts": {}})
+                lh.load_row_model({"kind": "vae", "value": bad_value, "opts": {}}, {})
                 assert False, f"expected LoaderRowError for value={bad_value!r}"
             except lh.LoaderRowError:
                 pass
@@ -139,10 +140,9 @@ def test_load_row_model_no_value_set_raises_legible_error():
 
 
 def test_load_row_model_valid_name_loads_and_returns_object():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        obj = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
+        obj = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, {})
         assert isinstance(obj, _FakeModel)
         assert calls == [("unet", "unetA.safetensors", "default")]
     finally:
@@ -150,12 +150,11 @@ def test_load_row_model_valid_name_loads_and_returns_object():
 
 
 def test_load_row_model_non_dict_or_unrecognized_kind_returns_zero():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        assert lh.load_row_model(None) == 0
-        assert lh.load_row_model("not-a-dict") == 0
-        assert lh.load_row_model({"kind": "sampler", "value": "euler"}) == 0
+        assert lh.load_row_model(None, {}) == 0
+        assert lh.load_row_model("not-a-dict", {}) == 0
+        assert lh.load_row_model({"kind": "sampler", "value": "euler"}, {}) == 0
         assert calls == []
     finally:
         restore()
@@ -167,20 +166,18 @@ def test_load_row_model_non_dict_or_unrecognized_kind_returns_zero():
 
 
 def test_load_row_model_unet_passes_weight_dtype():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "fp8_e4m3fn"}})
+        lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "fp8_e4m3fn"}}, {})
         assert calls == [("unet", "unetA.safetensors", "fp8_e4m3fn")]
     finally:
         restore()
 
 
 def test_load_row_model_clip_passes_type_and_device():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        lh.load_row_model({"kind": "clip", "value": "clipA.safetensors", "opts": {"type": "qwen_image", "device": "cpu"}})
+        lh.load_row_model({"kind": "clip", "value": "clipA.safetensors", "opts": {"type": "qwen_image", "device": "cpu"}}, {})
         assert calls == [("clip", "clipA.safetensors", "qwen_image", "cpu")]
     finally:
         restore()
@@ -192,20 +189,18 @@ def test_load_row_model_clip_missing_type_key_defaults_to_qwen_image_not_stable_
     # normalizeRow/mkRow, so this only fires off that path. Was
     # "stable_diffusion" (the same wrong-for-Anima default Bug 1 fixed on
     # the frontend); must agree with it, not silently diverge.
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        lh.load_row_model({"kind": "clip", "value": "clipA.safetensors", "opts": {}})
+        lh.load_row_model({"kind": "clip", "value": "clipA.safetensors", "opts": {}}, {})
         assert calls == [("clip", "clipA.safetensors", "qwen_image", "default")]
     finally:
         restore()
 
 
 def test_load_row_model_vae_has_no_extra_opts():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}})
+        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}}, {})
         assert calls == [("vae", "vaeA.safetensors")]
     finally:
         restore()
@@ -213,17 +208,19 @@ def test_load_row_model_vae_has_no_extra_opts():
 
 # ---------------------------------------------------------------------------
 # Cache: hits on an unchanged row, evicts on name/opts change, single entry
-# PER KIND (an unrelated kind's load doesn't disturb this kind's cache).
+# PER KIND (an unrelated kind's load doesn't disturb this kind's cache), and
+# instance-scoped (two callers with two different `cache` dicts don't evict
+# each other -- the whole point of this move off the module global).
 # ---------------------------------------------------------------------------
 
 
 def test_cache_hits_when_row_is_unchanged():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
+        cache = {}
         row = {"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "default"}}
-        first = lh.load_row_model(row)
-        second = lh.load_row_model(row)
+        first = lh.load_row_model(row, cache)
+        second = lh.load_row_model(row, cache)
         assert first is second, "unchanged row must hit the cache, not reload"
         assert len(calls) == 1, calls
     finally:
@@ -231,16 +228,16 @@ def test_cache_hits_when_row_is_unchanged():
 
 
 def test_cache_evicts_on_name_change():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        first = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
-        second = lh.load_row_model({"kind": "unet", "value": "unetB.safetensors", "opts": {}})
+        cache = {}
+        first = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
+        second = lh.load_row_model({"kind": "unet", "value": "unetB.safetensors", "opts": {}}, cache)
         assert first is not second
         assert len(calls) == 2, calls
         # The old entry is gone -- reloading the ORIGINAL name loads again
         # rather than finding a stale hit, proving eviction (not growth).
-        third = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
+        third = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
         assert len(calls) == 3, calls
         assert third is not first
     finally:
@@ -248,11 +245,11 @@ def test_cache_evicts_on_name_change():
 
 
 def test_cache_evicts_on_opts_change_same_name():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        first = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "default"}})
-        second = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "fp8_e4m3fn"}})
+        cache = {}
+        first = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "default"}}, cache)
+        second = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {"weight_dtype": "fp8_e4m3fn"}}, cache)
         assert first is not second
         assert len(calls) == 2, calls
     finally:
@@ -260,16 +257,16 @@ def test_cache_evicts_on_opts_change_same_name():
 
 
 def test_cache_is_single_entry_per_kind_not_shared_across_kinds():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        unet_obj = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
-        vae_obj = lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}})
+        cache = {}
+        unet_obj = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
+        vae_obj = lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}}, cache)
         # Loading the VAE row must not have evicted the UNET row's cache
         # entry -- this is the "residual coupling" mitigation from the
         # design doc: changing an unrelated row still returns the SAME
         # object for a row that didn't change.
-        unet_obj_again = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
+        unet_obj_again = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
         assert unet_obj_again is unet_obj
         assert len(calls) == 2, calls  # one unet load, one vae load -- no re-load
         assert vae_obj is not unet_obj
@@ -278,18 +275,38 @@ def test_cache_is_single_entry_per_kind_not_shared_across_kinds():
 
 
 def test_cache_changing_one_kind_does_not_evict_another_kind():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
-        lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
-        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}})
+        cache = {}
+        lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
+        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}}, cache)
         # Reload the VAE row by NAME change (vae has no extra opts per the
         # §3 table, so an unrelated opts field alone wouldn't change its
         # cache key) -- this still must not touch the unet slot.
-        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}})  # cache hit, no reload
-        unet_again = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}})
+        lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}}, cache)  # cache hit, no reload
+        unet_again = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
         assert len(calls) == 2, calls  # unet load, vae load -- neither reloaded
         assert unet_again.tag.startswith("unet:")
+    finally:
+        restore()
+
+
+def test_cache_is_scoped_to_the_dict_passed_in_not_shared_globally():
+    # Two INDEPENDENT cache dicts (standing in for two AnimaLoaderPanel
+    # instances) loading the SAME row must each load their own object --
+    # proof there is no module-level global left for them to collide on.
+    calls, restore = _install_fake_comfy()
+    try:
+        cache_a, cache_b = {}, {}
+        row = {"kind": "unet", "value": "unetA.safetensors", "opts": {}}
+        obj_a = lh.load_row_model(row, cache_a)
+        obj_b = lh.load_row_model(row, cache_b)
+        assert obj_a is not obj_b, "separate caches must not share a cached object"
+        assert len(calls) == 2, calls
+        # Each cache still hits on its OWN second call.
+        assert lh.load_row_model(row, cache_a) is obj_a
+        assert lh.load_row_model(row, cache_b) is obj_b
+        assert len(calls) == 2, calls
     finally:
         restore()
 
@@ -425,7 +442,6 @@ def _panel_state(rows):
 
 
 def test_run_only_loads_rows_whose_slot_is_wired():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         state = _panel_state([
@@ -448,7 +464,6 @@ def test_run_only_loads_rows_whose_slot_is_wired():
 
 
 def test_run_nothing_wired_loads_nothing():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         state = _panel_state([
@@ -467,7 +482,6 @@ def test_run_nothing_wired_loads_nothing():
 
 
 def test_run_missing_prompt_fails_open_and_loads_everything():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         state = _panel_state([
@@ -484,7 +498,6 @@ def test_run_missing_prompt_fails_open_and_loads_everything():
 
 
 def test_run_garbage_prompt_fails_open_and_loads_everything():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         state = _panel_state([{"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}}])
@@ -496,7 +509,6 @@ def test_run_garbage_prompt_fails_open_and_loads_everything():
 
 
 def test_run_wired_slot_with_no_row_is_harmless():
-    _reset()
     calls, restore = _install_fake_comfy()
     try:
         state = _panel_state([{"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}}])
@@ -508,6 +520,79 @@ def test_run_wired_slot_with_no_row_is_harmless():
         out = AnimaLoaderPanel().run(state, prompt=prompt, unique_id="7")
         assert out == tuple([0] * 8), "a wire to an empty slot must not crash or load anything"
         assert calls == []
+    finally:
+        restore()
+
+
+# ---------------------------------------------------------------------------
+# The whole point of this change: the model cache is per AnimaLoaderPanel
+# INSTANCE, not a module-level global. Two panels loading different unets
+# must not evict each other; one panel changing its own row still must.
+# ---------------------------------------------------------------------------
+
+
+def test_run_two_panel_instances_with_different_unets_do_not_evict_each_other():
+    calls, restore = _install_fake_comfy()
+    try:
+        state_a = _panel_state([{"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}}])
+        state_b = _panel_state([{"slot": 1, "kind": "unet", "value": "unetB.safetensors", "opts": {}}])
+        prompt_a = {
+            "7": {"class_type": "AnimaLoaderPanel", "inputs": {"panel_state": state_a}},
+            "1": {"class_type": "KSampler", "inputs": {"model": _link("7", 0)}},
+        }
+        prompt_b = {
+            "8": {"class_type": "AnimaLoaderPanel", "inputs": {"panel_state": state_b}},
+            "1": {"class_type": "KSampler", "inputs": {"model": _link("8", 0)}},
+        }
+        panel_a = AnimaLoaderPanel()
+        panel_b = AnimaLoaderPanel()
+
+        out_a1 = panel_a.run(state_a, prompt=prompt_a, unique_id="7")
+        out_b1 = panel_b.run(state_b, prompt=prompt_b, unique_id="8")
+        assert len(calls) == 2, calls  # one unetA load (panel A), one unetB load (panel B)
+
+        # Panel A re-runs its OWN unchanged row AFTER panel B has loaded a
+        # completely different unet in between -- this must be a cache HIT
+        # on panel A's own object, not a reload, and panel B's load must not
+        # have evicted it. This is the exact bug this change fixes: with a
+        # module-level cache, panel B's load would have overwritten the
+        # shared "unet" slot and forced panel A to reload from disk here.
+        out_a2 = panel_a.run(state_a, prompt=prompt_a, unique_id="7")
+        assert len(calls) == 2, calls  # still 2 -- no reload for panel A
+        assert out_a2[0] is out_a1[0], "instance A's cached model must survive instance B's unrelated load"
+        assert out_a1[0] is not out_b1[0], "the two instances must hold genuinely different objects"
+    finally:
+        restore()
+
+
+def test_run_single_instance_changing_its_own_row_name_misses_cache_and_reloads():
+    # The pre-existing one-entry-per-kind behaviour, now exercised through a
+    # single persistent AnimaLoaderPanel INSTANCE (the same one ComfyUI would
+    # reuse across queue runs) rather than a module global: changing what
+    # THIS instance's own unet row asks for must still miss the cache.
+    calls, restore = _install_fake_comfy()
+    try:
+        panel = AnimaLoaderPanel()
+        state_a = _panel_state([{"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}}])
+        state_b = _panel_state([{"slot": 1, "kind": "unet", "value": "unetB.safetensors", "opts": {}}])
+        prompt_a = {
+            "7": {"class_type": "AnimaLoaderPanel", "inputs": {"panel_state": state_a}},
+            "1": {"class_type": "KSampler", "inputs": {"model": _link("7", 0)}},
+        }
+        prompt_b = {
+            "7": {"class_type": "AnimaLoaderPanel", "inputs": {"panel_state": state_b}},
+            "1": {"class_type": "KSampler", "inputs": {"model": _link("7", 0)}},
+        }
+        out1 = panel.run(state_a, prompt=prompt_a, unique_id="7")
+        out2 = panel.run(state_b, prompt=prompt_b, unique_id="7")
+        assert out1[0] is not out2[0], "changing this instance's own row name must miss the cache and reload"
+        assert len(calls) == 2, calls
+
+        # And re-running the ORIGINAL name on the SAME instance still hits
+        # the cache once eviction has happened -- eviction, not disabling.
+        out3 = panel.run(state_a, prompt=prompt_a, unique_id="7")
+        assert out3[0] is not out1[0], "the original slot was overwritten -- a fresh load, not a stale hit"
+        assert len(calls) == 3, calls
     finally:
         restore()
 
@@ -526,6 +611,7 @@ ALL_TESTS = [
     test_cache_evicts_on_opts_change_same_name,
     test_cache_is_single_entry_per_kind_not_shared_across_kinds,
     test_cache_changing_one_kind_does_not_evict_another_kind,
+    test_cache_is_scoped_to_the_dict_passed_in_not_shared_globally,
     test_referenced_slots_missing_or_bad_prompt_fails_open,
     test_referenced_slots_our_id_absent_from_prompt_fails_open,
     test_referenced_slots_no_wires_at_all_is_a_real_empty_set,
@@ -542,6 +628,8 @@ ALL_TESTS = [
     test_run_missing_prompt_fails_open_and_loads_everything,
     test_run_garbage_prompt_fails_open_and_loads_everything,
     test_run_wired_slot_with_no_row_is_harmless,
+    test_run_two_panel_instances_with_different_unets_do_not_evict_each_other,
+    test_run_single_instance_changing_its_own_row_name_misses_cache_and_reloads,
 ]
 
 

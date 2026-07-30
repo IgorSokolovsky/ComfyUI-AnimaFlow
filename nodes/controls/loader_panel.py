@@ -85,6 +85,7 @@ from ._loader_log_helpers import (
     format_loader_slot_line,
 )
 from ._loaders_helpers import (
+    LoaderCache,
     LoaderRowError,
     cache_probe,
     load_row_model,
@@ -236,6 +237,18 @@ class AnimaLoaderPanel:
             "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
 
+    def __init__(self) -> None:
+        # Per-node-instance model cache (kind -> (cache_key, loaded_object),
+        # ONE entry per kind -- see `_loaders_helpers.py`'s own docstring for
+        # why) -- lives here, not at module scope, so two Loader Panel
+        # instances holding different models never evict each other, while
+        # still surviving between runs of THIS node the way ComfyUI already
+        # keeps node instances alive between queue executions (same pattern
+        # `lora_loader.py`'s own `__init__`/`LoraCache` uses). Passed
+        # explicitly into `load_row_model`/`cache_probe` below -- neither
+        # function reaches for a shared global.
+        self._cache: LoaderCache = {}
+
     def run(self, panel_state: str = "{}", prompt=None, unique_id=None):
         # LOUD, unconditional -- deliberately NOT gated behind `_log_level()`
         # (unlike `_emit_loader_log` below): a hijacked `panel_state` input
@@ -316,7 +329,7 @@ class AnimaLoaderPanel:
             if events is not None and isinstance(kind, str) and kind in _LOADABLE_KINDS:
                 opts = row.get("opts") if isinstance(row.get("opts"), dict) else {}
                 try:
-                    probe = cache_probe(kind, name, opts) if isinstance(name, str) else None
+                    probe = cache_probe(kind, name, opts, self._cache) if isinstance(name, str) else None
                     if probe is not None:
                         cache_key, cache_hit = probe["cache_key"], probe["hit"]
                 except Exception:  # noqa: BLE001 - diagnostic read, never fatal.
@@ -327,7 +340,7 @@ class AnimaLoaderPanel:
                     resolved_path = None
 
             try:
-                obj = load_row_model(row)
+                obj = load_row_model(row, self._cache)
             except LoaderRowError as exc:
                 if events is not None:
                     events.append({
