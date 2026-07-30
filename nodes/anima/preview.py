@@ -181,9 +181,39 @@ class AnimaPreview:
         try:
             # Real ComfyUI context -- same convention as
             # `nodes/prompt_rules/_rules_helpers.py`'s import of `src.prompt_rules.core`.
-            from ...src.anima.preview_settings import normalize_preview_settings  # type: ignore
+            from ...src.anima.preview_settings import (  # type: ignore
+                PREVIEW_SETTINGS_SCHEMA,
+                detect_schema_mismatch,
+                normalize_preview_settings,
+            )
         except ImportError:
-            from src.anima.preview_settings import normalize_preview_settings
+            from src.anima.preview_settings import (
+                PREVIEW_SETTINGS_SCHEMA,
+                detect_schema_mismatch,
+                normalize_preview_settings,
+            )
+
+        # LOUD, unconditional -- deliberately NOT gated behind `_should_log()`
+        # (unlike the run-summary line further down): a hijacked `preview_state`
+        # input (2026-07-29 live bug -- `detect_schema_mismatch`'s own docstring
+        # in `settings.py` has the full story) silently replaces this node's
+        # entire compare/save settings with something else's STRING output, and
+        # `normalize_preview_settings` below already tolerates that by degrading
+        # to defaults with ZERO signal. This only OBSERVES it -- it never
+        # changes what `settings` resolves to, and stays silent for the two
+        # non-noteworthy cases (genuinely absent/first-run, or a value that IS
+        # this node's own schema at any version).
+        mismatch_reason = detect_schema_mismatch(preview_state, PREVIEW_SETTINGS_SCHEMA)
+        if mismatch_reason:
+            _logger.warning(
+                "[AnimaFlow] Anima Preview: preview_state did not arrive as this "
+                "node's own saved state (%s). Another extension appears to have "
+                "wired something into this node's state input -- a same-typed "
+                "STRING output getting broadcast here by something like "
+                "cg-use-everywhere is a common cause. Falling back to default "
+                "preview settings for this run.",
+                mismatch_reason,
+            )
 
         settings = normalize_preview_settings(preview_state)
 

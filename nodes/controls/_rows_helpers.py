@@ -53,6 +53,102 @@ def parse_state(raw: Any) -> Dict[str, Any]:
     return {"version": version, "rows": rows}
 
 
+def _looks_like_a_panel_row(row: Any) -> bool:
+    """Does `row` look like a Control/Loader Panel row at all? The one field
+    every real row carries regardless of `kind` (`rows.mjs`'s own state-shape
+    doc: `{ id, slot, kind, name, value, opts, ... }`, assigned once at row
+    creation and never renumbered) is `slot`, int-coercible -- unlike
+    `Anima LoRA Loader`'s own rows (`_lora_helpers.py`'s shape), which never
+    carry one at all. A low bar deliberately: `parse_state`/`rows_by_slot`
+    are already tolerant of a garbage row past this point; this only needs
+    to catch "this clearly isn't shaped like our rows", not validate every
+    field.
+    """
+    if not isinstance(row, dict):
+        return False
+    try:
+        int(row.get("slot"))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def detect_state_mismatch(raw: Any) -> Optional[str]:
+    """Does `panel_state` (the raw STRING widget value, BEFORE `parse_state`
+    runs) look like a hijacked value rather than this node's own (possibly
+    empty) state? Shared by both `control_panel.py` and `loader_panel.py` --
+    they read the identical `panel_state` shape via this same `parse_state`.
+
+    Root cause this exists to catch (2026-07-29 live bug, first caught on
+    `AnimaPreview`'s differently-shaped `preview_state` -- see
+    `src/anima/settings.detect_schema_mismatch`'s docstring for the full
+    story): a same-typed STRING output from an unrelated node getting
+    broadcast by another extension (observed: cg-use-everywhere) into a
+    `STRING` widget-input it was never meant to feed. `parse_state` already
+    tolerates this (any unparseable/wrong-shaped blob degrades to an empty
+    row list, by its own contract) -- that tolerance is UNCHANGED here; this
+    function only adds the OBSERVATION that degradation happened for a
+    reason worth surfacing. Never raises, never affects `parse_state`'s own
+    result.
+
+    Unlike `generation_settings`/`preview_state` (which carry an explicit
+    `"schema"` field to check verbatim -- see `settings.py`), `panel_state`
+    has never had one (`rows.mjs`'s own state-shape doc: `{version, rows}`,
+    no schema key), so this uses a STRUCTURAL fingerprint of the shapes it
+    could plausibly be confused with instead:
+
+      - `None` for a genuinely absent/fresh value (`None`, `""`, the literal
+        empty-object default `"{}"`, or an already-parsed empty dict) --
+        every brand-new node's widget looks like this. SILENT.
+      - `None` when it parses to a dict that has neither `"cacheMode"` nor
+        `"sep"` (both `Anima LoRA Loader`-only top-level keys -- see
+        `_lora_helpers.py`'s own state shape) and whose `"rows"` field,
+        if present at all, is a list that either is empty or has at least
+        one entry that looks like a real panel row (`_looks_like_a_panel_row`
+        above). This is deliberately the SAME bar `rows_by_slot` already
+        applies (a garbage row silently drops out of the slot map there
+        too) -- if not one row would survive that, that IS the silent
+        degradation this function exists to surface.
+      - a reason string for everything else: invalid JSON, a non-object, a
+        dict carrying `"cacheMode"`/`"sep"` (an `Anima LoRA Loader` state
+        leaking in -- its rows shape can otherwise look enough like ours to
+        pass; this is what actually catches that direction), no `"rows"`
+        field at all (the tell for a `generation_settings`/`preview_state`
+        blob leaking in -- neither has one either), a non-list `"rows"`, or
+        a non-empty `"rows"` where NOT ONE entry looks like a panel row.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped in ("", "{}"):
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError, RecursionError):
+            return "the value is not valid JSON"
+    else:
+        parsed = raw
+        if parsed == {}:
+            return None
+    if not isinstance(parsed, dict):
+        return f"the value is not a JSON object (got {type(parsed).__name__})"
+
+    if "cacheMode" in parsed or "sep" in parsed:
+        return "the value looks like an Anima LoRA Loader's lora_state, not a Control/Loader Panel's own state"
+
+    rows = parsed.get("rows")
+    if rows is None:
+        return "the value has no 'rows' field at all"
+    if not isinstance(rows, list):
+        return "its 'rows' field is not a list"
+    if not rows:
+        return None  # an emptied-out panel is still our own shape.
+    if any(_looks_like_a_panel_row(row) for row in rows):
+        return None
+    return "its 'rows' entries don't look like Control/Loader Panel rows (no usable 'slot')"
+
+
 def rows_by_slot(rows: List[Any], max_rows: int) -> Dict[int, Dict[str, Any]]:
     """The `rows` array (display order) -> a `{slot: row}` map, keyed by each
     row's OWN `slot` field, not its position in the array -- outputs are

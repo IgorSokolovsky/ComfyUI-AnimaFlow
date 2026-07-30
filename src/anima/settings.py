@@ -55,6 +55,70 @@ from typing import Any, Dict, List, Optional
 GENERATION_SETTINGS_SCHEMA = "animaflow.anima_generator.generation_settings"
 GENERATION_SETTINGS_VERSION = 1
 
+def detect_schema_mismatch(raw: Any, expected_schema: str) -> Optional[str]:
+    """Does `raw` (the settings STRING widget's value, BEFORE
+    `normalize_generation_settings`/`normalize_preview_settings` runs) look
+    like a hijacked value rather than this node's own state? Reused by
+    `preview_settings.py` for its own, differently-schemad blob (that
+    module's docstring: "The Preview node keeps its own settings blob, same
+    hidden-serialized-STRING pattern") — hence taking `expected_schema` as a
+    parameter rather than hardcoding `GENERATION_SETTINGS_SCHEMA`.
+
+    Root cause this exists to catch (2026-07-29 live bug): a same-typed
+    STRING output from an unrelated node (observed: `AnimaGenerator`'s
+    `metadata_json`) getting broadcast by another extension (observed:
+    cg-use-everywhere) into a `STRING` widget-input it was never meant to
+    feed — silently replacing this node's ENTIRE saved settings on every run.
+    `normalize_generation_settings`/`normalize_preview_settings` already
+    tolerate this (any unparseable/wrong-shaped blob degrades to defaults,
+    by contract — see this module's own "Normalization contract" section) —
+    that tolerance is deliberately UNCHANGED here; this function only adds
+    the OBSERVATION that degradation happened for a reason worth surfacing,
+    it never raises and never affects what the normalizer returns.
+
+    Three outcomes, matching the task's own three cases:
+      - `None` for a genuinely absent/fresh value: `None`, `""`, the literal
+        empty-object default `"{}"` (a STRING widget's own declared
+        default), or an already-parsed empty dict — every brand-new node's
+        widget looks like this. SILENT (this is the normal, non-noteworthy
+        case — see this function's own callers for why staying silent here
+        matters).
+      - `None` when the value parses to a dict whose own `"schema"` field
+        equals `expected_schema` — this genuinely IS our state, at ANY
+        version (a version mismatch is `migrate_version`'s job to resolve,
+        never this function's to flag).
+      - A short, human-readable reason string for everything else: invalid
+        JSON, a JSON scalar/array/list instead of an object, or a dict whose
+        `"schema"` field is either absent or names something else entirely.
+        This is the LOUD case — a caller prints/logs it, but still calls the
+        normalizer and still gets defaults back, exactly as before.
+
+    Never raises — same hostile-input contract as the normalizers above.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped in ("", "{}"):
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError, RecursionError):
+            return "the value is not valid JSON"
+    else:
+        parsed = raw
+        if parsed == {}:
+            return None
+    if not isinstance(parsed, dict):
+        return f"the value is not a JSON object (got {type(parsed).__name__})"
+    schema = parsed.get("schema")
+    if schema == expected_schema:
+        return None
+    if schema:
+        return f"the value's schema is {schema!r}, not this node's own {expected_schema!r}"
+    return "the value has no 'schema' field at all"
+
+
 # Settled 2026-07-27 (design doc §6a): upstream is effectively uncapped, but
 # every pass here is a full Impact re-sample, so the cap is a compute limit,
 # not a socket-count limit (there are no per-block SEGS sockets at all — §6a).

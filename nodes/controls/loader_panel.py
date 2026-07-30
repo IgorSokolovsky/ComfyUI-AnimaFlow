@@ -91,7 +91,7 @@ from ._loaders_helpers import (
     referenced_slots,
     resolve_full_path,
 )
-from ._rows_helpers import parse_state, rows_by_slot
+from ._rows_helpers import detect_state_mismatch, parse_state, rows_by_slot
 from ._type_helpers import ANY
 
 try:
@@ -237,6 +237,29 @@ class AnimaLoaderPanel:
         }
 
     def run(self, panel_state: str = "{}", prompt=None, unique_id=None):
+        # LOUD, unconditional -- deliberately NOT gated behind `_log_level()`
+        # (unlike `_emit_loader_log` below): a hijacked `panel_state` input
+        # (2026-07-29 live bug -- `detect_state_mismatch`'s own docstring in
+        # `_rows_helpers.py` has the full story) silently replaces the user's
+        # ENTIRE row list with something else's STRING output, and
+        # `parse_state` below already degrades that to an empty row list with
+        # ZERO signal -- that must surface regardless of whether "Console
+        # logging" is even turned on. This only OBSERVES it -- it never
+        # changes what `parse_state` returns, and stays silent for the two
+        # non-noteworthy cases (genuinely absent/first-run, or a value that
+        # IS this node's own shape).
+        mismatch_reason = detect_state_mismatch(panel_state)
+        if mismatch_reason:
+            _logger.warning(
+                "[AnimaFlow] Anima Loader Panel: panel_state did not arrive as "
+                "this node's own saved state (%s). Another extension appears "
+                "to have wired something into this node's state input -- a "
+                "same-typed STRING output getting broadcast here by something "
+                "like cg-use-everywhere is a common cause. Falling back to "
+                "default rows for this run.",
+                mismatch_reason,
+            )
+
         state = parse_state(panel_state)
         rows = state["rows"]
         slots = rows_by_slot(rows, MAX_ROWS)

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from .settings import _deep_merge_defaults, migrate_version, resolve_seed_int
+from .settings import _deep_merge_defaults, detect_schema_mismatch, migrate_version, resolve_seed_int
 from .stages import STAGE_ORDER
 
 # `resolve_seed_int` is re-exported here (not used directly in this module)
@@ -32,6 +32,12 @@ from .stages import STAGE_ORDER
 # function `pipeline.py` already uses for the settings-tree seed) -- see
 # `_preview_helpers.save_now`'s own doc comment for why it belongs there and
 # not in `format_filename` itself.
+
+# `detect_schema_mismatch` is likewise re-exported (not used directly in this
+# module) so `nodes/anima/preview.py` reaches it through this module's own
+# single import line, called with `PREVIEW_SETTINGS_SCHEMA` (below) as its
+# `expected_schema` -- see that function's own docstring in `settings.py` for
+# the shared "hijacked STRING widget-input" contract both settings blobs use.
 
 PREVIEW_SETTINGS_SCHEMA = "animaflow.anima_preview.preview_state"
 PREVIEW_SETTINGS_VERSION = 1

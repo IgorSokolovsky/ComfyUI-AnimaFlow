@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._lora_helpers import LoraCache, apply_loras, parse_state
+from ._lora_helpers import LoraCache, apply_loras, detect_state_mismatch, parse_state
 
 # See control_panel.py's own CATEGORY comment: Title Case in the picker, the
 # folder underneath (`nodes/controls/`, `js/controls/`) stays snake_case.
@@ -112,6 +112,27 @@ class AnimaLoraLoader:
         self._cache = LoraCache()
 
     def apply(self, model: Any, lora_state: str = "{}", clip: Any = None):
+        # LOUD, unconditional -- matches `_lora_helpers.apply_loras`'s own
+        # existing bare `print(...)` convention for this node (it has no
+        # "console logging" gate at all). A hijacked `lora_state` input
+        # (2026-07-29 live bug -- `detect_state_mismatch`'s own docstring has
+        # the full story) silently replaces the user's ENTIRE LoRA stack with
+        # something else's STRING output, and `parse_state` below already
+        # degrades that to an empty stack with ZERO signal. This only
+        # OBSERVES it -- it never changes what `parse_state` returns, and
+        # stays silent for the two non-noteworthy cases (genuinely
+        # absent/first-run, or a value that IS this node's own shape).
+        mismatch_reason = detect_state_mismatch(lora_state)
+        if mismatch_reason:
+            print(
+                f"[AnimaFlow] Anima LoRA Loader: lora_state did not arrive as "
+                f"this node's own saved state ({mismatch_reason}). Another "
+                f"extension appears to have wired something into this node's "
+                f"state input -- a same-typed STRING output getting broadcast "
+                f"here by something like cg-use-everywhere is a common cause. "
+                f"Falling back to an empty LoRA stack for this run."
+            )
+
         state = parse_state(lora_state)
         model, clip, triggers = apply_loras(model, clip, state, self._cache)
         return (model, clip, triggers)

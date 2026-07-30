@@ -735,6 +735,30 @@ def run_generator(*, context: Dict[str, Any], generation_settings: str) -> Tuple
     broken graph regardless of which stages happen to be enabled.
     """
     settings = settings_mod.normalize_generation_settings(generation_settings)
+
+    # LOUD, unconditional -- deliberately NOT gated behind `_should_log()`
+    # (unlike every other line in this module): a hijacked `generation_settings`
+    # input (2026-07-29 live bug -- `settings_mod.detect_schema_mismatch`'s own
+    # docstring has the full story) silently replaces the user's ENTIRE saved
+    # settings with something else's STRING output, and the existing tolerant
+    # normalization above already degrades that to defaults with ZERO signal.
+    # `detect_schema_mismatch` only OBSERVES this -- it never changes what
+    # `settings` resolved to above, and stays silent for the two non-noteworthy
+    # cases (genuinely absent/first-run, or a value that IS this node's own
+    # schema at any version).
+    mismatch_reason = settings_mod.detect_schema_mismatch(
+        generation_settings, settings_mod.GENERATION_SETTINGS_SCHEMA,
+    )
+    if mismatch_reason:
+        _logger.warning(
+            "[AnimaFlow] Anima Generator: generation_settings did not arrive as this "
+            "node's own saved state (%s). Another extension appears to have wired "
+            "something into this node's state input -- a same-typed STRING output "
+            "getting broadcast here by something like cg-use-everywhere is a common "
+            "cause. Falling back to default generation settings for this run.",
+            mismatch_reason,
+        )
+
     # Resolved ONCE per run (both cheap, mtime-cached reads) and reused for
     # every logging decision below -- module docstring's verbosity contract:
     # `should_log` gates the "summary" lines (run header, model files,

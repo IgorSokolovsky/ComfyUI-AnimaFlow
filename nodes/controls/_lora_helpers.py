@@ -105,6 +105,87 @@ def parse_state(raw: Any) -> Dict[str, Any]:
     return {"cacheMode": cache_mode, "sep": sep, "rows": rows}
 
 
+def _looks_like_a_lora_row(row: Any) -> bool:
+    """Does `row` look like a real `Anima LoRA Loader` row (a usable string
+    `name`, matching `parse_state`'s own survival bar), AND NOT ALSO carry a
+    `"slot"` key -- the one field every Control/Loader Panel row carries
+    (`_rows_helpers.py`'s own `_looks_like_a_panel_row`) that a genuine LoRA
+    row never does. A panel row can ALSO have a usable string `name` (its
+    display label, e.g. `"sampler name"` -- `_rows_helpers.py`'s own
+    docstring shows the shape), so `name` alone can't tell the two apart;
+    `slot`'s presence/absence is what actually does.
+    """
+    if not isinstance(row, dict):
+        return False
+    name = row.get("name")
+    if not (isinstance(name, str) and name.strip()):
+        return False
+    return "slot" not in row
+
+
+def detect_state_mismatch(raw: Any) -> Optional[str]:
+    """Does `lora_state` (the raw STRING widget value, BEFORE `parse_state`
+    runs) look like a hijacked value rather than this node's own (possibly
+    empty) state? Mirrors `_rows_helpers.detect_state_mismatch`'s own
+    contract and docstring for the shared "loud, never raise" rationale
+    (2026-07-29 live bug -- `src/anima/settings.detect_schema_mismatch`'s
+    docstring has the full story) -- this is the LoRA stack's own version of
+    that same structural-fingerprint check, since `lora_state` has never
+    carried an explicit `"schema"` field either.
+
+      - `None` -- genuinely absent (`None`/`""`/`"{}"`, or an already-parsed
+        empty dict): SILENT.
+      - `None` -- parses to a dict whose `"rows"` field, if present at all,
+        is a list that is either empty or has at least one entry that looks
+        like a real LoRA row (`_looks_like_a_lora_row` above -- the SAME bar
+        `parse_state` itself already applies via its own `name` check, plus
+        the `"slot"` exclusion that actually tells a Panel row apart from
+        ours). A dict with NEITHER `"rows"` NOR `"cacheMode"`/`"sep"` at all
+        is also accepted here IF it carries at least one of those two --
+        see below for why an empty dict there still means "absent".
+      - a reason string for everything else: invalid JSON, a non-object, a
+        dict with none of `"rows"`/`"cacheMode"`/`"sep"` at all (the tell for
+        a `generation_settings`/`preview_state`/unrelated blob leaking in --
+        none of those carry any of the three), a non-list `"rows"`, or a
+        non-empty `"rows"` where every entry either lacks a usable `name` or
+        carries a Panel-row `"slot"` key instead (a Control/Loader Panel
+        state leaking in -- its rows can otherwise have a usable `name` too,
+        which is exactly why `_looks_like_a_lora_row` also excludes `"slot"`).
+    Never raises.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped in ("", "{}"):
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError, RecursionError):
+            return "the value is not valid JSON"
+    else:
+        parsed = raw
+        if parsed == {}:
+            return None
+    if not isinstance(parsed, dict):
+        return f"the value is not a JSON object (got {type(parsed).__name__})"
+
+    rows = parsed.get("rows")
+    if rows is None:
+        if "cacheMode" in parsed or "sep" in parsed:
+            return None  # a partial-but-plausible lora_state (rows omitted).
+        return "the value has no recognizable Anima LoRA Loader fields (no 'rows', 'cacheMode', or 'sep')"
+    if not isinstance(rows, list):
+        return "its 'rows' field is not a list"
+    if not rows:
+        return None  # an emptied-out stack is still our own shape.
+    if any(_looks_like_a_lora_row(row) for row in rows):
+        return None
+    if any(isinstance(row, dict) and "slot" in row for row in rows):
+        return "its 'rows' entries look like Control/Loader Panel rows (they carry 'slot'), not an Anima LoRA Loader's own"
+    return "its 'rows' entries don't look like Anima LoRA Loader rows (no usable 'name')"
+
+
 def _clamp_strength(value: Any, default: float) -> float:
     try:
         v = float(value)
@@ -382,6 +463,7 @@ def _apply_lora_to_models(model: Any, clip: Any, lora: Any, sm: float, sc: float
 
 __all__ = (
     "parse_state",
+    "detect_state_mismatch",
     "row_name",
     "row_is_on",
     "row_strengths",
