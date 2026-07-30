@@ -550,6 +550,101 @@ test("options.getLockMs wins over options.lockMs when both are given", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// options.forwardToCanvas: false -- the MENU mode used by
+// `js/shared/overlay.mjs`'s `openOverlayWithZoom` (every popover/menu in the
+// pack opens through it). An unconsumed wheel is CONSUMED (preventDefault +
+// stopPropagation), never re-dispatched to the canvas -- a menu owns the
+// wheel completely, it doesn't forward it anywhere. A scrollable region
+// inside the overlay that still has room is untouched either way --
+// `scrollRegionWantsWheel` doesn't know or care about this option.
+// ---------------------------------------------------------------------------
+
+test("forwardToCanvas: false -- a plain (non-scrollable) target consumes the wheel but never dispatches to the canvas", () => {
+  const root = makeEl();
+  const canvas = makeEl();
+  installCanvasZoomPassthrough(root, () => canvas, { forwardToCanvas: false });
+  const { prevented, stopped } = fireWheel(root);
+  assert.ok(prevented, "a menu must swallow the wheel so it can't leak to the page behind it");
+  assert.ok(stopped);
+  assert.equal(canvas._dispatched.length, 0, "menu mode never re-dispatches to the canvas");
+});
+
+test("forwardToCanvas: false -- a short menu with NOTHING scrollable still does nothing visible: consumed, no dispatch, no throw even with no getCanvasEl at all", () => {
+  const root = makeEl();
+  installCanvasZoomPassthrough(root, undefined, { forwardToCanvas: false });
+  const { prevented } = fireWheel(root);
+  assert.ok(prevented, "still consumed even though there is nowhere it could have forwarded to");
+});
+
+test("forwardToCanvas: false -- a scrollable region under the cursor still scrolls normally: no preventDefault, no dispatch", () => {
+  const root = makeEl();
+  const scrollable = makeScrollable({ scrollTop: 10, scrollHeight: 100, clientHeight: 50 }); // room to scroll down
+  const canvas = makeEl();
+  installCanvasZoomPassthrough(root, () => canvas, { forwardToCanvas: false });
+  const { prevented } = fireWheel(root, { target: scrollable, deltaY: 100 });
+  assert.equal(prevented, false, "native scrolling of an in-overlay list must be left alone");
+  assert.equal(canvas._dispatched.length, 0);
+});
+
+test("forwardToCanvas: false -- once a scrollable region hits its end, the wheel is consumed immediately (no quiet-period wait, unlike node-body mode)", () => {
+  const root = makeEl();
+  const canvas = makeEl();
+  const clock = makeClock(1000);
+  installCanvasZoomPassthrough(root, () => canvas, { forwardToCanvas: false, now: clock.now });
+
+  const scrollable = makeScrollable({ scrollTop: 50, scrollHeight: 100, clientHeight: 50 }); // already at the bottom
+  const { prevented, stopped } = fireWheel(root, { target: scrollable, deltaY: 100 }); // not consumed by the list -- 0ms after "start"
+  assert.ok(prevented, "menu mode consumes on the very next event, no lock to wait out");
+  assert.ok(stopped);
+  assert.equal(canvas._dispatched.length, 0);
+});
+
+test("forwardToCanvas: false -- no-ops entirely under Nodes 2.0, same as forwarding mode", () => {
+  globalThis.window = { LiteGraph: { vueNodesMode: true } };
+  try {
+    const root = makeEl();
+    const canvas = makeEl();
+    installCanvasZoomPassthrough(root, () => canvas, { forwardToCanvas: false });
+    const { prevented } = fireWheel(root);
+    assert.equal(prevented, false);
+    assert.equal(canvas._dispatched.length, 0);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("forwardToCanvas: false -- teardown removes the listener same as the default mode", () => {
+  const root = makeEl();
+  const uninstall = installCanvasZoomPassthrough(root, undefined, { forwardToCanvas: false });
+  uninstall();
+  assert.equal((root._listeners.wheel || []).length, 0);
+});
+
+test("the default (no forwardToCanvas option, and forwardToCanvas: true explicitly) still forwards to the canvas -- node-body behaviour is unchanged", () => {
+  globalThis.window = {};
+  globalThis.WheelEvent = function WheelEvent(type, opts) {
+    this.type = type;
+    Object.assign(this, opts);
+  };
+  try {
+    const rootDefault = makeEl();
+    const canvasDefault = makeEl();
+    installCanvasZoomPassthrough(rootDefault, () => canvasDefault);
+    fireWheel(rootDefault);
+    assert.equal(canvasDefault._dispatched.length, 1);
+
+    const rootExplicit = makeEl();
+    const canvasExplicit = makeEl();
+    installCanvasZoomPassthrough(rootExplicit, () => canvasExplicit, { forwardToCanvas: true });
+    fireWheel(rootExplicit);
+    assert.equal(canvasExplicit._dispatched.length, 1);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.WheelEvent;
+  }
+});
+
 test("a non-numeric options.getLockMs() return value falls back to options.lockMs/WHEEL_LOCK_MS rather than throwing", () => {
   globalThis.window = {};
   globalThis.WheelEvent = function WheelEvent(type, opts) {

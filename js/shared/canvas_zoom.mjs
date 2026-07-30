@@ -197,13 +197,38 @@ function defaultGetCanvasEl() {
  * interaction.mjs`'s two call sites) passes `getLockMs`; `lockMs` stays a
  * static fallback for callers (and every existing test in this file) that
  * don't need a live-tunable value. `getLockMs` wins over `lockMs` when both
- * are given.
+ * are given. Only meaningful when `forwardToCanvas` (below) is true — the
+ * lock exists purely to smooth the hand-off from "scrolling an internal
+ * region" to "now zoom the canvas," so it's moot when there's no hand-off to
+ * smooth.
+ *
+ * `options.forwardToCanvas` (optional, default `true`) is what makes this ONE
+ * function serve two different surfaces:
+ *   - `true` (the node-BODY case: `js/prompt_rules/node/index.js`,
+ *     `js/controls/interaction.mjs`'s two `refs.root`/`addRefs.root` calls,
+ *     `js/anima/interaction.mjs`'s own `refs.root` call) — the original
+ *     Pixaroma-derived behaviour: an unconsumed wheel re-dispatches to the
+ *     canvas so scrolling the graph doesn't silently stop the moment the
+ *     cursor crosses onto the node's own DOM widget.
+ *   - `false` (the MENU case: `js/shared/overlay.mjs`'s `openOverlayWithZoom`,
+ *     the ONE place every popover/menu in this pack opens through) — a
+ *     floating panel is a surface you interact with, not a window onto the
+ *     graph. An unconsumed wheel is simply CONSUMED (`preventDefault` +
+ *     `stopPropagation`, no re-dispatch, no canvas zoom, no page scroll
+ *     leaking out from behind the menu) — the menu owns the wheel completely.
+ *     A scrollable region inside the menu that still has room keeps scrolling
+ *     exactly as before (`scrollRegionWantsWheel` is unchanged either way);
+ *     only the "what happens once nothing wants it" branch differs. The
+ *     quiet-period lock is skipped entirely in this mode — there is no
+ *     canvas hand-off to protect, an unconsumed wheel is consumed
+ *     immediately every time.
  */
 export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
   if (!root || typeof root.addEventListener !== "function") {
     return () => {};
   }
   const resolveCanvas = typeof getCanvasEl === "function" ? getCanvasEl : defaultGetCanvasEl;
+  const forwardToCanvas = !(options && options.forwardToCanvas === false);
   const nowFn = options && typeof options.now === "function" ? options.now : () => Date.now();
   const getLockMsFn = options && typeof options.getLockMs === "function" ? options.getLockMs : null;
   const staticLockMs = options && typeof options.lockMs === "number" ? options.lockMs : WHEEL_LOCK_MS;
@@ -222,8 +247,15 @@ export function installCanvasZoomPassthrough(root, getCanvasEl, options) {
       return; // Nodes 2.0 forwards the wheel to the canvas itself
     }
     if (scrollRegionWantsWheel(e.target, root, e.deltaX, e.deltaY)) {
-      lastConsumedAt = nowFn(); // arms the quiet-period lock
+      lastConsumedAt = nowFn(); // arms the quiet-period lock (node-body mode only; harmless otherwise)
       return; // a scrollable region still has room in this direction -- let it scroll
+    }
+    if (!forwardToCanvas) {
+      // Menu mode: the wheel stops here, full stop -- no canvas zoom, no
+      // page scroll behind the menu. See this function's own doc comment.
+      e.preventDefault();
+      e.stopPropagation();
+      return;
     }
     if (nowFn() - lastConsumedAt < resolveLockMs()) {
       // The SAME continuing gesture just finished scrolling an internal

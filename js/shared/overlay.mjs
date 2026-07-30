@@ -373,22 +373,42 @@ export function closeOverlaysNotAncestorOf(anchorEl) {
 }
 
 /**
- * `openOverlay` above, plus wheel-zoom passthrough on the overlay element
- * itself (`js/shared/canvas_zoom.mjs`) — so wheeling over any popover/menu
- * this pack ever opens zooms the canvas same as wheeling over the node body,
- * except over a genuinely scrollable child that still has room.
+ * `openOverlay` above, plus wheel handling on the overlay element itself
+ * (`js/shared/canvas_zoom.mjs`) — so wheeling over any popover/menu this
+ * pack ever opens (the LoRA search panel, option lists, ⚙ popovers, the ⓘ
+ * panel, row context menus, the picker — every one of them opens through
+ * THIS function) stays on the overlay and never reaches the canvas behind
+ * it, while a genuinely scrollable child that still has room keeps scrolling
+ * normally.
+ *
+ * This is deliberately `{ forwardToCanvas: false }` — a MENU, unlike a
+ * node's own body, is a surface you interact with, not a window onto the
+ * graph: scrolling a result list should scroll the list, not zoom the canvas
+ * behind it, and a short menu with nothing to scroll should simply do
+ * nothing on an unconsumed wheel (no zoom, no page scroll leaking out from
+ * behind it either). The node-BODY passthrough this same helper was
+ * originally built around (`.claude/skills/comfyui-node-renders-but-dead/
+ * SKILL.md` symptom 8 — wheel-to-zoom silently dying under a DOM-widget row)
+ * is untouched: that path calls `installCanvasZoomPassthrough` directly on
+ * the row/node root with no `forwardToCanvas` override at all
+ * (`js/controls/interaction.mjs`, `js/anima/interaction.mjs`,
+ * `js/prompt_rules/node/index.js`), so it keeps forwarding exactly as
+ * before. Only overlays opened through this one function change behaviour.
+ *
  * `getCanvasEl` is the real `() => app.canvas && app.canvas.canvas` getter
- * from the caller's `index.js` (or `undefined` under test, where
- * `installCanvasZoomPassthrough` harmlessly never finds a canvas to dispatch
- * to). Sets `handle.ownerKey`/tracks `_activeOverlay` itself, so callers
- * don't have to repeat that bookkeeping at every call site — set
+ * from the caller's `index.js` (or `undefined` under test) — kept as a
+ * parameter for API/signature stability even though menu mode never calls
+ * it, so a future caller that needs the node-body forwarding behaviour for
+ * some OTHER overlay doesn't require a signature change to opt back in.
+ * Sets `handle.ownerKey`/tracks `_activeOverlay` itself, so callers don't
+ * have to repeat that bookkeeping at every call site — set
  * `handle.ownerKey = key` is still the CALLER's job (this function doesn't
  * know what key a given opener wants to use), see `js/anima/interaction.mjs`
  * for the pattern.
  */
 export function openOverlayWithZoom(getCanvasEl, doc, anchorEl, contentEl, placement, onClose, overlayClassName) {
   const handle = openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName);
-  const uninstallZoom = installCanvasZoomPassthrough(handle.overlay, getCanvasEl);
+  const uninstallZoom = installCanvasZoomPassthrough(handle.overlay, getCanvasEl, { forwardToCanvas: false });
   const origClose = handle.close;
   handle.close = () => {
     uninstallZoom();
