@@ -272,17 +272,25 @@ def test_apply_failure_after_successful_load_contributes_no_triggers():
         restore()
 
 
-def test_strength_zero_row_still_counts_for_triggers_but_does_not_load():
+def test_strength_zero_row_is_still_loaded_and_applied_like_any_other():
+    # Owner decision 2026-07-30: the strength-0 no-load shortcut is gone.
+    # The switch alone decides whether a LoRA is applied -- a switched-on
+    # row at sm=0/sc=0 still goes through `cache.load` + apply, and counts
+    # toward `applied` for the same reason any other switched-on row does.
     files = _files_map("a.safetensors")
+    path_a = files["a.safetensors"]
     load_calls, apply_calls, restore = _install_fake_comfy(files=files)
     try:
         state = _state([_row("a.safetensors", sm=0.0, sc=0.0, triggers=["zeroed"])])
         cache = lh.LoraCache()
         model, clip, triggers = lh.apply_loras("MODEL0", "CLIP0", state, cache)
-        # File present, strengths zero: NOT applied to the model...
-        assert model == "MODEL0" and clip == "CLIP0"
-        assert load_calls == [] and apply_calls == []
-        # ...but the user turned it on on purpose, so it still counts (§1b).
+        # File present, strength zero: STILL loaded and applied (mathematically
+        # a no-op on the model, but the switch -- not the strength -- decides).
+        assert model == f"MODEL0+lora({path_a},0.0)"
+        assert load_calls == [(path_a,)]
+        assert apply_calls == [(path_a, 0.0, 0.0)]
+        # Outcome for triggers is unchanged, but the reason is now "it
+        # applied", not "it resolved without loading".
         assert triggers == "zeroed"
     finally:
         restore()
@@ -471,7 +479,7 @@ ALL_TESTS = [
     test_missing_file_contributes_no_triggers_and_is_not_loaded,
     test_corrupt_file_load_failure_contributes_no_triggers,
     test_apply_failure_after_successful_load_contributes_no_triggers,
-    test_strength_zero_row_still_counts_for_triggers_but_does_not_load,
+    test_strength_zero_row_is_still_loaded_and_applied_like_any_other,
     test_mode_none_clears_cache_after_every_run,
     test_mode_none_peaks_at_two_entries_mid_run_not_the_whole_stack,
     test_mode_all_keeps_whole_stack_and_frees_removed_rows,

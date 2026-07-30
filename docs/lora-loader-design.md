@@ -384,8 +384,16 @@ posture rather than a failure.
 ### 1b. Two pieces of its Python worth copying for the reasoning, not just the code
 
 - **Trigger words come only from rows that ACTUALLY APPLIED.** A missing, renamed, or corrupt file
-  contributes nothing, so `triggers` can never claim words for a LoRA that isn't in the model. A row
-  deliberately parked at strength 0 *does* count (the user turned it on on purpose).
+  contributes nothing, so `triggers` can never claim words for a LoRA that isn't in the model.
+  **Reversal, owner decision 2026-07-30:** this used to carve out an exception for a row
+  deliberately parked at strength 0 (both `sm`/`sc` exactly zero) — the file resolved, so it was
+  treated as "genuinely part of the stack" and its triggers counted, without a `cache.load` call
+  (a real VRAM saving on a tight-memory box, since nothing was ever read off disk). The owner
+  deleted that carve-out: **the switch alone decides whether a LoRA is applied.** A switched-on
+  row is now always loaded and applied, whatever its strength — zero included — and only a
+  missing file or a load/apply failure still contributes nothing. The tradeoff this reintroduces
+  is explicit and accepted: a zero-strength row now reads its file from disk and holds it in the
+  cache for a mathematically-unchanged (zero-weight) result.
 - **The memory modes are subtler than they look.** In `last`/`none`, each entry loaded this run is
   released right after the *next* one applies, so a 10-row stack peaks at ~2 files rather than 10.
   Their own pre-release review caught `last` behaving like `none` for any 2+ row stack, because
@@ -1061,7 +1069,8 @@ Plain-script, no pytest (`python3 tests/test_x.py` from repo root), and `node js
 
 - **State normalization**: unknown keys survive, missing keys default, a hostile blob never raises.
 - **`triggers` provenance**: words come only from rows that actually applied; a missing/corrupt file
-  contributes none; a strength-0 row still counts (§1b).
+  contributes none; a switched-on row at strength 0 is loaded and applied like any other and counts
+  the same way (§1b, reversed 2026-07-30 — strength no longer carves out an exception).
 - **Memory modes**: `last` keeps exactly one entry across a run and does **not** evict the retained
   entry on the first row of a multi-row stack (upstream's own regression); `all` frees entries for
   removed rows; `none` clears.

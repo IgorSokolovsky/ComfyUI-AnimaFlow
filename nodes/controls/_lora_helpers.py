@@ -342,10 +342,13 @@ class LoraCache:
         return cached
 
     def note_used(self, path: str) -> None:
-        """A strength-0 row: no load happens (nothing to gain from reading
-        the file), but the path still counts as "part of this run's stack"
-        for `end_run`'s bookkeeping below -- a deliberately zeroed row still
-        keeps its cached entry (if any) alive under `"all"` mode."""
+        """Mark `path` as "part of this run's stack" for `end_run`'s
+        bookkeeping below, WITHOUT loading it. Currently unused: it existed
+        for the strength-0 no-load shortcut in `apply_loras`, which the
+        owner deleted 2026-07-30 (a switched-on row is now always loaded,
+        so `load()` above does its own `_used_this_run` bookkeeping). Kept
+        for any future caller that legitimately wants "used, not loaded"
+        semantics."""
         self._used_this_run.add(path)
 
     def end_run(self) -> None:
@@ -398,10 +401,11 @@ def apply_loras(model: Any, clip: Any, state: Dict[str, Any], cache: LoraCache) 
     row's trigger words reach the output ONLY if the row's LoRA was
     actually applied to the model. A switched-on row whose file is missing,
     unreadable, or fails to load contributes NOTHING, even though the user
-    turned it on. A row deliberately parked at strength 0 (BOTH `sm` and
-    `sc` exactly zero) DOES still count -- the file resolves (so it's
-    genuinely part of the stack) and the user turned it on on purpose; it
-    just has zero numeric effect on the model itself.
+    turned it on. Strength no longer enters into it (owner decision,
+    2026-07-30, reversing the earlier strength-0 carve-out): a switched-on
+    row whose file resolves and whose LoRA loads is applied and counts,
+    whatever `sm`/`sc` are -- zero included. The switch is the only thing
+    that decides whether a LoRA is applied.
     """
     import folder_paths  # ComfyUI-only; lazy -- see module docstring.
 
@@ -426,13 +430,6 @@ def apply_loras(model: Any, clip: Any, state: Dict[str, Any], cache: LoraCache) 
         sm, sc = row_strengths(row)
         if clip is None:
             sc = 0.0  # nothing to apply a clip strength TO.
-
-        if sm == 0 and sc == 0:
-            # Deliberate no-op (file present, strengths zero): still counts
-            # (§1b) -- no load needed, so no `cache.load` call either.
-            resolved_rows.append(row)
-            cache.note_used(path)
-            continue
 
         try:
             lora, meta = cache.load(path)
