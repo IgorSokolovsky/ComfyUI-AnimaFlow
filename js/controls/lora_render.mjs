@@ -71,9 +71,10 @@
  *
  * Exactly like `render.mjs`'s `bodyHeight`: `contentHeight` below is pure
  * arithmetic on the row COUNT, matching this file's own CSS constants
- * (`ROW_H`/`ROW_GAP`/`HEADER_H`/`BODY_PAD`, plus the rows-card's own
- * `CARD_PAD`/`CARD_BORDER` — BUG 7, below) byte-for-byte, so
- * `lora_interaction.mjs`'s Class A sizing never has to read the live DOM.
+ * (`ROW_H`/`ROW_GAP`/`HEADER_H`, plus the rows-card's own `CARD_PAD`/
+ * `CARD_BORDER` — BUG 7, below) byte-for-byte, so `lora_interaction.mjs`'s
+ * Class A sizing never has to read the live DOM. (2026-07-30: `BODY_PAD` is
+ * no longer one of these — see `contentHeight`'s own comment below.)
  *
  * ## BUG 7 (2026-07-29 owner report) — the row floor, and the rows-card
  *
@@ -206,25 +207,17 @@ export const HEADER_H = 30;
 // putting this on `.wtn-lora-root` AS PADDING meant left/right came out
 // "roughly double" (root's own padding stacking with something else giving
 // the card an additional offset) while the BOTTOM came out flush (0, not 8)
-// against the node's own border. Root cause: a flex COLUMN container's
-// `padding` is one box surrounding BOTH children at once, so root's own
-// padding can only ever describe "the same inset on every side" as a single
-// number -- it can't be the thing that's ALSO supposed to independently gap
-// the header from the top and the card from the bottom AND both from the
-// sides, once something else (BUG 18 never pinned down a live-DOM cause
-// beyond the owner's own screenshots -- see this file's `applyNodeChrome`-
-// adjacent comment below) already contributes its own inset on top of it.
-// BUG 18's fix: `.wtn-lora-root` carries NO padding of its own anymore (the
-// owner's own suggested fix, taken as-is) -- this constant now names a
-// MARGIN each of root's two direct children (the header, the rows-card)
-// carries on whichever of its own four sides face the node's edge (header:
-// top+left+right; card: left+right+bottom -- the header-to-card gap in
-// between is `HEADER_GAP`'s own job, unchanged, via root's own flex `gap`).
-// That is the ONLY layer contributing this inset now, on every side, so it
-// cannot double: there is nothing left inside this file's own CSS for it to
-// stack with. `contentHeight()`'s formula is unchanged in VALUE (re-derived,
-// below) -- moving a fixed amount from one child's padding to two children's
-// margins contributes the identical total to the flex column's own height.
+// against the node's own border. BUG 18's own fix moved it to a MARGIN on
+// the header (top+left+right) and the card (left+right+bottom) instead --
+// still 8px of node-edge gap, just carried differently.
+//
+// (2026-07-30 owner report): the gap itself is now REMOVED ENTIRELY, not
+// moved again -- root carries no padding (unchanged since BUG 18) AND the
+// header/card now carry no margin either, so no CSS rule below spends this
+// constant anymore. It stays defined only because `contentHeight()`'s own
+// comment (below) and several regression tests still name `BODY_PAD` when
+// explaining the 16px (`BODY_PAD * 2`) `contentHeight()` used to add for
+// this gap and no longer does.
 export const BODY_PAD = 8;
 // The gap between the header row and the rows-card below it (BUG 7's new
 // card wrapper) -- kept at the ORIGINAL 7px `ROW_GAP` used to share with
@@ -310,20 +303,17 @@ export const NAME_MIN_W = 130;
 // One stepper cell, no tag: value + gap + spinner.
 export const STEPPER_W = STR_VAL_W + STR_CELL_GAP + STR_SPIN_W; // 48
 
-// BUG 10 fix to BUG 7's own derivation, RE-DERIVED again for BUG 18
-// (2026-07-29 owner report): the row's available width is NOT the node's
-// full width -- it's the node's width MINUS every layer of chrome between
-// the node's outer edge and the row itself: the node-edge gap (`BODY_PAD` --
-// BUG 18 moved this from the ROOT's own left+right padding to the CARD's own
-// left+right MARGIN, but it is still exactly one `BODY_PAD` per side, so
-// this sum is UNCHANGED in value), then the CARD's own left+right padding
-// (`CARD_PAD`) AND its left+right border (`CARD_BORDER`). BUG 7's original
-// MIN_W/MIN_W_SEP derivation only ever counted the ROW's OWN internal
-// padding (`ROW_PAD_L`/`ROW_PAD_R`) and silently omitted all three of
-// these -- meaning the floor it computed was already too narrow for the row
-// to actually fit in, even before BUG 10's card-gap request added any NEW
-// chrome. Fixed here rather than carried forward.
-const OUTER_CHROME_W = 2 * BODY_PAD + 2 * CARD_PAD + 2 * CARD_BORDER;
+// BUG 10 fix to BUG 7's own derivation, RE-DERIVED again for BUG 18, and
+// again on 2026-07-30 when the owner had the node-edge gap removed
+// entirely: the row's available width is the node's width MINUS every layer
+// of chrome between the node's outer edge and the row itself. That used to
+// include a node-edge term (`BODY_PAD` per side -- first the ROOT's own
+// left+right padding, then, BUG 18, the header's/card's own left+right
+// MARGIN); as of 2026-07-30 there is no such chrome at all (root has no
+// padding, the header/card carry no margin), so this sum no longer has a
+// `BODY_PAD` term. What remains is the CARD's own left+right padding
+// (`CARD_PAD`) AND its left+right border (`CARD_BORDER`).
+const OUTER_CHROME_W = 2 * CARD_PAD + 2 * CARD_BORDER;
 
 // grip · gap · name · gap · ONE stepper · gap · ⓘ · gap · switch, plus the
 // row's own left/right padding (4 gaps total between 5 children), plus
@@ -377,14 +367,13 @@ const CSS = `
 /* ── header strip: ＋ Add LoRA · slack · master switch · N/M · 🔍 · ⚙ ──
    the slack itself is .wtn-lora-master's own margin-left: auto rule,
    below -- this row is a plain flex container with no justify-content.
-   BUG 18: 'margin' (top+left+right, no bottom -- root's own 'gap' above
-   already provides the header-to-card gap) is what now carries the node-
-   edge inset root's padding used to, so the header stays visually aligned
-   with the card below it rather than sitting flush against the node's own
-   left/right/top border once root's own padding was removed. */
+   (2026-07-30 owner report): NO margin here either, matching root's own "no
+   padding" (BUG 18) -- the node-edge gap that used to live here (first as
+   root padding, then as this margin, BUG 18) is REMOVED ENTIRELY now, not
+   moved a third time; the owner tested this live and confirmed the node
+   looks correct flush against its own border. */
 .wtn-lora-header {
   display: flex; align-items: center; gap: 8px; height: 30px; flex: none;
-  margin: ${BODY_PAD}px ${BODY_PAD}px 0 ${BODY_PAD}px;
 }
 
 /* Content + padding, capped at 30% of the node -- must NOT flex, or it grows
@@ -479,15 +468,14 @@ const CSS = `
    empty state in the pack's '.wtn-card' idiom ('js/shared/theme.css'), but
    with a PLAIN '--wtn-line-soft' border, never an accent -- see this file's
    top doc comment for why that's settled rather than a fresh choice.
-   BUG 18: 'margin' (left+right+bottom -- no top; the header-to-card gap is
-   root's own 'gap', HEADER_GAP, unchanged) is the card's own share of the
-   node-edge inset root's padding used to carry -- see 'BODY_PAD''s own
-   comment above for the full BUG 18 derivation. ── */
+   (2026-07-30 owner report): NO margin either -- the node-edge gap this
+   card's margin used to carry (BUG 18) is REMOVED ENTIRELY now, matching
+   the header's own removal above; 'padding' below is the card's OWN inside
+   and is unaffected by that removal. ── */
 .wtn-lora-rows-card {
   border: ${CARD_BORDER}px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   border-radius: var(--wtn-radius, 10px); background: var(--wtn-surface, ${TOKENS.surface});
   padding: ${CARD_PAD}px; box-sizing: border-box;
-  margin: 0 ${BODY_PAD}px ${BODY_PAD}px ${BODY_PAD}px;
 }
 
 /* ── rows host + empty state ── */
@@ -1145,15 +1133,26 @@ export function buildSettingsPanel(doc) {
 // module's top doc comment.
 // ---------------------------------------------------------------------------
 
-/** Total node-body height for `rowCount` rows: the top+bottom node-edge gap
- * (`BODY_PAD` -- BUG 18 moved this from root's own padding to the header's/
- * card's own margin, see `BODY_PAD`'s comment above; the TOTAL it contributes
- * to this sum is unchanged, since `header.margin-top + card.margin-bottom`
- * still sums to exactly `BODY_PAD * 2`, the same as `root`'s old top+bottom
- * padding did) + the header + one inter-block gap + the rows-CARD (BUG 7:
- * border + padding on both axes) wrapping either the rows themselves or the
- * single empty-state line (which occupies exactly one row's height, so the
- * arithmetic never branches on a DIFFERENT constant for the empty case).
+/** Total node-body height for `rowCount` rows: the header + one inter-block
+ * gap + the rows-CARD (BUG 7: border + padding on both axes) wrapping either
+ * the rows themselves or the single empty-state line (which occupies exactly
+ * one row's height, so the arithmetic never branches on a DIFFERENT constant
+ * for the empty case).
+ *
+ * (2026-07-30 owner report -- root cause of "the card looks flush against
+ * the node's own bottom border"): this formula used to ALSO add
+ * `BODY_PAD * 2` here, for the top+bottom node-edge gap -- first root's own
+ * padding, then (BUG 18) the header's top margin + the card's bottom
+ * margin, which summed to that same `BODY_PAD * 2`. That term correctly
+ * matched the DOM for as long as the CSS actually rendered that much
+ * vertical chrome, so `contentHeight()` was NOT the thing under-counting
+ * anything -- it WAS counting the gap, all along. The owner has now had
+ * that gap removed from the CSS ENTIRELY (no padding on root, no margin on
+ * the header/card either -- see this file's CSS, above), so this function
+ * must stop adding for chrome that no longer exists, or the widget's
+ * (locked) height would overshoot the real DOM height by that same 16px --
+ * dead space at the bottom the user cannot drag away, since Class A height
+ * is locked (`getMinHeight === getMaxHeight`).
  *
  * This is the WIDGET's own box height -- it deliberately does NOT include
  * `WIDGETS_START_Y` (the fixed output-socket column reserved above the
@@ -1166,5 +1165,5 @@ export function contentHeight(rowCount) {
   const n = Math.max(0, rowCount);
   const rowsBlockH = n > 0 ? n * ROW_H + (n - 1) * ROW_GAP : ROW_H;
   const cardH = rowsBlockH + CARD_PAD * 2 + CARD_BORDER * 2;
-  return BODY_PAD * 2 + HEADER_H + HEADER_GAP + cardH;
+  return HEADER_H + HEADER_GAP + cardH;
 }
