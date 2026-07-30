@@ -5,9 +5,10 @@ Every node in `NODE_CLASS_MAPPINGS` is `EXPERIMENTAL = True` EXCEPT the
 explicit `GRADUATED` allow-list below. `AnimaLoaderPanel` graduated 2026-07-30
 (the attribute was removed outright -- ComfyUI treats a missing attribute the
 same as falsy, and an absent attribute is the cleaner statement than
-`EXPERIMENTAL = False`). `AnimaControlPanel` stays beta for now: it has an
-open drag-scale defect whose fix is still unverified live, and it is
-scheduled to graduate separately.
+`EXPERIMENTAL = False`). `AnimaControlPanel` graduated the same day: the bar
+is interface stability (frozen widget order, a stable state contract, stable
+sockets), not bug-freeness, and its last interface-affecting defect
+(drag-reorder ignoring canvas zoom) shipped in `d5088d3`.
 
 Without this guard, a future node could silently start (or stop) rendering
 the beta badge with no test noticing either way. Graduating the next node is
@@ -36,7 +37,7 @@ PACK_NAME = os.path.basename(REPO_ROOT)
 # Nodes that have graduated out of beta (no `[BETA]` badge). Every OTHER
 # registered node is expected to still carry `EXPERIMENTAL = True`. Adding a
 # name here is the one-line, visible edit a future graduation should be.
-GRADUATED = {"AnimaLoaderPanel"}
+GRADUATED = {"AnimaLoaderPanel", "AnimaControlPanel"}
 
 # Deliberately minimal and self-contained (same reasoning as
 # `test_node_descriptions.py`'s own script): a fresh `python3 -c ...` process

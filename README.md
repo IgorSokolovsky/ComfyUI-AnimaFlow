@@ -3,7 +3,7 @@
 **A lightweight, quality-of-life ComfyUI node pack for the [Anima](https://civitai.com/models/932505) model** — and for prompt work in general. Author your character once as declarative rules, build and combine prompts without walls of text, and keep everything consistent across every scene.
 
 > [!NOTE]
-> **Beta.** Most nodes are marked experimental in ComfyUI (`[BETA]` in the picker) and may change between versions. **Anima Loader Panel has graduated** — its widget order, state format and socket contract are frozen, so workflows using it keep loading. Feedback and issues are very welcome.
+> **Beta.** Most nodes are marked experimental in ComfyUI (`[BETA]` in the picker) and may change between versions. **Anima Loader Panel and Anima Control Panel have graduated** — their widget order, state format and socket contracts are frozen, so workflows using them keep loading. Feedback and issues are very welcome.
 
 ---
 

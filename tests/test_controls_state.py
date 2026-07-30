@@ -286,7 +286,10 @@ def test_control_panel_return_types_are_all_wildcard():
     assert AnimaControlPanel.RETURN_NAMES[-1] == f"value_{CONTROL_MAX_ROWS}"
     assert len(AnimaControlPanel.OUTPUT_TOOLTIPS) == CONTROL_MAX_ROWS
     assert AnimaControlPanel.CATEGORY == "AnimaFlow/Controls"
-    assert AnimaControlPanel.EXPERIMENTAL is True
+    # Graduated out of beta 2026-07-30 -- the attribute is absent, not False
+    # (ComfyUI treats a missing attribute the same as falsy; see
+    # tests/test_node_graduation.py for the pack-wide guard on this).
+    assert not getattr(AnimaControlPanel, "EXPERIMENTAL", False)
 
 
 def test_control_panel_input_types_declares_a_real_string_widget():
