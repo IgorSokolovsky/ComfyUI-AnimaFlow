@@ -1978,6 +1978,42 @@ test("removeRowAndSync asks ctx.confirmRemove before dropping a row with a live 
 });
 
 // ---------------------------------------------------------------------------
+// index.js's static import list -- PINNED to an explicit allowlist. Adding a
+// FIFTH static (`import ... from "...";`) import to this file killed the
+// entire Controls extension in a live browser (every DOM widget vanished,
+// the raw state blob showed on the node instead) -- reverted in `3feeb08`.
+// No other test can catch that class of regression (it only breaks in a
+// real ComfyUI page, not under this headless harness), which is exactly why
+// this is a source-scan guard rather than a behavioural one: it fails the
+// moment a SIXTH static import specifier appears anywhere in this file,
+// forcing whoever added it to either use a guarded dynamic `import()` (the
+// `loadMods()`/`loadLoraMods()` pattern this file already uses) or to
+// consciously update this allowlist with a reason.
+// ---------------------------------------------------------------------------
+
+test("index.js: the static (`import ... from`) import list is PINNED to an explicit allowlist -- a new one must be a guarded dynamic import() instead, per this file's own top doc comment", () => {
+  const indexSource = readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const ALLOWLIST = [
+    "/scripts/app.js",
+    "../shared/graph_loading.mjs",
+    "../shared/settings.mjs",
+    "../shared/refresh.mjs",
+  ];
+  // Matches a top-level `import ... from "specifier";` declaration -- never
+  // a dynamic `import("...")` call (no `from`, so this pattern can't match
+  // one), which is exactly the distinction this guard depends on:
+  // `loadMods()`/`loadLoraMods()`'s own `import("./rows.mjs")`-style calls
+  // must NOT be caught by this regex, only genuine static declarations.
+  const found = [...indexSource.matchAll(/^import\s+[\s\S]*?\bfrom\s*["']([^"']+)["'];?\s*$/gm)].map((m) => m[1]);
+  assert.ok(found.length > 0, "sanity check: the scan itself must find at least one static import");
+  assert.deepEqual(
+    found,
+    ALLOWLIST,
+    `static import list changed -- got ${JSON.stringify(found)}, expected exactly ${JSON.stringify(ALLOWLIST)}. A new static import must be a guarded dynamic import() instead (see this file's own top doc comment); if this addition is genuinely required as a static import, update ALLOWLIST here deliberately.`,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // index.js's OWN `confirmRemove` -- the "Confirm before removing a row"
 // setting (js/shared/settings.mjs, default ON). `index.js` carries a
 // top-level `/scripts/app.js` import (this file's own top doc comment), so
@@ -2448,6 +2484,84 @@ test("Loader Panel row (unet): picking a NEW model from the option-list menu (no
   // node.properties too, since that's the OTHER half of the handshake this
   // pack's skill file documents.
   assert.equal(node.properties.loaderPanelState.rows.find((r) => r.kind === "unet").value, "nyaIrisAnima_base1V20.safetensors");
+  closeActiveOverlay();
+});
+
+// =========================================================================
+// Core-mechanic audit (2026-07-30, owner directive): "after the state has
+// been re-parsed from the widget (the load path), an edit driven through
+// the node's own wired handler must land in the SERIALIZED widget value."
+// The suspected mechanism was: `restoreStateFromWidget` (the onConfigure
+// path) mints FRESH row ids via `rows.mjs`'s `normalizeRow`/`nextUid()`, and
+// if `syncRows`'s `rowSignature` cheap-path ever fired against a row list
+// whose ids matched the STALE, already-wired generation, a row-kind handler
+// (`wireComboRow`, closed over the row OBJECT) would mutate an ORPHAN no
+// longer reachable from `node.properties[stateProp]`, so `persistState`'s
+// widget write would never see the edit.
+//
+// This does NOT reproduce, by construction: `rowSignature` bakes `row.id`
+// into the string it compares (`interaction.mjs`'s `rowSignature`), and
+// `normalizeRow` NEVER reads a saved row's own `id` back out of the JSON --
+// it always mints a brand new one via `nextUid()`. So two INDEPENDENT
+// parses of the identical saved JSON (`setupNode`'s initial `ensureState`
+// parse, then `restoreNode`'s forced `restoreStateFromWidget` re-parse --
+// `simulateReload` below reproduces that exact two-phase sequence) can never
+// produce matching ids, which means `syncRows`'s signature check ALWAYS
+// takes the rebuild path on a re-parse, and `rebuildRowWidgets` always
+// re-wires every row's handlers against the CURRENT (post-re-parse) row
+// objects. There is no window in which an already-wired handler closes over
+// a row `rows.mjs`/`interaction.mjs` has since orphaned.
+//
+// Verified for the Loader Panel below (the confirmed reproduction target);
+// the Control Panel shares the identical `syncRows`/`rebuildRowWidgets`/
+// `rowSignature` code path with a different `panelConfig`, so this is one
+// mechanism covering both, not a Loader-Panel-only fix.
+// =========================================================================
+
+test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure reload sequence (a forced panel_state re-parse that mints fresh row ids), picking a NEW unet model through the row's own wired option-list menu still reaches the SERIALIZED panel_state widget", () => {
+  const overrides = {
+    getKnownLists: () => ({
+      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
+      vae: ["v.safetensors"],
+      clip: ["c.safetensors"],
+    }),
+  };
+  const savedDoc = makeDocStub();
+  const saved = makeFakeNode();
+  syncRows(saved, makeCtx(savedDoc, LOADER_PANEL_CONFIG, overrides)); // establishes the "saved workflow" -- default loader rows
+
+  // Reproduce index.js's real two-phase sequence with ONE ctx reused across
+  // BOTH phases (`restoreNode`'s own `node._ctrlCtx || buildCtx(...)` reuse
+  // contract -- a fresh ctx per phase would itself be a test artifact: a
+  // handler wired during phase 1 closes over whichever ctx `rebuildRowWidgets`
+  // was called with, so a genuinely-reused ctx is what the real extension
+  // guarantees, not a re-parse detail this test should be asserting).
+  const savedStateJSON = getStateWidget(saved).value;
+  const reloadedDoc = makeDocStub();
+  const reloaded = makeFakeNode(savedStateJSON);
+  reloaded.outputs = saved.outputs.map((o) => ({ ...o }));
+  const reloadedCtx = makeCtx(reloadedDoc, LOADER_PANEL_CONFIG, overrides);
+
+  ensureState(reloaded, reloadedCtx); // onNodeCreated's setupNode
+  syncRows(reloaded, reloadedCtx);
+  restoreStateFromWidget(reloaded, reloadedCtx); // onConfigure's restoreNode -- forces the re-parse
+  syncRows(reloaded, reloadedCtx);
+
+  makeWindowStub(reloadedDoc);
+  const unetEntry = reloaded._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
+
+  fire(unetEntry.refs.combo, "click");
+  const menu = reloadedDoc.body.children[reloadedDoc.body.children.length - 1];
+  assert.ok(menu.className.includes("wtn-ctl-overlay"));
+  const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
+  const target = opts.find((o) => o.textContent === "nyaIrisAnima_base1V20.safetensors");
+  assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
+  fire(target, "click");
+
+  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  const persistedUnet = JSON.parse(getStateWidget(reloaded).value).rows.find((r) => r.kind === "unet");
+  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors", "the pick made AFTER a reload's forced re-parse must reach the SERIALIZED widget, not just the on-screen row");
   closeActiveOverlay();
 });
 

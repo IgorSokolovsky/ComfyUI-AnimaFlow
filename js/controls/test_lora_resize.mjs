@@ -921,6 +921,62 @@ test("⚙: is keyed PER NODE -- opening a second node's dialog does not just tog
 });
 
 // =========================================================================
+// Core-mechanic audit (2026-07-30, owner directive): "after the state has
+// been re-parsed from the widget (the load path), an edit driven through
+// the node's own wired handler must land in the SERIALIZED widget value."
+// Suspected mechanism: `lora_state.mjs`'s `normalizeRow` mints a FRESH `id`
+// via `nextUid()` on every parse (never reads a saved row's own `id` back
+// out of the JSON), and `wireRow`'s handlers (`bump`, `refs.sw`'s on/off,
+// `commitTyped`, ...) close over `rowId`, not the row object -- so if a
+// handler wired against one parse's id ever survived a LATER re-parse's
+// `syncRows` without being re-wired, its `state.rows.find(r => r.id ===
+// rowId)` lookup would silently find nothing and no-op, rather than the
+// Control/Loader Panel's "mutates an orphan" symptom.
+//
+// This does NOT reproduce: `syncRows`'s `existingById` map (keyed by
+// `entry.id`) is looked up PER ROW against the CURRENT `state.rows`, and
+// since a re-parsed row's id can never match a stale entry's id (ids are
+// minted from a monotonic, never-reset, never-reused counter), every row
+// surviving a re-parse gets a BRAND-NEW entry + a BRAND-NEW `wireRow(node,
+// ctx, row.id, rowRefs)` call bound to the CURRENT id, and the stale entry
+// is dropped from the DOM. `restoreLoraNode` (the onConfigure path) calls
+// `restoreStateFromWidget` (the forced re-parse) then `mountLoraNode` ->
+// `syncRows` SYNCHRONOUSLY, immediately, every time -- there is no window in
+// which a re-parse happens without the very next `syncRows` re-binding every
+// handler to the ids that re-parse just produced.
+// =========================================================================
+
+test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure reload sequence (a forced lora_state re-parse that mints fresh row ids), bumping a row's strength through its own wired stepper still reaches the SERIALIZED lora_state widget", () => {
+  const savedNode = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "my_lora.safetensors", sm: 0.8, sc: 0.8 })]));
+  const savedCtx = makeCtx(makeDocStub());
+  setupLoraNode(savedNode, savedCtx); // establishes the "saved workflow"
+
+  // Reproduce index.js's real two-phase sequence with ONE ctx reused across
+  // BOTH phases (registerLoraNodeType's own `node._lrCtx || buildLoraCtx()`
+  // reuse contract) -- mirrors `js/controls/test_resize.mjs`'s identical
+  // audit test for the Control/Loader Panel.
+  const savedStateJSON = getStateWidget(savedNode).value;
+  const reloadedDoc = makeDocStub();
+  makeWindowStub(reloadedDoc);
+  const reloaded = makeFakeNode(savedStateJSON);
+  const reloadedCtx = makeCtx(reloadedDoc);
+
+  setupLoraNode(reloaded, reloadedCtx); // onNodeCreated
+  restoreLoraNode(reloaded, reloadedCtx); // onConfigure -- forces the re-parse
+
+  const rowBefore = ensureState(reloaded, reloadedCtx).rows[0];
+  const entry = reloaded._lrRows.find((e) => e.id === rowBefore.id);
+  assert.ok(entry, "the reloaded row's DOM entry must be wired against the CURRENT (post-re-parse) id");
+  assert.equal(entry.refs.strVal.value, "0.80");
+
+  fire(entry.refs.up, "click"); // the row's own wired strength stepper
+  assert.equal(entry.refs.strVal.value, "0.85");
+  const persistedRows = JSON.parse(getStateWidget(reloaded).value).rows;
+  assert.equal(persistedRows.length, 1);
+  assert.equal(persistedRows[0].sm, 0.85, "the bump made AFTER a reload's forced re-parse must reach the SERIALIZED widget, not just the on-screen row");
+});
+
+// =========================================================================
 // D. Row interactions
 // =========================================================================
 

@@ -2687,6 +2687,50 @@ test("toggling a stage switch (on the section HEADER itself) writes the generati
   assert.equal(genState(node).highres.enabled, true);
 });
 
+// ---------------------------------------------------------------------------
+// Core-mechanic audit (2026-07-30, owner directive): "after the state has
+// been re-parsed from the widget (the load path), an edit driven through the
+// node's own wired handler must land in the SERIALIZED widget value" -- the
+// same question raised for the Control/Loader Panel and the LoRA Loader,
+// asked here too. This node's `generation_settings` handshake is
+// structurally different from either of those: `ensureGenState` (this
+// module's own `restoreGenStateFromWidget` alias) is called from exactly ONE
+// call site (`mountGeneratorUI`), and `mountGeneratorUI` itself is guarded by
+// `if (node._anRefs) return node._anRefs;` -- so a real node's `setupNode`
+// (onNodeCreated) and `restoreNode` (onConfigure) BOTH call `mountNode` ->
+// `mountGeneratorUI`, but only the FIRST one ever actually parses the widget
+// or builds the body; the second is a no-op that returns the same `refs`
+// object. There is no per-row `id` here at all (a settings TREE, not a row
+// list), so the Control/Loader Panel's/LoRA Loader's "re-parse mints a fresh
+// id, stranding an already-wired handler" mechanism cannot arise structurally
+// -- every field handler closes over `node`/`state` (`node._anGenState`,
+// written exactly once, by the one `ensureGenState` call that ever runs),
+// never a row id. This test pins that invariant directly rather than
+// asserting an absence: `mountGeneratorUI` called a SECOND time (mirroring
+// `restoreNode` calling `mountNode` after `setupNode` already did) must not
+// re-parse (the widget's `generation_settings` value stays IDENTICAL to what
+// the first call already normalized+wrote), and a stage-switch toggle after
+// both calls still reaches the serialized widget.
+// ---------------------------------------------------------------------------
+
+test("core-mechanic audit: mountGeneratorUI's second call (mirroring restoreNode running after setupNode already mounted) does not re-parse generation_settings, and a stage toggle afterward still reaches the SERIALIZED widget", () => {
+  const node = makeGeneratorNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  const refs1 = mountGeneratorUI(node, ctx); // onNodeCreated's setupNode
+  const stateAfterFirstMount = node._anGenState;
+  const widgetValueAfterFirstMount = getGenSettingsWidget(node).value;
+
+  const refs2 = mountGeneratorUI(node, ctx); // onConfigure's restoreNode, same ctx reused
+  assert.equal(refs2, refs1, "a second mount call must be a no-op (same refs), not a rebuild");
+  assert.equal(node._anGenState, stateAfterFirstMount, "generation_settings must not be re-parsed into a NEW state object on the second mount call");
+  assert.equal(getGenSettingsWidget(node).value, widgetValueAfterFirstMount);
+
+  const header = findSectionHeader(refs2.body, "Highres");
+  fire(switchOf(header), "click");
+  assert.equal(genState(node).highres.enabled, true, "an edit made after the second mount call must still reach the SERIALIZED widget");
+});
+
 test("dragging a numeric field (steps) INSIDE an expanded Sampler section writes the widget on release, live-painting during the drag", () => {
   const node = makeGeneratorNode();
   const doc = makeDocStub();
@@ -3987,6 +4031,25 @@ test("wipeXFromEvent clamps to [0,100] and defaults to 50 for a degenerate rect"
   assert.equal(wipeXFromEvent({ left: 0, width: 100 }, -50), 0);
   assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 150), 100);
   assert.equal(wipeXFromEvent({ left: 0, width: 100 }, 50), 50);
+});
+
+test("core-mechanic audit: mountPreviewUI's second call (mirroring restoreNode running after setupNode already mounted) does not re-parse preview_state, and a Save-switch toggle afterward still reaches the SERIALIZED widget", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs1 = mountPreviewUI(node, ctx); // onNodeCreated's setupNode
+  const stateAfterFirstMount = node._anPreviewState;
+  const widgetValueAfterFirstMount = getPreviewStateWidget(node).value;
+
+  const refs2 = mountPreviewUI(node, ctx); // onConfigure's restoreNode, same ctx reused
+  assert.equal(refs2, refs1, "a second mount call must be a no-op (same refs), not a rebuild");
+  assert.equal(node._anPreviewState, stateAfterFirstMount, "preview_state must not be re-parsed into a NEW state object on the second mount call");
+  assert.equal(getPreviewStateWidget(node).value, widgetValueAfterFirstMount);
+
+  const header = findSectionHeader(refs2.body, "Save");
+  fire(switchOf(header), "click");
+  assert.equal(previewState(node).save.enabled, true, "an edit made after the second mount call must still reach the SERIALIZED widget");
 });
 
 test("Preview: the Save row's own switch reaches the preview_state widget immediately, WITHOUT opening the menu (stopPropagation keeps it a separate control)", () => {
