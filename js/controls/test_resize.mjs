@@ -449,6 +449,13 @@ function fakeArrange(node) {
   });
 }
 
+/** Test-local mirror of `interaction.mjs`'s own (private, unexported)
+ * `rowSignature` -- `id:kind` joined, nothing else -- so a test can assert
+ * "same signature" without needing that function exported for its own sake. */
+function rowSignatureOf(state) {
+  return state.rows.map((r) => `${r.id}:${r.kind}`).join("|");
+}
+
 function makeCtx(doc, panelConfig, overrides = {}) {
   return {
     panelConfig,
@@ -2563,6 +2570,243 @@ test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure relo
   const persistedUnet = JSON.parse(getStateWidget(reloaded).value).rows.find((r) => r.kind === "unet");
   assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors", "the pick made AFTER a reload's forced re-parse must reach the SERIALIZED widget, not just the on-screen row");
   closeActiveOverlay();
+});
+
+// =========================================================================
+// `syncRows` state-object-identity guard (2026-07-30, same day as the audit
+// immediately above). `rowSignature` is `id:kind` only, and (per that audit)
+// `restoreStateFromWidget`'s real `normalizeRow`/`nextUid()` mints ids that
+// can NEVER coincide with a prior parse's ids in this session -- so the
+// TWO-PHASE RELOAD specifically can never hit the cheap-repaint path by
+// signature collision alone; that mechanism is not how the reported stale
+// -model symptom reproduces, and the audit above is correct that it doesn't.
+//
+// That does not make comparing by signature alone SAFE, only lucky given
+// today's `nextUid` behavior. `node._ctrlRows[i].refs.row` -- and every
+// closure `wireComboRow`/`openListMenuFor`/etc. captured over that same row
+// object -- is only ever re-bound by a REAL `rebuildRowWidgets` call; a
+// repaint-only path never touches them. If `node.properties[stateProp]` is
+// ever swapped for a genuinely different object whose row ids happen to
+// still match the signature string byte-for-byte (a future normalizeRow
+// change that preserves ids where possible, a hand-rolled state restore, a
+// test double, anything other than today's always-fresh-id mint), the OLD
+// signature-only check would silently repaint against a state object no
+// longer reachable from `ensureState`/`persistState`, reintroducing exactly
+// the detached-DOM failure mode this section guards against structurally --
+// tracking OBJECT IDENTITY alongside the signature closes that gap
+// regardless of whether `nextUid` keeps making it unreachable in practice.
+//
+// The scenario below constructs the matching-signature-different-identity
+// state directly (there is no way to reach it through the real two-phase
+// reload today, per the audit) specifically to exercise `syncRows`'s own
+// identity check in isolation.
+// =========================================================================
+
+test("syncRows rebuilds (re-binding every row DOM closure) when node.properties holds a NEW state object whose signature happens to match the currently-wired one -- would have stayed on the stale repaint path with a signature-only check", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({
+      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
+      vae: ["v.safetensors"],
+      clip: ["c.safetensors"],
+    }),
+  });
+  syncRows(node, ctx); // builds the DOM against state A (default unet/vae/clip)
+  const stateA = ensureState(node, ctx);
+
+  // A hand-built state B: same `id`/`kind` for every row (so `rowSignature`
+  // is byte-for-byte identical to state A's), but a genuinely NEW object --
+  // exactly what the doc comment above says `restoreStateFromWidget` would
+  // hand back if a future `normalizeRow` ever preserved ids on a re-parse.
+  const stateB = { version: 1, rows: stateA.rows.map((r) => ({ ...r, opts: { ...r.opts } })) };
+  assert.notEqual(stateB, stateA, "must be a different object, not the same reference");
+  node.properties[ctx.panelConfig.stateProp] = stateB;
+
+  syncRows(node, ctx); // the signature is unchanged -- only object identity differs
+
+  // The crisp invariant: every row DOM entry must reference a row object
+  // that ensureState/persistState will ACTUALLY serialize, i.e. one drawn
+  // from stateB, not the orphaned stateA.
+  const liveState = ensureState(node, ctx);
+  assert.equal(liveState, stateB, "ensureState must still be handing back stateB");
+  node._ctrlRows.forEach((entry) => {
+    const wantRow = liveState.rows.find((r) => r.id === entry.id);
+    assert.equal(entry.refs.row, wantRow, `row ${entry.id} (${entry.kind}): DOM entry must be bound to the row object ensureState/persistState actually serialize`);
+  });
+
+  // Now drive an edit through the row's own wired handler (exactly what a
+  // user click does) and confirm it reaches the SERIALIZED widget, not an
+  // orphaned copy of the row.
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  fire(unetEntry.refs.combo, "click");
+  const menu = doc.body.children[doc.body.children.length - 1];
+  const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
+  const target = opts.find((o) => o.textContent === "nyaIrisAnima_base1V20.safetensors");
+  assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
+  fire(target, "click");
+
+  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors", "the pick must reach the SERIALIZED panel_state widget, not just the on-screen row");
+  closeActiveOverlay();
+});
+
+test("syncRows: an UNCHANGED state object (same signature, same identity) stays on the cheap repaint path -- no row DOM is torn down/rebuilt", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx);
+  const widgetsBefore = node._ctrlRows.map((e) => e.widget);
+  const rootsBefore = node._ctrlRows.map((e) => e.refs.root);
+  const rowsBefore = node._ctrlRows.map((e) => e.refs.row);
+
+  syncRows(node, ctx); // nothing changed at all -- same state object, same rows
+
+  const widgetsAfter = node._ctrlRows.map((e) => e.widget);
+  const rootsAfter = node._ctrlRows.map((e) => e.refs.root);
+  const rowsAfter = node._ctrlRows.map((e) => e.refs.row);
+  assert.deepEqual(widgetsAfter, widgetsBefore, "row widgets must be the SAME instances -- a rebuild would mint new ones");
+  assert.deepEqual(rootsAfter, rootsBefore, "row root elements must be the SAME instances -- a rebuild tears down and rebuilds DOM");
+  assert.deepEqual(rowsAfter, rowsBefore, "row objects must be the SAME instances -- a rebuild would rebind to (identical, but new) refs");
+});
+
+// =========================================================================
+// LIVE MEASUREMENT (2026-07-30, owner console output on a real `AnimaLoaderPanel`
+// node): after picking a new unet model, `repaintRows`/the DOM show the new
+// value, but `panel_state` never changes -- `sameObject=false` on every row,
+// `idInLiveState=true`, `rowSig` unchanged. This is `node._ctrlRows[i].refs.row`
+// pointing at a DETACHED row object while `node.properties[stateProp]` (what
+// `ensureState`/`persistState` actually read/write) holds a DIFFERENT,
+// id-preserving object -- most plausibly an id-preserving JSON round-trip of
+// `node.properties` (litegraph serializing the workflow) that happens WITHOUT
+// a `syncRows` call in between (so `rebuildRowWidgets` never re-binds the
+// existing entries). Reproduced directly below: a deep, id-PRESERVING clone
+// of the live state swapped into `node.properties[stateProp]` with `syncRows`
+// deliberately never called again -- exactly `sameObject: false` /
+// `idInLiveState: true` / an unchanged `rowSig`, matching the measurement
+// byte for byte.
+//
+// The fix: every row handler in `interaction.mjs` (`wireComboRow`/
+// `openListMenuFor`/`wireSeedRow`/`wireNumericRow`/`wireGear`/
+// `openGearPopover`/`wireRename`/`wireContextMenu`/`openContextMenuFor`/
+// `wireGrip`/`wireRow`) now captures only `row.id` and re-resolves the row
+// LIVE from `ensureState(node, ctx).rows` at the moment its own handler
+// fires -- mirroring `lora_interaction.mjs`'s existing `wireGrip`/
+// `openNamePickerFor`/etc, which were already structurally immune to this
+// exact bug for exactly that reason.
+// =========================================================================
+
+test("BUG (live, 2026-07-30): after node.properties[stateProp] is swapped for an id-PRESERVING deep clone WITHOUT syncRows re-running (sameObject=false, idInLiveState=true, rowSig unchanged -- the exact measured symptom), picking a new value through the row's REAL wired combo-menu handler still reaches the SERIALIZED panel_state widget", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({
+      unet: ["JANIMA_v10.safetensors", "animayume_v10BaseFinal.safetensors"],
+      vae: ["qwen-image/qwen_image_vae.safetensors"],
+      clip: ["qwen_3_06b_base.safetensors"],
+    }),
+  });
+  syncRows(node, ctx); // builds row DOM against state A (default loader rows)
+  const stateA = ensureState(node, ctx);
+
+  // The measured swap: a deep, id-PRESERVING clone (a JSON round-trip
+  // preserves every `id`/`kind`, exactly like a real litegraph
+  // serialize-then-restore of `node.properties` would) -- deliberately
+  // WITHOUT calling syncRows, so node._ctrlRows[i].refs.row stays bound to
+  // stateA while node.properties[stateProp] now points at stateB.
+  const stateB = JSON.parse(JSON.stringify(stateA));
+  node.properties[ctx.panelConfig.stateProp] = stateB;
+
+  // Confirm this reproduces the measured console output exactly.
+  assert.notEqual(stateB, stateA, "sameObject must be false");
+  assert.deepEqual(stateB.rows.map((r) => r.id), stateA.rows.map((r) => r.id), "idInLiveState -- ids preserved");
+  assert.equal(rowSignatureOf(stateB), rowSignatureOf(stateA), "rowSig must be unchanged");
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  const liveUnetRow = ensureState(node, ctx).rows.find((r) => r.id === unetEntry.id);
+  assert.notEqual(unetEntry.refs.row, liveUnetRow, "the DOM entry's row must be a DIFFERENT object from the live state's row of the same id");
+
+  // Drive the value change through the REAL wired combo-menu handler -- the
+  // same route the owner's click takes (click the combo, click an option).
+  fire(unetEntry.refs.combo, "click");
+  const menu = doc.body.children[doc.body.children.length - 1];
+  assert.ok(menu.className.includes("wtn-ctl-overlay"));
+  const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
+  const target = opts.find((o) => o.textContent === "animayume_v10BaseFinal.safetensors");
+  assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
+  fire(target, "click");
+
+  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  assert.equal(
+    persistedUnet.value,
+    "animayume_v10BaseFinal.safetensors",
+    "the pick must reach the SERIALIZED panel_state widget, not just a detached copy of the row -- this is what makes AnimaLoaderPanel.run() actually see the new model",
+  );
+  closeActiveOverlay();
+});
+
+test("a row handler whose row id no longer exists in the live state bails safely (no throw, no mutation) -- e.g. the row vanished while a control was still open", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({
+      unet: ["a.safetensors", "b.safetensors"],
+      vae: ["v.safetensors"],
+      clip: ["c.safetensors"],
+    }),
+  });
+  syncRows(node, ctx);
+  const state = ensureState(node, ctx);
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  const widgetBefore = getStateWidget(node).value;
+
+  // Remove the row from the LIVE state directly (not via removeRowAndSync,
+  // which would also tear down this entry's own DOM through syncRows) --
+  // reproduces "the row is gone by the time this row's own control fires."
+  state.rows = state.rows.filter((r) => r.id !== unetEntry.id);
+
+  assert.doesNotThrow(() => fire(unetEntry.refs.stepLeft, "click"), "the ◀ stepper (wireComboRow's cycle) must bail, not throw");
+  assert.doesNotThrow(() => fire(unetEntry.refs.combo, "click"), "opening the option-list menu (openListMenuFor) must bail, not throw");
+  assert.doesNotThrow(() => fire(unetEntry.refs.gear, "click"), "opening the ⚙ popover (openGearPopover) must bail, not throw");
+  closeActiveOverlay();
+
+  assert.equal(getStateWidget(node).value, widgetBefore, "none of these bailed handlers may have persisted anything");
+});
+
+test("repaintRows: an entry.refs.row diverged from the live state's row of the same id is rebound before painting, even on the cheap repaint-only path", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
+    getKnownLists: () => ({
+      unet: ["JANIMA_v10.safetensors", "animayume_v10BaseFinal.safetensors"],
+      vae: ["qwen-image/qwen_image_vae.safetensors"],
+      clip: ["qwen_3_06b_base.safetensors"],
+    }),
+  });
+  syncRows(node, ctx);
+  const stateA = ensureState(node, ctx);
+  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(unetEntry.refs.row, stateA.rows.find((r) => r.id === unetEntry.id), "sanity: freshly built, so still the SAME object");
+
+  // Same id-preserving swap as the BUG test above, but this time forcing
+  // `node._ctrlStateRef` to match the new object too, so `syncRows`'s own
+  // identity guard does NOT trip and this exercises repaintRows's cheap path
+  // in isolation (rather than the full rebuild the identity guard would
+  // otherwise force).
+  const stateB = JSON.parse(JSON.stringify(stateA));
+  stateB.rows.find((r) => r.kind === "unet").value = "animayume_v10BaseFinal.safetensors";
+  node.properties[ctx.panelConfig.stateProp] = stateB;
+  node._ctrlStateRef = stateB;
+  assert.equal(rowSignatureOf(stateB), node._ctrlRowSig, "signature must still match, so syncRows takes the repaint-only path");
+
+  syncRows(node, ctx); // cheap path only -- repaintRows, never rebuildRowWidgets
+
+  const rebound = node._ctrlRows.find((e) => e.kind === "unet");
+  assert.equal(rebound.refs.row, stateB.rows.find((r) => r.kind === "unet"), "entry.refs.row must be rebound to the LIVE state's row of the same id");
+  assert.equal(rebound.refs.row.value, "animayume_v10BaseFinal.safetensors", "the display must reflect the live row's value after rebind");
 });
 
 // =========================================================================

@@ -344,8 +344,23 @@ function afterEdit(node, ctx) {
 // Row-kind-specific wiring
 // ---------------------------------------------------------------------------
 
-function wireComboRow(node, ctx, row, refs) {
+/** `rowId` only -- never a captured `row` object. Every mutation below
+ * re-resolves the CURRENT row from `ensureState(node, ctx).rows` at the
+ * moment the handler actually fires, mirroring `lora_interaction.mjs`'s own
+ * `wireGrip`/`openNamePickerFor`/etc (see this module's top doc comment for
+ * why: `node.properties[stateProp]` can be swapped out from under an
+ * already-wired row -- measured live, `sameObject=false` with the id
+ * preserved -- and closing over the OLD row object silently mutates a
+ * detached copy `persistState` never serializes). A row that no longer
+ * exists (removed while this control was open) is a safe no-op, never a
+ * throw. */
+function wireComboRow(node, ctx, rowId, refs) {
   const cycle = (dir) => {
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return; // row vanished out from under this control -- nothing to cycle
+    }
     const list = optionListFor(ctx, row.kind);
     if (!list.length) {
       return;
@@ -357,7 +372,7 @@ function wireComboRow(node, ctx, row, refs) {
     // alone), but if THIS row's own list menu happens to be open, stepping
     // the value closes it too -- never leaves a now-stale selection
     // highlighted in an overlay still open behind the click.
-    closeOverlayIfOwnedBy(`list:${row.id}`);
+    closeOverlayIfOwnedBy(`list:${rowId}`);
   };
   refs.stepLeft.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -369,20 +384,29 @@ function wireComboRow(node, ctx, row, refs) {
   });
   refs.combo.addEventListener("click", (e) => {
     e.stopPropagation();
-    openListMenuFor(node, ctx, row, refs);
+    openListMenuFor(node, ctx, rowId, refs);
   });
 }
 
 /** Opens (or, on a second click of the SAME field, closes) this row's
  * option-list menu -- see `closeOverlayIfOwnedBy`'s doc comment for why the
  * toggle has to be decided HERE rather than left to the outside-click
- * dismiss listener. */
-function openListMenuFor(node, ctx, row, refs) {
-  const key = `list:${row.id}`;
+ * dismiss listener. Resolves `row` live from `rowId` both when the menu is
+ * BUILT (so it reflects whatever's actually live right now, never a stale
+ * closure) and AGAIN inside each option's own click (in case the row was
+ * removed -- or the state object swapped -- while the menu sat open); either
+ * miss is a safe no-op, never a throw. */
+function openListMenuFor(node, ctx, rowId, refs) {
+  const key = `list:${rowId}`;
   if (closeOverlayIfOwnedBy(key)) {
     return; // toggle: this field's own menu was open -- just close it
   }
   closeActiveOverlay(); // a DIFFERENT field's overlay was open -- switch to this one
+  const state = ensureState(node, ctx);
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return; // row vanished out from under this control -- nothing to show
+  }
   const doc = ctx.doc;
   const list = optionListFor(ctx, row.kind);
   const menu = el(doc, "div", "wtn-ctl-menu wtn");
@@ -396,8 +420,13 @@ function openListMenuFor(node, ctx, row, refs) {
     optEl.textContent = opt;
     optEl.addEventListener("click", (e) => {
       e.stopPropagation();
-      row.value = opt;
+      const liveState = ensureState(node, ctx);
+      const liveRow = liveState.rows.find((r) => r.id === rowId);
       closeActiveOverlay();
+      if (!liveRow) {
+        return; // row vanished while the menu was open -- nothing to write
+      }
+      liveRow.value = opt;
       afterEdit(node, ctx);
     });
     menu.appendChild(optEl);
@@ -413,9 +442,14 @@ function openListMenuFor(node, ctx, row, refs) {
   refs.root.classList.add("wtn-ctl-open");
 }
 
-function wireSeedRow(node, ctx, row, refs) {
+function wireSeedRow(node, ctx, rowId, refs) {
   refs.modeBtn.addEventListener("click", (e) => {
     e.stopPropagation();
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return;
+    }
     if (row.opts.after === "fixed") {
       row.opts.after = AFTER_MODES.includes(row.opts.lastMode) ? row.opts.lastMode : "randomize";
     } else {
@@ -426,6 +460,11 @@ function wireSeedRow(node, ctx, row, refs) {
   });
   refs.newBtn.addEventListener("click", (e) => {
     e.stopPropagation();
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return;
+    }
     row.value = randomSeedString();
     if (row.opts.after !== "fixed") {
       row.opts.lastMode = row.opts.after;
@@ -436,6 +475,11 @@ function wireSeedRow(node, ctx, row, refs) {
   if (refs.reuseBtn) {
     refs.reuseBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      const state = ensureState(node, ctx);
+      const row = state.rows.find((r) => r.id === rowId);
+      if (!row) {
+        return;
+      }
       // Guarded even though paintRow already hides this button for the same
       // condition (render.mjs's seed branch) -- a stray click racing a
       // repaint that hasn't landed yet must never resurrect a `lastUsed`
@@ -456,9 +500,14 @@ function wireSeedRow(node, ctx, row, refs) {
   }
 }
 
-function wireNumericRow(node, ctx, row, refs) {
+function wireNumericRow(node, ctx, rowId, refs) {
   let dragging = false;
   const setFromClientX = (clientX) => {
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return; // row vanished mid-drag -- nothing left to set
+    }
     const rect = typeof refs.root.getBoundingClientRect === "function" ? refs.root.getBoundingClientRect() : null;
     if (!rect || !Number.isFinite(rect.width) || rect.width <= 0) {
       return;
@@ -795,24 +844,34 @@ function buildClipPopover(doc, node, ctx, row, closeFn) {
   return root;
 }
 
-function wireGear(node, ctx, row, refs) {
+function wireGear(node, ctx, rowId, refs) {
   if (!refs.gear) {
     return;
   }
   refs.gear.addEventListener("click", (e) => {
     e.stopPropagation();
-    openGearPopover(node, ctx, row, refs);
+    openGearPopover(node, ctx, rowId, refs);
   });
 }
 
 /** Opens (or, on a second click of the SAME row's ⚙, closes) that row's
- * settings popover -- same toggle contract as `openListMenuFor` above. */
-function openGearPopover(node, ctx, row, refs) {
-  const key = `gear:${row.id}`;
+ * settings popover -- same toggle contract as `openListMenuFor` above.
+ * Resolves `row` live from `rowId` right before building the popover, so its
+ * content (and every field handler closing over this SAME row object) is
+ * bound to whatever `ensureState` actually serializes right now, never a
+ * stale closure. A row that's vanished by the time the ⚙ is clicked is a
+ * safe no-op -- no popover opens at all. */
+function openGearPopover(node, ctx, rowId, refs) {
+  const key = `gear:${rowId}`;
   if (closeOverlayIfOwnedBy(key)) {
     return; // toggle: this row's own popover was open -- just close it
   }
   closeActiveOverlay(); // a DIFFERENT overlay was open -- switch to this one
+  const state = ensureState(node, ctx);
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return; // row vanished out from under this control -- nothing to show
+  }
   const doc = ctx.doc;
   const closeFn = () => closeActiveOverlay();
   let content = null;
@@ -928,10 +987,17 @@ function beginRename(node, ctx, row, refs) {
 }
 
 /** The fast path: double-click the label itself (the menu item in
- * openContextMenuFor is the discoverable path to the same `beginRename`). */
-function wireRename(node, ctx, row, refs) {
+ * openContextMenuFor is the discoverable path to the same `beginRename`).
+ * Resolves `row` live from `rowId` at the moment the dblclick actually fires
+ * -- a row removed since this listener was wired is a safe no-op. */
+function wireRename(node, ctx, rowId, refs) {
   refs.name.addEventListener("dblclick", (e) => {
     e.stopPropagation();
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return;
+    }
     beginRename(node, ctx, row, refs);
   });
 }
@@ -943,13 +1009,13 @@ function wireRename(node, ctx, row, refs) {
 // the section above).
 // ---------------------------------------------------------------------------
 
-function wireContextMenu(node, ctx, row, refs) {
+function wireContextMenu(node, ctx, rowId, refs) {
   refs.root.addEventListener("contextmenu", (e) => {
     if (typeof e.preventDefault === "function") {
       e.preventDefault();
     }
     e.stopPropagation();
-    openContextMenuFor(node, ctx, row, refs);
+    openContextMenuFor(node, ctx, rowId, refs);
   });
 }
 
@@ -957,13 +1023,20 @@ function wireContextMenu(node, ctx, row, refs) {
  * right-click menu -- same toggle contract as `openListMenuFor`/
  * `openGearPopover` above (this one WAS already sharing the same
  * unconditional close-then-reopen bug, confirmed by inspection: nothing
- * about `contextmenu` made it any different from `click`). */
-function openContextMenuFor(node, ctx, row, refs) {
-  const key = `context:${row.id}`;
+ * about `contextmenu` made it any different from `click`). Resolves `row`
+ * live from `rowId` before building the menu -- a row removed by the time
+ * this fires is a safe no-op, no menu opens. */
+function openContextMenuFor(node, ctx, rowId, refs) {
+  const key = `context:${rowId}`;
   if (closeOverlayIfOwnedBy(key)) {
     return; // toggle: this row's own context menu was open -- just close it
   }
   closeActiveOverlay(); // a DIFFERENT overlay was open -- switch to this one
+  const state = ensureState(node, ctx);
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return; // row vanished out from under this control -- nothing to show
+  }
   const doc = ctx.doc;
   const menu = el(doc, "div", "wtn-ctl-menu wtn");
   const head = el(doc, "div", "wtn-ctl-mhead");
@@ -975,7 +1048,12 @@ function openContextMenuFor(node, ctx, row, refs) {
   rename.addEventListener("click", (e) => {
     e.stopPropagation();
     closeActiveOverlay();
-    beginRename(node, ctx, row, refs);
+    const liveState = ensureState(node, ctx);
+    const liveRow = liveState.rows.find((r) => r.id === rowId);
+    if (!liveRow) {
+      return;
+    }
+    beginRename(node, ctx, liveRow, refs);
   });
   menu.appendChild(rename);
 
@@ -987,7 +1065,7 @@ function openContextMenuFor(node, ctx, row, refs) {
   dup.addEventListener("click", (e) => {
     e.stopPropagation();
     closeActiveOverlay();
-    duplicateRowAndSync(node, ctx, row.id);
+    duplicateRowAndSync(node, ctx, rowId);
   });
   menu.appendChild(dup);
 
@@ -996,7 +1074,7 @@ function openContextMenuFor(node, ctx, row, refs) {
   del.addEventListener("click", (e) => {
     e.stopPropagation();
     closeActiveOverlay();
-    removeRowAndSync(node, ctx, row.id);
+    removeRowAndSync(node, ctx, rowId);
   });
   menu.appendChild(del);
 
@@ -1031,7 +1109,7 @@ function openContextMenuFor(node, ctx, row, refs) {
  * back to scale `1` if `ctx.getCanvasScale` is missing or not a function
  * (an older/partial ctx, or a test stub) -- never breaks under those.
  */
-function wireGrip(node, ctx, row, refs) {
+function wireGrip(node, ctx, rowId, refs) {
   if (!refs.grip) {
     return;
   }
@@ -1046,9 +1124,13 @@ function wireGrip(node, ctx, row, refs) {
     e.stopPropagation();
     closeActiveOverlay();
 
+    // Resolved live, right here at drag-START (mirrors `lora_interaction.
+    // mjs`'s own `wireGrip`) -- a fresh, single-gesture read of whatever
+    // `ensureState` currently serializes, never a `row` object captured back
+    // at wiring time.
     const state = ensureState(node, ctx);
     const snapshot = state.rows.slice();
-    const fromIndex = snapshot.findIndex((r) => r.id === row.id);
+    const fromIndex = snapshot.findIndex((r) => r.id === rowId);
     if (fromIndex < 0) {
       return;
     }
@@ -1184,21 +1266,30 @@ function openAddMenu(node, ctx, addRefs) {
 // Row wiring dispatch
 // ---------------------------------------------------------------------------
 
+// `row` here is only ever read AT BUILD TIME (`rebuildRowWidgets`'s own
+// `state.rows.forEach` loop, immediately after `ensureState` -- never a
+// closure held for later), purely to decide which kind of wiring this row
+// needs. Every sub-`wireX` function below is handed `row.id` alone, never
+// `row` itself -- each resolves its OWN live row at the moment its handler
+// actually fires (see this module's top doc comment and each function's own
+// doc comment for why a captured `row` object is exactly the bug this
+// dispatcher must not reintroduce).
 function wireRow(node, ctx, row, refs) {
-  wireGrip(node, ctx, row, refs);
-  wireContextMenu(node, ctx, row, refs);
-  wireRename(node, ctx, row, refs);
-  wireGear(node, ctx, row, refs);
+  const rowId = row.id;
+  wireGrip(node, ctx, rowId, refs);
+  wireContextMenu(node, ctx, rowId, refs);
+  wireRename(node, ctx, rowId, refs);
+  wireGear(node, ctx, rowId, refs);
   const kindMeta = KIND_META[row.kind] || KIND_META.auto;
   if (row.kind === "auto") {
     return;
   }
   if (isPickerKind(kindMeta)) {
-    wireComboRow(node, ctx, row, refs);
+    wireComboRow(node, ctx, rowId, refs);
   } else if (row.kind === "seed") {
-    wireSeedRow(node, ctx, row, refs);
+    wireSeedRow(node, ctx, rowId, refs);
   } else if (row.kind === "int" || row.kind === "float") {
-    wireNumericRow(node, ctx, row, refs);
+    wireNumericRow(node, ctx, rowId, refs);
   }
 }
 
@@ -1276,7 +1367,20 @@ export function teardownAllZoomPassthrough(node) {
 /** Repaint every existing row's DISPLAY (never its DOM structure) from the
  * current state — the cheap path taken whenever the row-list signature
  * hasn't changed (see this module's top doc comment). Also refreshes each
- * row's own output dot class/title and the "+ Add" strip's disabled state. */
+ * row's own output dot class/title and the "+ Add" strip's disabled state.
+ *
+ * Display-consistency defense (2026-07-30, alongside the handler-level fix):
+ * if `entry.refs.row` is no longer the SAME object as the live state's row
+ * of the same id (`node.properties[stateProp]` was swapped for a different,
+ * id-preserving object without a `syncRows` rebuild in between — the
+ * measured live symptom this whole pass exists for), rebind it to the live
+ * row here before painting. This does not by itself fix a handler that
+ * already closed over the stale object (that's the point of every `wireX`
+ * function above resolving live at fire-time instead) — it only ensures the
+ * NEXT paint, whatever triggers it, can never show a value that disagrees
+ * with what `persistState` would actually serialize. A row id no longer
+ * present in the live state at all (removed) is left as-is here; `syncRows`'
+ * signature check is what tears down/rebuilds the entry list itself. */
 function repaintRows(node, ctx) {
   const state = ensureState(node, ctx);
   const lists = ctx.getKnownLists ? ctx.getKnownLists() : {};
@@ -1287,6 +1391,10 @@ function repaintRows(node, ctx) {
       return;
     }
     try {
+      const liveRow = state.rows.find((r) => r.id === entry.id);
+      if (liveRow && entry.refs.row !== liveRow) {
+        entry.refs.row = liveRow;
+      }
       const row = entry.refs.row;
       const kindMeta = KIND_META[row.kind] || KIND_META.auto;
       let optionList = null;
@@ -1438,10 +1546,23 @@ export function syncRows(node, ctx) {
   const state = ensureState(node, ctx);
   const sig = rowSignature(state);
   try {
-    if (node._ctrlRowSig === sig && node._ctrlRows) {
+    if (node._ctrlRowSig === sig && node._ctrlStateRef === state && node._ctrlRows) {
       repaintRows(node, ctx);
     } else {
+      // `rowSignature` is `id:kind` only -- it can't tell a genuinely NEW
+      // state object apart from the one every existing row DOM closure
+      // (`wireComboRow`/`openListMenuFor`/etc.) still references, if that new
+      // object's rows ever happen to carry the same ids (today's
+      // `restoreStateFromWidget` always mints fresh ids via `rows.mjs`'s
+      // `nextUid()`, so this can't currently occur through that path --
+      // see `test_resize.mjs`'s "core-mechanic audit" -- but nothing else
+      // guarantees it never will). So identity is tracked separately,
+      // alongside the signature: a mismatch on EITHER forces a real rebuild
+      // (never just a repaint), so every closure re-binds to a row from THIS
+      // state object, the one `persistState`/`ensureState` will actually
+      // serialize.
       node._ctrlRowSig = sig;
+      node._ctrlStateRef = state;
       rebuildRowWidgets(node, ctx);
     }
     syncOutputs(node, ctx);
