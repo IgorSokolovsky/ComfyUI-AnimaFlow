@@ -765,6 +765,32 @@ Loader's picker cannot search checkpoints, because it could not do anything with
 panel is ~340px wide, so the same filters render as a **compact row of dropdown pills** — a rail there
 would eat the results. Do not drop filters to fit; change their presentation.
 
+#### An explicit `Search` button, not a debounce (owner, 2026-07-31) — SPEC, not built
+
+Owner: *"add delay to user search before searching — even better I would add a button next to the search
+field 'Search' which will only then execute search, and if value didn't change since last time search
+it's disable state."*
+
+Today typing re-searches on a debounce, so a ten-character query can cost several round trips to Civitai,
+each one burning §9's rate limiter and returning results nobody read. Replace it with an explicit action:
+
+- **A `Search` button beside the field.** Nothing fires from typing at all — not on a timer, not on
+  blur. **Enter in the field runs the same action** (an explicit button that keyboard users cannot reach
+  is a downgrade for them).
+- **Disabled when the query text is unchanged since the last executed search**, so the control states
+  "there is nothing new to fetch" rather than letting the user re-spend a request on the same thing.
+  Disabled is also the resting state on open once the initial search has run.
+- **Filters keep searching immediately on change.** A filter is one discrete choice, not a keystroke
+  sequence — there is no burst to suppress, and making sort/period/level need a second click would be
+  worse than what we have. Each filter-triggered search **updates the last-searched query text**, so the
+  button correctly settles back to disabled afterwards.
+- **Pagination is untouched** — loading page two is not a new search and must not depend on the button.
+
+Applies to **both** surfaces, the anchored panel and the modal, from one implementation.
+
+Note this makes the debounce timer redundant on the query path; remove it rather than leaving a dead
+timer that still fires.
+
 #### The modal's filter rail — select-adds-a-chip, NOT a chip grid (owner, 2026-07-29)
 
 Civitai's own rail is the reference for *structure* — collapsible sections, `Sort models by` /
