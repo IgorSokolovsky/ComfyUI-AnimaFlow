@@ -229,6 +229,53 @@ character name is *probably* a character LoRA — and "probably" is the problem.
 than none, because a user filtering by it would silently not see LoRAs that are actually there. **Never
 invent a category; show nothing when we don't know.** (`no preview` sets the same precedent, §1a-v.)
 
+### 1a-vii. Show the CIVITAI name instead of the filename — a setting (owner, 2026-07-31) — SPEC, not built
+
+Owner: *"in the select lora we should show the name in civitai (e.g. the one we downloaded and not the
+filename), this should be configuration that user can change."*
+
+Today the picker row renders `displayModelName(model.name, hideExtension)` (`model_picker.mjs:378`) —
+the **filename**, optionally minus its extension. A file called `real_skin-step00000200.safetensors`
+tells you much less than *"Realistic Skin Detail"*.
+
+> ### ⚠️ The one non-negotiable: this is a DISPLAY change only
+>
+> The filename is the **identity** — it is what the node state persists, what the picker returns on
+> pick, what `resolve_model_path` resolves, and what a saved workflow carries to another machine. A
+> display name must never reach any of those. If a workflow ever starts storing *"Realistic Skin Detail"*
+> where `real_skin-step00000200.safetensors` belongs, it breaks on every machine including its own, and it
+> breaks quietly. Change the label; change nothing else.
+
+**Where the name comes from.** The Civitai record for a local file lives in its `<base>.civitai.info`
+sidecar — the raw model-version response, from which `parse_model_version` already extracts a display
+name (§7c-iv's second correction: the sidecar holds raw, parsing happens on read). The ⓘ panel already
+prefers it: `model_info.mjs`'s `renderIdentity` does `civitaiName || prettyTitle(name)`. So the rule
+exists and is proven; the picker simply has no access to it.
+
+**It needs a backend field, not just a client cache.** `list_models_impl` returns filename entries only.
+`civitai_api.mjs`'s `cachedCategoryTag` shows the client-cache route is viable and cheap, but that cache
+is per-session and populated only for models whose ⓘ panel has been opened — a picker where a handful of
+rows show real names and the rest show filenames reads as broken, not as progressive. Add the name to the
+**list route**, read from each model's sidecar, so coverage is "every model that has ever been looked up
+or downloaded" and is stable across sessions. Sidecar reads are local and already on the executor; if the
+cost shows up on a large folder, cache per `(kind, mtime)` rather than dropping the feature.
+
+**Coverage will be partial regardless, and the fallback must be silent.** A model with no sidecar has no
+Civitai name, and that is the common case until the user has browsed or downloaded. Fall back to the
+existing `displayModelName` with no marker, no placeholder, no "unknown" — the row must look intentional.
+
+**The setting.** A boolean in Settings → AnimaFlow → Controls, alongside the existing `Hide file
+extension` it composes with, defaulting to **off** (filenames — today's behaviour, and the thing that
+matches what is on disk). It should govern **every** name display in the Controls track, not the picker
+alone: the picker row, the LoRA row's name field, and the ⓘ panel's title. One setting, one rule —
+otherwise the same model reads by two different names on two surfaces, which is worse than either choice.
+
+Two details worth settling while building rather than after: the row's name field is **ellipsis-truncated
+at a fixed width**, and Civitai names are frequently longer than filenames, so check the truncation still
+reads well and keep the full name in a `title` tooltip. And a **missing-file** row is rendered red by
+filename (§1a-ii) — that state must keep showing the filename regardless of this setting, because the
+whole point of that state is telling the user *which file on disk* is gone.
+
 ### 1a-iii. Reordering is DRAG; the menu keeps four of its six items (owner, 2026-07-29)
 
 > ⚠️ **Correction (2026-07-29, found while building M1).** This section originally said the pack had no
