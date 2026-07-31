@@ -28,30 +28,18 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 🐛 Every async-populated popover overflows — the ⓘ fix was one instance of a systemic gap (owner, 2026-07-31)
+### 🧹 Collapse `model_info.mjs`'s local `repositionAfterChange` into the shared observer (unblocked 2026-07-31)
 
-The ⓘ panel fix (`b92eff0`, now confirmed) treated this as one panel's problem. It isn't. Owner then
-reported the same thing twice more: the Civitai search panel *"expand and overflow the bottom"* when
-results load, and *"select lora also overflows"*.
+`0a53398` put the re-place-on-content-growth mechanism in `overlay.mjs`, where every panel gets it for
+free, and the owner has now confirmed it (*"overflow fixed"*). That makes `model_info.mjs`'s own
+`repositionAfterChange` — the local workaround written a day earlier, wrapping 7 mutation sites —
+**redundant**. It's harmless (a second re-place computing the same position changes nothing) but it is
+exactly the kind of duplicate mechanic the *Shells and Core Mechanics* item is about.
 
-**One cause, three panels.** An anchored panel calls `handle.reposition(...)` exactly once, right
-after opening — while it's still short and showing "Loading…". `reposition()` caps the height **only
-if neither side fits**, and a short panel fits, so no cap is applied. The async content then arrives,
-the panel grows past the viewport, and nothing re-places it. The cap is what makes the inner
-`overflow-y: auto` region engage, so an uncapped panel overflows instead of scrolling.
-
-Confirmed call sites: `js/controls/model_picker.mjs:522` (repositions once, no other trigger) and
-`js/controls/civitai_search.mjs:1693` (repositions at open, plus window-resize and anchor-move — but
-nothing for a *content* change). `model_info.mjs` hit it first and grew a local `repositionAfterChange`
-workaround, which is why it looked like a one-panel bug.
-
-**Fixed once in `js/shared/overlay.mjs`** with a `ResizeObserver` on the content element, so no panel
-has to wire this up and every future one inherits it. The hard part is convergence, not detection:
-repositioning applies a cap, the cap resizes the content, and that fires the observer again.
-
-> **Follow-up once all three are owner-confirmed:** `model_info.mjs`'s local `repositionAfterChange`
-> becomes redundant and should be deleted. Deliberately left in place during this fix — the owner had
-> just confirmed it works, and refactoring it in the same pass would muddy that verification.
+Held back deliberately during the shared fix so as not to disturb `b92eff0`'s verification while it was
+still fresh. Both are confirmed now, so the gate is passed. Small: delete the helper, unwrap its call
+sites, keep its tests that assert the *behaviour* (the panel stays on-screen after the content grows)
+and drop only the ones asserting the local mechanism's internals.
 
 ### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
 
@@ -301,7 +289,6 @@ assistant's or a reviewer's judgement — see the rule at the top.
 | Item | Commit | What would confirm it |
 |---|---|---|
 | A short download was renamed over the real filename — `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates now run before the rename | `68a2998` | An interrupted download leaves NO file behind, and reports "ended early" rather than succeeding. **The `corrupt` half IS confirmed** (via `d70942b` below); only the LENGTH gate is untested |
-| **Our `.mjs` modules were never cache-busted.** Core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs`. Two layers ported from Pixaroma | `31aaf90` | **After a full restart**, a pulled JS change appears on a plain reload — no Disable-cache dance. Not reported on yet |
 | The loader model cache was module-level, so two Loader Panels with different UNETs evicted each other every run | `12625c0` | Two Loader Panels, different UNETs, both stay warm across runs. Only worth checking if that setup is ever actually run |
 | A state input receiving foreign data now says so, loudly, on all five stateful nodes | `205d9fd` | It has never actually fired in the owner's console — unproven in the wild, and hopefully stays that way |
 | Sidecar + preview image written on download — **BACKEND HALF ONLY** | `4965389` | *Nothing to test yet: no frontend sends `civitai_meta`/`preview_url`, so downloads behave exactly as before. Do not report it as broken.* |
@@ -423,7 +410,9 @@ ever grow — re-count rather than trusting the number.
 | Item | Commit |
 |---|---|
 | **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (that one was `b92eff0`, below) |
-| **The ⓘ info panel grew after opening and overflowed** — the only popover placed against a near-empty box and then populated asynchronously from the Civitai lookup. Re-measures and re-places when the content lands, guarded so a detached panel is a silent no-op and a same-size change never re-places | `b92eff0` — owner: **"lora info expand overflow fixed"**. Note: this turned out to be *one instance* of a systemic gap — see *Now* |
+| **The ⓘ info panel grew after opening and overflowed** — the only popover placed against a near-empty box and then populated asynchronously from the Civitai lookup. Re-measures and re-places when the content lands | `b92eff0` — owner: **"lora info expand overflow fixed"**. Turned out to be *one instance* of the systemic gap below |
+| **Every async-populated popover overflowed** — three panels, one cause: `reposition()` is called once at open, while the content is still a short "Loading…" placeholder, and the height cap (the thing that makes the inner `overflow-y: auto` engage) only applies when the content doesn't fit *at that moment*. `openOverlay` now watches `contentEl` with a `ResizeObserver` and re-places on a real height change — **no panel needed a single line**, and every future one inherits it. Converging is the actual work: the comparison height is the one `reposition()` last *placed at*, recorded after its own cap | `0a53398` — owner: **"overflow fixed"** |
+| **Our `.mjs` modules were never cache-busted.** Core's no-store middleware tests `path.endswith(".js")`, which never matches `.mjs` — so every `.mjs` in this pack was served from cache indefinitely. Two layers ported from Pixaroma | `31aaf90` — owner: **"cach fixed"** (2026-07-31, first plain `R` with no Disable-cache after a restart). Open since 2026-07-30 |
 | **Adding an API key could not un-gate a card, and the "key required" chip lit up on hover.** `_sessionGatedKeys` learned correctly from a live failure but nothing ever re-evaluated it; the only thing that cleared it was a test-only helper, and the button is `disabled`, so there was no retry either | `030b579` — owner: **"fixed"** |
 | **Civitai's login page was saved as the model** — a gated download answers with HTML and a genuine `200`, and the length gate was structurally incapable because the page's own `Content-Length` was correct. `Content-Type` is now parsed before a single byte is read | `d70942b` — owner: **"Works"** |
 | **The Control Panel dropped edits after a reload** — same detached-row-object bug as the Loader Panel, masked for months because a random seed changed the payload every run anyway | `4e2c3ac` — owner: **"works"** (steps/cfg changed after a reload, no structural edit) |
