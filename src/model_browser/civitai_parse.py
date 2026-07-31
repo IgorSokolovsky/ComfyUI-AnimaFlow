@@ -17,6 +17,17 @@ to repeat. `_thumb_url`/`_is_adult_image`/`pick_thumbnail_url` (formerly
 plain alias) below are also near-verbatim ports of that same upstream
 file's `:361-374`/`:346-358`/(the thumbnail-selection loop inside
 `parse_civitai_modelversion`, `:401-419`) respectively.
+
+docs/lora-loader-design.md §7c-iv (2026-07-31, "the ⓘ panel's candidates
+live in the sidecar" / "SETTLED: the saved preview is
+`anim=false,width=450`"): there are now THREE named Civitai CDN transforms
+(`LIVE_THUMB_TRANSFORM`, `SAVED_PREVIEW_TRANSFORM`, `SOURCE_TRANSFORM`
+below), all sharing one rewrite helper (`_rewrite_transform`), and
+`parse_gallery_images` (moved here from `civitai_search.py`'s own
+`_parse_images`, which is now a plain alias -- same "one function, not two
+copies" rule `pick_gallery_image_url`'s own docstring already states) is
+what both `parse_model_version`'s new `images` key and the search path
+share, so the candidate-list rule lives in exactly one place.
 """
 from __future__ import annotations
 
@@ -114,9 +125,26 @@ def html_to_text(value: Any) -> str:
 def parse_model_version(obj: Any) -> Dict[str, Any]:
     """A Civitai model-version-by-hash response -> `{name?, type?,
     base_model?, triggers?, tags?, model_description?, version_description?,
-    thumbnail?, model_id?, version_id?}` -- only the keys actually present in
-    the source are set, so an empty return genuinely means "nothing usable
-    was in this response at all", not "every field happened to be absent".
+    images?, images_schema?, model_id?, version_id?}` -- only the keys
+    actually present in the source are set, so an empty return genuinely
+    means "nothing usable was in this response at all", not "every field
+    happened to be absent".
+
+    docs/lora-loader-design.md §7c-iv, "the ⓘ panel's candidates live in the
+    sidecar" (2026-07-31): `images` replaces the old single pre-chosen
+    `thumbnail` string entirely (deleted, not kept alongside this) --
+    picking ONE image ahead of time baked the browsing level in force at
+    WRITE time into the cache forever, since raising the level later never
+    triggers a re-fetch. `images` is the SAME ordered `[{url, nsfw_level,
+    type}]` candidate list `civitai_search.py`'s own search path already
+    emits (`parse_gallery_images`, shared rather than duplicated -- see this
+    module's own docstring), unfiltered by adult-ness, so a caller (the ⓘ
+    panel) picks at RENDER time against whatever browsing level is current,
+    exactly like the search card already does. `images_schema` is
+    `"gallery"` when `images` came from a real Civitai `images` array, or
+    `"legacy"` when it was grandfathered from an OLD raw record that only
+    ever carried a bare `thumbnail` string (see the migration comment
+    inline below) -- so a caller/test can tell the two shapes apart.
 
     docs/lora-loader-design.md §7d-i (owner, 2026-07-30): Civitai carries TWO
     distinct pieces of prose and they are returned as two INDEPENDENT,
@@ -208,37 +236,124 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
     if vid is not None:
         out["version_id"] = vid
 
-    thumbnail = pick_thumbnail_url(obj.get("images"))
-    if thumbnail:
-        out["thumbnail"] = thumbnail
+    images = parse_gallery_images(obj.get("images"))
+    if images:
+        out["images"] = images
+        out["images_schema"] = "gallery"
+    else:
+        # §7c-iv "Legacy sidecars migrate with no re-fetch, and by proof
+        # rather than assumption": a raw record with no usable `images`
+        # array at all, but carrying a bare `thumbnail` STRING, predates
+        # this `images` candidate list. That is provably safe to grandfather
+        # rather than hide: the OLD selection rule this key came from
+        # (`pick_gallery_image_url`, unchanged below) only ever accepted an
+        # `nsfwLevel` in `(None, 0, 1, 2)` or the `_is_adult_image`
+        # `level < 4` fallback -- and since Civitai's real levels are
+        # `1, 2, 4, 8, 16`, ANY url that rule could ever have picked is
+        # provably level <= 2. So it becomes a one-entry candidate list at
+        # level 2 (PG-13), not "unknown" (which would needlessly blank an
+        # already-cached, already-safe panel).
+        legacy_thumbnail = obj.get("thumbnail")
+        if isinstance(legacy_thumbnail, str) and legacy_thumbnail:
+            out["images"] = [{"url": legacy_thumbnail, "nsfw_level": 2, "type": ""}]
+            out["images_schema"] = "legacy"
 
     return out
 
 
-_ORIGINAL_SEG_RE = re.compile(r"/original=true(?:,[^/]*)?/")
+# docs/lora-loader-design.md §7c-iv: THREE named Civitai CDN transforms,
+# not scattered literals -- every one of them carries `anim=false` (a no-op
+# on a still image, byte-identical either way; a poster-frame extractor on a
+# `type: "video"` entry, since `width=<n>` alone makes the CDN transcode
+# actual video -- `200 video/mp4`, ~1.66 MB, often timing out, and
+# unrenderable in an `<img>` regardless -- see `_rewrite_transform`'s own
+# docstring for the measured bytes).
+LIVE_THUMB_TRANSFORM = "anim=false,width=256"    # search card + ⓘ panel thumb
+SAVED_PREVIEW_TRANSFORM = "anim=false,width=450"  # the on-disk preview sidecar
+SOURCE_TRANSFORM = "original=true"                # the untransformed source file
+
+# Matches ANY Civitai transform path segment -- `/original=true/`,
+# `/original=true,quality=90/`, `/width=256/`, `/anim=false,width=256/`, ...
+# -- by shape (a segment that is itself one or more comma-separated
+# `key=value` tokens) rather than one specific literal, so the rewrite below
+# can NORMALISE a URL that already carries any of the three transforms, not
+# only replace `original=true`. A hash/UUID/filename path segment never
+# contains `=`, so this can't accidentally eat one of those.
+_TRANSFORM_SEG_RE = re.compile(r"/[a-zA-Z][a-zA-Z0-9]*=[^/]*/")
+
+
+def _rewrite_transform(url: str, transform: str) -> str:
+    """Swap WHATEVER Civitai transform segment `url` already carries for
+    `transform` (one of the three named constants above) -- the ONE shared
+    rewrite helper every `_thumb_url`/`saved_preview_url` call goes through,
+    so there is exactly one regex to keep in sync rather than three copies
+    of it (docs/lora-loader-design.md §7c-iv, "Three named transforms, not
+    scattered literals").
+
+    ⚠️ Must normalise an ALREADY-transformed URL, not only `original=true`:
+    the frontend hands back a URL it is already displaying (carrying
+    `anim=false,width=256`, our own live-thumbnail rewrite) when the user
+    downloads that same candidate, and that has to become `width=450` for
+    the saved preview -- so this replaces `original=true`, an existing
+    `width=<n>` (with or without `anim=false` alongside it), or any other
+    transform segment shape uniformly. A URL with NO transform segment at
+    all passes through completely untouched -- there is nothing to swap,
+    and inventing a segment for a URL shape we don't recognise would be a
+    guess, not a rewrite.
+
+    Measured live 2026-07-31, on the same two URLs throughout §7c-iv (a
+    still and a video-preview entry):
+
+    | target                        | still                | video                 |
+    |-------------------------------|-----------------------|------------------------|
+    | `original=true` (source)      | `image/png` 4,192,036 B | `video/mp4` 2,768,985 B |
+    | `anim=false,width=256` (live)  | `image/jpeg` 20,522 B  | `image/jpeg` 64,550 B (poster) |
+    | `anim=false,width=450` (saved) | `image/jpeg` 36,481 B  | `image/jpeg` 64,550 B (poster) |
+
+    (A video's poster frame comes back at the same 64,550 B for both
+    `width=256` and `width=450` -- the CDN appears to serve one stored still
+    regardless of the requested width; harmless, just don't expect the
+    width parameter to change video output.)
+    """
+    if not isinstance(url, str) or not url:
+        return url
+    new_url, count = _TRANSFORM_SEG_RE.subn(f"/{transform}/", url, count=1)
+    return new_url if count else url
 
 
 def _thumb_url(url: str) -> str:
-    """Swap Civitai's full-resolution `/original=true/` transform segment
-    for `/anim=false,width=256/` -- a thumbnail needs roughly 55 KB, not the
-    ~1.5-4 MB the original-resolution image costs (same measurement as
-    `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:361-374`'s own `_thumb_url`,
-    MIT, THIRD_PARTY_NOTICES.md, extended here with `anim=false`). Any other
-    URL shape (already a width transform, or no transform segment at all)
-    passes through untouched.
-
-    **`anim=false` is load-bearing, not cosmetic** (docs/lora-loader-
-    design.md §7c-iv, measured live 2026-07-31): a gallery entry can be
-    `type: "video"` (an `.mp4`), and `width=256` alone on a video makes the
-    CDN transcode *video* -- `200 video/mp4`, 1.66 MB, often timing out, and
-    unrenderable in an `<img>` regardless. Adding `anim=false` makes the
-    SAME request return `200 image/jpeg`, 64,550 bytes -- a poster frame.
-    On a still image `anim=false` is byte-identical to without it (measured:
-    28,370 bytes either way), so this is a no-op on stills and a poster-
-    frame extractor on videos -- never a reason to special-case `type`
-    here.
+    """Rewrite `url` to `LIVE_THUMB_TRANSFORM` (`anim=false,width=256`) -- a
+    thumbnail needs roughly 20 KB, not the ~1.5-4 MB the original-resolution
+    image costs (same measurement as `../ComfyUI-Pixaroma/nodes/
+    _lora_helpers.py:361-374`'s own `_thumb_url`, MIT,
+    THIRD_PARTY_NOTICES.md, extended here with `anim=false` and generalised
+    to `_rewrite_transform` so it also normalises an ALREADY-rewritten or
+    already-`width=<n>` URL, not just `original=true`). A thin wrapper --
+    see `_rewrite_transform`'s own docstring for the shared mechanism and
+    the measured bytes.
     """
-    return _ORIGINAL_SEG_RE.sub("/anim=false,width=256/", url, count=1)
+    return _rewrite_transform(url, LIVE_THUMB_TRANSFORM)
+
+
+def saved_preview_url(url: str) -> str:
+    """Rewrite `url` to `SAVED_PREVIEW_TRANSFORM` (`anim=false,width=450`) --
+    docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
+    `anim=false,width=450`": 115x smaller than the untransformed source on a
+    still (36,481 B vs 4,192,036 B), and fixes a LIVE bug on a video-preview
+    entry, which today saves 2.77 MB of `video/mp4` as its "preview image"
+    under whatever extension the writer chose -- `anim=false` turns that
+    same request into a 64,550 B JPEG poster frame instead, exactly like the
+    live-thumbnail rewrite already does. `download.fetch_preview_image` is
+    the only caller -- it normalises whatever URL it's handed (untransformed
+    `original=true`, an existing `anim=false,width=256` the frontend is
+    already displaying, or anything else) to this ONE size before ever
+    fetching, so the level-awareness this needs comes for free from the
+    caller already having filtered its candidate by the user's browsing
+    level (§7c-iv, "the sidecar's level applies at SAVE time... from the
+    CALLER, not from a new parameter") -- this function itself has no idea
+    what a browsing level even is, by design.
+    """
+    return _rewrite_transform(url, SAVED_PREVIEW_TRANSFORM)
 
 
 def _is_adult_image(nsfw: Any, level: Any) -> bool:
@@ -297,30 +412,80 @@ def pick_thumbnail_url(images: Any) -> Optional[str]:
     (above), which now holds the actual selection loop.
 
     Public (promoted from `_pick_thumbnail`, docs task 2026-07-31, "Civitai
-    search panel thumbnails"). `parse_model_version`'s own `thumbnail` key
-    (the by-hash lookup's single-image result, unrelated to the search
-    panel) calls this directly. **`civitai_search.py`'s own `_parse_version`
-    no longer does** (docs/lora-loader-design.md §7c-iv, 2026-07-31): once
-    the browsing level became a user setting, picking ONE image ahead of
-    time stopped being this layer's job -- `_parse_version` now hands the
-    frontend the full `images` candidate list instead (each entry still
-    thumbnail-rewritten via `civitai_parse._thumb_url` directly, not through
-    this function's own adult-filtering pick), and the frontend chooses.
-    This function's hardcoded level-4 cutoff (via `pick_gallery_image_url`)
-    remains exactly what it always was for `preview_url`/`parse_model_version`
-    -- that cutoff was never this function's problem to generalize, only
-    the search panel's live thumbnail stopped using it.
+    search panel thumbnails"). **Neither `parse_model_version` nor
+    `civitai_search.py`'s own `_parse_version` calls this any more**
+    (docs/lora-loader-design.md §7c-iv, 2026-07-31, "the ⓘ panel's
+    candidates live in the sidecar" / "Send the CANDIDATES to the frontend,
+    not one pre-chosen URL"): once the browsing level became a user
+    setting, picking ONE image ahead of time stopped being either layer's
+    job -- both now hand over the full `images` candidate list instead
+    (`parse_gallery_images`, each entry thumbnail-rewritten via `_thumb_url`
+    directly, not through this function's own adult-filtering pick), and a
+    caller (the frontend, or a future consumer) picks. This function's
+    hardcoded level-4 cutoff (via `pick_gallery_image_url`) remains exactly
+    what it always was for whatever still calls it directly (kept per this
+    task's own "stays as they are unless something genuinely no longer uses
+    it" constraint) -- that cutoff was never this function's problem to
+    generalize, only its two callers stopped using it.
     """
     url = pick_gallery_image_url(images)
     return _thumb_url(url) if url else None
 
 
-# Old private name kept as a plain alias -- `parse_model_version` above now
-# calls the public `pick_thumbnail_url` directly, but `tests/
-# test_model_browser.py`'s own `test_pick_thumbnail_still_transforms_its_own_
-# result` (and any other existing internal call site) still reaches this
-# under its original name, unchanged.
+# Old private name kept as a plain alias -- `tests/test_model_browser.py`'s
+# own `test_pick_thumbnail_still_transforms_its_own_result` (and any other
+# existing internal call site) still reaches this under its original name,
+# unchanged.
 _pick_thumbnail = pick_thumbnail_url
+
+
+def parse_gallery_images(images_raw: Any) -> List[Dict[str, Any]]:
+    """A version's raw `images` gallery -> an ordered list of
+    `{url, nsfw_level, type}` CANDIDATES, each `url` already thumbnail-
+    rewritten (`_thumb_url`'s `anim=false,width=256`) -- docs/lora-loader-
+    design.md §7c-iv, "Send the CANDIDATES to the frontend, not one
+    pre-chosen URL". Once the browsing level is a user setting, picking a
+    single image ahead of time is a CALLER decision (it knows the viewer's
+    chosen level; this layer doesn't), so this function hands over every
+    usable entry rather than selecting one -- unlike `pick_gallery_image_url`
+    /`pick_thumbnail_url`, it does NOT filter by adult-ness at all; every
+    level from the response is included, in the SAME order Civitai returned
+    them, so a caller can walk it "first at or below my level, falling
+    forward on failure".
+
+    Only entries with a truthy `url` are kept (an entry with no URL at all
+    is not a usable candidate for anything). `nsfw_level` is that entry's
+    own `nsfwLevel`, or `None` when absent -- absent means UNKNOWN, never
+    "safe": an existing sidecar/cached search result predates this field
+    entirely, and inventing a safe default for it would defeat the whole
+    point of a level ceiling. `type` is the entry's own `type` (`"image"`/
+    `"video"`), or `""` when absent -- a video entry is a normal candidate
+    here, not something to drop: `_thumb_url`'s `anim=false` is exactly what
+    makes a video's poster frame renderable, so filtering video out here
+    would throw away the fix.
+
+    Shared by BOTH consumers -- `parse_model_version`'s own `images` key
+    (the ⓘ panel, §7c-iv's THIRD consumer) and `civitai_search.py`'s
+    `_parse_version` (the search card, via that module's own `_parse_images`
+    alias to this function) -- so the candidate-list rule lives in exactly
+    one place rather than drifting into two copies.
+    """
+    if not isinstance(images_raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for image in images_raw:
+        if not isinstance(image, dict):
+            continue
+        url = image.get("url")
+        if not url:
+            continue
+        level = image.get("nsfwLevel")
+        out.append({
+            "url": _thumb_url(str(url)),
+            "nsfw_level": level if isinstance(level, int) and not isinstance(level, bool) else None,
+            "type": str(image.get("type") or ""),
+        })
+    return out
 
 
 def parse_model_description(obj: Any) -> Optional[str]:
@@ -416,5 +581,8 @@ def civitai_shape_from_search_meta(meta: Any) -> Dict[str, Any]:
 
 __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
-    "pick_gallery_image_url", "pick_thumbnail_url", "civitai_shape_from_search_meta",
+    "pick_gallery_image_url", "pick_thumbnail_url", "parse_gallery_images",
+    "civitai_shape_from_search_meta",
+    "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_TRANSFORM", "SOURCE_TRANSFORM",
+    "saved_preview_url",
 )

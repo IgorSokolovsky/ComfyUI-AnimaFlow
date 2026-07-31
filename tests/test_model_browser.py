@@ -396,8 +396,11 @@ def test_interop_translate_cminfo_typical_fixture_feeds_parse_model_version():
     assert parsed["model_description"] == "The author's write-up."
     assert parsed["version_description"] == "Trained on preview3."
     # Civicomfy stores no gallery images in this file (its preview is a
-    # SEPARATE download) -- never invent a thumbnail from nothing.
+    # SEPARATE download) -- never invent a thumbnail from nothing, and
+    # never grandfather a legacy candidate from a key that was never here.
     assert "thumbnail" not in parsed
+    assert "images" not in parsed
+    assert "images_schema" not in parsed
 
 
 def test_interop_translate_cminfo_never_raises_on_malformed_input():
@@ -500,7 +503,16 @@ def test_parse_model_version_typical_response():
     assert parsed["tags"] == ["character", "anime"]  # KEPT -- our divergence from upstream
     assert parsed["model_id"] == 999
     assert parsed["version_id"] == 12345
-    assert parsed["thumbnail"] == "https://example.com/img/anim=false,width=256/x.jpg"
+    # docs/lora-loader-design.md §7c-iv: `images` replaces the old
+    # single-pick `thumbnail` -- a caller (the ⓘ panel) picks at RENDER
+    # time, against whatever browsing level is current.
+    assert parsed["images"] == [{
+        "url": "https://example.com/img/anim=false,width=256/x.jpg",
+        "nsfw_level": 1,
+        "type": "",
+    }]
+    assert parsed["images_schema"] == "gallery"
+    assert "thumbnail" not in parsed
     # §7d-i: the version's own text is its own first-class field now, never
     # collapsed with the model's write-up (this fixture's `model` sub-object
     # carries no `description` of its own, so `model_description` is absent).
@@ -538,20 +550,96 @@ def test_parse_model_version_tags_as_dicts_are_tolerated():
     assert civitai_parse.parse_model_version(obj)["tags"] == ["character", "style"]
 
 
-def test_parse_model_version_explicit_gallery_falls_back_to_non_adult():
+def test_parse_model_version_images_are_unfiltered_and_preserve_order():
+    # docs/lora-loader-design.md §7c-iv: unlike the OLD `thumbnail` pick
+    # (which fell back to the first non-adult image), `images` is NEVER
+    # filtered by adult-ness here -- both candidates survive, in Civitai's
+    # own order, so a caller can walk them against the user's own chosen
+    # browsing level.
     obj = {
         "images": [
             {"url": "https://example.com/explicit.jpg", "nsfw": "X", "nsfwLevel": 8},
             {"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1},
         ],
     }
-    # The safe image should win even though it's second, since the first is adult.
-    assert civitai_parse.parse_model_version(obj)["thumbnail"] == "https://example.com/anim=false,width=256/safe.jpg"
+    parsed = civitai_parse.parse_model_version(obj)
+    assert parsed["images"] == [
+        {"url": "https://example.com/explicit.jpg", "nsfw_level": 8, "type": ""},
+        {"url": "https://example.com/anim=false,width=256/safe.jpg", "nsfw_level": 1, "type": ""},
+    ]
+    assert parsed["images_schema"] == "gallery"
+    assert "thumbnail" not in parsed
 
 
-def test_parse_model_version_all_explicit_gallery_yields_no_thumbnail():
+def test_parse_model_version_all_explicit_gallery_still_yields_images_candidates():
+    # Contrast with the OLD `thumbnail`-only behaviour: an all-adult
+    # gallery used to yield NO thumbnail at all. `images` still surfaces
+    # every candidate -- a caller browsing at a high enough level can use
+    # it; hiding it entirely is the FRONTEND's decision, not this parser's.
     obj = {"images": [{"url": "https://example.com/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}]}
-    assert "thumbnail" not in civitai_parse.parse_model_version(obj)
+    parsed = civitai_parse.parse_model_version(obj)
+    assert parsed["images"] == [{"url": "https://example.com/explicit.jpg", "nsfw_level": 16, "type": ""}]
+    assert parsed["images_schema"] == "gallery"
+    assert "thumbnail" not in parsed
+
+
+def test_parse_model_version_video_entry_survives_into_images_candidates():
+    # docs/lora-loader-design.md §7c-iv: a gallery entry can be `type:
+    # "video"` -- `_thumb_url`'s `anim=false` makes it a renderable poster
+    # frame, so it's a normal candidate here, never dropped.
+    obj = {"images": [{
+        "url": "https://image.civitai.com/xyz/original=true/135268953.mp4",
+        "nsfwLevel": 1, "type": "video",
+    }]}
+    parsed = civitai_parse.parse_model_version(obj)
+    assert parsed["images"] == [{
+        "url": "https://image.civitai.com/xyz/anim=false,width=256/135268953.mp4",
+        "nsfw_level": 1,
+        "type": "video",
+    }]
+
+
+def test_parse_model_version_no_images_no_legacy_thumbnail_omits_both_keys():
+    obj = {"modelId": 1, "id": 2}
+    parsed = civitai_parse.parse_model_version(obj)
+    assert "images" not in parsed
+    assert "images_schema" not in parsed
+    assert "thumbnail" not in parsed
+
+
+def test_parse_model_version_legacy_thumbnail_only_migrates_to_one_candidate_at_level_2():
+    # docs/lora-loader-design.md §7c-iv "Legacy sidecars migrate with no
+    # re-fetch, and by proof rather than assumption": a raw record with no
+    # `images` gallery at all, but a bare `thumbnail` string, predates the
+    # `images` candidate list. The OLD selection rule that key came from
+    # only ever accepted `nsfwLevel` in (None, 0, 1, 2) or a `level < 4`
+    # fallback -- so it's provably level <= 2 -- grandfathered as PG-13
+    # rather than hidden as "unknown".
+    obj = {"modelId": 1, "id": 2, "thumbnail": "https://example.com/anim=false,width=256/legacy.jpg"}
+    parsed = civitai_parse.parse_model_version(obj)
+    assert parsed["images"] == [{
+        "url": "https://example.com/anim=false,width=256/legacy.jpg",
+        "nsfw_level": 2,
+        "type": "",
+    }]
+    assert parsed["images_schema"] == "legacy"
+
+
+def test_parse_model_version_real_images_win_over_a_stray_legacy_thumbnail_key():
+    # A raw record carrying BOTH a real `images` gallery and a stray
+    # `thumbnail` key (shouldn't happen in practice) -- the real gallery
+    # always wins; a legacy key never shadows real data.
+    obj = {
+        "images": [{"url": "https://example.com/original=true/real.jpg", "nsfwLevel": 1}],
+        "thumbnail": "https://example.com/should-be-ignored.jpg",
+    }
+    parsed = civitai_parse.parse_model_version(obj)
+    assert parsed["images"] == [{
+        "url": "https://example.com/anim=false,width=256/real.jpg",
+        "nsfw_level": 1,
+        "type": "",
+    }]
+    assert parsed["images_schema"] == "gallery"
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +709,71 @@ def test_thumb_url_still_tolerates_original_true_with_other_params():
 def test_thumb_url_passes_through_a_url_with_no_transform_segment():
     url = "https://image.civitai.com/xyz/1917130.jpeg"
     assert civitai_parse._thumb_url(url) == url
+
+
+# ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-iv: "Three named transforms, not scattered
+# literals" -- `_rewrite_transform` is the ONE shared rewrite helper behind
+# `_thumb_url` (LIVE_THUMB_TRANSFORM) and `saved_preview_url`
+# (SAVED_PREVIEW_TRANSFORM), and it must normalise ANY of the three input
+# shapes (an untransformed `original=true` source URL, an existing
+# `width=<n>` transform, or a bare URL with no transform segment at all) to
+# ANY of the three targets, not just rewrite `original=true` once.
+# ---------------------------------------------------------------------------
+
+_ORIGINAL_URL = "https://image.civitai.com/xyz/original=true/1917130.jpeg"
+_ALREADY_LIVE_THUMB_URL = "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg"
+_NO_TRANSFORM_URL = "https://image.civitai.com/xyz/1917130.jpeg"
+
+
+def test_rewrite_transform_named_constants_are_the_measured_values():
+    assert civitai_parse.LIVE_THUMB_TRANSFORM == "anim=false,width=256"
+    assert civitai_parse.SAVED_PREVIEW_TRANSFORM == "anim=false,width=450"
+    assert civitai_parse.SOURCE_TRANSFORM == "original=true"
+
+
+def test_rewrite_transform_from_original_true_to_each_target():
+    assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.LIVE_THUMB_TRANSFORM) == \
+        "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg"
+    assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.SAVED_PREVIEW_TRANSFORM) == \
+        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+    assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.SOURCE_TRANSFORM) == _ORIGINAL_URL
+
+
+def test_rewrite_transform_from_an_existing_width_transform_to_each_target():
+    # ⚠️ The load-bearing case: the frontend hands back a URL it is ALREADY
+    # displaying -- our own `anim=false,width=256` live-thumbnail rewrite --
+    # and that has to become `width=450` (or any other target), not pass
+    # through untouched.
+    assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.LIVE_THUMB_TRANSFORM) == \
+        _ALREADY_LIVE_THUMB_URL
+    assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.SAVED_PREVIEW_TRANSFORM) == \
+        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+    assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.SOURCE_TRANSFORM) == \
+        "https://image.civitai.com/xyz/original=true/1917130.jpeg"
+
+
+def test_rewrite_transform_with_no_transform_segment_passes_through_for_every_target():
+    for transform in (civitai_parse.LIVE_THUMB_TRANSFORM, civitai_parse.SAVED_PREVIEW_TRANSFORM, civitai_parse.SOURCE_TRANSFORM):
+        assert civitai_parse._rewrite_transform(_NO_TRANSFORM_URL, transform) == _NO_TRANSFORM_URL
+
+
+def test_saved_preview_url_emits_anim_false_width_450():
+    assert civitai_parse.saved_preview_url(_ORIGINAL_URL) == \
+        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+
+
+def test_saved_preview_url_normalises_an_already_live_thumbnail_url():
+    # The exact scenario §7c-iv calls out: the frontend sends back the URL
+    # of the candidate it's already displaying (`anim=false,width=256`).
+    assert civitai_parse.saved_preview_url(_ALREADY_LIVE_THUMB_URL) == \
+        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+
+
+def test_saved_preview_url_on_a_video_entry_still_gets_the_poster_frame_transform():
+    video_url = "https://image.civitai.com/xyz/original=true/135268953.mp4"
+    assert civitai_parse.saved_preview_url(video_url) == \
+        "https://image.civitai.com/xyz/anim=false,width=450/135268953.mp4"
 
 
 def test_civitai_shape_from_search_meta_typical_fields():
@@ -3143,6 +3296,45 @@ def test_fetch_preview_image_success_writes_file_with_correct_extension():
         assert local.find_preview_path(dest_model) == result
 
 
+def test_fetch_preview_image_normalises_the_url_to_width_450_before_fetching():
+    # docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
+    # anim=false,width=450" -- `fetch_preview_image` must normalise
+    # WHATEVER url it's handed (untransformed here) before the opener ever
+    # sees it.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        requested = []
+
+        def opener(url, timeout):
+            requested.append(url)
+            return _FakeDownloadResponse(b"jpegbytes", headers={"Content-Type": "image/jpeg"})
+
+        download.fetch_preview_image(
+            "https://image.civitai.com/xyz/original=true/1917130.jpeg", dest_model, opener=opener,
+        )
+        assert requested == ["https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"]
+
+
+def test_fetch_preview_image_normalises_an_already_transformed_url_to_width_450():
+    # The frontend sends back the URL of the candidate it's already
+    # displaying, which carries `anim=false,width=256` -- must still become
+    # `width=450`, not pass through untouched.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        requested = []
+
+        def opener(url, timeout):
+            requested.append(url)
+            return _FakeDownloadResponse(b"jpegbytes", headers={"Content-Type": "image/jpeg"})
+
+        download.fetch_preview_image(
+            "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg", dest_model, opener=opener,
+        )
+        assert requested == ["https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"]
+
+
 def test_fetch_preview_image_rejects_non_https_url_without_calling_opener():
     def _must_not_be_called(*args, **kwargs):
         raise AssertionError("a non-HTTPS preview url must never reach the opener")
@@ -4191,8 +4383,12 @@ ALL_TESTS = [
     test_parse_model_version_genuinely_empty_response_parses_to_nothing,
     test_parse_model_version_top_level_tags_win_over_model_tags,
     test_parse_model_version_tags_as_dicts_are_tolerated,
-    test_parse_model_version_explicit_gallery_falls_back_to_non_adult,
-    test_parse_model_version_all_explicit_gallery_yields_no_thumbnail,
+    test_parse_model_version_images_are_unfiltered_and_preserve_order,
+    test_parse_model_version_all_explicit_gallery_still_yields_images_candidates,
+    test_parse_model_version_video_entry_survives_into_images_candidates,
+    test_parse_model_version_no_images_no_legacy_thumbnail_omits_both_keys,
+    test_parse_model_version_legacy_thumbnail_only_migrates_to_one_candidate_at_level_2,
+    test_parse_model_version_real_images_win_over_a_stray_legacy_thumbnail_key,
     test_pick_gallery_image_url_prefers_explicitly_safe_and_is_untransformed,
     test_pick_gallery_image_url_all_explicit_yields_none,
     test_pick_thumbnail_still_transforms_its_own_result,
@@ -4200,6 +4396,13 @@ ALL_TESTS = [
     test_thumb_url_emits_anim_false_width_256,
     test_thumb_url_still_tolerates_original_true_with_other_params,
     test_thumb_url_passes_through_a_url_with_no_transform_segment,
+    test_rewrite_transform_named_constants_are_the_measured_values,
+    test_rewrite_transform_from_original_true_to_each_target,
+    test_rewrite_transform_from_an_existing_width_transform_to_each_target,
+    test_rewrite_transform_with_no_transform_segment_passes_through_for_every_target,
+    test_saved_preview_url_emits_anim_false_width_450,
+    test_saved_preview_url_normalises_an_already_live_thumbnail_url,
+    test_saved_preview_url_on_a_video_entry_still_gets_the_poster_frame_transform,
     test_civitai_shape_from_search_meta_typical_fields,
     test_civitai_shape_from_search_meta_never_raises_on_malformed_input,
     test_parse_model_version_both_descriptions_present_are_returned_distinctly,
@@ -4345,6 +4548,8 @@ ALL_TESTS = [
     test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_status,
     test_preview_extension_for_content_type_maps_known_types_and_rejects_unknown,
     test_fetch_preview_image_success_writes_file_with_correct_extension,
+    test_fetch_preview_image_normalises_the_url_to_width_450_before_fetching,
+    test_fetch_preview_image_normalises_an_already_transformed_url_to_width_450,
     test_fetch_preview_image_rejects_non_https_url_without_calling_opener,
     test_fetch_preview_image_is_safe_redirect_refusal_never_calls_the_opener,
     test_fetch_preview_image_unknown_content_type_is_rejected_body_never_written,

@@ -112,6 +112,19 @@ import {
   closeOverlaysNotAncestorOf,
   activeOverlayRef,
 } from "../shared/overlay.mjs";
+// The level-aware thumbnail-candidate mechanism (`docs/lora-loader-design.md`
+// §7c-iv, "the level governs the ⓘ panel too") -- moved out of
+// `civitai_search.mjs` into a shared module precisely so this file could
+// import the SAME retry-then-advance/locked-state machinery the search card
+// uses, rather than a second copy (see that module's own top doc comment).
+import {
+  levelLabelToInt,
+  pickThumbCandidates,
+  attachThumbCandidate,
+  THUMB_RETRY_BACKOFF_MS,
+  THUMB_SKELETON_CLASS,
+  THUMB_SKELETON_CSS,
+} from "../shared/civitai_thumb.mjs";
 
 const STYLE_ID = "wtn-mi-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -159,13 +172,26 @@ const CSS = `
   width: 58px; height: 58px; flex: none; border-radius: 7px; overflow: hidden;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   display: flex; align-items: center; justify-content: center;
+  /* \`position: relative\` is what lets the shared "loading" skeleton
+     (\`../shared/civitai_thumb.mjs\`'s \`THUMB_SKELETON_CSS\`, spliced in
+     below) overlay this box via \`position: absolute; inset: 0\` without
+     taking a flex slot of its own -- see that constant's own doc comment. */
+  position: relative;
 }
 .wtn-mi-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+${THUMB_SKELETON_CSS}
 .wtn-mi-thumb-ph {
   width: 22px; height: 22px; background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
   mask-image: url("${IMAGE_PLACEHOLDER_SVG}"); -webkit-mask-image: url("${IMAGE_PLACEHOLDER_SVG}");
   mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat;
 }
+/* §7c-iv's "locked" state, ported here from the search card
+   (\`civitai_search.mjs\`'s own \`.wtn-cs-thumb-locked\`) -- the SAME 🙈 glyph,
+   so the two surfaces agree on what "hidden by your browsing level" looks
+   like (task brief: "do not introduce a third glyph"). This panel has no
+   \`gated\` concept of its own (no download button here), so there is only
+   ever one lock glyph in this file. */
+.wtn-mi-thumb-locked { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 20px; }
 .wtn-mi-identity { flex: 1 1 auto; min-width: 0; }
 .wtn-mi-title {
   font-size: 14px; font-weight: 600; line-height: 1.25;
@@ -617,6 +643,8 @@ function prettyTitle(name) {
  * @param {string[]} [opts.selectedTriggers] - the currently-selected subset (from ANY source) that reaches the output.
  * @param {boolean} [opts.civitaiEnabled] - the "Civitai" ⚙/Settings switch's CURRENT value (§7b decision 20).
  * @param {boolean} [opts.showThumbnails] - the "Show preview thumbnails" ⚙/Settings switch's CURRENT value (§7b, Slice 5) -- `false` renders NO thumbnail element at all; defaults to `true`, same convention as `civitaiEnabled`.
+ * @param {string} [opts.browsingLevel] - the "Maximum browsing level" ⚙/Settings switch's CURRENT value (§7c-iv, one of `CIVITAI_SEARCH_LEVEL_OPTIONS` -- `"PG".."XXX"`), read by the CALLER the same way `civitaiEnabled`/`showThumbnails` already are -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY the Civitai-sourced fallback thumbnail (below) -- the local on-disk preview (`thumbUrl`) is never level-filtered (§7c-iv: "never what the user already has locally -- a file on disk was an explicit act"). Defaults to `"PG"`, the setting's own default.
+ * @param {number} [opts.thumbRetryBackoffMs] - test-only override for the identity thumb's retry backoff (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real use), matching `civitai_search.mjs`'s own `openCivitaiSearch` convention so a test can drive the retry chain deterministically instead of waiting on a real timer.
  * @param {(nextSelected: string[], nextCustom: string[]) => void} [opts.onChange]
  * @param {() => void} [opts.onClose]
  * @returns {object|null} the overlay handle, or `null` if this call just toggled an already-open panel closed.
@@ -633,6 +661,8 @@ export function openModelInfo({
   selectedTriggers = [],
   civitaiEnabled = true,
   showThumbnails = true,
+  browsingLevel = "PG",
+  thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
   onChange,
   onClose,
 } = {}) {
@@ -681,6 +711,13 @@ export function openModelInfo({
   // default open, matching the single AUTHOR'S NOTES section's own default.
   let modelNotesOpen = true;
   let versionNotesOpen = true;
+  // §7c-iv's own "make sure a card that re-renders mid-retry doesn't leave a
+  // stale timer writing to a detached element" -- the SAME `renderGeneration`
+  // convention `civitai_search.mjs` uses, ported here because this panel ALSO
+  // re-renders (`renderThumb`, from `renderIdentity`) while a thumbnail retry
+  // is still pending -- e.g. clicking `↻ Civitai` while the local preview's
+  // own onerror/retry chain hasn't settled yet.
+  let thumbGeneration = 0;
 
   function notify() {
     if (typeof onChange === "function") {
@@ -695,23 +732,18 @@ export function openModelInfo({
   // `showThumbnails === false` (§7b "Show preview thumbnails", Slice 5) skips
   // building the thumbnail element ENTIRELY -- not merely hiding it -- same
   // "no element at all" contract `model_picker.mjs`'s own `buildRow` follows
-  // for the identical setting.
-  if (showThumbnails !== false) {
-    const thumb = el(doc, "div", "wtn-mi-thumb");
-    const url = thumbUrl(kind, name);
-    if (url) {
-      const img = el(doc, "img");
-      img.src = url;
-      img.alt = "";
-      img.addEventListener("error", () => {
-        thumb.innerHTML = "";
-        thumb.appendChild(el(doc, "span", "wtn-mi-thumb-ph"));
-      });
-      thumb.appendChild(img);
-    } else {
-      thumb.appendChild(el(doc, "span", "wtn-mi-thumb-ph"));
-    }
-    head.appendChild(thumb);
+  // for the identical setting. This is ORTHOGONAL to §7c-iv's browsing level
+  // (task brief): this switch decides whether a thumbnail element is built
+  // at all; the level decides which image goes in one, below.
+  //
+  // `thumbHost`'s CONTENTS are rebuilt by `renderThumb()` (a dynamic subtree,
+  // same "static shell + dynamic host" convention as `chipsHost`/`statusHost`/
+  // `descHost`) rather than built once here -- unlike Slice 4, the Civitai
+  // fallback candidates below aren't known until `civitaiRecord` resolves,
+  // which happens AFTER this static shell is built.
+  const thumbHost = showThumbnails !== false ? el(doc, "div", "wtn-mi-thumb") : null;
+  if (thumbHost) {
+    head.appendChild(thumbHost);
   }
 
   const identity = el(doc, "div", "wtn-mi-identity");
@@ -932,7 +964,102 @@ export function openModelInfo({
     }
   }
 
+  function buildPlaceholderGlyph() {
+    return el(doc, "span", "wtn-mi-thumb-ph");
+  }
+
+  function buildLockedGlyph() {
+    // Same 🙈 glyph + wording as the search card's own "locked" state
+    // (`civitai_search.mjs`'s `buildThumb`) -- task brief: "do not introduce
+    // a third glyph."
+    const lock = el(doc, "span", "wtn-mi-thumb-locked");
+    lock.textContent = "\u{1F648}"; // 🙈
+    lock.title = "Preview hidden — above your browsing level";
+    return lock;
+  }
+
+  /**
+   * Rebuilds the identity thumbnail (§7c-iv, "the level governs the ⓘ panel
+   * too"). Precedence, per the design doc's own four-source table and the
+   * owner's 2026-07-31 correction to this task's brief:
+   *
+   *   1. the LOCAL on-disk preview (`thumbUrl`) -- always tried first,
+   *      NEVER level-filtered ("never what the user already has locally --
+   *      a file on disk was an explicit act");
+   *   2. once that fails to load (or there's no `name`/`kind` to resolve one
+   *      at all), the Civitai lookup's own `images` candidates, filtered to
+   *      the caller's `browsingLevel` and walked with the SAME
+   *      retry-then-advance chain the search card uses
+   *      (`attachThumbCandidate`, shared);
+   *   3. `"locked"` (a DIFFERENT glyph than a plain "no image") when Civitai
+   *      has images for this model but every one is above the chosen level;
+   *   4. the plain placeholder otherwise -- no local file, no Civitai record
+   *      (yet), or Civitai genuinely has no gallery at all.
+   *
+   * While ANY candidate in that chain is in flight (owner request,
+   * 2026-07-31), the box shows the shared `THUMB_SKELETON_CLASS` shimmer
+   * instead of sitting blank -- built once, before candidate 0 is even
+   * tried, and cleared only on the chain's own terminal outcome (a genuine
+   * load, or every candidate including its own retry exhausted), so it
+   * survives the local preview failing AND the fall-through into the
+   * Civitai candidates without flashing on and off in between.
+   *
+   * Rebuilt (not built once) because `civitaiRecord` isn't known until the
+   * lookup resolves, which happens AFTER this panel's static shell -- called
+   * from `renderIdentity`, which already re-runs on every lookup/forget
+   * outcome. `thumbGeneration` is this function's own render-generation guard
+   * (this file's top-of-closure doc comment) so a retry/advance timer queued
+   * under an EARLIER call never writes into a thumb box a LATER call has
+   * already cleared.
+   */
+  function renderThumb() {
+    if (!thumbHost) {
+      return; // showThumbnails === false (§7b) -- no element exists to fill
+    }
+    thumbHost.innerHTML = "";
+    thumbGeneration += 1;
+    const gen = thumbGeneration;
+    const isStale = () => gen !== thumbGeneration;
+
+    const localUrl = thumbUrl(kind, name);
+    const civitaiImages = civitaiRecord && Array.isArray(civitaiRecord.images) ? civitaiRecord.images : [];
+    const levelInt = levelLabelToInt(browsingLevel);
+    const civitaiCandidates = pickThumbCandidates(civitaiImages, levelInt);
+    const candidates = localUrl ? [localUrl, ...civitaiCandidates] : civitaiCandidates;
+    // A PRE-CHECK decision (`civitai_thumb.mjs`'s own doc comment on this
+    // exact split), computed once up front -- independent of whether the
+    // local file (or a level-passing Civitai candidate) subsequently fails
+    // to LOAD.
+    const locked = civitaiImages.length > 0 && civitaiCandidates.length === 0;
+
+    if (candidates.length === 0) {
+      thumbHost.appendChild(locked ? buildLockedGlyph() : buildPlaceholderGlyph());
+      return;
+    }
+    // The shared "loading" skeleton (owner request, 2026-07-31) -- built
+    // ONCE, before the local preview (candidate 0) is even tried, and
+    // removed only on the chain's own terminal outcome (`onLoaded`/
+    // `onExhausted` below), so it survives the local file failing AND the
+    // fall-through into the level-aware Civitai candidates, exactly as it
+    // does on the search card (`civitai_search.mjs`'s own `buildThumb`).
+    const skeleton = el(doc, "span", THUMB_SKELETON_CLASS);
+    thumbHost.appendChild(skeleton);
+    const clearSkeleton = (t) => {
+      if (skeleton.parentNode === t && typeof t.removeChild === "function") {
+        t.removeChild(skeleton);
+      }
+    };
+    attachThumbCandidate(doc, thumbHost, candidates, { index: 0, retried: false }, isStale, thumbRetryBackoffMs, (d, t) => {
+      clearSkeleton(t);
+      t.appendChild(locked ? buildLockedGlyph() : buildPlaceholderGlyph());
+    }, (d, t) => {
+      clearSkeleton(t);
+    });
+  }
+
   function renderIdentity() {
+    renderThumb();
+
     // The header TITLE prefers Civitai's own model name (a real display
     // name, e.g. "Skin Detail XL") over the prettified filename the moment
     // one is known -- a filename transform is a fallback for "we don't know

@@ -280,46 +280,15 @@ def _parse_files(files_raw: Any, *, gated: bool) -> List[Dict[str, Any]]:
     return out
 
 
-def _parse_images(images_raw: Any) -> List[Dict[str, Any]]:
-    """A version's raw `images` gallery -> an ordered list of
-    `{url, nsfw_level, type}` CANDIDATES, each `url` already thumbnail-
-    rewritten (`civitai_parse._thumb_url`'s `anim=false,width=256`) --
-    docs/lora-loader-design.md §7c-iv, "Send the CANDIDATES to the
-    frontend, not one pre-chosen URL". Once the browsing level is a user
-    setting, picking a single image ahead of time is a FRONTEND decision
-    (it knows the user's chosen level; this layer doesn't), so this
-    function hands over every usable entry rather than selecting one --
-    unlike `civitai_parse.pick_gallery_image_url`/`pick_thumbnail_url`,
-    it does NOT filter by adult-ness at all; every level from the response
-    is included, in the SAME order Civitai returned them, so the frontend
-    can walk it "first at or below my level, falling forward on failure".
-
-    Only entries with a truthy `url` are kept (an entry with no URL at all
-    is not a usable candidate for anything). `nsfw_level` is that entry's
-    own `nsfwLevel`, or `None` when absent -- absent means UNKNOWN, never
-    "safe": an existing sidecar/cached search result predates this field
-    entirely, and inventing a safe default for it would defeat the whole
-    point of a level ceiling. `type` is the entry's own `type` (`"image"`/
-    `"video"`), or `""` when absent -- a video entry is a normal candidate
-    here, not something to drop: `_thumb_url`'s `anim=false` is exactly what
-    makes a video's poster frame renderable, so filtering video out here
-    would throw away the fix.
-    """
-    if not isinstance(images_raw, list):
-        return []
-    out: List[Dict[str, Any]] = []
-    for image in images_raw:
-        if not isinstance(image, dict):
-            continue
-        url = image.get("url")
-        if not url:
-            continue
-        out.append({
-            "url": civitai_parse._thumb_url(str(url)),
-            "nsfw_level": _clean_int(image.get("nsfwLevel")),
-            "type": str(image.get("type") or ""),
-        })
-    return out
+# docs/lora-loader-design.md §7c-iv (2026-07-31, "the ⓘ panel's candidates
+# live in the sidecar"): this gallery-candidate parse moved to
+# `civitai_parse.parse_gallery_images` so `parse_model_version`'s own new
+# `images` key (the ⓘ panel's THIRD level-aware consumer) shares the EXACT
+# same rule rather than a second copy of this loop -- kept under this
+# module's original private name (a plain alias, not a copy, same
+# convention as `civitai_parse._pick_thumbnail`'s own alias) so every
+# existing call/comment below referencing `_parse_images` still resolves.
+_parse_images = civitai_parse.parse_gallery_images
 
 
 def pick_primary_file(files: Any) -> Optional[Dict[str, Any]]:

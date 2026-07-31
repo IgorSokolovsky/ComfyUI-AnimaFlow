@@ -26,11 +26,6 @@ import {
   resultBaseModel,
   resultSubtitle,
   gatedSubtitle,
-  levelLabelToInt,
-  pickThumbCandidates,
-  thumbState,
-  advanceThumbAttempt,
-  THUMB_RETRY_BACKOFF_MS,
   subfolderFromDestinationField,
   searchReasonMessage,
   downloadStartMessage,
@@ -54,6 +49,7 @@ import {
 } from "./civitai_search.mjs";
 import { invalidateList, hasFile, listModels } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
+import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 
 let failures = 0;
 let count = 0;
@@ -247,120 +243,16 @@ test("gatedSubtitle: always the bare line -- no base model, no separator (it now
 
 // =========================================================================
 // §7c-iv -- levelLabelToInt / pickThumbCandidates / thumbState /
-// advanceThumbAttempt. Pure, DOM-free.
+// advanceThumbAttempt / attachThumbCandidate now live in
+// `../shared/civitai_thumb.mjs` (moved so the ⓘ panel can share the same
+// mechanism -- see that module's own top doc comment), with their own pure
+// coverage moved to `js/shared/test_civitai_thumb.mjs`. `civitai_search.mjs`
+// still re-exports the first five under their original names (so any OTHER
+// existing import of them from this file keeps working), but this test file
+// no longer imports them directly -- the `openCivitaiSearch` DOM-level
+// integration tests below exercise the exact same functions indirectly, via
+// `buildThumb`.
 // =========================================================================
-
-test("levelLabelToInt: each label maps to Civitai's own bitmask value", () => {
-  assert.equal(levelLabelToInt("PG"), 1);
-  assert.equal(levelLabelToInt("PG-13"), 2);
-  assert.equal(levelLabelToInt("R"), 4);
-  assert.equal(levelLabelToInt("X"), 8);
-  assert.equal(levelLabelToInt("XXX"), 16);
-});
-
-test("levelLabelToInt: a garbage/unrecognised/missing label degrades to 1 (PG), the most conservative, never throws", () => {
-  assert.equal(levelLabelToInt("nope"), 1);
-  assert.equal(levelLabelToInt(""), 1);
-  assert.equal(levelLabelToInt(undefined), 1);
-  assert.equal(levelLabelToInt(null), 1);
-});
-
-test("pickThumbCandidates: an image passes iff its own nsfw_level is at or below the chosen level -- exercised at each of the five levels", () => {
-  const images = [
-    { url: "pg.jpg", nsfw_level: 1, type: "image" },
-    { url: "pg13.jpg", nsfw_level: 2, type: "image" },
-    { url: "r.jpg", nsfw_level: 4, type: "image" },
-    { url: "x.jpg", nsfw_level: 8, type: "image" },
-    { url: "xxx.jpg", nsfw_level: 16, type: "image" },
-  ];
-  assert.deepEqual(pickThumbCandidates(images, 1), ["pg.jpg"]);
-  assert.deepEqual(pickThumbCandidates(images, 2), ["pg.jpg", "pg13.jpg"]);
-  assert.deepEqual(pickThumbCandidates(images, 4), ["pg.jpg", "pg13.jpg", "r.jpg"]);
-  assert.deepEqual(pickThumbCandidates(images, 8), ["pg.jpg", "pg13.jpg", "r.jpg", "x.jpg"]);
-  assert.deepEqual(pickThumbCandidates(images, 16), ["pg.jpg", "pg13.jpg", "r.jpg", "x.jpg", "xxx.jpg"]);
-});
-
-test("pickThumbCandidates: preserves Civitai's own gallery order -- never re-sorts by level", () => {
-  const images = [
-    { url: "second.jpg", nsfw_level: 4, type: "image" },
-    { url: "first.jpg", nsfw_level: 1, type: "image" },
-  ];
-  assert.deepEqual(pickThumbCandidates(images, 16), ["second.jpg", "first.jpg"]);
-});
-
-test("pickThumbCandidates: a null/absent per-image nsfw_level is treated as 16 (XXX) -- conservative, never leaks below the user's own setting", () => {
-  const images = [
-    { url: "unlabelled.jpg", nsfw_level: null },
-    { url: "also-unlabelled.jpg" },
-  ];
-  assert.deepEqual(pickThumbCandidates(images, 8), [], "neither passes at X -- an unlabelled image is treated as XXX");
-  assert.deepEqual(pickThumbCandidates(images, 16), ["unlabelled.jpg", "also-unlabelled.jpg"], "both pass once the level itself is XXX");
-});
-
-test("pickThumbCandidates: garbage/non-array images, and a garbage/non-finite level (defaults to 1/PG), never throw", () => {
-  assert.deepEqual(pickThumbCandidates(null, 16), []);
-  assert.deepEqual(pickThumbCandidates(undefined, 16), []);
-  assert.deepEqual(pickThumbCandidates("not-an-array", 16), []);
-  const images = [{ url: "a.jpg", nsfw_level: 1 }, { url: "b.jpg", nsfw_level: 4 }];
-  assert.deepEqual(pickThumbCandidates(images, NaN), ["a.jpg"], "a garbage level defaults to 1 (PG)");
-  assert.deepEqual(pickThumbCandidates(images, undefined), ["a.jpg"]);
-});
-
-test("pickThumbCandidates: an entry with no usable url is skipped, never a blank/garbage src", () => {
-  const images = [{ nsfw_level: 1 }, { url: "", nsfw_level: 1 }, { url: "ok.jpg", nsfw_level: 1 }];
-  assert.deepEqual(pickThumbCandidates(images, 16), ["ok.jpg"]);
-});
-
-test("thumbState: gated wins over everything, even a non-empty images array that would otherwise be 'image'", () => {
-  assert.equal(thumbState("gated", [{ url: "x.jpg", nsfw_level: 1 }], 16), "gated");
-});
-
-test("thumbState: 'placeholder' for genuinely empty/garbage images (not gated)", () => {
-  assert.equal(thumbState("available", [], 16), "placeholder");
-  assert.equal(thumbState("available", null, 16), "placeholder");
-  assert.equal(thumbState("available", undefined, 16), "placeholder");
-});
-
-test("thumbState: 'locked' when images is non-empty but NOTHING passes the chosen level -- distinct from 'placeholder'", () => {
-  const images = [{ url: "xxx.jpg", nsfw_level: 16 }];
-  assert.equal(thumbState("available", images, 1), "locked", "an XXX-only gallery at the PG setting is locked, not placeholder");
-  assert.equal(thumbState("installed", images, 1), "locked", "the card's OWN action state (installed/downloading/available) never changes this -- only 'gated' does");
-});
-
-test("thumbState: 'image' once at least one candidate passes", () => {
-  const images = [{ url: "xxx.jpg", nsfw_level: 16 }, { url: "pg.jpg", nsfw_level: 1 }];
-  assert.equal(thumbState("available", images, 1), "image");
-});
-
-test("advanceThumbAttempt: a single candidate -- first failure retries the SAME index, second failure exhausts (no more candidates)", () => {
-  const candidates = ["only.jpg"];
-  const first = advanceThumbAttempt(candidates, undefined);
-  assert.deepEqual(first, { action: "retry", index: 0 });
-  const second = advanceThumbAttempt(candidates, { index: 0, retried: true });
-  assert.deepEqual(second, { action: "exhausted", index: 1 });
-});
-
-test("advanceThumbAttempt: two candidates -- retry candidate 0, then advance to candidate 1, then retry candidate 1, then exhaust", () => {
-  const candidates = ["a.jpg", "b.jpg"];
-  const step1 = advanceThumbAttempt(candidates, undefined); // candidates[0] just failed for the first time
-  assert.deepEqual(step1, { action: "retry", index: 0 });
-  const step2 = advanceThumbAttempt(candidates, { index: 0, retried: true }); // the retry ALSO failed
-  assert.deepEqual(step2, { action: "advance", index: 1 });
-  const step3 = advanceThumbAttempt(candidates, { index: 1, retried: false }); // candidates[1] just failed for the first time
-  assert.deepEqual(step3, { action: "retry", index: 1 });
-  const step4 = advanceThumbAttempt(candidates, { index: 1, retried: true }); // its own retry also failed
-  assert.deepEqual(step4, { action: "exhausted", index: 2 });
-});
-
-test("advanceThumbAttempt: an empty/garbage candidates list is immediately exhausted, never throws", () => {
-  assert.deepEqual(advanceThumbAttempt([], undefined), { action: "exhausted", index: 0 });
-  assert.deepEqual(advanceThumbAttempt(null, undefined), { action: "exhausted", index: 0 });
-  // `index` is already out of bounds against an empty list regardless of
-  // `retried` -- the "index >= length" check fires before that flag is ever
-  // consulted, so the returned index is the UNCHANGED input index (0), not
-  // incremented.
-  assert.deepEqual(advanceThumbAttempt(undefined, { index: 0, retried: true }), { action: "exhausted", index: 0 });
-});
 
 // =========================================================================
 // resolveVersionView -- the version-picker's own pure core (docs task
@@ -1026,6 +918,10 @@ function makeResult({ modelId, versionId, name, installed = false, gated = false
     size_kb: 1000,
     gated,
     installed,
+    // Matches `_annotate_search_results`'s own shape (`api.py`) -- that
+    // function ALWAYS sets this key (`[]` with no primary version), never
+    // leaves it `undefined`.
+    triggers: [],
   };
   if (images !== undefined) {
     result.images = images;
@@ -1268,6 +1164,85 @@ await asyncTest("openCivitaiSearch: clicking Download starts a job; the card sho
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     assert.equal(findAll(handle.overlay, "wtn-cs-action-installed").length, 1, "the card must flip to installed once the job completes");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: the download payload now carries civitai_meta and the currently-shown preview_url (task brief: 'the whole sidecar feature is dead code today')", async () => {
+  _resetDownloadStateForTests();
+  const result = makeResult({
+    modelId: 11, versionId: 22, name: "Sidecar LoRA", images: [img("https://image.civitai.com/pg.jpg", 1)],
+  });
+  result.tags = ["character"];
+  result.type = "LORA";
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      capturedBody = JSON.parse(opts.body);
+      return jsonResponse({ reason: "started", message: "", job_id: "job-sidecar" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(capturedBody, "the download/start request must have actually gone out");
+    assert.deepEqual(capturedBody.civitai_meta, {
+      model_id: 11, version_id: 22, name: "Sidecar LoRA", type: "LORA", base_model: "SDXL", tags: ["character"], triggers: [],
+    });
+    assert.equal(capturedBody.preview_url, "https://image.civitai.com/pg.jpg", "must send the URL of the candidate the card is showing -- level-filtered by construction");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: omits preview_url entirely when nothing passes the level -- the backend saves no preview, which is specified, not a failure", async () => {
+  _resetDownloadStateForTests();
+  // XXX-only gallery at the default PG (1) setting -- 'locked', no candidate passes.
+  const result = makeResult({
+    modelId: 12, versionId: 23, name: "Locked Sidecar LoRA", images: [img("https://image.civitai.com/xxx.jpg", 16)],
+  });
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      capturedBody = JSON.parse(opts.body);
+      return jsonResponse({ reason: "started", message: "", job_id: "job-locked-sidecar" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(capturedBody, "the download/start request must have actually gone out");
+    assert.equal("preview_url" in capturedBody, false, "no candidate passed the level -- preview_url must be OMITTED, never sent as null/an over-level URL");
+    assert.ok(capturedBody.civitai_meta, "civitai_meta must still be sent regardless of the preview outcome");
+
     handle.close();
   } finally {
     restoreFetch();
@@ -2013,6 +1988,101 @@ await asyncTest("openCivitaiSearch: a failed FIRST candidate advances (no backof
     assert.ok(secondImg, "must advance to candidate 1 immediately, with no wait");
     assert.equal(secondImg.src, "https://image.civitai.com/second.jpg");
     assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 0, "still trying candidate 1 -- no placeholder yet");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: the loading skeleton shows while a candidate is in flight, survives a retry AND an advance, and clears on a genuine load", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeResult({
+    modelId: 5,
+    versionId: 5,
+    name: "Skeleton",
+    images: [img("https://image.civitai.com/first.jpg"), img("https://image.civitai.com/second.jpg")],
+  })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", thumbRetryBackoffMs: 10,
+    });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton must show the instant a candidate is in flight");
+
+    const firstImg = findAllByTag(handle.overlay, "img")[0];
+    firstImg.onerror(); // 1st failure of candidate 0 -- queues the retry
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton must survive a queued retry, never flashing off");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "still showing after the retry re-attaches");
+
+    const retriedFirstImg = findAllByTag(handle.overlay, "img")[0];
+    retriedFirstImg.onerror(); // 2nd failure of candidate 0 -- advances to candidate 1
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton must ALSO survive an advance to the next candidate");
+
+    const secondImg = findAllByTag(handle.overlay, "img")[0];
+    secondImg.onload(); // candidate 1 genuinely loads
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0, "a genuine load must clear the skeleton");
+    assert.equal(findAllByTag(handle.overlay, "img").length, 1, "the loaded <img> itself stays");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 0, "a loaded image must never ALSO show the placeholder");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: the loading skeleton clears on exhaustion too, resolving to exactly the placeholder", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeResult({ modelId: 6, versionId: 6, name: "Skeleton Exhausts", images: [img("https://image.civitai.com/only.jpg")] })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", thumbRetryBackoffMs: 10,
+    });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1);
+    const firstImg = findAllByTag(handle.overlay, "img")[0];
+    firstImg.onerror(); // queue the retry
+    const retried = await (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return findAllByTag(handle.overlay, "img")[0];
+    })();
+    retried.onerror(); // the retry ALSO fails -- exhausted, only one candidate
+
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0, "exhaustion must clear the skeleton, never leave it alongside the placeholder");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 1, "and resolve to exactly the placeholder");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: 'locked' and the plain placeholder never show a skeleton at all -- there is no candidate in flight", async () => {
+  _resetDownloadStateForTests();
+  const results = [
+    makeResult({ modelId: 7, versionId: 7, name: "Locked", images: [img("https://image.civitai.com/xxx.jpg", 16)] }),
+    makeResult({ modelId: 8, versionId: 8, name: "No Images" }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0, "neither a locked nor a plain-placeholder card ever attempts a candidate, so neither ever shows the loading skeleton");
 
     handle.close();
   } finally {

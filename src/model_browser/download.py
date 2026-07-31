@@ -813,6 +813,20 @@ def fetch_preview_image(
     model download into a reported failure (task's own "must never fail or
     delay the model download").
 
+    docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
+    `anim=false,width=450`": `url` is normalised to `civitai_parse.
+    SAVED_PREVIEW_TRANSFORM` (`civitai_parse.saved_preview_url`) BEFORE the
+    fetch, regardless of what transform (if any) it already carried --
+    untransformed `original=true` (today's own `preview_url`), an existing
+    `anim=false,width=256` (the frontend hands back the URL of the
+    candidate it's ALREADY displaying, which is level-filtered by
+    construction -- see that function's own docstring for why this needs no
+    second level check here), or anything else. 115x smaller than the
+    untransformed source on a still, and fixes a LIVE bug on a video-preview
+    entry that today saves 2.77 MB of raw `video/mp4` as its "preview
+    image" -- `anim=false` turns that same request into a small JPEG poster
+    frame instead.
+
     `timeout` reuses `stream_download`'s own existing 30s default (a
     preview fetch getting the SAME patience Civitai's other endpoints get,
     not a shorter one invented for this) -- only `max_bytes` is a new,
@@ -836,6 +850,7 @@ def fetch_preview_image(
     """
     if not isinstance(url, str) or not url:
         return None
+    url = civitai_parse.saved_preview_url(url)
     if not _is_safe_redirect(url):
         return None
 
@@ -878,8 +893,19 @@ def finalize_successful_download(
     the `.civitai.info` sidecar from data the caller already held (no
     network at all for this part), then fetches the community preview image
     the caller already has a URL for (one guarded network call, ONLY if
-    `civitai_enabled`). Never raises, and never turns a successful download
-    into a reported failure -- every step here is independently best-effort.
+    `civitai_enabled`; `fetch_preview_image` itself normalises whatever URL
+    it's handed to `civitai_parse.SAVED_PREVIEW_TRANSFORM` before fetching).
+    Never raises, and never turns a successful download into a reported
+    failure -- every step here is independently best-effort.
+
+    docs/lora-loader-design.md §7c-iv, "the sidecar's level applies at SAVE
+    time, not display time": `preview_url` being falsy here means no
+    candidate passed the caller's chosen browsing level -- correctly saves
+    NOTHING (`if not preview_url: return` below), never a fallback to an
+    unfiltered pick. And once a preview file exists, the overwrite policy
+    right below means it is NEVER replaced later even if the level changes
+    -- level-awareness lives entirely in what URL the caller sends, not in
+    a second check made here.
 
     Overwrite policy (decided deliberately, not left implicit):
       - `.civitai.info` -- ALWAYS (over)written when `civitai_meta`

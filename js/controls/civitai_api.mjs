@@ -446,16 +446,36 @@ export async function searchModels(kind, { query = "", baseModel = "", sort = ""
  * of `invalid_kind`/`invalid_destination`/`already_installed`/`invalid_url`/
  * `too_large`/`busy`/`started` from the route itself, or this function's own
  * `offline` degrade for a transport failure. `job_id` is set ONLY when
- * `reason === "started"`; poll it via `downloadProgress` below. */
-export async function startDownload({ kind, subfolder = "", filename, downloadUrl, sizeKb } = {}) {
+ * `reason === "started"`; poll it via `downloadProgress` below.
+ *
+ * `civitaiMeta`/`previewUrl` -- the sidecar-seeding fields `api.py`'s route
+ * has accepted since `4965389` but `civitai_search.mjs` never actually sent
+ * (task brief: "the whole sidecar feature is dead code today"). Both are
+ * OPTIONAL and passed through as-is: `civitai_meta` is the caller's own
+ * normalized search-result fields for this exact result (so the backend can
+ * seed a `.civitai.info` sidecar with no second lookup); `preview_url` is the
+ * URL of whichever candidate the caller's own card is currently showing
+ * (already level-filtered by the caller -- this function makes no leveling
+ * decision of its own), or omitted entirely when nothing passed the level.
+ * Neither is required -- a caller with nothing to send (a legacy/garbage
+ * result) simply omits them, and the route's own `payload.get(...)` already
+ * treats an absent key as `None`. */
+export async function startDownload({ kind, subfolder = "", filename, downloadUrl, sizeKb, civitaiMeta, previewUrl } = {}) {
   if (!kind || !filename || !downloadUrl) {
     return { reason: "invalid_destination", message: "Missing required download fields.", job_id: null };
   }
   try {
+    const body = { kind, subfolder, filename, download_url: downloadUrl, size_kb: sizeKb };
+    if (civitaiMeta && typeof civitaiMeta === "object") {
+      body.civitai_meta = civitaiMeta;
+    }
+    if (typeof previewUrl === "string" && previewUrl) {
+      body.preview_url = previewUrl;
+    }
     const r = await fetch(DOWNLOAD_START_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, subfolder, filename, download_url: downloadUrl, size_kb: sizeKb }),
+      body: JSON.stringify(body),
     });
     const j = await r.json();
     if (j && typeof j.reason === "string") {

@@ -520,6 +520,12 @@ function openNamePickerFor(node, ctx, rowId, refs) {
  * setting is read HERE (`model_info.mjs` never reads it itself -- §7b
  * decision 20), and `onChange` writes the panel's selected/custom words
  * straight back onto this exact row.
+ *
+ * `browsingLevel` (§7c-iv, "the level governs the ⓘ panel too") -- read HERE
+ * the same way, so the panel's identity thumb's Civitai-sourced fallback
+ * always reflects whatever the user last set in the search panel's own
+ * "Maximum browsing level" select (the two share the SAME user-wide setting,
+ * `../shared/settings.mjs`'s `CIVITAI_SEARCH_LEVEL`).
  */
 function openInfoPanelFor(node, ctx, rowId, refs) {
   const state = ensureState(node, ctx);
@@ -530,6 +536,7 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
   const entry = cachedList("loras").find((m) => m && m.name === row.name);
   const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
   const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
+  const browsingLevel = getSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL]);
   openModelInfo({
     ctx,
     anchorEl: refs.info,
@@ -542,6 +549,7 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
     selectedTriggers: Array.isArray(row.triggers) ? row.triggers : [],
     civitaiEnabled,
     showThumbnails,
+    browsingLevel,
     onChange: (nextSelected, nextCustom) => {
       const s = ensureState(node, ctx);
       const r = s.rows.find((entry2) => entry2.id === rowId);

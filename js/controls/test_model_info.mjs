@@ -19,7 +19,8 @@ import {
   descriptionsView,
   openModelInfo,
 } from "./model_info.mjs";
-import { invalidateInfo } from "./civitai_api.mjs";
+import { invalidateInfo, thumbUrl } from "./civitai_api.mjs";
+import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 
 let failures = 0;
 let count = 0;
@@ -430,6 +431,18 @@ function findAll(root, className) {
   return out;
 }
 
+function findAllByTag(root, tagName) {
+  const out = [];
+  const walk = (e) => {
+    if (e.tagName === tagName) {
+      out.push(e);
+    }
+    (e.children || []).forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
 async function settle(n = 3) {
   for (let i = 0; i < n; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -686,9 +699,194 @@ await asyncTest("openModelInfo: showThumbnails === false renders NO thumbnail el
     });
     await settle();
     assert.equal(findAll(handleOff.overlay, "wtn-mi-thumb").length, 0, "showThumbnails: false must render NO thumbnail element at all");
+    assert.equal(findAll(handleOff.overlay, THUMB_SKELETON_CLASS).length, 0, "showThumbnails: false must not resurrect the loading skeleton either");
     // The rest of the identity block is unaffected.
     assert.equal(findAll(handleOff.overlay, "wtn-mi-title").length, 1);
     handleOff.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// §7c-iv -- "the level governs the ⓘ panel too". The identity thumb tries
+// the LOCAL on-disk preview first (never level-filtered), falls through to
+// the level-aware Civitai candidates on failure, and shows the shared
+// loading skeleton for whichever candidate is currently in flight.
+// =========================================================================
+
+await asyncTest("openModelInfo: the identity thumb tries the LOCAL preview first, shows the loading skeleton while it's in flight, and clears it on a genuine load", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-local.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+    });
+    await settle();
+
+    const img = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(img, "the local preview must be attempted first, even with no Civitai record at all");
+    assert.equal(img.src, thumbUrl(kind, name));
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton must show while the local preview is in flight");
+
+    img.onload(); // the local preview genuinely renders
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0, "a genuine load must clear the skeleton");
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-ph").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-locked").length, 0);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: once the LOCAL preview fails (retried, then exhausted), falls through to the level-aware Civitai candidates -- same retry-then-advance chain as the search card", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-fallback.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "Fallback Test", images: [{ url: "https://image.civitai.com/pg.jpg", nsfw_level: 1, type: "image" }] },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      thumbRetryBackoffMs: 10,
+    });
+    await settle();
+
+    const localImg = findAllByTag(handle.overlay, "img")[0];
+    assert.equal(localImg.src, thumbUrl(kind, name), "still tries the local preview first even once a Civitai record is known");
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1);
+
+    localImg.onerror(); // 1st failure -- queues the retry
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton survives the local preview's own retry");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const retriedImg = findAllByTag(handle.overlay, "img")[0];
+    assert.equal(retriedImg.src, thumbUrl(kind, name), "the retry uses the SAME local url");
+
+    retriedImg.onerror(); // 2nd failure of the local candidate -- advances (no backoff) to the Civitai candidate
+    const civitaiImg = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(civitaiImg, "must fall through to the Civitai candidate once the local preview is exhausted");
+    assert.equal(civitaiImg.src, "https://image.civitai.com/pg.jpg");
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 1, "the skeleton must survive the fall-through too");
+
+    civitaiImg.onload();
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-ph").length, 0);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: 'locked' -- once the local preview fails, Civitai has images but every one is above the chosen level", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-locked.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "Locked Test", images: [{ url: "https://image.civitai.com/xxx.jpg", nsfw_level: 16, type: "image" }] },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    // Default browsingLevel is "PG" (1) -- an XXX-only (16) gallery must lock.
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      thumbRetryBackoffMs: 10,
+    });
+    await settle();
+
+    const localImg = findAllByTag(handle.overlay, "img")[0];
+    localImg.onerror();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    findAllByTag(handle.overlay, "img")[0].onerror(); // exhausts the local candidate -- no Civitai candidate passes the level either
+
+    assert.equal(findAll(handle.overlay, THUMB_SKELETON_CLASS).length, 0, "exhaustion must clear the skeleton");
+    assert.equal(findAllByTag(handle.overlay, "img").length, 0, "a locked thumb never renders an <img>");
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-ph").length, 0, "locked is distinct from the plain placeholder");
+    const locked = findAll(handle.overlay, "wtn-mi-thumb-locked")[0];
+    assert.ok(locked, "the locked glyph must render");
+    assert.match(locked.title, /above your browsing level/i);
+    assert.equal(locked.textContent, "\u{1F648}", "must use the SAME glyph as the search card's own locked state -- no third glyph");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: a re-render mid-retry (e.g. a forced ↻ Civitai lookup landing while the local preview's own retry is still pending) leaves no stale timer writing into a detached thumb", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-stale.safetensors";
+  invalidateInfo(kind, name);
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return {
+      json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+    };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+      thumbRetryBackoffMs: 40,
+    });
+    await settle();
+
+    const firstImg = findAllByTag(handle.overlay, "img")[0];
+    firstImg.onerror(); // queues a retry ~40ms out, against THIS render generation
+
+    // A forced re-lookup (`↻ Civitai`) re-renders the identity block --
+    // including the thumb -- WHILE that retry timer is still pending.
+    const refetchBtn = findAll(handle.overlay, "wtn-mi-refetch")[0];
+    refetchBtn.click();
+    await settle();
+
+    const rebuiltImg = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(rebuiltImg, "the re-render must build its own fresh <img> for the local candidate");
+    assert.equal(fetchCalls, 2, "the forced refetch must have actually happened");
+
+    // Let the ORIGINAL (now-stale) retry timer fire.
+    await new Promise((resolve) => setTimeout(resolve, 70));
+
+    assert.equal(findAllByTag(handle.overlay, "img").length, 1, "the stale timer must not duplicate/replace the new render's own <img>");
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-ph").length, 0, "the stale timer must not append a placeholder into the current render either");
+
+    handle.close();
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);

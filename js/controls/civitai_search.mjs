@@ -114,8 +114,26 @@ import {
   CIVITAI_SEARCH_SORT_OPTIONS,
   CIVITAI_SEARCH_PERIOD_OPTIONS,
   CIVITAI_SEARCH_LEVEL_OPTIONS,
-  CIVITAI_SEARCH_LEVEL_TO_INT,
 } from "../shared/settings.mjs";
+// §7c-iv's thumbnail-candidate mechanism now lives in `../shared/civitai_thumb
+// .mjs` (moved, not duplicated, so the ⓘ info panel -- `model_info.mjs` --
+// can share it rather than carry a second copy; see that file's own top doc
+// comment for the full "why"). Re-exported below under their original names
+// so every existing import of THIS file (`test_civitai_search.mjs` included)
+// keeps working unchanged; `attachThumbCandidate` is imported directly for
+// `buildThumb`'s own use, below.
+import {
+  levelLabelToInt,
+  pickThumbCandidates,
+  thumbState,
+  advanceThumbAttempt,
+  THUMB_RETRY_BACKOFF_MS,
+  attachThumbCandidate,
+  THUMB_SKELETON_CLASS,
+  THUMB_SKELETON_CSS,
+} from "../shared/civitai_thumb.mjs";
+
+export { levelLabelToInt, pickThumbCandidates, thumbState, advanceThumbAttempt, THUMB_RETRY_BACKOFF_MS };
 
 const STYLE_ID = "wtn-cs-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -238,6 +256,11 @@ const CSS = `
   flex: none; width: 40px; height: 40px; border-radius: 5px; overflow: hidden;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   display: flex; align-items: center; justify-content: center;
+  /* \`position: relative\` is what lets the shared "loading" skeleton
+     (\`../shared/civitai_thumb.mjs\`'s \`THUMB_SKELETON_CSS\`, spliced in
+     below) overlay this box via \`position: absolute; inset: 0\` without
+     taking a flex slot of its own -- see that constant's own doc comment. */
+  position: relative;
 }
 .wtn-cs-thumb-ph {
   width: 16px; height: 16px; background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -255,6 +278,7 @@ const CSS = `
    same 40px box the placeholder/padlock/lock already occupy -- \`object-fit:
    cover\` so a non-square gallery image never distorts. */
 .wtn-cs-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+${THUMB_SKELETON_CSS}
 .wtn-cs-meta { flex: 1 1 auto; min-width: 0; }
 .wtn-cs-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The base-model chip + download count share one row (owner, 2026-07-30) --
@@ -607,114 +631,11 @@ export function gatedSubtitle() {
 
 // ---------------------------------------------------------------------------
 // §7c-iv -- the "maximum browsing level" select, thumbnail candidate
-// selection, and the retry-then-advance state machine. All pure, all
-// DOM-free, matching every other helper in this file.
+// selection, and the retry-then-advance state machine now live in
+// `../shared/civitai_thumb.mjs` (moved 2026-07-31 so `model_info.mjs`'s ⓘ
+// panel can share them -- see that module's own top doc comment). Re-exported
+// above under their original names.
 // ---------------------------------------------------------------------------
-
-/** The "maximum browsing level" setting's own label string ("PG".."XXX",
- * `CIVITAI_SEARCH_LEVEL_OPTIONS`) -> Civitai's numeric bitmask value (`1`
- * PG / `2` PG-13 / `4` R / `8` X / `16` XXX) -- the one place this file
- * converts between the two. An unrecognised/garbage label (a hand-edited
- * `comfy.settings.json`, or simply a value from before this setting existed)
- * degrades to `1` (PG), the most conservative of the five, never throws. */
-export function levelLabelToInt(label) {
-  return CIVITAI_SEARCH_LEVEL_TO_INT[label] || 1;
-}
-
-/** The ordered candidate thumbnail URLs out of a version's own `images`
- * array (§7c-iv) -- every entry whose `nsfw_level` is at or below `level`,
- * in Civitai's own order, URLs only (a caller only ever needs the next URL
- * to try, never the whole image object). **A `null`/absent per-image
- * `nsfw_level` is treated as `16` (XXX)** -- conservative, so an unlabelled
- * image never leaks below the user's own setting; every image measured
- * against the live API carried a level, so this should be rare in practice
- * (design doc §7c-iv). Garbage/non-array `images`, or a garbage/non-finite
- * `level` (defaults to `1`, PG), degrade rather than throw. Comparing a
- * SINGLE image's own `nsfw_level` with `<=` is safe -- unlike the model-level
- * `nsfw_level`, which is a bitmask UNION across every image and must never
- * be compared ordinally, one image carries exactly one level, so `1 < 2 < 4
- * < 8 < 16` is a genuine ordering for this comparison. */
-export function pickThumbCandidates(images, level) {
-  const list = Array.isArray(images) ? images : [];
-  const lvl = Number.isFinite(level) ? level : 1;
-  return list
-    .filter((img) => img && typeof img.url === "string" && img.url)
-    .filter((img) => (Number.isFinite(img.nsfw_level) ? img.nsfw_level : 16) <= lvl)
-    .map((img) => img.url);
-}
-
-/** The thumbnail BOX's own state (§7c-iv's "fifth card state" -- about the
- * box only, never the card's own action/download state): `"gated"` when the
- * card itself is gated (§7c-iii, unchanged by this feature -- a gated card
- * never shows a thumbnail regardless of `images`; `gated` wins over
- * everything below, per that section's own "two padlocks" rule), else
- * `"placeholder"` when `images` is genuinely empty (a model with no gallery
- * at all -- also what an over-level model at the PG setting looks like,
- * since the server trims its gallery to nothing before this ever runs; see
- * this file's own top doc comment / `runSearch`'s PG note), `"locked"` when
- * `images` is non-empty but NOTHING in it passes `level` (the model has
- * pictures, they're all above the user's own setting), or `"image"` when at
- * least one candidate passes -- `pickThumbCandidates` is what a caller then
- * uses to get the actual URL list to try. */
-export function thumbState(cardState, images, level) {
-  if (cardState === "gated") {
-    return "gated";
-  }
-  const list = Array.isArray(images) ? images : [];
-  if (list.length === 0) {
-    return "placeholder";
-  }
-  return pickThumbCandidates(list, level).length > 0 ? "image" : "locked";
-}
-
-/** How long to wait before retrying the SAME failed thumbnail URL once
- * (§7c-iv: "retry the same URL once after a short backoff (~400ms)") before
- * advancing to the next candidate. Exported/overridable (`openCivitaiSearch`'s
- * own `thumbRetryBackoffMs` option) purely so a test can drive this
- * deterministically instead of waiting on a real ~400ms timer, matching this
- * file's existing `pollIntervalMs` convention. */
-export const THUMB_RETRY_BACKOFF_MS = 400;
-
-/**
- * Advances the retry-then-advance state machine (§7c-iv) one failure at a
- * time. Pure and DOM-free so the SEQUENCE itself is directly testable
- * without a real `<img>`/timer -- `buildThumb`'s own DOM driver
- * (`attachThumbCandidate`, below) is a thin wrapper around this.
- *
- * `<img>.onerror` carries no status code (a timeout, a 404 and a transcode
- * failure are indistinguishable from the error event) -- so this function
- * never looks at WHY a candidate failed, only at how many times THIS one
- * has.
- *
- * `state` is `{index, retried}` describing the candidate that just failed
- * (its position in `candidates`, and whether IT has already been retried
- * once) -- omit for the very first failure of `candidates[0]` (defaults to
- * `{index: 0, retried: false}`). Returns `{action, index}`:
- *   - `"retry"`     -- try `candidates[index]` again (the SAME url) --
- *                      caller waits the backoff first.
- *   - `"advance"`   -- try `candidates[index]` (a NEW, next url) -- no
- *                      backoff; this is a fresh URL, not a repeat.
- *   - `"exhausted"` -- every candidate has now failed (including its own
- *                      retry) -- show the placeholder.
- * Garbage/non-array `candidates` degrades to `[]` (immediately
- * `"exhausted"`), never throws.
- */
-export function advanceThumbAttempt(candidates, state) {
-  const list = Array.isArray(candidates) ? candidates : [];
-  const index = state && Number.isFinite(state.index) ? state.index : 0;
-  const retried = !!(state && state.retried);
-  if (index >= list.length) {
-    return { action: "exhausted", index };
-  }
-  if (!retried) {
-    return { action: "retry", index };
-  }
-  const nextIndex = index + 1;
-  if (nextIndex >= list.length) {
-    return { action: "exhausted", index: nextIndex };
-  }
-  return { action: "advance", index: nextIndex };
-}
 
 /**
  * The destination FIELD's text -> the `subfolder` value actually sent to
@@ -1077,12 +998,17 @@ async function _pollLoop(jobId, pollIntervalMs) {
  * only (default 800ms in real use) -- exists so a test can drive the poll
  * loop with a short, deterministic interval instead of waiting on a real
  * 800ms timer.
+ *
+ * `civitaiMeta`/`previewUrl` (task brief, "wire the download sidecar -- it
+ * has never been connected") -- passed straight through to `startDownload`,
+ * which is the one that actually puts them on the wire; see that function's
+ * own doc comment.
  */
-export async function startDownloadJob({ kind, subfolder = "", filename, downloadUrl, sizeKb, key }, pollIntervalMs = 800) {
+export async function startDownloadJob({ kind, subfolder = "", filename, downloadUrl, sizeKb, key, civitaiMeta, previewUrl }, pollIntervalMs = 800) {
   if (_activeDownload) {
     return { reason: "busy", message: "Another download is already running — wait for it to finish.", job_id: null };
   }
-  const resp = await startDownload({ kind, subfolder, filename, downloadUrl, sizeKb });
+  const resp = await startDownload({ kind, subfolder, filename, downloadUrl, sizeKb, civitaiMeta, previewUrl });
   if (resp.reason === "started") {
     _activeDownload = { kind, jobId: resp.job_id, key, filename, status: "downloading", bytes: 0, total: null, message: "" };
     _notify();
@@ -1127,74 +1053,32 @@ function buildFilterSelect(doc, options, current, onChange) {
 }
 
 /**
- * Attaches (or re-attaches, on retry/advance) an `<img>` for
- * `candidates[attempt.index]` into `thumb`. The DOM driver behind
- * `advanceThumbAttempt`'s pure state machine (§7c-iv) -- `onerror` calls that
- * function, then either waits `backoffMs` and re-attaches the SAME url
- * (`"retry"`), re-attaches immediately for a NEW url (`"advance"`), or swaps
- * in the placeholder (`"exhausted"`).
- *
- * `isStale()` is this card's own render-generation check
- * (`openCivitaiSearch`'s `renderGeneration` counter) -- called before EVERY
- * DOM mutation this function or its pending `setTimeout` ever perform, so a
- * card that gets re-rendered mid-retry (the download poll re-renders the
- * whole list every ~800ms) never leaves an orphaned timer writing into a
- * thumb box that isn't showing anymore.
- */
-function attachThumbCandidate(doc, thumb, candidates, attempt, isStale, backoffMs) {
-  const img = el(doc, "img", "wtn-cs-thumb-img");
-  img.loading = "lazy";
-  img.referrerPolicy = "no-referrer";
-  img.alt = "";
-  img.onerror = () => {
-    if (isStale()) {
-      return; // this card's own list-pass is no longer the current one -- never touch a detached thumb
-    }
-    // `removeChild` (not `.remove()`) so this works against both a real DOM
-    // element and this pack's own minimal doc-stub test double.
-    if (img.parentNode === thumb && typeof thumb.removeChild === "function") {
-      thumb.removeChild(img);
-    }
-    const result = advanceThumbAttempt(candidates, attempt);
-    if (result.action === "exhausted") {
-      thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
-      return;
-    }
-    const nextAttempt = { index: result.index, retried: result.action === "retry" };
-    if (result.action === "retry") {
-      // Same URL, after a short backoff (§7c-iv) -- `<img>.onerror` carries
-      // no status code, so a timeout/404/transcode failure are all handled
-      // by this ONE rule.
-      setTimeout(() => {
-        if (isStale()) {
-          return;
-        }
-        attachThumbCandidate(doc, thumb, candidates, nextAttempt, isStale, backoffMs);
-      }, backoffMs);
-      return;
-    }
-    // "advance" -- a genuinely different URL, tried immediately -- no backoff.
-    attachThumbCandidate(doc, thumb, candidates, nextAttempt, isStale, backoffMs);
-  };
-  img.src = candidates[attempt.index];
-  thumb.appendChild(img);
-}
-
-/**
- * The 40px thumbnail box -- FIVE states now (§7c-iv's "fifth card state",
- * `thumbState`'s own doc comment has the full priority rule):
+ * The 40px thumbnail box -- FIVE states from `thumbState` (§7c-iv's "fifth
+ * card state", that function's own doc comment has the full priority rule),
+ * plus a transient SIXTH one this function itself manages:
  *
  *   - `"gated"`       -- §7c-iii's padlock, unchanged: no thumbnail at all.
- *   - `"locked"`      -- NEW: a DIFFERENT lock glyph + tooltip than `gated`'s
- *                        own (§7c-iv's own "two padlocks" warning) -- this
- *                        model HAS images, every one is above the chosen
- *                        browsing level.
+ *   - `"locked"`      -- a DIFFERENT lock glyph + tooltip than `gated`'s own
+ *                        (§7c-iv's own "two padlocks" warning) -- this model
+ *                        HAS images, every one is above the chosen browsing
+ *                        level.
  *   - `"placeholder"` -- the existing neutral grey box, for a model with NO
  *                        images at all.
- *   - `"image"`       -- an `<img>` for `candidates[0]`, retried once on
- *                        failure then advanced through the rest of
- *                        `candidates` (`attachThumbCandidate`, above) before
- *                        finally falling back to the placeholder.
+ *   - `"image"`       -- while any candidate's own `<img>` is still in
+ *                        flight, shows the shared `THUMB_SKELETON_CLASS`
+ *                        shimmer (owner request, 2026-07-31) -- built once,
+ *                        before `candidates[0]` is even tried, and removed
+ *                        only once the WHOLE retry-then-advance chain
+ *                        (`../shared/civitai_thumb.mjs`'s
+ *                        `attachThumbCandidate`) reaches a terminal outcome:
+ *                        `onLoaded` (a candidate genuinely rendered) or
+ *                        `onExhausted` (every candidate, including its own
+ *                        retry, failed) -- this card's own `onExhausted`
+ *                        callback, below, is what makes THAT fallback the
+ *                        plain `wtn-cs-thumb-ph` placeholder rather than
+ *                        re-deriving `locked` (see that module's own
+ *                        "PRE-CHECK, not a post-exhaustion guess" doc
+ *                        comment).
  *
  * `isStale`/`backoffMs` are only meaningful for the `"image"` state -- see
  * `attachThumbCandidate`'s own doc comment.
@@ -1218,7 +1102,24 @@ function buildThumb(doc, state, candidates, isStale, backoffMs) {
     return thumb;
   }
   if (state === "image" && Array.isArray(candidates) && candidates.length > 0) {
-    attachThumbCandidate(doc, thumb, candidates, { index: 0, retried: false }, isStale, backoffMs);
+    // The shared "loading" skeleton (owner request, 2026-07-31) -- built
+    // ONCE, before the first candidate is even tried, and removed only on
+    // the chain's own terminal outcome (`onLoaded`/`onExhausted` below) --
+    // never torn down between an individual retry/advance step, which is
+    // what lets it survive the WHOLE chain rather than flashing on and off.
+    const skeleton = el(doc, "span", THUMB_SKELETON_CLASS);
+    thumb.appendChild(skeleton);
+    const clearSkeleton = (t) => {
+      if (skeleton.parentNode === t && typeof t.removeChild === "function") {
+        t.removeChild(skeleton);
+      }
+    };
+    attachThumbCandidate(doc, thumb, candidates, { index: 0, retried: false }, isStale, backoffMs, (d, t) => {
+      clearSkeleton(t);
+      t.appendChild(el(d, "span", "wtn-cs-thumb-ph"));
+    }, (d, t) => {
+      clearSkeleton(t);
+    });
     return thumb;
   }
   // "placeholder", or a garbage/empty candidates list reaching here anyway
@@ -1501,6 +1402,17 @@ export function openCivitaiSearch({
     const gen = renderGeneration;
     const isStale = () => gen !== renderGeneration;
     card.appendChild(buildThumb(doc, tState, candidates, isStale, thumbRetryBackoffMs));
+    // The download sidecar's own `preview_url` (task brief, §7c-iv's "save
+    // what you're showing" rule): the FIRST level-passing candidate -- i.e.
+    // the card's own primary attempt, already level-filtered by construction
+    // (`candidates`, above) -- or `null` when nothing passes the level at
+    // all (`locked`/`placeholder`/`gated`), so the backend saves NO preview
+    // rather than an over-level one. This is a deliberate simplification of
+    // "currently displaying": if the primary candidate has failed to load
+    // and the box has since advanced to a later one, this still sends the
+    // PRIMARY level-passing URL rather than tracking the live retry index --
+    // still level-filtered, still one of the candidates the box would show.
+    const previewUrl = candidates.length > 0 ? candidates[0] : null;
 
     const meta = el(doc, "div", "wtn-cs-meta");
     const title = el(doc, "div", "wtn-cs-title");
@@ -1651,8 +1563,29 @@ export function openCivitaiSearch({
         }
         cardMessages.delete(rKey);
         const subfolder = subfolderFromDestinationField(destInput.value, kind);
+        // The sidecar-seeding fields (`api.py`'s own `/download/start`
+        // docstring, "no info sidecar, no preview image" fix) -- both were
+        // accepted server-side since `4965389` but never actually sent, so
+        // the whole feature was dead code (task brief). `civitaiMeta` is
+        // OUR OWN normalized fields for this exact result -- the same shape
+        // `civitai_search.parse_search_response`/`_annotate_search_results`
+        // already produced them in, so the backend can seed a
+        // `.civitai.info` sidecar with no second lookup. `previewUrl` is
+        // `null` whenever nothing passes the level (`previewUrl`, above) --
+        // the backend then saves no preview, which is specified, not a
+        // failure (task brief).
+        const civitaiMeta = {
+          model_id: result.model_id,
+          version_id: view.primary_version_id,
+          name: view.name,
+          type: result.type,
+          base_model: view.base_model,
+          tags: result.tags,
+          triggers: view.triggers,
+        };
         const resp = await startDownloadJob({
           kind, subfolder, filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb, key: rKey,
+          civitaiMeta, previewUrl,
         }, pollIntervalMs);
         if (resp.reason !== "started") {
           cardMessages.set(rKey, downloadStartMessage(resp));

@@ -23,6 +23,7 @@ import {
   cachedCategoryTag,
   thumbUrl,
   searchModels,
+  startDownload,
 } from "./civitai_api.mjs";
 
 let failures = 0;
@@ -495,6 +496,61 @@ await asyncTest("searchModels: defaults to level=1 (PG) when omitted, and degrad
 });
 
 // =========================================================================
+// startDownload -- the sidecar-seeding fields (task brief: "the whole
+// sidecar feature is dead code today", `civitai_meta`/`preview_url`).
+// =========================================================================
+
+await asyncTest("startDownload: sends civitai_meta and preview_url on the wire when both are supplied", async () => {
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return jsonResponse({ reason: "started", message: "", job_id: "abc" });
+  });
+  try {
+    const civitaiMeta = { model_id: 1, version_id: 2, name: "N", type: "LORA", base_model: "SDXL", tags: ["character"], triggers: ["tw"] };
+    await startDownload({
+      kind: "loras", subfolder: "", filename: "a.safetensors", downloadUrl: "https://civitai.com/api/download/models/2", sizeKb: 100,
+      civitaiMeta, previewUrl: "https://image.civitai.com/pg.jpg",
+    });
+    assert.deepEqual(capturedBody.civitai_meta, civitaiMeta);
+    assert.equal(capturedBody.preview_url, "https://image.civitai.com/pg.jpg");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("startDownload: omits civitai_meta/preview_url entirely when not supplied -- never sends a null/undefined placeholder", async () => {
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return jsonResponse({ reason: "started", message: "", job_id: "abc" });
+  });
+  try {
+    await startDownload({ kind: "loras", subfolder: "", filename: "a.safetensors", downloadUrl: "https://civitai.com/api/download/models/2", sizeKb: 100 });
+    assert.equal("civitai_meta" in capturedBody, false, "must OMIT the key, not send civitai_meta: null");
+    assert.equal("preview_url" in capturedBody, false, "must OMIT the key when nothing passed the level -- the backend then saves no preview (specified behaviour, not a failure)");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("startDownload: a garbage civitaiMeta/previewUrl is dropped rather than sent as-is", async () => {
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return jsonResponse({ reason: "started", message: "", job_id: "abc" });
+  });
+  try {
+    await startDownload({
+      kind: "loras", subfolder: "", filename: "a.safetensors", downloadUrl: "https://civitai.com/api/download/models/2", sizeKb: 100,
+      civitaiMeta: "not-an-object", previewUrl: "",
+    });
+    assert.equal("civitai_meta" in capturedBody, false);
+    assert.equal("preview_url" in capturedBody, false);
+  } finally {
+    restoreFetch();
+  }
+});
 
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
