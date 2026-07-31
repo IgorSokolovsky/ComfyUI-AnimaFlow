@@ -1,8 +1,26 @@
 # LoRA Loader + Civitai browser — design
 
-**Status: M1 BUILT (2026-07-29), not yet verified in a live ComfyUI.** M2 (search + download) and M2b
-(the toolbar modal) remain spec-only and still need §9's network policy. See §0e for what M1 actually
-shipped and the two implementation decisions that are not in the 26-row table below.
+**Status (2026-07-31): M1, M2 and M2b's first slice are BUILT.** §9's network policy is settled and in
+force. See §0e for what M1 shipped; the milestone list in §0c is the plan, this is where it actually got to.
+
+| | state |
+|---|---|
+| **M1** — node, rows, picker, ⓘ panel, sizing, drag + FLIP, ⚙, hash lookup | ✅ built, owner-confirmed |
+| **M2** — search + download in the anchored panel, thumbnails, per-version picker, browsing level, sidecar | ✅ built; search + level owner-confirmed, the rest awaiting a restart |
+| **M2b slice 1** — toolbar button, 90% modal, filter rail, result grid, download | ✅ built, unverified |
+| **M2b slice 2** — the detail **swap** + multi-column community gallery + copy-prompt | ❌ **not built** |
+| **§7c-ii** — the *picker's* vertical info panel (version selector, description, single-column gallery) | ❌ **not built** — the one part of M2 still outstanding |
+| **§1a-vii** — show the Civitai name instead of the filename, behind a setting | ❌ **not built** (spec only) |
+| **ⓘ backfill saves the preview image** (§7c-iv) | ❌ **not built** — until it is, that path re-fetches from Civitai forever |
+| **`notfound`'s search-by-name link** | ❌ still the disabled stub M1 left |
+| **Remove an installed model** (decisions taken 2026-07-30, `docs/TODO.md`) | ❌ **not built** |
+| **Installed-by-kind section in the modal** (owner, 2026-07-30) | ❌ **not built** |
+| **M3** — Loader Panel reuse, checkpoints + UNET | ❌ **not built** |
+
+> ⚠️ This header previously read *"M2 and M2b remain spec-only"* long after both shipped, and §7c-iv
+> still carried "SPEC, not yet built" after it was built and confirmed. **A status line is the first
+> thing read and the last thing updated** — if you ship a milestone here, change this table in the same
+> commit.
 
 Originally written 2026-07-29 from a full read of the upstream reference. Three
 things the board listed as open are **settled here by investigation** (§2b, §5, §6); one genuinely
@@ -784,8 +802,17 @@ below it show **only the active filters**, so the rail reads as *what am I filte
 | Maximum browsing level | plain `<select>` (PG → XXX) | no — single choice, no chips (§7c-iv) |
 
 Details worth fixing now: selecting resets the `<select>` to its "Add a …" placeholder so it reads as an
-*action* rather than a current value; a duplicate selection is a no-op; and an empty group shows a faint
-`any` so "no filter" is stated rather than blank.
+*action* rather than a current value, and a duplicate selection is a no-op.
+
+> **REVERSED 2026-07-31, owner, from the built rail.** This previously required *"an empty group shows a
+> faint `any` so 'no filter' is stated rather than blank."* It does not: the `<select>` directly above
+> already reads *"Add a base model…"*, so `any` restates the control and costs a second line of text per
+> section for nothing. **An empty group renders nothing.** Three further corrections from the same look:
+> **no card/box chrome per section** — five bordered panels stacked read as five widgets rather than one
+> rail, so headings and spacing do the separating; **the open `<select>` shows a `✓` against
+> already-selected values** (a prefix on the option's own text — a native `<select>` cannot render markup
+> — so the dropdown states current selection instead of making the user read it off the chips); and **no
+> header subtitle** on the modal (`unscoped — every supported type` is dropped; the title suffices).
 
 **Every filter chip carries an `✕`**, which is consistent with §1a-i rather than contradicting it: there,
 the `✕` marks a word *you* authored versus one the file supplied. In the rail **every** chip is user-put,
@@ -867,7 +894,7 @@ Three things this table is load-bearing for:
 > on the first result card. Read the mockup before claiming it is silent on something; grepping it for the
 > word you expect is not the same as looking at it.
 
-### 7c-iv. Browsing LEVEL replaces the NSFW checkbox (owner, 2026-07-31) — SPEC, not yet built
+### 7c-iv. Browsing LEVEL replaces the NSFW checkbox (owner, 2026-07-31) — BUILT, owner-confirmed
 
 **Supersedes** the `NSFW ✅` row in §7c-i's filter table and the `Show NSFW | switch` row in the modal
 rail table. Everything else in §7c-i stands.
