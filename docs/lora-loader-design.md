@@ -653,7 +653,11 @@ and *outcome*:
 | base model (SD1.5 / SDXL / Pony / Flux / Illustrious …) | ✅ | ✅ |
 | sort (Relevancy / Most downloaded / Highest rated / Newest) | ✅ | ✅ |
 | period (Day / Week / Month / Year / All time) | ✅ | ✅ |
-| NSFW | ✅ | ✅ |
+| ~~NSFW~~ → **maximum browsing level** (PG / PG-13 / R / X / XXX) | ✅ | ✅ |
+
+> The NSFW **checkbox** is superseded by a five-level selector — see **§7c-iv**, which also explains why
+> the level cannot be a server-side filter and what that forces. The row above is the only change to
+> this table.
 
 So exactly **one** filter behaves differently, and it is the one implied by the mount point: a LoRA
 Loader's picker cannot search checkpoints, because it could not do anything with the result.
@@ -682,7 +686,7 @@ below it show **only the active filters**, so the rail reads as *what am I filte
 | Period | plain `<select>` | no |
 | Filter by Base Model | `<select>` → chips | **yes** |
 | Filter by Model Type | `<select>` → chips | **yes** |
-| Show NSFW | switch | no |
+| Maximum browsing level | plain `<select>` (PG → XXX) | no — single choice, no chips (§7c-iv) |
 
 Details worth fixing now: selecting resets the `<select>` to its "Add a …" placeholder so it reads as an
 *action* rather than a current value; a duplicate selection is a no-op; and an empty group shows a faint
@@ -767,6 +771,113 @@ Three things this table is load-bearing for:
 > ⚠️ I initially reported that the mockup did not specify an already-present state. **It does** — `✓ have`,
 > on the first result card. Read the mockup before claiming it is silent on something; grepping it for the
 > word you expect is not the same as looking at it.
+
+### 7c-iv. Browsing LEVEL replaces the NSFW checkbox (owner, 2026-07-31) — SPEC, not yet built
+
+**Supersedes** the `NSFW ✅` row in §7c-i's filter table and the `Show NSFW | switch` row in the modal
+rail table. Everything else in §7c-i stands.
+
+#### What went wrong, and what the API actually allows
+
+Owner: *"we got some lora (NSFW with no thumbnail) but when turning on nsfw thumbnail exist… lets check
+why nsfw is false."* Two separate findings, both **measured live against `civitai.com/api/v1/models`**
+on 2026-07-31, not inferred:
+
+**1. Civitai's model-level `nsfw` boolean is not an adult flag.** Twelve LoRAs from one query all
+reported `nsfw: False` while carrying `nsfwLevel` values of 15, 23 and 31. The bool is legacy;
+**`nsfwLevel` is the real signal** — a bitmask: `1 PG · 2 PG-13 · 4 R · 8 X · 16 XXX` (`32 Blocked`,
+never browsable). We parse `item.get("nsfw")` at `civitai_search.py:341` and **discard `nsfwLevel`
+entirely**, at both model and image level. That is the root gap.
+
+**2. The `nsfw` request parameter is binary, and there is no level parameter.** Measured:
+
+| request | images returned |
+|---|---|
+| `nsfw=false`, or the parameter omitted | levels `[1]` only |
+| `nsfw=true` | levels `[1, 2, 4, 8, 16]` |
+| `browsingLevel=31` · `nsfw=16` · `nsfw=X` | **HTTP 400** |
+
+So `nsfw=false` does **not** hide adult models — it returns them with the gallery *trimmed to level 1*.
+A model with no level-1 image therefore arrives with an **empty gallery**, and gets no thumbnail. Flip
+the checkbox on, its level-2 images come back, our own filter accepts those, and a thumbnail appears.
+That is exactly the reported behaviour, and it is Civitai's doing, not a bug in our parsing.
+
+**The consequence that decides the design: a level selector cannot be a server-side filter.** It must be
+client-side, which requires fetching the full gallery first. The owner's two proposals ("switch to a
+level selector" and "always fetch everything, lock what's above") are therefore not alternatives —
+the first *requires* the second.
+
+#### The design
+
+**One setting replaces the checkbox: `Maximum browsing level`**, five choices, remembered user-wide in
+Settings → AnimaFlow like every other filter (§7c-i's last paragraph).
+
+| level | request sent | filtering |
+|---|---|---|
+| **PG** (default) | `nsfw=false` | none needed — the server never sends adult content |
+| PG-13 · R · X · XXX | `nsfw=true` | client-side, to the chosen maximum |
+
+**The lowest setting is a genuine server-side guarantee, not a cosmetic one.** That asymmetry is
+deliberate: at PG we never ask for adult content at all, rather than downloading it and choosing not to
+render it. Above PG, precision the API cannot give us is worth the trade.
+
+**State the trade honestly:** at any level above PG, explicit image **URLs and model titles** arrive in
+the payload even when browsing at R. No explicit image is ever *fetched* — the browser only requests
+bytes for a URL we put in `src`, and we never do for an over-level image. But **titles must be filtered
+client-side by the model's `nsfwLevel`**, or an XXX model's name appears in an R-level list.
+
+#### Thumbnail selection, and where the thumbnail comes from
+
+Unchanged mechanism, newly level-aware. Civitai serves gallery images as
+`https://image.civitai.com/<hash>/<uuid>/original=true/<id>.jpeg`, and `_thumb_url`
+(`civitai_parse.py:221`) rewrites the `/original=true/` segment to `/width=256/` — **~55 KB instead of
+~1.5 MB**, ported from Pixaroma. `preview_url` keeps the untransformed URL because it is saved to disk
+at download time, where fidelity matters; `thumb_url` is the rewritten one, for live display. The two
+stay separate keys.
+
+The selection rule becomes: **the first image whose `nsfwLevel` is at or below the user's chosen
+maximum**, rewritten to width 256. This replaces `pick_gallery_image_url`'s current two-tier
+"explicitly safe, then merely not-adult" fallback, whose hardcoded level-4 cutoff becomes the level
+selector's job.
+
+- Guard for **video previews.** A gallery entry carries `type`, and Civitai hosts video previews for
+  WAN-style models. A 252-image LoRA sample was 100% `type: "image"`/`.jpeg`, so this is a guard
+  against something not yet observed here, not a fix for a seen failure — prefer `type == "image"`, and
+  let the existing `onerror` placeholder catch anything that slips through.
+- `pick_gallery_image_url` is also used for the **download-time preview sidecar**. Decide explicitly
+  whether that one follows the browsing level or always takes the best available image; they are
+  different questions (one is display, one is a file the user keeps).
+
+#### A fifth card state: `locked`
+
+§7c-iii settles four card states — installed / downloading / available / gated. This adds one, and it is
+about the **thumbnail box only**, never the action:
+
+> **`locked`** — the model has images, but every one of them is above the chosen level. Show a lock in
+> the 40px thumb box with a tooltip naming the reason (*"Preview hidden — above your browsing level"*),
+> **not** the grey `no image` placeholder.
+
+That distinction is the whole point of the feature: today a missing thumbnail conflates *explicit
+gallery*, *no gallery at all*, and *fetch failed* into one grey square that reads as a bug. Keep the
+existing placeholder for genuinely-imageless models, so the two stay tellable apart.
+
+The `gated` padlock (§7c-iii) is a **different** lock with a different meaning — that one is "needs an
+API key". Two padlocks in one UI is a real ambiguity: give `locked` a distinct glyph or clearly
+different tooltip, and if a card is somehow both, `gated` wins (it blocks the action; `locked` only
+hides a picture).
+
+#### Build notes
+
+- **Parse `nsfwLevel` at both levels** — on the model (`_parse_search_item`) and on each image. Keep the
+  legacy `nsfw` bool parsed for now, but nothing should *decide* anything from it.
+- The pure/impure split holds: level filtering is pure and offline-testable. `_is_adult_image`'s
+  hardcoded thresholds go away in favour of a level comparison.
+- Test with recorded payloads exercising each level, a model whose gallery is entirely above the level
+  (⇒ `locked`), a model with no images at all (⇒ placeholder), and a `nsfwLevel: 32` entry (never shown
+  at any setting).
+- **Existing `.civitai.info` sidecars and any cached search results predate `nsfwLevel`.** Treat a
+  missing level as unknown, and decide whether unknown is shown or locked — the safe default is to
+  treat it as PG-only-if-the-image-says-so rather than assuming safe.
 
 ### 7d-i. TWO descriptions, labelled — never collapsed into one (owner, 2026-07-30)
 
