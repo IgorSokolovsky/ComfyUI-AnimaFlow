@@ -189,7 +189,46 @@ memories worth loading first: Anima's structured prompt format is **labelled PRO
 JSON** (JSON tested worse), and every composing node must stay **prompt-format-agnostic** — booru tags
 *and* natural-language prose, configurable separator, no comma-splitting assumptions.
 
-### 🎨 LoRA loader — **M1 BUILT, awaiting live verification** · M2 / M2b / M3 still spec (2026-07-29)
+### 🎨 LoRA loader / Civitai browser — the five remaining items, in order (owner queued 2026-07-31)
+
+Owner asked for all five queued, on top of the frontend pass already in *Now* (delete UI, `Search`
+button, `Search Civitai by name →`). Sequenced by dependency, not by size.
+
+**1. §1a-vii — show the Civitai name instead of the filename.** The display seam already exists
+(`displayRowName`, shipped in `261ca21`), so this adds a *source* to it rather than touching `paintRow`
+again. Needs the **list route to carry the name**, read from each model's sidecar — a client-cache-only
+version would leave most rows on filenames and read as broken. Population is already solved at both ends:
+`civitai_shape_from_search_meta` maps a search result's name at download time, and a lookup writes the
+sidecar for anything else. The missing piece is `invalidateList(kind)` after a lookup, or a freshly-known
+name sits on disk unused. **⚠️ Display only — `row.name` is identity** and must never change, or a saved
+workflow stops resolving on every machine including its own.
+
+**2. §7c-ii + M2b slice 2 — ONE component, two mounts.** These look like two items and are not: §7d's own
+table says *"the modal's detail view (**which is also the picker's, §7c-ii**)"*. Build the detail view
+once — version selector, creator/badges/stats, both labelled descriptions (§7d-i), the community gallery
+with prompt-on-hover and copy-prompt, and `View on Civitai ↗` — and mount it **single-column vertically**
+in the picker and as a **master→detail swap keeping the rail** in the modal. Building them separately
+would produce two galleries to keep in sync, which is exactly the duplication *Shells and Core Mechanics*
+is about.
+> Three constraints the spec already fixes: the **browsing level governs the gallery** (community images
+> are the most likely adult surface in the whole feature); **prompts are untrusted text** rendered with
+> `textContent`, and a prompt legitimately contains `<lora:name:0.8>` which must not become markup; and
+> **thumbnails lazy-load with a cap on concurrency** — a gallery is the one place here that can pull real
+> bandwidth.
+
+**3. Installed-by-kind in the browser** (owner, 2026-07-30). Group what is already on disk, by kind, in
+the modal. `list_models` already answers per kind and all three kinds are active as of `a6bc45b`; this is
+presentation plus the delete affordance the frontend pass is adding.
+
+**4. M3 — Loader Panel reuse, checkpoints + UNET.** Deliberately last: it should be an **import, not an
+extraction**. The layering guard (`test_model_picker.mjs`'s `GUARDED_FILES`) already fails the suite if a
+shared module imports anything `lora_*`, which is what keeps this a wiring job. If M3 turns out to need
+real extraction, that is a signal the guard was not doing its job.
+
+Everything above is specced in [`lora-loader-design.md`](lora-loader-design.md); none of it needs a new
+decision from the owner.
+
+### 🎨 LoRA loader — original spec framing (2026-07-29)
 
 **M1 shipped** across five reviewed slices — the node, the picker, the ⓘ panel + Civitai hash lookup,
 the ⚙ dialog, FLIP drag-reorder. It is in *Done (unverified)* below with the exact checks to run.
