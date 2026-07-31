@@ -919,7 +919,7 @@ them are easy to forget:
 | surface | picks via | level-aware? |
 |---|---|---|
 | search result card | the new `images` candidate list | ✅ this task |
-| **ⓘ info panel** (58px thumb) | `parse_model_version`'s single `thumbnail` key, from `pick_thumbnail_url` | ✅ **this section** |
+| **ⓘ info panel** (58px thumb) | ⚠️ **the LOCAL preview file** — `thumbUrl(kind, name)`, `model_info.mjs:701` — see the correction below | ✅ **this section** |
 | **download-time preview sidecar** | `pick_gallery_image_url` (untransformed) | ✅ **owner decided 2026-07-31: "all 3 should be level aware"** |
 
 ##### The setting is GLOBAL, and must be named that way (owner, 2026-07-31)
@@ -982,6 +982,26 @@ to change video output.)
 So there are now **three** transforms, and they should be named as such rather than left as scattered
 literals: `width=256` for live thumbnails, `width=450` for the saved preview, and untransformed only where
 something genuinely needs the source file. All three carry `anim=false`.
+
+> ### ⚠️ CORRECTION (2026-07-31) — this section originally described the ⓘ panel's thumbnail wrongly
+>
+> It claimed the panel renders `parse_model_version`'s `thumbnail` key. **It does not.**
+> `model_info.mjs:701` calls `thumbUrl(kind, name)` — the **local** `/wtn/model_browser/thumb` route,
+> which serves a preview image file sitting next to the model on disk. Grepping the frontend confirms
+> **nothing has ever read the sidecar's `thumbnail` key**; it has been written and never displayed.
+>
+> Found when the owner reported the panel *"still shows 18+ image"* after the search half shipped. The
+> obvious reading was "the level fix hasn't reached this surface yet". The real one is that the image
+> is a **local file on their disk** — which, by this section's own four-source rule, is deliberately
+> *not* level-filtered. The symptom was real; my explanation of it was not.
+>
+> So this is not a *conversion* of a Civitai-backed thumbnail — it is **adding a second source**:
+>
+> **local preview → Civitai candidates (level-filtered) → `locked` → placeholder**
+>
+> The local file stays preferred and unfiltered. The Civitai candidate list is the fallback, and in
+> practice it is what users will see, because the local route 404s for nearly every model today (our own
+> preview-saving path has never been wired — see below).
 
 The ⓘ panel **already inherits the `anim=false` video fix for free**, since it shares `_thumb_url`.
 Only the *level* is missing.
