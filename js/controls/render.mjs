@@ -57,6 +57,17 @@
 import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
 import { openOverlay as sharedOpenOverlay } from "../shared/overlay.mjs";
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
+// `displayRowName` is the settings-aware "Hide file extension" display seam
+// (task brief, 2026-07-31, part B: "check the Loader/Control Panel row
+// labels for the same gap"). A picker-kind row's own combo VALUE
+// (`unet`/`vae`/`clip` -- the only ones that are ever real filenames;
+// `sampler`/`scheduler` values have no extension, so this is a harmless
+// no-op for them) painted the raw filename verbatim, with no HIDE_FILE_
+// EXTENSION reference anywhere in this file -- same gap `lora_render.mjs`'s
+// `paintRow` had, same fix: reuse the ONE settings-aware display function
+// (`model_picker.mjs`'s own doc comment) rather than re-reading the setting
+// here directly.
+import { displayRowName } from "./model_picker.mjs";
 
 const STYLE_ID = "wtn-controls-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -587,7 +598,13 @@ export function paintRow(refs, row, optionList, disabledReason) {
   if (isPickerKind(kindMeta)) {
     const list = Array.isArray(optionList) ? optionList : [];
     const idx = Math.max(0, list.indexOf(row.value));
-    refs.val.textContent = list.length ? String(list[idx] ?? list[0]) : (disabledReason ? "unavailable" : "");
+    const value = list.length ? String(list[idx] ?? list[0]) : "";
+    // The picker's DISPLAY VALUE (`unet`/`vae`/`clip` rows are real
+    // filenames; `sampler`/`scheduler` values have no extension, so this is
+    // a no-op for them) -- `row.value`/`list` above are the wire IDENTITY and
+    // are never touched.
+    refs.val.textContent = value ? displayRowName(value) : (disabledReason ? "unavailable" : "");
+    refs.val.title = value || "";
   } else if (row.kind === "seed") {
     // "-1" is the "you won't know until it runs" convention (mirrors stock
     // ComfyUI's own randomize-seed widget display) -- ONLY for `randomize`.

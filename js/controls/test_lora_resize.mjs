@@ -937,6 +937,53 @@ test("⚙: toggling Civitai off immediately hides the header's 🔍 (re-runs syn
   }
 });
 
+test("⚙: toggling Hide file extension immediately repaints every row's own label (task brief, 2026-07-31, part B) -- 'the second part is the one that gets forgotten'", () => {
+  const node = makeFakeNode(stateJSON([{ name: "celica_v2.safetensors" }]));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const rowRefs = node._lrRows[0].refs;
+  assert.equal(rowRefs.nameLabel.textContent, "celica_v2.safetensors", "extension shown by default (setting off)");
+
+  const written = {};
+  globalThis.window = {
+    app: { extensionManager: { setting: {
+      get: (id) => (Object.prototype.hasOwnProperty.call(written, id) ? written[id] : undefined),
+      set: (id, v) => { written[id] = v; },
+    } } },
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+  };
+  try {
+    fire(node._lrRefs.settingsBtn, "click");
+    const settingsSwitches = findAllByClass(doc.body, "wtn-lora-switch").filter((e) => !e.title);
+    settingsSwitches[0]._listeners.click.forEach((fn) => fn({ stopPropagation() {} })); // Hide file extension is the 1st of the three
+    assert.equal(written[SETTING_IDS.HIDE_FILE_EXTENSION], true);
+    // The row must repaint IMMEDIATELY -- not merely on the next unrelated
+    // sync -- because the setting toggle alone does not otherwise touch this
+    // row's own DOM.
+    assert.equal(rowRefs.nameLabel.textContent, "celica_v2", "extension stripped the moment the setting flips, no further action needed");
+    assert.equal(rowRefs.nameLabel.title, "celica_v2.safetensors", "the label's own tooltip still carries the REAL, untruncated name");
+    assert.equal(rowRefs.nameBtn.title, "celica_v2.safetensors", "the enclosing button's tooltip is unaffected -- identity, not display");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("paintRow: the name label reads the live 'Hide file extension' setting via displayRowName -- row.name (identity) itself never changes", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.HIDE_FILE_EXTENSION ? true : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    const refs = buildRowElement(doc);
+    const row = mkStateRow({ name: "detail/celica_v2.safetensors" });
+    paintRow(refs, row);
+    assert.equal(refs.nameLabel.textContent, "detail/celica_v2", "display strips the extension");
+    assert.equal(row.name, "detail/celica_v2.safetensors", "identity is untouched by painting");
+    assert.equal(refs.nameLabel.title, "detail/celica_v2.safetensors");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("⚙: is keyed PER NODE -- opening a second node's dialog does not just toggle the first one closed", () => {
   const nodeA = makeFakeNode(stateJSON([]));
   const nodeB = makeFakeNode(stateJSON([]));

@@ -69,6 +69,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { SETTING_IDS } from "../shared/settings.mjs";
+
 import {
   KIND_META,
   MAX_ROWS,
@@ -723,6 +725,29 @@ test("paintRow: combo row shows the current value from the option list", () => {
   const refs = buildRowElement(doc, row, KIND_META.sampler, CONTROL_PANEL_CONFIG);
   paintRow(refs, row, ["euler", "dpmpp_2m"], null);
   assert.equal(refs.val.textContent, "dpmpp_2m");
+});
+
+test("paintRow: a picker-kind row's own value (a real filename for unet/vae/clip) honours the live 'Hide file extension' setting, identity untouched (task brief, 2026-07-31, part B)", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.HIDE_FILE_EXTENSION ? true : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    const row = mkRow("unet", { value: "anima-base-v1.0.safetensors" });
+    const refs = buildRowElement(doc, row, KIND_META.unet, LOADER_PANEL_CONFIG);
+    paintRow(refs, row, ["anima-base-v1.0.safetensors"], null);
+    assert.equal(refs.val.textContent, "anima-base-v1.0", "extension stripped by the live setting");
+    assert.equal(row.value, "anima-base-v1.0.safetensors", "identity (row.value) is untouched by painting");
+    assert.equal(refs.val.title, "anima-base-v1.0.safetensors", "the value's own tooltip still carries the real, untruncated name");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("paintRow: a picker-kind row's value is unaffected by 'Hide file extension' when off/unset (default)", () => {
+  const doc = makeDocStub();
+  const row = mkRow("unet", { value: "anima-base-v1.0.safetensors" });
+  const refs = buildRowElement(doc, row, KIND_META.unet, LOADER_PANEL_CONFIG);
+  paintRow(refs, row, ["anima-base-v1.0.safetensors"], null);
+  assert.equal(refs.val.textContent, "anima-base-v1.0.safetensors");
 });
 
 test("paintRow: a disabled (def-missing) combo row shows 'unavailable' and sets the disabled reason", () => {

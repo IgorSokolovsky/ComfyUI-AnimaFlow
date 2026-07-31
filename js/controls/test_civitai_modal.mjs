@@ -208,6 +208,27 @@ test("injectModalStyles: a no-op (never throws) with no doc and no global docume
 });
 
 // =========================================================================
+// D1 -- no per-section card/box chrome on the rail (owner, 2026-07-31): a
+// SCOPED reset of the shared '.wtn-collapse' class, never an edit to that
+// class itself (which every other consumer -- e.g. the Rule Builder -- must
+// keep unchanged).
+// =========================================================================
+
+test("D1: '.wtn-cm-rail .wtn-collapse' resets background/border/radius to none -- scoped, never editing the shared '.wtn-collapse' class itself", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, "civitai_modal.mjs"), "utf8");
+  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*background:\s*none/s);
+  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*border:\s*none/s);
+  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*border-radius:\s*0/s);
+});
+
+test("D4: the '.wtn-cm-badge' CSS rule itself is gone (not merely the element)", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, "civitai_modal.mjs"), "utf8");
+  assert.doesNotMatch(src, /\.wtn-cm-badge/);
+});
+
+// =========================================================================
 // openCivitaiModal -- DOM-level integration, via a minimal stub DOM
 // (independently reimplemented, matching test_civitai_search.mjs's own
 // `makeDocStub` -- see that file's top doc comment on why tracks keep their
@@ -609,6 +630,82 @@ await asyncTest("openCivitaiModal: clicking Download posts the result's OWN deri
   }
 });
 
+// =========================================================================
+// C/E (task brief, 2026-07-31) -- search issued/result count and download
+// start/finish route through `js/shared/console_log.mjs`'s level-aware
+// helper, tagged "Civitai browser" (this surface's own tag, distinct from
+// the node-embedded picker's own "LoRA search").
+// =========================================================================
+
+await asyncTest("openCivitaiModal: at 'debug', a search issued and its result count are both logged, tagged 'Civitai browser'; a download logs start then finish", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 43, versionId: 43, name: "Logged Modal Result", kind: "unet" })];
+  const savedSettings = { [SETTING_IDS.CONSOLE_LOGGING]: "debug" };
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => savedSettings[id] } } } };
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  let progressCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-log-modal" });
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      return jsonResponse({ reason: "ok", status: progressCalls === 1 ? "downloading" : "ok", bytes: progressCalls === 1 ? 40 : 100, total: 100, message: "" });
+    }
+    return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc, pollIntervalMs: 10 });
+    await settle();
+
+    assert.ok(logCalls.every((c) => c[0] === "[AnimaFlow Civitai browser]"), "every logged line is tagged with this surface's own tag");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("issuing search")), "a search issue is logged");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("-> 1 result(s)")), "the result count is logged");
+
+    const btn = findAll(handle.scrim, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    btn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.ok(logCalls.some((c) => c.join(" ").includes("download started:")), "download start is logged");
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.ok(logCalls.some((c) => c.join(" ").includes("download finished:") && c.join(" ").includes("(ok)")), "download finish is logged");
+
+    handle.close();
+  } finally {
+    console.log = origLog;
+    delete globalThis.window;
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: at 'off' (the default), nothing is logged at all", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    assert.equal(logCalls.length, 0, "no live app/setting reachable -- defaults to 'off', genuinely silent");
+    handle.close();
+  } finally {
+    console.log = origLog;
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
 await asyncTest("openCivitaiModal: the rail's chip filters add, dedupe, and remove, and persist to the SAME settings a fresh open re-reads", async () => {
   _resetDownloadStateForTests();
   _resetModalForTests();
@@ -691,7 +788,13 @@ await asyncTest("openCivitaiModal: the rail's chip filters add, dedupe, and remo
   }
 });
 
-await asyncTest("openCivitaiModal: an empty filter group shows a faint 'any', not a blank space", async () => {
+// D2 (REVERSED 2026-07-31, owner, from the built rail): an empty filter
+// group used to show a faint "any" line -- it now renders NOTHING at all,
+// since the select directly above already reads "Add a ..." and a second
+// line restating that adds nothing. Do NOT "restore" the old 'any' line as
+// a regression fix -- this reversal is deliberate (docs/lora-loader-
+// design.md's own §7c-i records the same correction).
+await asyncTest("openCivitaiModal: an empty filter group renders NOTHING (D2 -- reverses the old faint 'any' line)", async () => {
   _resetDownloadStateForTests();
   _resetModalForTests();
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
@@ -699,11 +802,70 @@ await asyncTest("openCivitaiModal: an empty filter group shows a faint 'any', no
     const doc = makeDocStub();
     const handle = openCivitaiModal({ doc });
     await settle();
-    const anyLines = findAll(handle.scrim, "wtn-cm-chip-any");
-    assert.equal(anyLines.length, 2, "both multi-value sections (base model, model type) show 'any' with nothing selected");
-    for (const line of anyLines) {
-      assert.equal(line.textContent, "any");
+    const chipsHosts = findAll(handle.scrim, "wtn-cm-chips");
+    assert.equal(chipsHosts.length, 2, "both multi-value sections (base model, model type) still have a chips host");
+    for (const host of chipsHosts) {
+      assert.equal(host.children.length, 0, "an empty group's chips host has NO children at all -- no 'any' line, no placeholder");
     }
+    assert.equal(findAll(handle.scrim, "wtn-cm-chip-any").length, 0, "the old 'any' class must never render");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: D3 -- the open <select> shows a checkmark against already-selected values, never mutating the underlying value", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const savedSettings = {};
+  const fakeApp = { extensionManager: { setting: { get: (id) => savedSettings[id], set: (id, v) => { savedSettings[id] = v; } } } };
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  globalThis.window = { app: fakeApp };
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const selects = findAllByTag(handle.scrim, "select");
+    const baseModelSel = selects[3]; // sort, period, level, base-model-adder, model-type-adder
+
+    // Nothing selected yet -- no option carries the checkmark.
+    let opts = baseModelSel.children.filter((c) => c.tagName === "option");
+    assert.ok(opts.every((o) => !o.textContent.startsWith("✓")), "no checkmark before anything is added");
+
+    baseModelSel.value = "Pony";
+    baseModelSel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    opts = baseModelSel.children.filter((c) => c.tagName === "option");
+    const ponyOpt = opts.find((o) => o.value === "Pony");
+    assert.equal(ponyOpt.textContent, "✓ Pony", "the selected option's own text is prefixed with a checkmark");
+    assert.equal(ponyOpt.value, "Pony", "the underlying VALUE is untouched -- only the text label carries the checkmark");
+    const otherOpt = opts.find((o) => o.value && o.value !== "Pony");
+    assert.equal(otherOpt.textContent, otherOpt.value, "every OTHER option stays plain");
+
+    handle.close();
+  } finally {
+    delete globalThis.window;
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: D4 -- no header subtitle badge; the title alone renders", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    assert.equal(findAll(handle.scrim, "wtn-cm-badge").length, 0, "the subtitle badge element must be gone entirely");
+    const headSpans = findAllByTag(handle.scrim, "span").filter((e) => e.textContent === "Browse Civitai");
+    assert.equal(headSpans.length, 1, "the title itself still renders");
     handle.close();
   } finally {
     restoreFetch();

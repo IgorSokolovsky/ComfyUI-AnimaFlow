@@ -16,6 +16,7 @@ import {
   invalidateList,
   hasFile,
   cachedList,
+  isListCached,
   invalidateInfo,
   lookupInfo,
   forgetInfo,
@@ -217,6 +218,45 @@ await asyncTest("cachedList: the SAME array listModels already cached, with no f
     assert.equal(calls, 1);
     assert.equal(cachedList(kind), fetched); // same reference
     assert.equal(calls, 1); // cachedList triggered NO fetch
+  } finally {
+    restoreFetch();
+  }
+});
+
+// =========================================================================
+// isListCached -- "has this kind's list ever resolved", distinct from
+// cachedList's own [] (which can't tell "never fetched" apart from "fetched,
+// empty" -- both return []).
+// =========================================================================
+
+test("isListCached: false for a kind that has never resolved, or a missing kind, never throws", () => {
+  assert.equal(isListCached("kind-never-fetched-ilc"), false);
+  assert.equal(isListCached(null), false);
+  assert.equal(isListCached(""), false);
+  assert.equal(isListCached(undefined), false);
+});
+
+await asyncTest("isListCached: true the instant listModels resolves, even for a genuinely empty (but real) list", async () => {
+  const kind = "kind-ilc-empty";
+  stubFetch(async () => jsonResponse({ reason: "ok", models: [] }));
+  try {
+    assert.equal(isListCached(kind), false, "not yet fetched");
+    await listModels(kind);
+    assert.equal(isListCached(kind), true, "resolved to a real (if empty) list -- no longer unknown");
+    assert.deepEqual(cachedList(kind), [], "distinguishing this from 'never fetched' is the whole point -- both cachedList() calls return []");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("isListCached: false again after invalidateList", async () => {
+  const kind = "kind-ilc-invalidate";
+  stubFetch(async () => jsonResponse({ reason: "ok", models: [{ name: "a.safetensors" }] }));
+  try {
+    await listModels(kind);
+    assert.equal(isListCached(kind), true);
+    invalidateList(kind);
+    assert.equal(isListCached(kind), false);
   } finally {
     restoreFetch();
   }

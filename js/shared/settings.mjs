@@ -108,22 +108,43 @@ export const SETTING_IDS = {
   CIVITAI_SEARCH_BASE_MODEL: "AnimaFlow.Controls.CivitaiSearchBaseModel",
   CIVITAI_SEARCH_SORT: "AnimaFlow.Controls.CivitaiSearchSort",
   CIVITAI_SEARCH_PERIOD: "AnimaFlow.Controls.CivitaiSearchPeriod",
-  // SUPERSEDED by CIVITAI_SEARCH_LEVEL, below (docs/lora-loader-design.md
+  // SUPERSEDED by CIVITAI_BROWSING_LEVEL, below (docs/lora-loader-design.md
   // §7c-iv, owner 2026-07-31: a five-level "maximum browsing level" select
   // replaces the NSFW checkbox, because Civitai's own `nsfw` request
   // parameter is binary and a level selector needs the full gallery fetched
-  // client-side regardless). Kept registered and in `ANIMAFLOW_SETTINGS`
-  // below, UNUSED by any real code path now -- an id is append-only
-  // (this module's own top doc comment): removing it would silently discard
-  // whatever a user had already saved here, which is not a safe operation.
+  // client-side regardless). Kept registered (`SETTING_IDS`/`SETTING_DEFAULTS`
+  // both keep this entry -- an id is append-only, this module's own top doc
+  // comment: removing it would silently discard whatever a user had already
+  // saved here, which is not a safe operation), but as of A3 (owner
+  // screenshot, 2026-07-31: "a control that does nothing is worse than no
+  // control") it is deliberately EXCLUDED from `ANIMAFLOW_SETTINGS` below --
+  // see that array's own top comment for the rule this and the two
+  // `CIVITAI_MODAL_*` ids below all share.
   CIVITAI_SEARCH_NSFW: "AnimaFlow.Controls.CivitaiSearchNsfw",
-  // The replacement (§7c-iv) -- five choices, `CIVITAI_SEARCH_LEVEL_OPTIONS`
-  // below, PG default. Stored as the LABEL string ("PG".."XXX"), matching
-  // `_SORT`/`_PERIOD`'s own "raw enum string, sent through a small mapping
-  // rather than the wire value itself" convention -- `civitai_search.mjs`'s
-  // own `levelLabelToInt` is the one place that turns this into the numeric
-  // bitmask value (`1`/`2`/`4`/`8`/`16`) the search route actually reads.
-  CIVITAI_SEARCH_LEVEL: "AnimaFlow.Controls.CivitaiSearchLevel",
+  // RENAMED from `CIVITAI_SEARCH_LEVEL`/`AnimaFlow.Controls.CivitaiSearchLevel`
+  // (owner, 2026-07-31, docs/lora-loader-design.md's own "The id and label say
+  // 'search'" section): this governs every surface that loads a Civitai image
+  // -- the search panel/modal, the ⓘ info panel's identity thumb, and the
+  // download-time preview sidecar -- not just search, so the old id/label
+  // were actively misleading once the ⓘ panel and sidecar started reading it
+  // too (`58a1749`). Five choices, `CIVITAI_SEARCH_LEVEL_OPTIONS` below (that
+  // options array's own name is UNCHANGED -- it's an enum, not a setting id,
+  // and renaming it buys nothing), PG default. Stored as the LABEL string
+  // ("PG".."XXX"), matching `_SORT`/`_PERIOD`'s own "raw enum string, sent
+  // through a small mapping rather than the wire value itself" convention --
+  // `civitai_search.mjs`'s own `levelLabelToInt` is the one place that turns
+  // this into the numeric bitmask value (`1`/`2`/`4`/`8`/`16`) the search
+  // route actually reads.
+  //
+  // Renaming the id ORPHANS any already-saved value (a brand-new id has
+  // nothing stored under it yet), so this resets every user's remembered
+  // level back to the PG default exactly once. That is acceptable **only**
+  // because the superseded id was a single commit old at rename time (owner,
+  // 2026-07-31) -- ids are otherwise append-only for exactly this reason
+  // (this module's own top doc comment), and the SAME rename a month from now
+  // would not be acceptable. Do not repeat this reasoning to justify a LATER
+  // rename of an id that has actually been in use.
+  CIVITAI_BROWSING_LEVEL: "AnimaFlow.Controls.CivitaiBrowsingLevel",
   // M2b (docs/lora-loader-design.md §7c-i's rail): the toolbar MODAL's own
   // multi-value filters -- "Filter by Base Model"/"Filter by Model Type" are
   // `<select>`-adds-a-chip, unlike the picker's own single-value
@@ -135,8 +156,12 @@ export const SETTING_IDS = {
   // because ComfyUI's Settings-dialog widget types (`combo`/`boolean`/
   // `text`/`number`) have no native multi-select -- `type: "text"` stores
   // the serialized array, and `civitai_modal.mjs`'s own `parseStoredList`/
-  // `serializeList` are the one place that (de)serializes it; the dialog
-  // field itself is not meant to be hand-edited (see its own tooltip below).
+  // `serializeList` are the one place that (de)serializes it. A4 (owner
+  // screenshot, 2026-07-31): these two are the rail's OWN chip state, never
+  // meant to be hand-edited as a raw `[]` text field -- excluded from
+  // `ANIMAFLOW_SETTINGS` below (kept here in `SETTING_IDS`/`SETTING_DEFAULTS`
+  // so an already-saved value is never discarded; see that array's own top
+  // comment for the rule this and `CIVITAI_SEARCH_NSFW` above both share).
   CIVITAI_MODAL_BASE_MODELS: "AnimaFlow.Controls.CivitaiModalBaseModels",
   CIVITAI_MODAL_MODEL_TYPES: "AnimaFlow.Controls.CivitaiModalModelTypes",
 };
@@ -180,14 +205,58 @@ export const CIVITAI_SEARCH_BASE_MODEL_OPTIONS = [
 export const CIVITAI_SEARCH_SORT_OPTIONS = ["Relevancy", "Most Downloaded", "Highest Rated", "Newest"];
 export const CIVITAI_SEARCH_PERIOD_OPTIONS = ["Day", "Week", "Month", "Year", "AllTime"];
 
+/**
+ * A1 (owner screenshot, 2026-07-31): the Settings-dialog COMBO for this
+ * setting rendered `settings.AnimaFlow_Controls_CivitaiSearchBaseModel.
+ * options.` (a raw, untranslated i18n key) as its first choice, because the
+ * installed `comfyui-frontend-package` bundle's own `translateOptions`
+ * (`assets/dialogService-*.js`, decompiled -- there is no source map to cite
+ * a line number against) builds each option's i18n lookup as
+ * `` `settings.${slug(id)}.options.${slug(optionText)}` `` with the option's
+ * OWN TEXT as the untranslated fallback:
+ *
+ *   `e.map(e=>{let r=typeof e=="string"?e:e.text,i=typeof e=="string"?e:e.value;
+ *   return{text:n(`settings.${slug(id)}.options.${slug(r)}`,r),value:i}})`
+ *
+ * For a plain string option, `r` (the slug input) AND the fallback are the
+ * SAME string -- so `CIVITAI_SEARCH_BASE_MODEL_OPTIONS[0]` (`""`, "any base
+ * model") produces the key `...options.` (a slug of `""` is `""`) with a
+ * FALSY fallback (`""` itself) -- ComfyUI's `t(key, fallback)` renders the
+ * raw key when neither a translation nor a truthy fallback exists. Every
+ * other option's own text IS its fallback, so only this one, uniquely empty,
+ * value breaks. The in-panel `<select>` (`civitai_search.mjs`'s
+ * `buildFilterSelect`) never hits this: it builds its OWN option elements and
+ * maps `"" -> "Any"` directly, with no i18n layer in between at all.
+ *
+ * The fix confirmed by reading that same bundle: `translateOptions` accepts
+ * a `{text, value}` OBJECT per option (`typeof e=="string"?e:e.text` / `e.value`
+ * above) -- `text` feeds BOTH the slug and the fallback, `value` is what
+ * actually reaches `t.setting.value`/gets persisted. Mapping the empty
+ * option's `text` to `"Any"` (matching the picker's own label for it) gives
+ * every option a non-empty fallback, so the untranslated-key case can never
+ * recur for THIS setting -- no sentinel value substitution needed anywhere,
+ * since the wire `value` for "any" stays the real `""` this setting's
+ * default/every reader already expects (`CIVITAI_SEARCH_BASE_MODEL_OPTIONS`
+ * itself, used by the picker's own `<select>` and the modal's rail, is
+ * UNCHANGED -- this is a SEPARATE array, only ever consumed by the dialog
+ * declaration below).
+ */
+export const CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS = CIVITAI_SEARCH_BASE_MODEL_OPTIONS.map((value) => ({
+  text: value === "" ? "Any" : value,
+  value,
+}));
+
 // The "maximum browsing level" select (docs/lora-loader-design.md §7c-iv) --
 // five labels, in ascending order, matching Civitai's own `nsfwLevel`
 // bitmask (`1 PG · 2 PG-13 · 4 R · 8 X · 16 XXX`; `32 Blocked` is never
 // offered -- it is never browsable at any setting). The SETTING's own
-// persisted value is one of these label strings (`CIVITAI_SEARCH_LEVEL`,
+// persisted value is one of these label strings (`CIVITAI_BROWSING_LEVEL`,
 // above); `CIVITAI_SEARCH_LEVEL_TO_INT` is the one place that converts a
 // label to the numeric value the search route and the per-image
-// `nsfw_level` comparison actually use.
+// `nsfw_level` comparison actually use. (This options array/int-map keep
+// their own `CIVITAI_SEARCH_LEVEL_*` names -- they're enums, not a setting
+// id, and renaming them buys nothing; only the SETTING id itself was
+// scope-neutralised, A2.)
 export const CIVITAI_SEARCH_LEVEL_OPTIONS = ["PG", "PG-13", "R", "X", "XXX"];
 export const CIVITAI_SEARCH_LEVEL_TO_INT = { PG: 1, "PG-13": 2, R: 4, X: 8, XXX: 16 };
 
@@ -218,7 +287,7 @@ export const SETTING_DEFAULTS = {
   [SETTING_IDS.CIVITAI_SEARCH_NSFW]: false,
   // PG (owner, §7c-iv) -- a genuine server-side guarantee (Civitai is never
   // asked for adult content at all at this level), unlike the other four.
-  [SETTING_IDS.CIVITAI_SEARCH_LEVEL]: "PG",
+  [SETTING_IDS.CIVITAI_BROWSING_LEVEL]: "PG",
   // Empty JSON array -- "no chips yet" (§7c-i: "an empty group shows a faint
   // `any`"), matching `CIVITAI_SEARCH_BASE_MODEL`'s own "" = "any" default in
   // spirit, just serialized (this id's own `SETTING_IDS` comment).
@@ -231,6 +300,27 @@ export const SETTING_DEFAULTS = {
 // items. `category: ["AnimaFlow", ...]` is what makes the sidebar section
 // itself read "AnimaFlow" (task brief) — every item shares that first
 // element.
+//
+// **The dialog is for things a user should change. Persisted-but-internal
+// state keeps its id and stays out of this list.** (Owner screenshots,
+// 2026-07-31, A3/A4.) Three ids are deliberately ABSENT from the array below
+// even though every one of them is a real, live `SETTING_IDS`/
+// `SETTING_DEFAULTS` entry that `getSetting`/`setSetting` reads and writes
+// exactly like any other: `CIVITAI_SEARCH_NSFW` (superseded, its own tooltip
+// already admitted it does nothing — a visible control nobody can act on
+// usefully is worse than none) and `CIVITAI_MODAL_BASE_MODELS`/
+// `CIVITAI_MODAL_MODEL_TYPES` (the toolbar browser's own rail chip state, a
+// `[]`-shaped JSON string with no sane hand-edited form — the rail itself,
+// `civitai_modal.mjs`, is their only real editor). Omitting an id from THIS
+// array does not stop it working: the installed `comfyui-frontend-package`
+// bundle's own setting store keys its persisted VALUES by id directly
+// (`e.value[id]`, decompiled from `assets/dialogService-*.js`'s `get`/`set`),
+// independent of whether `addSetting` (fired per entry in this array, once
+// per `registerExtension` call) was ever called for that id — so leaving an
+// id out of this list only ever removes its DIALOG ROW, never its ability to
+// be read/written/persisted. That is what makes "keep the id and default
+// registered, but drop the dialog entry" (A3/A4) a real, safe operation
+// rather than a contradiction.
 // ---------------------------------------------------------------------------
 
 export const ANIMAFLOW_SETTINGS = [
@@ -243,13 +333,19 @@ export const ANIMAFLOW_SETTINGS = [
     defaultValue: SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING],
     tooltip:
       "How much the Anima Generator/Preview print to the server console per "
-      + "run. 'off' silences it entirely; 'summary' prints the run header, "
-      + "the resolved sampler values, and one line per stage; 'debug' adds "
-      + "finer-grained detail (full context-supplied report, each stage's own "
-      + "resolved sampler values). Replaces the old ANIMAFLOW_DEBUG "
-      + "environment variable, which still works as an override for a "
-      + "headless run with no browser attached: if set to a truthy value it "
-      + "forces 'debug' regardless of this setting.",
+      + "run. Also governs the Controls track's own Civitai activity -- the "
+      + "LoRA search panel, the toolbar browser modal, the ⓘ info panel, and "
+      + "the model picker -- so search/download/lookup activity is visible "
+      + "at 'debug' and silent otherwise. 'off' silences everything; "
+      + "'summary' prints the run header, the resolved sampler values, one "
+      + "line per stage, and one line per user-visible Civitai operation "
+      + "(a search issued and its result count, a download starting/"
+      + "finishing, a lookup's outcome); 'debug' adds finer-grained detail "
+      + "(full context-supplied report, each stage's own resolved sampler "
+      + "values, cache-hit-vs-fetch detail on the Civitai side). Replaces "
+      + "the old ANIMAFLOW_DEBUG environment variable, which still works as "
+      + "an override for a headless run with no browser attached: if set to "
+      + "a truthy value it forces 'debug' regardless of this setting.",
   },
   {
     id: SETTING_IDS.WHEEL_QUIET_PERIOD_MS,
@@ -390,7 +486,13 @@ export const ANIMAFLOW_SETTINGS = [
     name: "Civitai search: base model filter",
     category: ["AnimaFlow", "Controls", "Civitai search: base model filter"],
     type: "combo",
-    options: CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
+    // A1 -- `{text, value}` objects, NOT the plain-string
+    // `CIVITAI_SEARCH_BASE_MODEL_OPTIONS` every other consumer (the picker's
+    // own `<select>`, the modal's rail) uses -- see
+    // `CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS`'s own doc comment above for
+    // why the plain-string form uniquely broke for this one setting's first
+    // (empty, "any") option.
+    options: CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS,
     defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL],
     tooltip:
       "The base-model filter last used in the Civitai search panel (LoRA "
@@ -416,58 +518,37 @@ export const ANIMAFLOW_SETTINGS = [
     defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_PERIOD],
     tooltip: "The time-period filter last used in the Civitai search panel -- remembered user-wide.",
   },
+  // A3 -- CIVITAI_SEARCH_NSFW has NO entry here any more (own tooltip used to
+  // admit it does nothing at all) -- see this array's own top comment for why
+  // that is safe: the id/default stay live in `SETTING_IDS`/`SETTING_DEFAULTS`
+  // above, only the dialog ROW is gone.
   {
-    id: SETTING_IDS.CIVITAI_SEARCH_NSFW,
-    name: "Civitai search: show NSFW",
-    category: ["AnimaFlow", "Controls", "Civitai search: show NSFW"],
-    type: "boolean",
-    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_NSFW],
-    tooltip:
-      "SUPERSEDED (docs/lora-loader-design.md §7c-iv) by 'Civitai search: "
-      + "maximum browsing level', below -- no longer read by any code path. "
-      + "Kept here, unused, only so a value you already saved isn't silently "
-      + "discarded.",
-  },
-  {
-    id: SETTING_IDS.CIVITAI_SEARCH_LEVEL,
-    name: "Civitai search: maximum browsing level",
-    category: ["AnimaFlow", "Controls", "Civitai search: maximum browsing level"],
+    // A2 -- RENAMED from `CIVITAI_SEARCH_LEVEL` (see `SETTING_IDS`'s own
+    // comment on `CIVITAI_BROWSING_LEVEL` for the full "why" and the accepted
+    // one-time reset to PG this rename causes).
+    id: SETTING_IDS.CIVITAI_BROWSING_LEVEL,
+    name: "Civitai: maximum browsing level",
+    category: ["AnimaFlow", "Controls", "Civitai: maximum browsing level"],
     type: "combo",
     options: CIVITAI_SEARCH_LEVEL_OPTIONS,
-    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL],
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL],
     tooltip:
-      "The maximum Civitai content level shown in the search panel's results "
-      + "and thumbnails (PG / PG-13 / R / X / XXX) -- remembered user-wide, "
-      + "the same as every other search filter here. Replaces the old NSFW "
-      + "checkbox (§7c-iv). PG is a genuine server-side guarantee -- Civitai "
-      + "is never asked for adult content at all -- while PG-13/R/X/XXX are "
-      + "filtered client-side from a fuller gallery fetch, since Civitai's "
-      + "own search API has no level parameter of its own.",
+      "The maximum Civitai content level shown across EVERY surface that "
+      + "loads a Civitai image -- the search panel and toolbar browser's own "
+      + "results/thumbnails, the ⓘ info panel's identity thumbnail, and the "
+      + "download-time preview sidecar (PG / PG-13 / R / X / XXX) -- "
+      + "remembered user-wide, one setting for all of them, not per surface. "
+      + "Replaces the old NSFW checkbox (§7c-iv). PG is a genuine server-side "
+      + "guarantee -- Civitai is never asked for adult content at all -- "
+      + "while PG-13/R/X/XXX are filtered client-side from a fuller gallery "
+      + "fetch, since Civitai's own search API has no level parameter of its "
+      + "own. Never filters a file already on disk -- only what this pack "
+      + "fetches and shows FROM Civitai.",
   },
-  {
-    id: SETTING_IDS.CIVITAI_MODAL_BASE_MODELS,
-    name: "Civitai browser: base model filters (internal)",
-    category: ["AnimaFlow", "Controls", "Civitai browser: base model filters (internal)"],
-    type: "text",
-    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_BASE_MODELS],
-    tooltip:
-      "Internal storage for the toolbar Civitai browser's own 'Filter by "
-      + "Base Model' rail chips (a JSON array of strings) -- edited from the "
-      + "browser's own filter rail, not this field. Remembered user-wide, "
-      + "same as every other Civitai search filter.",
-  },
-  {
-    id: SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES,
-    name: "Civitai browser: model type filters (internal)",
-    category: ["AnimaFlow", "Controls", "Civitai browser: model type filters (internal)"],
-    type: "text",
-    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES],
-    tooltip:
-      "Internal storage for the toolbar Civitai browser's own 'Filter by "
-      + "Model Type' rail chips (a JSON array of strings) -- edited from the "
-      + "browser's own filter rail, not this field. Remembered user-wide, "
-      + "same as every other Civitai search filter.",
-  },
+  // A4 -- CIVITAI_MODAL_BASE_MODELS/CIVITAI_MODAL_MODEL_TYPES have NO entry
+  // here any more (they used to render as bare `[]` text fields) -- same
+  // reasoning as CIVITAI_SEARCH_NSFW above: the ids/defaults stay live,
+  // `civitai_modal.mjs`'s own rail is their only real editor.
 ];
 
 // ---------------------------------------------------------------------------

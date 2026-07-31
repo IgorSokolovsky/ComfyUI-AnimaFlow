@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import {
   formatFileSize,
   displayModelName,
+  displayRowName,
   filterModelsFlat,
   groupModels,
   metaLineFor,
@@ -28,6 +29,7 @@ import {
   openModelPicker,
 } from "./model_picker.mjs";
 import { invalidateList, invalidateInfo, lookupInfo } from "./civitai_api.mjs";
+import { SETTING_IDS } from "../shared/settings.mjs";
 
 let failures = 0;
 let count = 0;
@@ -106,6 +108,29 @@ test("displayModelName: non-string/empty name is always an empty string", () => 
   assert.equal(displayModelName(null, true), "");
   assert.equal(displayModelName(undefined, false), "");
   assert.equal(displayModelName("", true), "");
+});
+
+// =========================================================================
+// displayRowName -- the settings-aware seam (task brief, 2026-07-31, part B):
+// reads the LIVE "Hide file extension" setting itself, rather than taking it
+// as a parameter, so a `paintRow` in either track can share ONE display
+// function instead of each re-reading the setting on its own.
+// =========================================================================
+
+test("displayRowName: strips the extension when the live setting is on, leaves it alone when off/unset", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.HIDE_FILE_EXTENSION ? true : undefined) } } } };
+  try {
+    assert.equal(displayRowName("celica_v2.safetensors"), "celica_v2");
+  } finally {
+    delete globalThis.window;
+  }
+  assert.equal(displayRowName("celica_v2.safetensors"), "celica_v2.safetensors", "no live app reachable -- falls back to the setting's own default (off)");
+});
+
+test("displayRowName: non-string/empty name is always an empty string, never throws", () => {
+  assert.equal(displayRowName(null), "");
+  assert.equal(displayRowName(undefined), "");
+  assert.equal(displayRowName(""), "");
 });
 
 // =========================================================================

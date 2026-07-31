@@ -12,6 +12,7 @@ import {
   SETTING_DEFAULTS,
   ANIMAFLOW_SETTINGS,
   CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
+  CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS,
   CIVITAI_SEARCH_SORT_OPTIONS,
   CIVITAI_SEARCH_PERIOD_OPTIONS,
   CIVITAI_SEARCH_LEVEL_OPTIONS,
@@ -37,22 +38,50 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — eighteen settings (the original ten, documented below,
-// plus M2's five: docs/lora-loader-design.md §8's `CIVITAI_API_KEY` and
-// §7c-i's four remembered search filters, `CIVITAI_SEARCH_BASE_MODEL`/
-// `_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own `CIVITAI_SEARCH_LEVEL`, which
-// supersedes `_NSFW` but does not replace its own registered entry, plus
-// M2b's own two internal multi-value rail filters, `CIVITAI_MODAL_BASE_
-// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`), all under the AnimaFlow category,
-// ids in the documented namespace, every one with a tooltip and a default
-// matching the table. Re-count rather than trusting this number — it only
-// ever grows.
+// Declaration shape — EIGHTEEN registered ids (`SETTING_IDS`/`SETTING_
+// DEFAULTS`: the original ten, plus M2's five -- docs/lora-loader-design.md
+// §8's `CIVITAI_API_KEY` and §7c-i's four remembered search filters,
+// `CIVITAI_SEARCH_BASE_MODEL`/`_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own
+// browsing-level id (`CIVITAI_BROWSING_LEVEL`, RENAMED 2026-07-31 from
+// `CIVITAI_SEARCH_LEVEL` -- see that id's own comment in `settings.mjs`),
+// plus M2b's own two internal multi-value rail filters, `CIVITAI_MODAL_BASE_
+// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`) -- but only FIFTEEN of them get a
+// dialog ROW in `ANIMAFLOW_SETTINGS`. Three are deliberately excluded (A3/A4,
+// owner screenshots 2026-07-31): `CIVITAI_SEARCH_NSFW` (superseded, its own
+// tooltip admitted it does nothing) and the two `CIVITAI_MODAL_*` ids (the
+// toolbar browser's own internal rail-chip state) -- see `ANIMAFLOW_SETTINGS`'s
+// own top comment in `settings.mjs` for why omitting a dialog row never stops
+// an id from being read/written. Re-count rather than trusting either number
+// — they only ever grow.
 // ---------------------------------------------------------------------------
 
-test("ANIMAFLOW_SETTINGS declares exactly the eighteen documented settings", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 18);
+// The three ids deliberately excluded from the dialog list (A3/A4) -- kept as
+// a named constant so every assertion below that needs "every REGISTERED id
+// except these" reads as one rule, not a repeated inline exclusion list.
+const DIALOG_EXCLUDED_IDS = [
+  SETTING_IDS.CIVITAI_SEARCH_NSFW,
+  SETTING_IDS.CIVITAI_MODAL_BASE_MODELS,
+  SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES,
+];
+
+test("SETTING_IDS/SETTING_DEFAULTS both declare exactly eighteen ids", () => {
+  assert.equal(Object.keys(SETTING_IDS).length, 18);
+  assert.deepEqual(Object.keys(SETTING_DEFAULTS).sort(), Object.values(SETTING_IDS).sort());
+});
+
+test("ANIMAFLOW_SETTINGS declares exactly fifteen dialog rows -- every registered id EXCEPT the three internal/superseded ones", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 15);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
-  assert.deepEqual(ids, Object.values(SETTING_IDS).sort());
+  const expected = Object.values(SETTING_IDS).filter((id) => !DIALOG_EXCLUDED_IDS.includes(id)).sort();
+  assert.deepEqual(ids, expected);
+});
+
+test("the three dialog-excluded ids are NOT in ANIMAFLOW_SETTINGS, but ARE still real SETTING_IDS/SETTING_DEFAULTS entries", () => {
+  for (const id of DIALOG_EXCLUDED_IDS) {
+    assert.ok(!ANIMAFLOW_SETTINGS.some((s) => s.id === id), `${id} must not have a dialog row`);
+    assert.ok(Object.values(SETTING_IDS).includes(id), `${id} must still be a registered SETTING_IDS entry`);
+    assert.ok(Object.prototype.hasOwnProperty.call(SETTING_DEFAULTS, id), `${id} must still have a default`);
+  }
 });
 
 test("every setting's id is in the AnimaFlow.<Group>.<Name> namespace", () => {
@@ -124,10 +153,13 @@ test("CIVITAI_API_KEY: id matches src/model_browser/keys.py's SETTING_ID verbati
   assert.equal(setting.defaultValue, "");
 });
 
-test("the four search-filter settings are combos/boolean matching civitai_search.mjs's own option lists, NSFW defaults off", () => {
+test("the base-model/sort/period search-filter settings are combos matching civitai_search.mjs's own option lists", () => {
   const baseModel = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL);
   assert.equal(baseModel.type, "combo");
-  assert.deepEqual(baseModel.options, CIVITAI_SEARCH_BASE_MODEL_OPTIONS);
+  // A1 -- the DIALOG's own `{text, value}` variant, NOT the plain-string list
+  // (`civitai_search.mjs`/`civitai_modal.mjs` still use the plain one).
+  assert.deepEqual(baseModel.options, CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS);
+  assert.notStrictEqual(baseModel.options, CIVITAI_SEARCH_BASE_MODEL_OPTIONS, "must not be the plain-string array");
   assert.equal(baseModel.defaultValue, "");
 
   const sort = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_SORT);
@@ -141,52 +173,74 @@ test("the four search-filter settings are combos/boolean matching civitai_search
   assert.deepEqual(period.options, CIVITAI_SEARCH_PERIOD_OPTIONS);
   // Matches src/model_browser/civitai_search.py's own DEFAULT_PERIOD verbatim.
   assert.equal(period.defaultValue, "AllTime");
-
-  const nsfw = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW);
-  assert.equal(nsfw.type, "boolean");
-  assert.equal(nsfw.defaultValue, false, "NSFW ships OFF (owner decision, §7c-i) -- kept registered even though superseded (§7c-iv)");
 });
 
 // ---------------------------------------------------------------------------
-// §7c-iv -- the "maximum browsing level" select supersedes CIVITAI_SEARCH_NSFW.
+// A1 -- the base-model dialog combo's `{text, value}` options never produce
+// an empty fallback (the untranslated-i18n-key bug, `settings.mjs`'s own
+// `CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS` doc comment has the full
+// decompiled-bundle evidence).
 // ---------------------------------------------------------------------------
 
-test("CIVITAI_SEARCH_LEVEL: a combo of exactly PG/PG-13/R/X/XXX, defaulting to PG, remembered user-wide", () => {
-  const level = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_LEVEL);
+test("CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS: every entry has a non-empty text/truthy fallback, values match the plain list 1:1", () => {
+  assert.equal(CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS.length, CIVITAI_SEARCH_BASE_MODEL_OPTIONS.length);
+  for (let i = 0; i < CIVITAI_SEARCH_BASE_MODEL_OPTIONS.length; i += 1) {
+    const entry = CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS[i];
+    assert.equal(typeof entry, "object");
+    assert.equal(entry.value, CIVITAI_SEARCH_BASE_MODEL_OPTIONS[i], "value must match the plain list, position-for-position");
+    assert.equal(typeof entry.text, "string");
+    assert.ok(entry.text.length > 0, `entry ${i} (value=${JSON.stringify(entry.value)}) must have a non-empty text fallback`);
+  }
+  const anyEntry = CIVITAI_SEARCH_BASE_MODEL_DIALOG_OPTIONS.find((e) => e.value === "");
+  assert.ok(anyEntry, "the empty 'any base model' value must still be present");
+  assert.equal(anyEntry.text, "Any", "the empty option's own display fallback, matching the picker's own 'Any' label");
+});
+
+// ---------------------------------------------------------------------------
+// A2 -- CIVITAI_BROWSING_LEVEL (renamed from CIVITAI_SEARCH_LEVEL, owner
+// 2026-07-31: the id/label said "search" when it now governs every surface
+// that loads a Civitai image) -- and §7c-iv's own supersede-not-replace of
+// CIVITAI_SEARCH_NSFW.
+// ---------------------------------------------------------------------------
+
+test("CIVITAI_BROWSING_LEVEL: a combo of exactly PG/PG-13/R/X/XXX, defaulting to PG, remembered user-wide, scope-neutral name", () => {
+  const level = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_BROWSING_LEVEL);
   assert.equal(level.type, "combo");
   assert.deepEqual(level.options, CIVITAI_SEARCH_LEVEL_OPTIONS);
   assert.deepEqual(CIVITAI_SEARCH_LEVEL_OPTIONS, ["PG", "PG-13", "R", "X", "XXX"]);
   assert.equal(level.defaultValue, "PG");
-  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL], "PG");
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL], "PG");
+  // Scope-neutral -- neither the id nor the visible name says "search" any
+  // more (it governs the ⓘ panel and the download-time preview too).
+  assert.equal(SETTING_IDS.CIVITAI_BROWSING_LEVEL, "AnimaFlow.Controls.CivitaiBrowsingLevel");
+  assert.doesNotMatch(level.name.toLowerCase(), /search/);
 });
 
 test("CIVITAI_SEARCH_LEVEL_TO_INT: each label maps to Civitai's own bitmask value, in ascending order", () => {
   assert.deepEqual(CIVITAI_SEARCH_LEVEL_TO_INT, { PG: 1, "PG-13": 2, R: 4, X: 8, XXX: 16 });
 });
 
-test("both the old NSFW id and the new LEVEL id stay registered -- an id is append-only, never deleted", () => {
+test("the old NSFW id stays registered (append-only) but has no dialog row; the renamed browsing-level id has one", () => {
   assert.equal(SETTING_IDS.CIVITAI_SEARCH_NSFW, "AnimaFlow.Controls.CivitaiSearchNsfw");
-  assert.equal(SETTING_IDS.CIVITAI_SEARCH_LEVEL, "AnimaFlow.Controls.CivitaiSearchLevel");
-  assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW), "the superseded id must still be registered, not deleted");
-  assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_LEVEL));
+  assert.ok(Object.values(SETTING_IDS).includes(SETTING_IDS.CIVITAI_SEARCH_NSFW), "the superseded id must still be a registered SETTING_IDS entry");
+  assert.ok(!ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW), "A3 -- no dialog row for the superseded id");
+  assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_BROWSING_LEVEL));
 });
 
 // ---------------------------------------------------------------------------
 // M2b -- the toolbar modal's own multi-value rail filters (docs/lora-loader-
 // design.md §7c-i's rail: "select-adds-a-chip"). Stored as a JSON-array-of-
 // strings STRING (no native multi-select settings-dialog widget type), never
-// hand-edited from the dialog itself -- `civitai_modal.mjs`'s own rail is the
-// real editor.
+// hand-edited from the dialog -- A4 (owner screenshot, 2026-07-31) removed
+// their dialog row entirely (they used to render as bare `[]` text fields);
+// `civitai_modal.mjs`'s own rail is their only real editor.
 // ---------------------------------------------------------------------------
 
-test("CIVITAI_MODAL_BASE_MODELS / CIVITAI_MODAL_MODEL_TYPES: text settings defaulting to an empty JSON array, remembered user-wide", () => {
+test("CIVITAI_MODAL_BASE_MODELS / CIVITAI_MODAL_MODEL_TYPES: registered ids/defaults (empty JSON array), but NO dialog row (A4)", () => {
   for (const id of [SETTING_IDS.CIVITAI_MODAL_BASE_MODELS, SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES]) {
-    const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === id);
-    assert.ok(setting, id);
-    assert.equal(setting.type, "text");
-    assert.equal(setting.defaultValue, "[]");
+    assert.ok(!ANIMAFLOW_SETTINGS.some((s) => s.id === id), `${id} must have no dialog row`);
     assert.equal(SETTING_DEFAULTS[id], "[]");
-    assert.match(setting.id, /^AnimaFlow\.Controls\./);
+    assert.match(id, /^AnimaFlow\.Controls\./);
   }
 });
 

@@ -71,16 +71,19 @@
  *
  * ## Integration note -- the backend contract this file is written against
  *
- * At the time this was built, `src/model_browser`'s search route still hard-
- * requires a whitelisted `kind` and has no multi-value `base_models`/`types`
- * params or per-result `kind` annotation (`civitai_api.mjs`'s own
- * `searchUnscoped` doc comment has the measured detail) -- that half of M2b
- * is a separate, concurrent backend task. Every result-shape read here
- * (`resultKind`, `resolveVersionView`, etc.) degrades to a safe "unknown"
- * rather than throwing, so this module works correctly against today's
- * `invalid_kind` reply (an honest "no results" empty state) and will start
- * working fully the moment the backend half lands, with no frontend change
- * required.
+ * **Landed** (`a6bc45b`): `kind` is optional on the SEARCH path only (its
+ * absence is the "search every supported type" signal `searchUnscoped`
+ * sends), every result carries its own derived `kind` (our folder for that
+ * Civitai model type, or `null` when we have none -- `resultKind`'s own doc
+ * comment), and `base_model`/`types` both accept MULTIPLE values as repeated
+ * query-string params under their existing singular keys (`base_model`,
+ * `types` -- never a comma-joined or invented-plural form; `civitai_api.mjs`'s
+ * own `searchUnscoped` doc comment has the wire-format detail). Every
+ * result-shape read here (`resultKind`, `resolveVersionView`, etc.) still
+ * degrades to a safe "unknown" rather than throwing against anything
+ * malformed or from an older backend build -- that defensive read was never
+ * specific to the backend gap this note used to describe, and stays useful
+ * regardless.
  */
 
 import {
@@ -126,6 +129,13 @@ import {
   THUMB_SKELETON_CLASS,
   THUMB_SKELETON_CSS,
 } from "../shared/civitai_thumb.mjs";
+// C/E (task brief, 2026-07-31): route this surface's own diagnostic output
+// (search issued/its result count, download start/finish) through the
+// pack-wide "Console logging" level -- see that module's own top doc
+// comment. "Civitai browser" is this surface's own tag (task brief: "make
+// each line identify which surface it came from") -- distinct from the
+// node-embedded picker's own "LoRA search" tag.
+import { logSummary, logDebug } from "../shared/console_log.mjs";
 
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 const STYLE_ID = "wtn-cm-style";
@@ -292,7 +302,6 @@ const CSS = `
   display: flex; align-items: center; gap: 10px; padding: 12px 16px; flex: none;
   border-bottom: 1px solid var(--wtn-line, ${TOKENS.line}); font-weight: 650; font-size: 14px;
 }
-.wtn-cm-head .wtn-cm-badge { font-family: var(--wtn-font-mono); font-size: 11px; font-weight: 500; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-cm-close { margin-left: auto; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 16px; background: none; border: none; }
 .wtn-cm-close:hover { color: var(--wtn-ink, ${TOKENS.ink}); }
 
@@ -300,13 +309,26 @@ const CSS = `
 
 .wtn-cm-rail {
   width: 216px; flex: none; overflow-y: auto; padding: 10px;
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 14px;
   border-right: 1px solid var(--wtn-line, ${TOKENS.line});
 }
-.wtn-cm-rail .wtn-collapse { font-size: 12px; }
+/* D1 (REVERSED 2026-07-31, owner, docs/lora-loader-design.md section 7c-i's
+   own "no card/box chrome per section" correction): each rail section used
+   to be its own bordered, filled '.wtn-collapse' panel -- five of those
+   stacked read as five separate widgets, not one rail. Overridden here,
+   SCOPED to '.wtn-cm-rail' only -- '.wtn-collapse' itself (js/shared/
+   theme.css) stays unchanged for every OTHER consumer (the Rule Builder,
+   etc.); this is a local reset, not a shared-class edit. The section
+   HEADING ('<summary>') and this rail's own 'gap' (widened above, 10px ->
+   14px, to keep sections visually distinct with no border to do that job
+   any more) are what separate one section from the next now. */
+.wtn-cm-rail .wtn-collapse {
+  font-size: 12px; background: none; border: none; border-radius: 0;
+}
+.wtn-cm-rail .wtn-collapse > summary { padding: 0 0 4px; }
+.wtn-cm-rail .wtn-collapse__bd { padding: 0; }
 .wtn-cm-rail select { width: 100%; margin-top: 6px; }
 .wtn-cm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.wtn-cm-chip-any { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 11.5px; font-style: italic; margin-top: 8px; }
 .wtn-cm-chip { display: inline-flex; align-items: center; gap: 5px; }
 .wtn-cm-chip-x { cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-weight: 700; }
 .wtn-cm-chip-x:hover { color: var(--wtn-bad, ${TOKENS.bad}); }
@@ -414,8 +436,31 @@ function buildSingleSelectRow(doc, options, current, onChange, labelForValue) {
  * read/write the caller's own state (never held here) so this stays a pure
  * DOM builder with no state of its own; `onChanged()` is called after every
  * add/remove so the caller can re-run the search. Returns `{ el, refresh }`
- * -- `refresh()` re-renders just the chip row (called after add/remove),
- * without rebuilding the `<select>` itself.
+ * -- `refresh()` re-renders both the chip row AND the `<select>`'s own
+ * option labels (D3, below), without rebuilding the `<select>` element
+ * itself (its own identity/listeners survive every refresh).
+ *
+ * **D2 (REVERSED 2026-07-31, owner, from the built rail) -- an empty group
+ * renders NOTHING**, not a faint "any" line. This previously matched §7c-i's
+ * own "an empty group shows a faint `any` so 'no filter' is stated rather
+ * than blank" -- the owner's own words override it: the `<select>` directly
+ * above already reads `"Add a base model…"`/`"Add a model type…"`, so `any`
+ * only restates what the control already says, for a second line of text per
+ * section that adds nothing. Do NOT "fix" this back to rendering `any` as a
+ * regression fix later -- it is deliberate, not an oversight (the design doc
+ * itself records the same reversal).
+ *
+ * **D3 -- the OPEN `<select>` shows a `✓` against already-selected values.**
+ * A native `<select>` cannot render arbitrary markup in one of its own
+ * `<option>`s, so the ✓ is a plain text PREFIX on that option's own label
+ * (`"✓ SDXL 1.0"`), computed fresh every `refresh()` call (selection changes
+ * on every add/remove) -- the underlying `value` attribute is never touched,
+ * so selecting an already-selected value stays the existing no-op
+ * (`addFilterValue`'s own dedupe). `optionEls` (a `value -> <option>` map,
+ * built once) is what lets `refresh()` re-label the right elements without
+ * rebuilding the `<select>` -- rebuilding it on every chip add/remove would
+ * also destroy the user's mid-interaction scroll position within the
+ * dropdown's own option list.
  */
 function buildChipFilterSection(doc, { placeholder, options, getCurrent, setCurrent, onChanged }) {
   const wrap = el(doc, "div");
@@ -424,23 +469,30 @@ function buildChipFilterSection(doc, { placeholder, options, getCurrent, setCurr
   placeholderOpt.value = "";
   placeholderOpt.textContent = placeholder;
   sel.appendChild(placeholderOpt);
+  const optionEls = new Map(); // value -> <option> (D3 -- relabeled on every refresh)
   for (const value of options) {
     const opt = el(doc, "option");
     opt.value = value;
     opt.textContent = value;
     sel.appendChild(opt);
+    optionEls.set(value, opt);
   }
   sel.value = "";
   sel.addEventListener("click", (e) => e.stopPropagation());
   const chipsHost = el(doc, "div", "wtn-cm-chips");
 
   function refresh() {
-    chipsHost.innerHTML = "";
     const list = getCurrent();
+    const selected = new Set(list);
+    // D3 -- relabel every option to reflect CURRENT selection, every refresh.
+    for (const [value, opt] of optionEls) {
+      opt.textContent = selected.has(value) ? `✓ ${value}` : value;
+    }
+
+    chipsHost.innerHTML = "";
+    // D2 -- an empty group renders nothing at all (see this function's own
+    // top doc comment for why this reverses the design doc's earlier rule).
     if (!list.length) {
-      const any = el(doc, "span", "wtn-cm-chip-any");
-      any.textContent = "any";
-      chipsHost.appendChild(any);
       return;
     }
     for (const value of list) {
@@ -575,12 +627,12 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   scrim.appendChild(panel);
 
   const head = el(targetDoc, "div", "wtn-cm-head");
+  // D4 (REVERSED 2026-07-31, owner, from the built rail): the "unscoped --
+  // every supported type" subtitle badge is GONE -- the title alone is
+  // enough. Do not re-add a badge element here.
   const headTitle = el(targetDoc, "span");
   headTitle.textContent = "Browse Civitai";
   head.appendChild(headTitle);
-  const badge = el(targetDoc, "span", "wtn-cm-badge");
-  badge.textContent = "unscoped — every supported type";
-  head.appendChild(badge);
   const closeBtn = el(targetDoc, "button", "wtn-cm-close");
   closeBtn.type = "button";
   closeBtn.textContent = "✕"; // ✕
@@ -602,7 +654,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   let currentFilters = {
     sort: getSetting(SETTING_IDS.CIVITAI_SEARCH_SORT, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_SORT]),
     period: getSetting(SETTING_IDS.CIVITAI_SEARCH_PERIOD, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_PERIOD]),
-    level: getSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL]),
+    level: getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]),
     baseModels: parseStoredList(getSetting(SETTING_IDS.CIVITAI_MODAL_BASE_MODELS, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_BASE_MODELS])),
     modelTypes: parseStoredList(getSetting(SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES])),
   };
@@ -623,7 +675,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
 
   const levelSel = buildSingleSelectRow(targetDoc, CIVITAI_SEARCH_LEVEL_OPTIONS, currentFilters.level, (v) => {
     currentFilters.level = v;
-    setSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, v);
+    setSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, v);
     runSearch({ resetCursor: true });
   });
   levelSel.title = "Maximum browsing level — PG never asks Civitai for adult content at all; PG-13/R/X/XXX filter a fuller gallery client-side.";
@@ -860,6 +912,9 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
         }, pollIntervalMs);
         if (resp.reason !== "started") {
           cardMessages.set(rKey, downloadStartMessage(resp));
+          logSummary("Civitai browser", `download NOT started: ${view.file_name} (${resp.reason})`);
+        } else {
+          logSummary("Civitai browser", `download started: ${view.file_name} (${kind})`);
         }
         renderGrid();
       });
@@ -914,8 +969,15 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       loading = true;
     }
     renderGrid();
+    const query = search.value.trim();
+    logDebug(
+      "Civitai browser",
+      `issuing ${resetCursor ? "search" : "page fetch"} (query=${JSON.stringify(query)}, `
+      + `baseModels=${JSON.stringify(currentFilters.baseModels)}, modelTypes=${JSON.stringify(currentFilters.modelTypes)}, `
+      + `sort=${currentFilters.sort}, period=${currentFilters.period}, level=${currentFilters.level})`,
+    );
     const resp = await searchUnscoped({
-      query: search.value.trim(),
+      query,
       baseModels: currentFilters.baseModels,
       modelTypes: currentFilters.modelTypes,
       sort: currentFilters.sort,
@@ -935,6 +997,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       const line = el(targetDoc, "div", lineClass);
       line.textContent = searchReasonMessage(resp) || resp.message || "Search failed.";
       statusLine.appendChild(line);
+      logSummary("Civitai browser", `search issued (query=${JSON.stringify(query)}) failed -- ${resp.reason}`);
       if (resetCursor) {
         results = [];
         nextCursor = null;
@@ -945,6 +1008,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     const incoming = resp.results || [];
     results = resetCursor ? appendDedupedResults([], incoming) : appendDedupedResults(results, incoming);
     nextCursor = resp.next_cursor;
+    logSummary("Civitai browser", `search issued (query=${JSON.stringify(query)}) -> ${incoming.length} result(s)`);
     renderGrid();
   }
 
@@ -971,6 +1035,8 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   function onDownloadStateChange() {
     const job = getActiveDownloadState();
     if (job && job.status && job.status !== "downloading" && job.status !== "cancelling") {
+      // C/E -- one summary line per TERMINAL transition, never per poll tick.
+      logSummary("Civitai browser", `download finished: ${job.filename || job.key} (${job.status})`);
       const finished = results.find((r) => resultKey(resolveVersionView(r)) === job.key);
       if (finished) {
         const versions = Array.isArray(finished.versions) ? finished.versions : null;

@@ -174,6 +174,19 @@ export function cachedList(kind) {
   return (kind && _listCache.get(kind)) || [];
 }
 
+/** Whether `kind`'s list has EVER resolved at least once, this session --
+ * `true` even for a real, successful fetch that came back empty (a genuinely
+ * file-less folder), `false` for "never fetched" -- the same "unknown, not
+ * missing" distinction `hasFile` already draws, but as its own predicate:
+ * `cachedList` alone can't tell "never fetched" apart from "fetched, empty"
+ * (both return `[]`). Exists for a caller (`model_picker.mjs`'s own summary
+ * logging, task brief C/E: "list fetched vs served from cache") that needs to
+ * know, BEFORE calling `listModels`, whether the upcoming call will be
+ * answered from cache or actually reach the network. */
+export function isListCached(kind) {
+  return !!kind && _listCache.has(kind);
+}
+
 /**
  * Whether `name` is in the last-fetched list for `kind`:
  *   - `true`/`false` once that kind's list has actually resolved at least

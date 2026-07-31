@@ -32,9 +32,21 @@
  * `hideExtension`/`showThumbnails` are real parameters, both wired from
  * Slice 5's ⚙ dialog (`js/shared/settings.mjs`'s `HIDE_FILE_EXTENSION`/
  * `SHOW_PREVIEW_THUMBNAILS`, read by `lora_interaction.mjs`'s
- * `openNamePickerFor` and passed in here as plain data -- this file itself
- * never reaches into `../shared/settings.mjs`, matching `model_info.mjs`'s
- * own `civitaiEnabled` convention).
+ * `openNamePickerFor` and passed in here as plain data -- this file's own
+ * PICKER never reaches into `../shared/settings.mjs`, matching
+ * `model_info.mjs`'s own `civitaiEnabled` convention).
+ *
+ * **`displayRowName`, below, is the one exception** (task brief, 2026-07-31,
+ * "hide file extension is on but our field label show it while the picker
+ * doesn't" -- part B): it reads `HIDE_FILE_EXTENSION` itself, because it
+ * exists precisely so a ROW LABEL (`lora_render.mjs`'s `paintRow`, and
+ * `js/controls/render.mjs`'s own picker-kind rows) can paint through the
+ * SAME live setting the picker already honours, without either of those
+ * `paintRow`s reaching into settings on their own. One settings-aware display
+ * function, reused by both tracks' `paintRow`s, is the seam
+ * `docs/lora-loader-design.md` §1a-vii needs next (showing a Civitai display
+ * name instead of the filename, behind a setting): that adds a SOURCE here,
+ * it does not require a second wrapper.
  *
  * ## Icons are duplicated here, not imported from `lora_render.mjs`
  *
@@ -53,7 +65,17 @@ import {
   closeOverlaysNotAncestorOf,
   activeOverlayRef,
 } from "../shared/overlay.mjs";
-import { listModels, thumbUrl, cachedCategoryTag } from "./civitai_api.mjs";
+import { listModels, thumbUrl, cachedCategoryTag, isListCached } from "./civitai_api.mjs";
+// `../shared/settings.mjs` is track-agnostic (imports nothing of ours), same
+// reasoning `civitai_search.mjs`'s own top doc comment gives for reaching
+// into it directly -- see `displayRowName`'s own doc comment, below, for why
+// THIS one function is the exception to this file's "settings arrive as a
+// parameter" rule.
+import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
+// C/E (task brief, 2026-07-31): route this surface's own diagnostic output
+// through the pack-wide "Console logging" level -- see that module's own top
+// doc comment.
+import { logSummary, logDebug } from "../shared/console_log.mjs";
 
 const STYLE_ID = "wtn-mp-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -239,6 +261,30 @@ export function displayModelName(name, hideExtension) {
   }
   const stripped = name.slice(0, dot);
   return stripped || name;
+}
+
+/**
+ * The settings-aware seam (task brief, 2026-07-31, part B): `displayModelName`
+ * (above), but reading the LIVE "Hide file extension" setting itself rather
+ * than taking it as a caller-supplied parameter -- the ONE place every row
+ * label in this pack (the LoRA Loader's own row, `lora_render.mjs`'s
+ * `paintRow`; the Control/Loader Panel's picker-kind rows, `js/controls/
+ * render.mjs`'s own `paintRow`) paints through at REPAINT time, so a future
+ * additional name SOURCE (§1a-vii: the Civitai display name instead of the
+ * filename) is one change here, not a change duplicated across two
+ * `paintRow`s.
+ *
+ * `name` is the identity value (`row.name`, or a picker-kind row's live combo
+ * value) -- this function only ever computes what to DISPLAY for it, it never
+ * mutates or returns anything a caller should persist. `""`/non-string
+ * degrades to `""`, matching `displayModelName`'s own contract; never throws.
+ */
+export function displayRowName(name) {
+  if (typeof name !== "string" || !name) {
+    return "";
+  }
+  const hideExtension = !!getSetting(SETTING_IDS.HIDE_FILE_EXTENSION, SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION]);
+  return displayModelName(name, hideExtension);
 }
 
 /** Flat, case-insensitive substring filter across every entry's `name` --
@@ -528,9 +574,20 @@ export function openModelPicker({
     search.focus(); // "takes focus on open" (§1a-v)
   }
 
+  // C/E (task brief, 2026-07-31) -- "list fetched vs served from cache,
+  // count, a missing-file mark". `wasCached` must be read BEFORE `listModels`
+  // resolves (its own cache write would otherwise make every later read look
+  // like a hit) -- `isListCached` (`civitai_api.mjs`) is the one place that
+  // can tell "never fetched" apart from "fetched, empty" (`cachedList` alone
+  // can't -- both return `[]`).
+  const wasCached = isListCached(kind);
   listModels(kind).then((fetched) => {
     models = fetched;
     loading = false;
+    logSummary("LoRA picker", `${kind}: ${wasCached ? "served from cache" : "fetched"}, ${models.length} file(s)`);
+    if (currentName && !models.some((m) => m && m.name === currentName)) {
+      logDebug("LoRA picker", `${kind}: current selection "${currentName}" not found in the list`);
+    }
     render();
   });
 

@@ -147,6 +147,13 @@ import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.
 // never import a `lora_*` module; a `lora_*` module importing THEM is the
 // intended, allowed direction).
 import { hasFile } from "./civitai_api.mjs";
+// `displayRowName` is the settings-aware "hide file extension" seam (task
+// brief, 2026-07-31, part B) -- see its own doc comment in `model_picker.mjs`
+// for why importing it here is the allowed direction (that file's own top
+// doc comment), and why it's the ONE place this row's label reads the live
+// setting rather than `paintRow` reaching into `../shared/settings.mjs`
+// itself.
+import { displayRowName } from "./model_picker.mjs";
 // `lora_state.mjs` is this node's OWN (non-track-agnostic) state model --
 // importing it from here is unrestricted (the layering guard only forbids
 // `model_picker.mjs`/`civitai_api.mjs`/`model_info.mjs` importing a `lora_*`
@@ -947,13 +954,25 @@ export function buildRowElement(doc) {
  * resolved at least once (`civitai_api.mjs`'s "unknown, not missing" rule)
  * -- an empty/unpicked row name (`row.name` falsy) is likewise never
  * "missing," it's simply unpicked. Only an EXPLICIT `false` (a real,
- * fetched list that genuinely doesn't contain this name) paints red. */
+ * fetched list that genuinely doesn't contain this name) paints red.
+ *
+ * The label is DISPLAY, `row.name` is IDENTITY, and must never change (task
+ * brief, 2026-07-31, part B) -- `displayRowName` (`model_picker.mjs`) is what
+ * turns identity into what actually paints, reading the live "Hide file
+ * extension" setting itself so this function never has to. The row's own
+ * `title` tooltip always carries the REAL, untruncated/unstripped `row.name`
+ * regardless of what the label shows, so hovering a hidden extension still
+ * reveals it. */
 export function paintRow(refs, row, sepStrengths) {
-  refs.nameLabel.textContent = row.name || "(pick a LoRA)";
+  refs.nameLabel.textContent = (row.name && displayRowName(row.name)) || "(pick a LoRA)";
   const missing = !!row.name && hasFile("loras", row.name) === false;
   refs.nameBtn.title = missing
     ? `Missing file: ${row.name} -- pick another LoRA`
     : row.name || "Click to pick a LoRA";
+  // The label's OWN tooltip (in addition to the button's, above) -- always
+  // the real, untruncated/unstripped name, so hovering it directly still
+  // reveals the extension even when the display strips it.
+  refs.nameLabel.title = row.name || "";
   refs.nameBtn.classList.toggle("wtn-lora-missing", missing);
   // BUG 17: `.value`, not `.textContent` -- the stepper's value is a real
   // `<input>` now. Repainting overwrites whatever the user may be mid-typing

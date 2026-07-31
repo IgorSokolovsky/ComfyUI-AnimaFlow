@@ -125,6 +125,12 @@ import {
   THUMB_SKELETON_CLASS,
   THUMB_SKELETON_CSS,
 } from "../shared/civitai_thumb.mjs";
+// C/E (task brief, 2026-07-31): route this surface's own diagnostic output
+// (lookup outcome, cache hit vs fetch, forget) through the pack-wide
+// "Console logging" level -- see that module's own top doc comment. "LoRA
+// info" is this surface's own tag (task brief: "make each line identify
+// which surface it came from").
+import { logSummary, logDebug } from "../shared/console_log.mjs";
 
 const STYLE_ID = "wtn-mi-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -1421,6 +1427,7 @@ export function openModelInfo({
       // open with NO request at all (see this file's top doc comment).
       const cached = cachedInfo(kind, name);
       if (cached) {
+        logDebug("LoRA info", `${kind}/${name}: cache hit (${cached.reason})`);
         applyLookupResponse(cached);
         repositionAfterChange(() => {
           renderStatus();
@@ -1440,11 +1447,14 @@ export function openModelInfo({
       status = { phase: "searching" };
       repositionAfterChange(() => renderStatus());
     }
+    logDebug("LoRA info", `${kind}/${name}: ${force ? "forced re-fetch" : "fetching (cache miss)"}`);
     const response = await lookupInfo(kind, name, { force: !!force, cachedOnly: !force });
     if (cancelled) {
       return;
     }
     applyLookupResponse(response);
+    const outcome = response.reason === "offline" ? `offline (${response.offline_reason})` : response.reason;
+    logSummary("LoRA info", `${kind}/${name}: lookup outcome = ${outcome}`);
     repositionAfterChange(() => {
       renderStatus();
       renderIdentity();
@@ -1458,6 +1468,7 @@ export function openModelInfo({
       return;
     }
     await forgetInfo(kind, name);
+    logSummary("LoRA info", `${kind}/${name}: forgot cached Civitai info`);
     civitaiRecord = null;
     civitaiTriggers = [];
     status = { phase: "idle" };

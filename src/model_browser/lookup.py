@@ -9,10 +9,15 @@ socket at all, missing sidecar or not (see `cached_only`'s own doc below).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from . import civitai_client, civitai_parse, hashing, sidecar
+from . import logs as logs_mod
 from .local import resolve_model_path
+
+# One logger for the whole feature (`logs.py`'s own docstring).
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 
 def _augment_with_model_description(
@@ -165,17 +170,37 @@ def lookup_model_info(
     `offline_reason="civitai_disabled"` -- distinct from every genuine
     network-failure reason, since nothing was actually attempted.
     """
+    def _emit(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Summary-level: exactly ONE `found`/`notfound`/`offline` line per
+        call, whatever branch produced `result` -- every `return` below
+        goes through this instead of returning its dict directly, so no
+        branch can be added later without also being covered (task:
+        "a lookup (found/notfound/offline)"). Returns `result` unchanged;
+        `logs.log_summary` itself never raises and does nothing at `off`.
+        """
+        logs_mod.log_summary(
+            _logger, logs_mod.format_lookup_summary,
+            kind=kind, name=name, reason=result.get("reason"), offline_reason=result.get("offline_reason"),
+        )
+        return result
+
     path = resolve_model_path(kind, name)
     if path is None:
-        return {
+        return _emit({
             "reason": "offline",
             "offline_reason": "missing_file",
             "message": "That model file could not be found locally.",
             "data": None,
-        }
+        })
 
     if not force_refresh or cached_only:
         cached = sidecar.read_sidecar(path)
+        # Debug-only: "cache hit vs miss on the sidecar" (task's own
+        # phrasing) -- a hit/miss on the SIDECAR FILE itself, independent of
+        # whether it goes on to parse to something usable (that's a
+        # separate, rarer failure the `if parsed:` branch below already
+        # handles by falling through to a fresh fetch).
+        logs_mod.log_debug(_logger, logs_mod.format_lookup_cache_debug, name=name, hit=cached is not None)
         if cached is not None:
             parsed = civitai_parse.parse_model_version(cached)
             if parsed:
@@ -187,53 +212,54 @@ def lookup_model_info(
                 parsed, changed = _augment_with_model_description(parsed, cached, cached_only=cached_only)
                 if changed:
                     sidecar.write_sidecar(path, cached)
-                return {
+                    logs_mod.log_debug(_logger, logs_mod.format_sidecar_write_debug, name=name)
+                return _emit({
                     "reason": "found",
                     "offline_reason": None,
                     "message": "",
                     "data": _finalize_descriptions(parsed, cached),
                     "source": "sidecar",
-                }
+                })
 
     if cached_only:
         # No sidecar (or nothing usable in it) -- STOP HERE. Reaching
         # `hashing.sha256_file`/`civitai_client.lookup_by_hash` below would
         # be exactly the outbound request `cached_only` exists to make
         # impossible, regardless of what `force_refresh` said.
-        return {
+        return _emit({
             "reason": "offline",
             "offline_reason": "civitai_disabled",
             "message": "Civitai is turned off, and nothing is cached for this file yet.",
             "data": None,
-        }
+        })
 
     try:
         sha = hashing.sha256_file(path)
     except OSError as exc:
-        return {
+        return _emit({
             "reason": "offline",
             "offline_reason": "unreadable",
             "message": f"Could not read the file to hash it: {exc}",
             "data": None,
-        }
+        })
 
     result = civitai_client.lookup_by_hash(sha)
     if result["reason"] == "offline":
-        return {**result, "data": None}
+        return _emit({**result, "data": None})
     if result["reason"] == "notfound":
-        return {
+        return _emit({
             "reason": "notfound",
             "offline_reason": None,
             "message": result.get("message", ""),
             "data": None,
-        }
+        })
 
     # result["reason"] == "found"
     parsed = civitai_parse.parse_model_version(result["data"])
     if not parsed:
         # A 200 that parsed to nothing usable at all -- matches upstream's
         # own "if not parsed: notfound" rule (this function's own docstring).
-        return {"reason": "notfound", "offline_reason": None, "message": "", "data": None}
+        return _emit({"reason": "notfound", "offline_reason": None, "message": "", "data": None})
 
     # BUG 2 -- same one-time description top-up as the cache-hit branch
     # above, applied to the freshly-fetched raw response before it's cached.
@@ -241,13 +267,14 @@ def lookup_model_info(
     # earlier when it's set), passed through for defensiveness only.
     parsed, _ = _augment_with_model_description(parsed, result["data"], cached_only=cached_only)
     sidecar.write_sidecar(path, result["data"])
-    return {
+    logs_mod.log_debug(_logger, logs_mod.format_sidecar_write_debug, name=name)
+    return _emit({
         "reason": "found",
         "offline_reason": None,
         "message": "",
         "data": _finalize_descriptions(parsed, result["data"]),
         "source": "civitai",
-    }
+    })
 
 
 def forget_cached(kind: object, name: Any) -> bool:

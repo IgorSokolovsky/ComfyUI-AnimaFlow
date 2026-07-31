@@ -132,6 +132,14 @@ import {
   THUMB_SKELETON_CLASS,
   THUMB_SKELETON_CSS,
 } from "../shared/civitai_thumb.mjs";
+// C/E (task brief, 2026-07-31): route this surface's own diagnostic output
+// (search issued/its result count, download start/finish) through the
+// pack-wide "Console logging" level -- see that module's own top doc
+// comment. "LoRA search" is this surface's own tag (task brief: "make each
+// line identify which surface it came from") -- distinct from the toolbar
+// browser's own "Civitai browser" tag, even though both eventually call the
+// SAME `civitai_api.mjs` network functions.
+import { logSummary, logDebug } from "../shared/console_log.mjs";
 
 export { levelLabelToInt, pickThumbCandidates, thumbState, advanceThumbAttempt, THUMB_RETRY_BACKOFF_MS };
 
@@ -1226,7 +1234,7 @@ export function openCivitaiSearch({
     period: getSetting(SETTING_IDS.CIVITAI_SEARCH_PERIOD, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_PERIOD]),
     // §7c-iv: the label string ("PG".."XXX") -- `levelLabelToInt` is where
     // this becomes the numeric value `searchModels`/thumbnail-picking need.
-    level: getSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL]),
+    level: getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]),
   };
 
   const baseModelSel = buildFilterSelect(doc, CIVITAI_SEARCH_BASE_MODEL_OPTIONS, currentFilters.baseModel, (v) => {
@@ -1255,7 +1263,7 @@ export function openCivitaiSearch({
   // from a fuller gallery fetch (this file's own top doc comment).
   const levelSel = buildFilterSelect(doc, CIVITAI_SEARCH_LEVEL_OPTIONS, currentFilters.level, (v) => {
     currentFilters.level = v;
-    setSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, v);
+    setSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, v);
     runSearch({ resetCursor: true });
   });
   levelSel.title = "Maximum browsing level — PG never asks Civitai for adult content at all; PG-13/R/X/XXX filter a fuller gallery client-side.";
@@ -1605,6 +1613,9 @@ export function openCivitaiSearch({
         }, pollIntervalMs);
         if (resp.reason !== "started") {
           cardMessages.set(rKey, downloadStartMessage(resp));
+          logSummary("LoRA search", `download NOT started: ${view.file_name} (${resp.reason})`);
+        } else {
+          logSummary("LoRA search", `download started: ${view.file_name} (${kind})`);
         }
         renderList();
       });
@@ -1711,8 +1722,15 @@ export function openCivitaiSearch({
       loading = true;
     }
     renderList();
+    const query = search.value.trim();
+    logDebug(
+      "LoRA search",
+      `${kind}: issuing ${resetCursor ? "search" : "page fetch"} (query=${JSON.stringify(query)}, `
+      + `baseModel=${JSON.stringify(currentFilters.baseModel)}, sort=${currentFilters.sort}, `
+      + `period=${currentFilters.period}, level=${currentFilters.level})`,
+    );
     const resp = await searchModels(kind, {
-      query: search.value.trim(),
+      query,
       baseModel: currentFilters.baseModel,
       sort: currentFilters.sort,
       period: currentFilters.period,
@@ -1736,6 +1754,7 @@ export function openCivitaiSearch({
       const line = el(doc, "div", lineClass);
       line.textContent = searchReasonMessage(resp) || resp.message || "Search failed.";
       statusLine.appendChild(line);
+      logSummary("LoRA search", `${kind}: search issued (query=${JSON.stringify(query)}) failed -- ${resp.reason}`);
       if (resetCursor) {
         results = [];
         nextCursor = null;
@@ -1752,6 +1771,7 @@ export function openCivitaiSearch({
     const incoming = resp.results || [];
     results = resetCursor ? appendDedupedResults([], incoming) : appendDedupedResults(results, incoming);
     nextCursor = resp.next_cursor;
+    logSummary("LoRA search", `${kind}: search issued (query=${JSON.stringify(query)}) -> ${incoming.length} result(s)`);
     renderList();
   }
 
@@ -1811,6 +1831,9 @@ export function openCivitaiSearch({
   function onDownloadStateChange() {
     const job = getActiveDownloadState();
     if (job && job.status && job.status !== "downloading" && job.status !== "cancelling") {
+      // C/E -- one summary line per TERMINAL transition, never per poll tick
+      // (this branch already only ever runs on a terminal status, above).
+      logSummary("LoRA search", `download finished: ${job.filename || job.key} (${job.status})`);
       const finishedResult = results.find((r) => resultKey(r) === job.key || !!findVersionByJobKey(r, job.key));
       const finishedVersion = finishedResult ? findVersionByJobKey(finishedResult, job.key) : null;
       if (job.status === "ok") {

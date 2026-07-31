@@ -21,6 +21,7 @@ import {
 } from "./model_info.mjs";
 import { invalidateInfo, thumbUrl } from "./civitai_api.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
+import { SETTING_IDS } from "../shared/settings.mjs";
 
 let failures = 0;
 let count = 0;
@@ -1239,6 +1240,77 @@ await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE 
     assert.equal(findAll(handle2.overlay, "wtn-mi-status-compact").length, 1, "the found compact row renders straight from cache");
     handle2.close();
   } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// C/E (task brief, 2026-07-31) -- lookup outcome / cache hit vs fetch /
+// forget route through `js/shared/console_log.mjs`'s level-aware helper,
+// tagged "LoRA info" (this surface's own tag).
+// =========================================================================
+
+await asyncTest("openModelInfo: at 'debug', a fresh lookup logs a fetch + its outcome; a SECOND open logs a cache hit; 'Clear cache' logs the forget", async () => {
+  const kind = "loras";
+  const name = "info-logging.safetensors";
+  invalidateInfo(kind, name);
+  const savedSettings = { [SETTING_IDS.CONSOLE_LOGGING]: "debug" };
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => savedSettings[id] } } } };
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found", offline_reason: null, message: "",
+      data: { name: "Logged LoRA", triggers: [], model_id: 1, version_id: 2 },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle1 = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name, civitaiEnabled: true });
+    await settle();
+    assert.ok(logCalls.every((c) => c[0] === "[AnimaFlow LoRA info]"), "every logged line is tagged with this surface's own tag");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("fetching (cache miss)")), "the first open logs a real fetch");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("lookup outcome = found")), "the outcome is logged");
+    handle1.close();
+
+    logCalls.length = 0;
+    const handle2 = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name, civitaiEnabled: true });
+    await settle();
+    assert.ok(logCalls.some((c) => c.join(" ").includes("cache hit (found)")), "the second open logs a cache hit, not a fetch");
+
+    logCalls.length = 0;
+    const clearBtn = findAll(handle2.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
+    assert.ok(clearBtn);
+    clearBtn.click();
+    await settle();
+    assert.ok(logCalls.some((c) => c.join(" ").includes("forgot cached Civitai info")), "'Clear cache' logs the forget");
+    handle2.close();
+  } finally {
+    console.log = origLog;
+    delete globalThis.window;
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: at 'off' (the default), nothing is logged at all", async () => {
+  const kind = "loras";
+  const name = "info-logging-silent.safetensors";
+  invalidateInfo(kind, name);
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  globalThis.fetch = async () => ({ json: async () => ({ reason: "offline", offline_reason: "civitai_disabled", message: "", data: null }) });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name, civitaiEnabled: true });
+    await settle();
+    assert.equal(logCalls.length, 0, "no live app/setting reachable -- defaults to 'off', genuinely silent");
+    handle.close();
+  } finally {
+    console.log = origLog;
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);
   }

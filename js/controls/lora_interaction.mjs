@@ -525,7 +525,8 @@ function openNamePickerFor(node, ctx, rowId, refs) {
  * the same way, so the panel's identity thumb's Civitai-sourced fallback
  * always reflects whatever the user last set in the search panel's own
  * "Maximum browsing level" select (the two share the SAME user-wide setting,
- * `../shared/settings.mjs`'s `CIVITAI_SEARCH_LEVEL`).
+ * `../shared/settings.mjs`'s `CIVITAI_BROWSING_LEVEL` -- RENAMED from
+ * `CIVITAI_SEARCH_LEVEL`, A2, since it governs more than search).
  */
 function openInfoPanelFor(node, ctx, rowId, refs) {
   const state = ensureState(node, ctx);
@@ -536,7 +537,7 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
   const entry = cachedList("loras").find((m) => m && m.name === row.name);
   const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
   const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
-  const browsingLevel = getSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL]);
+  const browsingLevel = getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]);
   openModelInfo({
     ctx,
     anchorEl: refs.info,
@@ -903,6 +904,13 @@ function openLoraSettings(node, ctx, anchorEl) {
     const current = getSetting(SETTING_IDS.HIDE_FILE_EXTENSION, SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION]);
     setSetting(SETTING_IDS.HIDE_FILE_EXTENSION, !current);
     refreshFromSettings();
+    // Task brief, 2026-07-31 (part B): "the second part is the one that gets
+    // forgotten" -- every row's own label reads this setting at PAINT time
+    // (`lora_render.mjs`'s `paintRow`, via `displayRowName`), so toggling it
+    // here must force every row to repaint, not just update the switch's own
+    // visual (mirrors the `civitaiSwitch` handler's identical `syncRows` call,
+    // just below).
+    syncRows(node, ctx);
   });
   refs.civitaiSwitch.addEventListener("click", (e) => {
     e.stopPropagation();

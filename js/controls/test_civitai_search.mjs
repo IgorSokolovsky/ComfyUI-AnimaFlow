@@ -1182,6 +1182,86 @@ await asyncTest("openCivitaiSearch: clicking Download starts a job; the card sho
   }
 });
 
+// =========================================================================
+// C/E (task brief, 2026-07-31) -- search issued/result count and download
+// start/finish route through `js/shared/console_log.mjs`'s level-aware
+// helper, tagged "LoRA search" (this surface's own tag, distinct from the
+// toolbar browser's "Civitai browser").
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: at 'debug', a search issued and its result count are both logged, tagged 'LoRA search'; a download logs start then finish", async () => {
+  _resetDownloadStateForTests();
+  const result = makeResult({ modelId: 41, versionId: 41, name: "Logged LoRA" });
+  const savedSettings = { [SETTING_IDS.CONSOLE_LOGGING]: "debug" };
+  globalThis.window = {
+    app: { extensionManager: { setting: { get: (id) => savedSettings[id] } } },
+  };
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  let progressCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-log-1" });
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      return jsonResponse({ reason: "ok", status: progressCalls === 1 ? "downloading" : "ok", bytes: progressCalls === 1 ? 40 : 100, total: 100, message: "" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+
+    assert.ok(logCalls.every((c) => c[0] === "[AnimaFlow LoRA search]"), "every logged line is tagged with this surface's own tag");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("issuing search")), "a search issue is logged");
+    assert.ok(logCalls.some((c) => c.join(" ").includes("-> 1 result(s)")), "the result count is logged");
+
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.ok(logCalls.some((c) => c.join(" ").includes("download started:")), "download start is logged");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(logCalls.some((c) => c.join(" ").includes("download finished:") && c.join(" ").includes("(ok)")), "download finish is logged");
+
+    handle.close();
+  } finally {
+    console.log = origLog;
+    delete globalThis.window;
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: at 'off' (the default), nothing is logged at all", async () => {
+  _resetDownloadStateForTests();
+  const result = makeResult({ modelId: 42, versionId: 42, name: "Silent LoRA" });
+  const logCalls = [];
+  const origLog = console.log;
+  console.log = (...args) => logCalls.push(args);
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    assert.equal(logCalls.length, 0, "no live app/setting reachable -- defaults to 'off', genuinely silent");
+    handle.close();
+  } finally {
+    console.log = origLog;
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
 await asyncTest("openCivitaiSearch: the download payload now carries civitai_meta and the currently-shown preview_url (task brief: 'the whole sidecar feature is dead code today')", async () => {
   _resetDownloadStateForTests();
   const result = makeResult({
@@ -1525,7 +1605,7 @@ await asyncTest("openCivitaiSearch: the maximum-browsing-level <select> defaults
     await settle();
     assert.equal(queries.length, 2, "changing the level re-searches immediately");
     assert.equal(queries[1].level, "8", "X resolves to Civitai's own bitmask value 8");
-    assert.equal(savedSettings[SETTING_IDS.CIVITAI_SEARCH_LEVEL], "X", "the label, not the numeric value, is what gets persisted (matching sort/period's own convention)");
+    assert.equal(savedSettings[SETTING_IDS.CIVITAI_BROWSING_LEVEL], "X", "the label, not the numeric value, is what gets persisted (matching sort/period's own convention)");
 
     handle.close();
   } finally {
