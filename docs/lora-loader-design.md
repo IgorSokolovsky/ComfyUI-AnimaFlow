@@ -935,11 +935,29 @@ Two consequences, both deliberate:
 - If **no** candidate passes the level, **no preview is saved.** A missing preview is correct here, never
   a fallback to an over-level image.
 
-> **Still open — the sidecar's SIZE**, a separate question from its level. `preview_url` is currently the
-> untransformed `original=true` URL, measured at **4.19 MB of PNG** for one image; that trade was struck
-> when the cost was assumed to be ~1.5 MB. **Recommendation: `anim=false,width=450`** — ample for a
-> preview any model manager displays, a fraction of the bytes, and `anim=false` means a video-preview
-> model saves a poster frame rather than an `.mp4` written under an image extension. Not applied yet.
+##### SETTLED: the saved preview is `anim=false,width=450` (owner, 2026-07-31)
+
+`preview_url` was the untransformed `original=true` URL, kept that way "because fidelity matters" — a
+trade struck when the cost was assumed to be ~1.5 MB. Measured, on the same two URLs used throughout
+this section:
+
+| | `original=true` | **`anim=false,width=450`** |
+|---|---|---|
+| still image | `image/png` · 4,192,036 B | `image/jpeg` · **36,481 B** |
+| video entry | **`video/mp4`** · 2,768,985 B | `image/jpeg` · **64,550 B** (poster frame) |
+
+**115× smaller on the still**, and the video row is the important one: today a video-preview model saves
+**2.77 MB of `video/mp4` as its preview image**, under whatever extension the preview writer chose. That
+is a live bug in the current sidecar path, not merely a size concern — it has simply never been reported,
+because nothing renders that file inside this pack. `anim=false` fixes it at the same time.
+
+(A video's poster frame comes back at 64,550 B for both `width=450` and `width=256` — the CDN appears to
+serve one stored still regardless of the requested width. Harmless, just don't expect the width parameter
+to change video output.)
+
+So there are now **three** transforms, and they should be named as such rather than left as scattered
+literals: `width=256` for live thumbnails, `width=450` for the saved preview, and untransformed only where
+something genuinely needs the source file. All three carry `anim=false`.
 
 The ⓘ panel **already inherits the `anim=false` video fix for free**, since it shares `_thumb_url`.
 Only the *level* is missing.
