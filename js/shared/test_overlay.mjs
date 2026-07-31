@@ -17,6 +17,14 @@
  * only needs enough of a DOM to create elements, append them, and fire wheel
  * events, so it's smaller than that one.
  *
+ * Also covers `reposition()`'s own viewport-clamp/flip decision (added
+ * later, see the "reposition()'s viewport clamp" section comment below) and
+ * the content-resize auto re-place `openOverlay` now performs on top of it
+ * (`overlay.mjs`'s own top doc comment, "A THIRD layer, 2026-07-31") -- both
+ * outgrew "just the zoom wiring" this file started as, but stayed here
+ * rather than splitting out, since `openOverlay` is still the one function
+ * under test either way.
+ *
  * Plain `node js/shared/test_overlay.mjs`.
  */
 import assert from "node:assert/strict";
@@ -613,6 +621,186 @@ test("no live window (vw/vh null) -- positions exactly as today, no throw", () =
     assert.equal(handle.overlay.style.left, "10px");
     assert.equal(handle.overlay.style.top, "56px"); // bottom + 6, no flip/clamp possible without a real vh
     assert.equal(handle.overlay.style.width, "240px");
+    handle.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The content-resize auto re-place -- "A THIRD layer, 2026-07-31" in
+// overlay.mjs's own top doc comment. Three owner reports, one cause: an
+// anchored panel calls `reposition()` exactly once, right after opening,
+// while it's still a short "Loading..." placeholder; the real content lands
+// asynchronously, grows past whatever room was measured at that instant, and
+// nothing ever re-places or re-caps it. `TestResizeObserver` below is a
+// minimal, manually-driven stub (`.fire()` invokes the stored callback
+// directly, no scheduling/batching modeled) -- exactly enough to prove
+// `openOverlay` wires one up, reacts to a real height change, ignores a
+// no-op one, and tears it down on close, without needing a real DOM's
+// asynchronous delivery timing.
+// ---------------------------------------------------------------------------
+
+class TestResizeObserver {
+  static instances = [];
+  constructor(cb) {
+    this.cb = cb;
+    this.disconnected = false;
+    this.observed = [];
+    TestResizeObserver.instances.push(this);
+  }
+  observe(elm) {
+    this.observed.push(elm);
+  }
+  disconnect() {
+    this.disconnected = true;
+  }
+  /** Test-only: simulate a real observation notification firing. `overlay.mjs`'s
+   * own callback never reads the entries/observer arguments (it re-measures
+   * `contentEl` itself), so this passes nothing. */
+  fire() {
+    this.cb([], this);
+  }
+}
+
+/** Counts calls into `reposition()` by wrapping `anchorEl.getBoundingClientRect`
+ * -- every `reposition()` call reads it exactly once, unconditionally, at its
+ * very top, so this is a reliable proxy for "how many times has
+ * `reposition()` actually run" without `overlay.mjs` needing to expose that
+ * count itself. */
+function countRepositionCalls(anchorEl) {
+  const counter = { calls: 0 };
+  const orig = anchorEl.getBoundingClientRect;
+  anchorEl.getBoundingClientRect = (...args) => {
+    counter.calls += 1;
+    return orig.apply(anchorEl, args);
+  };
+  return counter;
+}
+
+test("content growing after open triggers exactly one automatic re-place", () => {
+  TestResizeObserver.instances.length = 0;
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  doc.defaultView.ResizeObserver = TestResizeObserver;
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 40 }; // short "Loading..." placeholder
+  const handle = openOverlay(doc, anchor, content, "below");
+  const counter = countRepositionCalls(anchor);
+  try {
+    const ro = TestResizeObserver.instances[0];
+    assert.ok(ro, "openOverlay must create a ResizeObserver when the doc provides one");
+    assert.equal(ro.observed[0], content, "it must observe contentEl, not the overlay wrapper");
+
+    // The real content lands, replacing the placeholder -- still fits below
+    // (room below is huge), but its height genuinely changed.
+    content._size = { width: 150, height: 300 };
+    ro.fire();
+    assert.equal(counter.calls, 1, "grown content triggers exactly one automatic re-place");
+    assert.equal(handle.overlay.style.top, "86px", "80(anchor bottom) + 6(gap) -- re-placed exactly like a fresh below-open would be");
+  } finally {
+    handle.close();
+  }
+});
+
+test("a resize observation with unchanged height triggers no automatic re-place", () => {
+  TestResizeObserver.instances.length = 0;
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  doc.defaultView.ResizeObserver = TestResizeObserver;
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 300 };
+  const handle = openOverlay(doc, anchor, content, "below");
+  const counter = countRepositionCalls(anchor);
+  try {
+    const ro = TestResizeObserver.instances[0];
+    ro.fire(); // nothing changed
+    assert.equal(counter.calls, 0, "an unchanged height must never trigger a re-place -- a poll that re-renders the same content every 800ms must not jitter the popover");
+  } finally {
+    handle.close();
+  }
+});
+
+test("a {minHeight} floor set by an earlier explicit reposition() call is remembered and reused by the automatic re-place", () => {
+  TestResizeObserver.instances.length = 0;
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  doc.defaultView.ResizeObserver = TestResizeObserver;
+  const anchor = makeLayoutElement("button");
+  // roomBelow = 800 - 730 - 6 - 12 = 52 (tiny); roomAbove = 700 - 6 - 12 = 682.
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 700, right: 170, bottom: 730, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 40 }; // fits fine at first -- no cap yet, floor merely remembered
+  const handle = openOverlay(doc, anchor, content, "below");
+  try {
+    handle.reposition({ minHeight: 5000 });
+    assert.equal(content.style.maxHeight, "", "still fits -- no cap needed yet");
+
+    const ro = TestResizeObserver.instances[0];
+    content._size = { width: 150, height: 900 }; // now doesn't fit either side -- needs a cap
+    ro.fire();
+    assert.equal(content.style.maxHeight, "5000px", "the automatic re-place reused the LAST explicit call's floor, not a lost 0");
+  } finally {
+    handle.close();
+  }
+});
+
+test("grow -> cap -> re-observe converges -- the cap's own follow-up notification never causes another re-place (no oscillation)", () => {
+  TestResizeObserver.instances.length = 0;
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  doc.defaultView.ResizeObserver = TestResizeObserver;
+  const anchor = makeLayoutElement("button");
+  // Same anchor as the "neither side fits" test above: roomBelow = 52, roomAbove = 682.
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 700, right: 170, bottom: 730, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 40 };
+  const handle = openOverlay(doc, anchor, content, "below");
+  const counter = countRepositionCalls(anchor);
+  try {
+    const ro = TestResizeObserver.instances[0];
+
+    // Grows past BOTH sides' room -- reposition() applies a cap, which
+    // itself changes contentEl's OWN rendered height (a resize a real
+    // ResizeObserver would notice too) -- firing again right after
+    // simulates that follow-up notification.
+    content._size = { width: 150, height: 900 };
+    ro.fire();
+    assert.equal(counter.calls, 1, "one re-place for the actual growth");
+    assert.equal(content.style.maxHeight, "682px", "capped to roomAbove, same as the existing non-observer cap test above");
+
+    ro.fire(); // the cap's own follow-up notification
+    assert.equal(counter.calls, 1, "the post-cap height matches what reposition() just placed at -- must not cause a second call");
+    ro.fire(); // fired again for good measure
+    assert.equal(counter.calls, 1, "bounded: repeated observations of the same settled height never accumulate more calls");
+  } finally {
+    handle.close();
+  }
+});
+
+test("close() disconnects the resize observer", () => {
+  TestResizeObserver.instances.length = 0;
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 });
+  doc.defaultView.ResizeObserver = TestResizeObserver;
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  const handle = openOverlay(doc, anchor, content, "below");
+  const ro = TestResizeObserver.instances[0];
+  assert.equal(ro.disconnected, false);
+  handle.close();
+  assert.equal(ro.disconnected, true, "close() must disconnect the resize observer -- a leaked observer holding a detached node is exactly the kind of thing that survives green tests");
+});
+
+test("no ResizeObserver available anywhere (no doc.defaultView one, and Node has no global one) -- silent no-op, content growth after open never re-places, no throw", () => {
+  const doc = makeLayoutDocStub({ w: 1200, h: 800 }); // .ResizeObserver never set
+  const anchor = makeLayoutElement("button");
+  anchor.getBoundingClientRect = () => ({ left: 20, top: 50, right: 170, bottom: 80, width: 150, height: 30 });
+  const content = doc.createElement("div");
+  content._size = { width: 150, height: 40 };
+  assert.doesNotThrow(() => {
+    const handle = openOverlay(doc, anchor, content, "below");
+    assert.equal(handle.overlay.style.top, "86px");
+    content._size = { width: 150, height: 900 }; // grows, but nothing is observing it
+    assert.equal(handle.overlay.style.top, "86px", "no observer exists to notice the growth, so nothing re-places it");
     handle.close();
   });
 });

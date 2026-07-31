@@ -30,6 +30,57 @@
  * `makeWindowStub`, which never sets either) it stays a no-op, so extracting
  * this changes zero existing Controls test outcomes.
  *
+ * ## A THIRD layer, 2026-07-31: re-placing after the content GROWS, not just
+ * once at open (owner-reported, three separate panels)
+ *
+ * The two corrections above both fix how a single `reposition()` call
+ * decides where to put the overlay. Neither touches WHEN `reposition()` gets
+ * called — and every anchored panel in this pack calls it exactly once,
+ * right after opening, while its content is still whatever it was at that
+ * instant (typically a short "Loading…" placeholder). `computeAnchoredMaxHeight`
+ * /the `"below"` branch's own cap only ever engages when the content doesn't
+ * fit AT THE TIME `reposition()` runs — a short placeholder fits, so no cap
+ * is applied, and the inner `overflow-y: auto` region it's paired with never
+ * gets a bounded box to scroll inside of. When the real content lands
+ * asynchronously and grows past it, the panel just grows past the bottom of
+ * the viewport instead of scrolling — confirmed on `model_picker.mjs` (one
+ * `reposition()` call, at open, ever), `civitai_search.mjs` (repositions at
+ * open plus on window-resize and anchor-move, but nothing for a CONTENT size
+ * change), and `model_info.mjs` (which hit this first and grew its own
+ * local `repositionAfterChange` workaround rather than wait for a shared
+ * fix here).
+ *
+ * The fix: `openOverlay` itself now watches `contentEl` with a
+ * `ResizeObserver` (resolved from `doc.defaultView.ResizeObserver` first,
+ * falling back to `globalThis.ResizeObserver`; `undefined` on both — every
+ * headless test in this pack, and any host with no live one — is a clean,
+ * total no-op, exactly this module's existing "no mechanism available"
+ * convention) and calls `reposition()` again whenever the observed height
+ * genuinely changes, so no caller has to wire this up by hand (unlike
+ * `model_info.mjs`'s own `repositionAfterChange`, which still exists as a
+ * separate, redundant mechanism on that one panel — harmless since a second
+ * re-place landing on the same position is a no-op in effect, but worth
+ * collapsing into this one once it's proven out; not done here, on purpose,
+ * so as not to disturb a fix the owner only just confirmed works).
+ *
+ * Two things make this converge instead of oscillate:
+ *
+ * 1. It remembers the LAST `sizeOpts` (`{ minHeight }`) any caller passed to
+ *    `reposition()`, and reuses that same floor for the automatic re-place —
+ *    re-placing with a *lost* floor would silently undo whatever minimum the
+ *    caller originally asked for.
+ * 2. It compares the observed height against the height `reposition()`
+ *    itself last actually placed at (recorded right after that call
+ *    finishes, i.e. AFTER any height cap it applied), not against whatever
+ *    height was current when the observer fired — `reposition()`'s own
+ *    "below" branch can shrink `contentEl` via `max-height`, which is itself
+ *    a resize the observer will see; comparing against the POST-cap height
+ *    means that follow-up observation reads as "unchanged" and stops the
+ *    loop. A `repositioning` flag additionally swallows any observation
+ *    fired synchronously from inside `reposition()`'s own body, in case a
+ *    given `ResizeObserver` implementation (or a test double) ever delivers
+ *    one that way rather than batched to a later turn.
+ *
  * ## Why overlays live on `document.body`, not inside the anchor's own tree
  *
  * A DOM-widget row/root's own container may clip overflow inside the node's
@@ -222,7 +273,31 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
    * anything (the ⚙ dialog, row/option menus, the ⓘ panel) keeps floor `0`,
    * unchanged from before this option existed.
    */
+  // Most recent non-undefined `sizeOpts` any caller has passed to
+  // `reposition()` -- reused by the automatic content-resize re-place
+  // (below `reposition()`'s own definition) so it never re-places with a
+  // LOST floor. `undefined` until the first caller that actually passes
+  // one; the automatic re-place before that point just passes `undefined`
+  // straight through, identical to every existing no-args call.
+  let lastSizeOpts;
+  // `contentEl`'s own height at the moment `reposition()` last FINISHED
+  // placing the overlay (i.e. after any height cap it applied) -- what the
+  // resize-observer re-place, below, diffs the newly observed height
+  // against to decide "did anything actually change." `null` until the
+  // first `reposition()` call completes.
+  let placedHeight = null;
+  // True only while THIS `reposition()` call's own body is running --
+  // guards the resize observer below against reacting to a resize IT ITSELF
+  // caused (`reposition()`'s own `contentEl.style.maxHeight` mutation is a
+  // resize too), in case a given `ResizeObserver` implementation (or a test
+  // double) ever delivers that notification synchronously rather than
+  // batched to a later turn.
+  let repositioning = false;
   const reposition = (sizeOpts) => {
+    if (sizeOpts !== undefined) {
+      lastSizeOpts = sizeOpts;
+    }
+    repositioning = true;
     const rect = typeof anchorEl.getBoundingClientRect === "function"
       ? anchorEl.getBoundingClientRect()
       : { left: 0, top: 0, right: 0, bottom: 0, width: 240 };
@@ -311,8 +386,51 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
     // matters — this is what fixes the owner-reported 2026-07-30 overflow
     // (menus spilling off the right side; only the bottom was ever handled).
     clampOverlayToViewport(overlay, contentEl, vw, vh);
+
+    // Record the height THIS call actually placed at (after any cap it just
+    // applied) -- this, not whatever height happens to be current when the
+    // resize observer next fires, is what the automatic re-place below
+    // diffs against, so a follow-up observation of the SAME cap this call
+    // just applied reads as "unchanged" and the loop stops. See this
+    // module's own top doc comment, "A THIRD layer, 2026-07-31."
+    const placedBox = measureBox(contentEl) || measureBox(overlay);
+    placedHeight = placedBox ? placedBox.height : null;
+    repositioning = false;
   };
   reposition();
+
+  // Watches `contentEl` for a height change AFTER this initial placement
+  // (async content replacing a "Loading…" placeholder, a result list
+  // growing, ...) and re-places the overlay when it happens, so no caller
+  // has to remember to call `reposition()` itself on every content change --
+  // see this module's own top doc comment, "A THIRD layer, 2026-07-31," for
+  // why this converges instead of oscillating. Resolved from
+  // `doc.defaultView` first, falling back to `globalThis`, and `undefined`
+  // on both (every headless test in this pack, and any host with no live
+  // one) is a clean, total no-op -- this mechanism simply never engages,
+  // exactly like the viewport-flip above degrades to "never adjust" with no
+  // real `window`.
+  const resizeObserverCtor = (doc.defaultView && doc.defaultView.ResizeObserver)
+    || (typeof globalThis !== "undefined" ? globalThis.ResizeObserver : undefined);
+  let resizeObserver = null;
+  if (typeof resizeObserverCtor === "function") {
+    resizeObserver = new resizeObserverCtor(() => {
+      if (repositioning) {
+        // A resize `reposition()` itself just caused (its own max-height
+        // cap on `contentEl`) -- swallow it here; `reposition()`'s own
+        // `placedHeight` bookkeeping (above) already accounts for the
+        // POST-cap height, so there is nothing new to react to.
+        return;
+      }
+      const box = measureBox(contentEl) || measureBox(overlay);
+      const h = box ? box.height : null;
+      if (h == null || placedHeight == null || Math.abs(h - placedHeight) < 0.5) {
+        return; // no real change -- never a spurious re-place (the panels' own periodic re-renders must not jitter the popover)
+      }
+      reposition(lastSizeOpts);
+    });
+    resizeObserver.observe(contentEl);
+  }
 
   function onDocPointerDown(e) {
     if (overlay.contains(e.target) || (anchorEl && anchorEl.contains && anchorEl.contains(e.target))) {
@@ -362,6 +480,13 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
       return;
     }
     closed = true;
+    if (resizeObserver) {
+      // A leaked observer holding a detached `contentEl` is exactly the kind
+      // of thing that survives green tests -- tear it down every time, not
+      // just when a content-resize actually happened.
+      resizeObserver.disconnect();
+      resizeObserver = null;
+    }
     suspendOutsideClose();
     if (overlay.parentNode) {
       overlay.parentNode.removeChild(overlay);
