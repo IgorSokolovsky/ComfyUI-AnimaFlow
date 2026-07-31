@@ -1002,6 +1002,27 @@ something genuinely needs the source file. All three carry `anim=false`.
 > The local file stays preferred and unfiltered. The Civitai candidate list is the fallback, and in
 > practice it is what users will see, because the local route 404s for nearly every model today (our own
 > preview-saving path has never been wired — see below).
+>
+> ### ⚠️ SECOND CORRECTION — "the cache bakes in the level" was also wrong
+>
+> This section claimed *"`lookup.py` writes `parse_model_version`'s output — including one already-chosen
+> `thumbnail` string — to `<base>.civitai.info`"*, and built the argument for render-time picking on top of
+> that. **It writes `result["data"]` — the RAW Civitai response** (`lookup.py:243`, and `cached` on the
+> cache-hit branch at `:189`). `parse_model_version` runs on *read*.
+>
+> So nothing was ever baked in: the sidecar has always held the full `images` array with every
+> `nsfwLevel`, and a render-time pick had all the data it needed from the start. The conclusion —
+> candidates, picked at render time — is still right, but it was already achievable and the urgency was
+> imagined. The legacy single-`thumbnail` migration is therefore **defensive only**: it cannot arise from
+> our own write path (verified back to `815c286`), and survives only to tolerate a hand-edited or
+> externally-authored `.civitai.info`.
+>
+> **Both corrections in this section are the same mistake**: I specced this subsystem from the design
+> doc's own description of it instead of reading the code, and asserted where data comes from and goes
+> without grepping either end. Both were caught downstream rather than by me. When writing a contract for
+> an *existing* subsystem, every claim about data flow — what is stored, what is rendered, what reads
+> which key — has to be checked against the source, because such a claim reads as authoritative
+> afterwards and the next person builds on it.
 
 The ⓘ panel **already inherits the `anim=false` video fix for free**, since it shares `_thumb_url`.
 Only the *level* is missing.
