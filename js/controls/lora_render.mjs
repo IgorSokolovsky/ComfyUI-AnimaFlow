@@ -515,22 +515,26 @@ const CSS = `
 .wtn-ctl-row.wtn-lora-dragging .wtn-ctl-body {
   border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); box-shadow: 0 8px 20px rgba(0,0,0,.5);
 }
-/* FLIP settle (§1a-iii, Slice 5): lora_interaction.mjs's flipRows writes
-   each surviving row's OWN inverse-translate as an inline transform the
-   instant the new order paints, then -- one animation frame later -- adds
-   THIS class and clears that inline style back to nothing, which is what
-   turns "already there" into "glides there". transform is the ONLY
-   property this rule ever touches -- never a layout property (this is a DOM
-   widget composited over a canvas; animating layout there is visibly
-   thrashy). prefers-reduced-motion is handled ENTIRELY by the media query
-   below -- with the transition removed, the exact same
-   set-transform-then-clear sequence simply snaps instead of gliding, so no
-   JS branch is needed to honour it (matches the approved
-   playground/lora-loader.html mockup's own .row.flip/@media pair
-   verbatim). */
-.wtn-ctl-row.wtn-lora-flip { transition: transform .18s cubic-bezier(.2, .7, .3, 1); }
+/* FLIP settle (§1a-iii, Slice 5): lora_interaction.mjs's flipRows (a thin
+   wrapper over js/shared/flip.mjs's track-agnostic core -- see that
+   module's own top doc comment) writes each surviving row's OWN
+   inverse-translate as an inline transform the instant the new order
+   paints, then -- one animation frame later -- adds THIS class and clears
+   that inline style back to nothing, which is what turns "already there"
+   into "glides there". transform is the ONLY property this rule ever
+   touches -- never a layout property (this is a DOM widget composited over
+   a canvas; animating layout there is visibly thrashy). prefers-reduced-
+   motion is handled ENTIRELY by the media query below -- with the
+   transition removed, the exact same set-transform-then-clear sequence
+   simply snaps instead of gliding, so no JS branch is needed to honour it
+   (matches the approved playground/lora-loader.html mockup's own
+   .row.flip/@media pair verbatim). Class name is TRACK-NEUTRAL
+   ('wtn-row-flip', not the old 'wtn-lora-flip') -- render.mjs (Control
+   Panel) carries the byte-for-byte identical rule so both tracks share one
+   class, one animation, from one shared JS core. */
+.wtn-ctl-row.wtn-row-flip { transition: transform .18s cubic-bezier(.2, .7, .3, 1); }
 @media (prefers-reduced-motion: reduce) {
-  .wtn-ctl-row.wtn-lora-flip { transition: none; }
+  .wtn-ctl-row.wtn-row-flip { transition: none; }
 }
 /* an OFF row recedes -- name/strength/info dim, the switch itself (still the
    ONE thing that must stay fully legible) does not (design doc §1a-ii). */

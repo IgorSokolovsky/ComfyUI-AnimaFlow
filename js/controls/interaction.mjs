@@ -131,6 +131,14 @@ import { isSizeLike } from "../shared/size.mjs";
 // the import right above it.
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
 
+// FLIP drag-reorder settle animation -- the track-agnostic capture/inverse-
+// transform/settle core, shared with `lora_interaction.mjs` (which ported
+// it here first; see `js/shared/flip.mjs`'s own top doc comment for why the
+// core lives there and what differs between the two tracks). Plain relative
+// import, same reasoning as `size.mjs`/`settings.mjs` above -- zero `app`/
+// `window`/`LiteGraph` reference at module scope.
+import { captureRowTops as sharedCaptureRowTops, flipRows as sharedFlipRows } from "../shared/flip.mjs";
+
 // Shared `options` object for every `installCanvasZoomPassthrough` call in
 // this file (both below) -- `getLockMs` itself still resolves the setting
 // FRESH on every wheel event (it's a closure calling `getSetting` live,
@@ -1094,6 +1102,74 @@ function openContextMenuFor(node, ctx, rowId, refs) {
 // when `panelConfig.reorder` is true).
 // ---------------------------------------------------------------------------
 
+// Matches render.mjs's own '.wtn-row-flip' transition duration (.18s) plus a
+// small buffer -- long enough that the class is never removed WHILE the
+// transition it enables is still visibly running (same constant, same
+// reasoning, as `lora_interaction.mjs`'s identical `FLIP_SETTLE_MS`).
+const FLIP_SETTLE_MS = 200;
+
+function ctrlRowEl(entry) {
+  return entry && entry.refs && entry.refs.root;
+}
+
+/** Every currently-mounted row's CURRENT top position, keyed by row id --
+ * call this BEFORE mutating `node._ctrlRows`' order, so `flipRows` (below)
+ * has an "old" position to diff the "new" one against. Thin wrapper over
+ * `js/shared/flip.mjs`'s track-agnostic core -- exported for direct
+ * testability, matching `lora_interaction.mjs`'s identical pair. */
+export function captureRowTops(node) {
+  return sharedCaptureRowTops(node._ctrlRows, ctrlRowEl);
+}
+
+/**
+ * Call AFTER a reorder has been applied (`applyReorderLive` +
+ * `alignOutputsLegacy` + `setDirtyCanvas` -- see `wireGrip`'s own `onMove`
+ * below). UNLIKE the LoRA loader's synchronous DOM `appendChild` move (its
+ * own `flipRows` calls straight into the shared core), a Control Panel
+ * reorder only swaps `node.widgets`' order -- the row's actual on-screen
+ * position is repainted ASYNCHRONOUSLY by ComfyUI's own DOM-widget host,
+ * confirmed (not assumed) by reading the installed `comfyui_frontend_
+ * package`'s bundled Vue components: each row's DOM-widget wrapper `<div>`
+ * (a distinct element from our own `.wtn-ctl-row`, which is mounted as ITS
+ * child and never touched again after that) is repositioned by a
+ * `DomWidgets` component's `updateWidgets()`, itself hooked onto
+ * `canvas.onDrawForeground` -- which only runs once litegraph's own render
+ * loop actually redraws the canvas, something `setDirtyCanvas(true, true)`
+ * merely SCHEDULES for the next animation frame rather than performing
+ * synchronously. Measuring "now" immediately after the reorder (the way
+ * `lora_interaction.mjs` does) would therefore always read the OLD
+ * position -- every delta 0, no visible animation at all, exactly the
+ * silent-failure mode this whole port has to avoid. So this wrapper defers
+ * the actual measure-and-animate step by one `requestAnimationFrame` before
+ * handing off to the shared core, which then does its OWN separate,
+ * one-frame-later class-add (`js/shared/flip.mjs`) -- reordering, in a real
+ * ComfyUI session, is therefore: [reorder + setDirtyCanvas] -> [next frame:
+ * litegraph redraws, `arrange()` updates each row widget's `.y`,
+ * `onDrawForeground` repositions the row's wrapper -- THIS wrapper's own
+ * deferred callback fires here, measuring the now-correct position and
+ * writing the inverse transform] -> [frame after that: the shared core adds
+ * the transitioning class] -> settle.
+ *
+ * Under a host with no `requestAnimationFrame` (this pack's own
+ * headless-test convention) there is nothing to defer TO, so this is a
+ * silent no-op rather than an instant settle -- a row already has whatever
+ * position the test gave it, with no reorder-triggered repaint to wait for
+ * in the first place.
+ *
+ * NOT wired at drag-END (`onUp`, below) -- only from `onMove`'s own per-swap
+ * branch, mirroring `lora_interaction.mjs`'s identical choice: the last
+ * swap's own flip is already what settles the drag visually, so `onUp` only
+ * clears the dragging class and persists.
+ */
+export function flipRows(node, beforeTops) {
+  if (typeof requestAnimationFrame !== "function") {
+    return;
+  }
+  requestAnimationFrame(() => {
+    sharedFlipRows(node._ctrlRows, ctrlRowEl, beforeTops, { className: "wtn-row-flip", settleMs: FLIP_SETTLE_MS });
+  });
+}
+
 /**
  * BUG 15 (2026-07-29 owner report): "the drag has an issue, it goes over
  * multiple rows on a small mouse movement" -- `ev.clientY` is a SCREEN pixel
@@ -1147,12 +1223,18 @@ function wireGrip(node, ctx, rowId, refs) {
       const delta = Math.round((ev.clientY - startY) / (step * scaleFactor));
       const newOrder = reorderRows(snapshot, fromIndex, fromIndex + delta);
       if (newOrder.some((r, i) => r !== state.rows[i])) {
+        // FLIP: measure BEFORE mutating/repainting (mirrors
+        // `lora_interaction.mjs`'s identical call site) -- row count never
+        // changes here, only order, so nothing about sizing/output slots is
+        // affected by adding this.
+        const beforeTops = captureRowTops(node);
         state.rows = newOrder;
         applyReorderLive(node, newOrder.map((r) => r.id));
         alignOutputsLegacy(node);
         if (typeof node.setDirtyCanvas === "function") {
           node.setDirtyCanvas(true, true);
         }
+        flipRows(node, beforeTops);
       }
     };
     const onUp = () => {

@@ -123,6 +123,8 @@ import {
   resolveAutoOnConnect,
   closeActiveOverlay,
   teardownAllZoomPassthrough,
+  captureRowTops,
+  flipRows,
 } from "./interaction.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -3330,6 +3332,170 @@ test("BUG 15: falls back to scale 1 when ctx.getCanvasScale is absent (older/par
     ["float", "int"],
     "must behave as scale 1 when the accessor is missing",
   );
+});
+
+// =========================================================================
+// E1. FLIP drag-reorder settle animation (owner report: "our Control Panel
+// drag doesn't have animation like our Loras") -- ported from
+// `lora_interaction.mjs`'s original `captureRowTops`/`flipRows` via the
+// shared `js/shared/flip.mjs` core (that module's own `test_flip.mjs`
+// exercises the core mechanic in isolation; these tests exercise THIS
+// track's own wrapper -- `entry.refs.root` as the element, and the extra
+// one-`requestAnimationFrame` defer this track needs before measuring
+// "after", which the LoRA loader's synchronous DOM move does not).
+// =========================================================================
+
+test("captureRowTops/flipRows: read/write via entry.refs.root, matching render.mjs's buildRowElement (NOT entry.refs.row, which is the state object, not a DOM node)", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  node._ctrlRows[0].refs.root._rect.top = 0;
+  node._ctrlRows[1].refs.root._rect.top = 34;
+
+  const tops = captureRowTops(node);
+  assert.equal(tops.get(node._ctrlRows[0].id), 0);
+  assert.equal(tops.get(node._ctrlRows[1].id), 34);
+});
+
+test("flipRows: with no requestAnimationFrame host, this is a silent no-op -- never throws, never writes a transform", () => {
+  assert.equal(typeof globalThis.requestAnimationFrame, "undefined", "sanity: no rAF stub installed in this test");
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  const before = captureRowTops(node);
+  node._ctrlRows[0].refs.root._rect.top = 34;
+  node._ctrlRows[1].refs.root._rect.top = 0;
+  assert.doesNotThrow(() => flipRows(node, before));
+  assert.ok(!node._ctrlRows[0].refs.root.style.transform);
+  assert.ok(!node._ctrlRows[1].refs.root.style.transform);
+});
+
+test("flipRows: defers measuring 'after' by one requestAnimationFrame (the async DOM-widget-host repaint this track needs, unlike the LoRA loader's synchronous appendChild move) -- measuring synchronously would read the OLD position and animate nothing", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  const elA = node._ctrlRows[0].refs.root;
+  const elB = node._ctrlRows[1].refs.root;
+  elA._rect.top = 0;
+  elB._rect.top = 34;
+  const before = captureRowTops(node);
+
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  try {
+    flipRows(node, before);
+    assert.equal(rafQueue.length, 1, "flipRows must schedule exactly one outer rAF before measuring anything");
+    assert.ok(!elA.style.transform, "must NOT measure/write synchronously -- the repaint hasn't happened yet");
+    assert.ok(!elB.style.transform);
+
+    // Simulate ComfyUI's own async DOM-widget-host repaint landing between
+    // the reorder and this outer rAF firing (exactly what the real
+    // `canvas.onDrawForeground` -> Vue reactivity chain does).
+    elA._rect.top = 34;
+    elB._rect.top = 0;
+
+    const outer = rafQueue.shift();
+    outer(); // fires the deferred call into the shared core
+    assert.equal(elA.style.transform, "translateY(-34px)", "NOW it must measure the just-repainted position and write the inverse delta");
+    assert.equal(elB.style.transform, "translateY(34px)");
+    assert.equal(elA.classList.contains("wtn-row-flip"), false, "the settle class must not be added yet -- that's the shared core's OWN, further-deferred rAF");
+
+    // The shared core's own inner rAF -- one PER MOVED ROW (both elA and elB
+    // moved here), added by the outer callback above.
+    assert.equal(rafQueue.length, 2, "the shared core must have queued its own settle-class rAF, one per moved row");
+    rafQueue.splice(0).forEach((cb) => cb());
+    assert.equal(elA.style.transform, "");
+    assert.equal(elB.style.transform, "");
+    assert.equal(elA.classList.contains("wtn-row-flip"), true);
+    assert.equal(elB.classList.contains("wtn-row-flip"), true);
+  } finally {
+    delete globalThis.requestAnimationFrame;
+  }
+});
+
+test("grip drag-reorder + FLIP: a full pointer sequence still swaps rows correctly with FLIP wired in, and the swap decision is unaffected by the (still-stale, not-yet-repainted) row rects", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const win = makeWindowStub(doc);
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  addRowAndSync(node, ctx, "seed");
+  fakeArrange(node);
+  const originalIds = node._ctrlRows.map((e) => e.id);
+  const draggedRefs = node._ctrlRows[0].refs;
+
+  // Deliberately leave every row's _rect at its stub default (all identical,
+  // all top: 0) -- if the swap decision below were ever computed from
+  // MEASURED element positions instead of the pointer's own screen-space
+  // math (`ev.clientY`/`step`/`scaleFactor`, wireGrip's existing contract),
+  // identical rects would make every row indistinguishable and the drag
+  // would break. It doesn't, because the swap decision never reads a rect at
+  // all -- captureRowTops/flipRows only ever run AROUND the already-decided
+  // reorder, for the animation, never to decide it.
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  try {
+    fire(draggedRefs.grip, "pointerdown", { clientY: 0 });
+    fireWin(win, "pointermove", { clientY: 2 * (ROW_H + ROW_GAP) }); // move down two rows' worth
+    fireWin(win, "pointerup");
+
+    const newIds = node._ctrlRows.map((e) => e.id);
+    assert.deepEqual(newIds, [originalIds[1], originalIds[2], originalIds[0]], "the reorder itself must be exactly as correct as it was before FLIP was wired in");
+
+    // FLIP was still triggered -- at least one rAF got queued for the swap
+    // (never flushed here; this test's job is the swap's own correctness,
+    // not the animation's -- that's covered by the dedicated tests above).
+    assert.ok(rafQueue.length >= 1, "flipRows must have been invoked (queued at least the outer defer)");
+    // Draining every queued frame must never throw, even with every row's
+    // rect still sitting at the stub's identical default (no test in this
+    // block bothered to fake a real per-row repaint) -- a real ComfyUI
+    // session would have geometry to animate; this harness just proves the
+    // whole chain degrades safely when it doesn't.
+    while (rafQueue.length) {
+      const cb = rafQueue.shift();
+      assert.doesNotThrow(() => cb());
+    }
+  } finally {
+    delete globalThis.requestAnimationFrame;
+  }
+});
+
+test("flipRows: the output dot is NOT animated -- alignOutputsLegacy parks it from widget.y (canvas geometry), unaffected by the DOM row's own inline transform", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  addRowAndSync(node, ctx, "int");
+  addRowAndSync(node, ctx, "float");
+  fakeArrange(node);
+  alignOutputsLegacy(node);
+  const before = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+
+  const elA = node._ctrlRows[0].refs.root;
+  elA._rect.top = 0;
+  const beforeTops = captureRowTops(node);
+  elA._rect.top = 34; // simulate the row visually moving
+  const rafQueue = [];
+  globalThis.requestAnimationFrame = (cb) => rafQueue.push(cb);
+  try {
+    flipRows(node, beforeTops);
+    rafQueue.forEach((cb) => cb());
+  } finally {
+    delete globalThis.requestAnimationFrame;
+  }
+  // Dots are driven by widget.y (unchanged by fakeArrange in this test --
+  // no reorder happened, only a simulated rect move), never by the row's own
+  // CSS transform -- so re-running alignOutputsLegacy must reproduce the
+  // exact same positions.
+  alignOutputsLegacy(node);
+  const after = node.outputs.map((o) => (o.pos ? o.pos.slice() : null));
+  assert.deepEqual(after, before, "the dot's canvas position must be entirely unaffected by the DOM row's own FLIP transform");
 });
 
 // =========================================================================

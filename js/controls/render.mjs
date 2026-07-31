@@ -115,6 +115,31 @@ const CSS = `
 .wtn-ctl-row.wtn-ctl-open .wtn-ctl-body { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 .wtn-ctl-row.wtn-ctl-dragging { opacity: .5; }
 .wtn-ctl-row.wtn-ctl-dragging .wtn-ctl-body { border-color: var(--wtn-accent, ${TOKENS.accent}); }
+/* FLIP settle (drag-reorder animation, ported from the LoRA loader --
+   js/shared/flip.mjs's own top doc comment has the full mechanic + why this
+   track needs an extra one-frame defer that lora_render.mjs's identical rule
+   doesn't). interaction.mjs's flipRows writes each surviving row's OWN
+   inverse-translate as an inline transform the instant the reorder actually
+   repaints, then -- one animation frame later -- adds THIS class and clears
+   that inline style back to nothing, which is what turns "already there"
+   into "glides there". transform is the ONLY property this rule ever
+   touches -- never a layout property (this is a DOM widget composited over
+   a canvas; animating layout there is visibly thrashy) -- and never the
+   ComfyUI DOM-widget host's OWN wrapper element (which owns 'transform' for
+   canvas-zoom scale), only this row's own '.wtn-ctl-row' (a plain child of
+   that wrapper, mounted once and never touched again -- see
+   js/shared/flip.mjs's doc comment for how that was confirmed). prefers-
+   reduced-motion is handled ENTIRELY by the media query below -- with the
+   transition removed, the exact same set-transform-then-clear sequence
+   simply snaps instead of gliding, so no JS branch is needed to honour it.
+   Byte-for-byte the SAME rule as lora_render.mjs's -- both tracks share one
+   class ('wtn-row-flip', track-neutral on purpose) from one shared JS core,
+   so a Control Panel with no LoRA loader node on the canvas still gets this
+   rule. */
+.wtn-ctl-row.wtn-row-flip { transition: transform .18s cubic-bezier(.2, .7, .3, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .wtn-ctl-row.wtn-row-flip { transition: none; }
+}
 .wtn-ctl-row.wtn-ctl-auto .wtn-ctl-body { border-style: dashed; border-color: #2c3644; }
 .wtn-ctl-row.wtn-ctl-auto .wtn-ctl-name { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 .wtn-ctl-row.wtn-ctl-disabled { opacity: .55; }

@@ -117,7 +117,7 @@ persisted, how a node is sized — are the same problem every time, and today ea
 | **Detached row objects / stale closures** | Fixed in the Loader Panel, then **shipped again** in the Control Panel — `4e2c3ac`'s own note reads *"same detached-row-object bug as the Loader Panel"*. The same bug twice because the row-wiring mechanic wasn't shared |
 | **Drag-reorder FLIP animation** | Exists only in `lora_interaction.mjs`. Owner: *"our Control Panel drag doesn't have animation like our Loras"* |
 | **The row entry's own shape** | LoRA rows use `entry.refs.root`, Control Panel rows use `entry.refs.row` — the same concept under two names, which is why the shared FLIP helper has to be parameterised over an accessor instead of just taking a list |
-| **CSS class ownership** | `.wtn-ctl-row.wtn-lora-flip` — a `wtn-lora-` class applied to a Control Panel row, because the rule was written for one track and reached by the other |
+| **CSS class ownership** | `.wtn-ctl-row.wtn-lora-flip` — a `wtn-lora-` class applied to a Control Panel row, because the rule was written for one track and reached by the other. **Fixed 2026-07-31**: renamed to the track-neutral `.wtn-row-flip` when the FLIP core was extracted |
 | **Class A node sizing** | Five separate layers (`getMaxHeight`/`setSize`/per-frame/load-path/`onResize`), re-implemented per track. The `Array.isArray(node.size)` bug defeated **five** of them at once precisely because there was no single place to get it right |
 
 **What exists already** (the boundary is real, just incomplete): `js/shared/` has `overlay.mjs`,

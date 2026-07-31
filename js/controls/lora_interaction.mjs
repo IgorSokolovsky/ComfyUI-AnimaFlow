@@ -66,14 +66,18 @@
  * CURRENT screen position immediately BEFORE `syncRows` repaints the new
  * order, and `flipRows` (called immediately after) measures again, writes
  * each row's own old-minus-new delta as an inline `transform`, then — one
- * animation frame later — lets `lora_render.mjs`'s own `.wtn-lora-flip` CSS
+ * animation frame later — lets `lora_render.mjs`'s own `.wtn-row-flip` CSS
  * class transition that back to zero. Only `transform` is ever touched (this
  * is a DOM widget composited over a canvas; a layout-property transition
  * there would visibly thrash); `prefers-reduced-motion` is handled entirely
  * by that CSS rule's own `@media` query, so there is no JS branch for it
  * here. `stopPropagation` on the pointer handlers (already present, below —
  * `wireGrip` predates this slice) remains load-bearing: without it litegraph
- * steals the gesture and no drag — animated or not — ever starts.
+ * steals the gesture and no drag — animated or not — ever starts. The actual
+ * capture/inverse-transform/settle mechanic now lives in `js/shared/flip.mjs`
+ * (extracted while porting this same animation to the Control/Loader Panel —
+ * see that module's own top doc comment); `captureRowTops`/`flipRows` below
+ * are thin, track-local wrappers over it.
  *
  * Row COUNT never changes during a reorder (only order does), so the Class A
  * per-frame height correction (`onDrawForegroundLora`, below) has nothing to
@@ -105,6 +109,15 @@ import {
 } from "./lora_state.mjs";
 
 import { reorderRows } from "./rows.mjs";
+
+// FLIP core -- EXTRACTED to js/shared/flip.mjs while porting this exact
+// animation to the Control/Loader Panel (`js/controls/interaction.mjs`),
+// whose row architecture needs a different "when to measure 'after'" but the
+// SAME capture/inverse-transform/settle mechanic -- see that module's own
+// top doc comment. `captureRowTops`/`flipRows` below are kept as thin,
+// track-local wrappers (same exported names, same call signature) so this
+// file's own doc comment/tests/call sites are untouched.
+import { captureRowTops as sharedCaptureRowTops, flipRows as sharedFlipRows } from "../shared/flip.mjs";
 
 // `civitai_api.mjs`/`model_picker.mjs` are the track-agnostic pair this
 // node's row-menu/name-picker wiring depends on this slice (`docs/
@@ -331,82 +344,40 @@ function repaintOne(node, ctx, rowId) {
 
 // ---------------------------------------------------------------------------
 // FLIP drag-reorder animation (design doc §1a-iii, Slice 5) -- see this
-// module's top doc comment for the technique. Kept as two small, exported
-// (for direct testability, matching every other DOM-touching helper in this
-// file) functions rather than inlined into `wireGrip`'s `onMove`.
+// module's top doc comment for the technique, and js/shared/flip.mjs's own
+// top doc comment for why the core mechanic now lives there instead of here.
+// Kept as two small, exported (for direct testability, matching every other
+// DOM-touching helper in this file, and so existing call sites/tests are
+// unaffected) thin wrappers rather than inlined into `wireGrip`'s `onMove`.
 // ---------------------------------------------------------------------------
 
-// Matches lora_render.mjs's own '.wtn-lora-flip' transition duration (.18s)
-// plus a small buffer -- long enough that the class is never removed WHILE
-// the transition it enables is still visibly running.
+// Matches render.mjs/lora_render.mjs's own '.wtn-row-flip' transition
+// duration (.18s) plus a small buffer -- long enough that the class is never
+// removed WHILE the transition it enables is still visibly running.
 const FLIP_SETTLE_MS = 200;
+
+function loraRowEl(entry) {
+  return entry && entry.refs && entry.refs.root;
+}
 
 /** Every currently-mounted row's CURRENT top position, keyed by row id --
  * call this BEFORE `syncRows` repaints a reorder, so `flipRows` (below) has
- * an "old" position to diff the "new" one against. Never throws on a row
- * whose element lacks a real `getBoundingClientRect` (the fake-node test
- * stub's default rect is static, which is fine -- see `flipRows`' own doc
- * comment on what that means for headless tests). */
+ * an "old" position to diff the "new" one against. Thin wrapper over
+ * `js/shared/flip.mjs`'s track-agnostic core. */
 export function captureRowTops(node) {
-  const map = new Map();
-  for (const entry of node._lrRows || []) {
-    const rowEl = entry && entry.refs && entry.refs.root;
-    if (rowEl && typeof rowEl.getBoundingClientRect === "function") {
-      map.set(entry.id, rowEl.getBoundingClientRect().top);
-    }
-  }
-  return map;
+  return sharedCaptureRowTops(node._lrRows, loraRowEl);
 }
 
 /**
- * Call AFTER `syncRows` has already repainted the new row order. For every
- * row whose top moved (`beforeTops` vs its NOW top), writes the OLD-minus-
- * NEW delta as an inline `transform: translateY(...)` immediately (so the
- * row visually stays where it was for one frame), then -- one animation
- * frame later -- adds `lora_render.mjs`'s `.wtn-lora-flip` class (which
- * transitions `transform` back to nothing) and clears the inline style,
- * removing the class again after `FLIP_SETTLE_MS`. `transform` is the ONLY
- * property ever touched. `prefers-reduced-motion` is handled entirely by
- * that CSS class's own `@media` rule (`lora_render.mjs`) -- there is
- * deliberately no JS branch for it here (see this module's top doc comment).
- *
- * Under a host with no `requestAnimationFrame` (this pack's own headless-test
- * convention, matching `scheduleFit`'s identical bail above) the transform is
- * cleared immediately instead of animated -- an instant settle, never a
- * row stuck mid-transform.
+ * Call AFTER `syncRows` has already repainted the new row order (this
+ * track's reorder is a synchronous DOM `appendChild` move -- see this
+ * module's top doc comment -- so there is nothing to wait for; contrast
+ * `js/controls/interaction.mjs`'s own `flipRows`, which defers this same
+ * core by a frame first). Thin wrapper over `js/shared/flip.mjs`'s
+ * `flipRows` -- see that module's own doc comment for the full mechanic.
  */
 export function flipRows(node, beforeTops) {
-  for (const entry of node._lrRows || []) {
-    const was = beforeTops.get(entry.id);
-    if (was == null) {
-      continue;
-    }
-    const rowEl = entry && entry.refs && entry.refs.root;
-    if (!rowEl || typeof rowEl.getBoundingClientRect !== "function" || !rowEl.style) {
-      continue;
-    }
-    const now = rowEl.getBoundingClientRect().top;
-    const dy = was - now;
-    if (!dy) {
-      continue; // this row didn't visually move (e.g. the dragged row itself, still under the pointer)
-    }
-    rowEl.classList.remove("wtn-lora-flip"); // restart cleanly if a previous flip is still mid-flight
-    rowEl.style.transform = `translateY(${dy}px)`;
-    if (typeof requestAnimationFrame !== "function") {
-      rowEl.style.transform = "";
-      continue;
-    }
-    requestAnimationFrame(() => {
-      rowEl.classList.add("wtn-lora-flip");
-      rowEl.style.transform = "";
-      const clear = () => rowEl.classList.remove("wtn-lora-flip");
-      if (typeof setTimeout === "function") {
-        setTimeout(clear, FLIP_SETTLE_MS);
-      } else {
-        clear();
-      }
-    });
-  }
+  sharedFlipRows(node._lrRows, loraRowEl, beforeTops, { className: "wtn-row-flip", settleMs: FLIP_SETTLE_MS });
 }
 
 /**

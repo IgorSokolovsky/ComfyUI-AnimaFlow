@@ -1588,7 +1588,7 @@ test("captureRowTops: keyed by row id, reads each mounted row's CURRENT top", ()
   assert.equal(tops.get("y"), 65);
 });
 
-test("flipRows: writes each MOVED row's inverse-translate transform immediately, then (next rAF) transitions it to 0 via .wtn-lora-flip", () => {
+test("flipRows: writes each MOVED row's inverse-translate transform immediately, then (next rAF) transitions it to 0 via .wtn-row-flip", () => {
   const doc = makeDocStub();
   const elA = doc.createElement("div");
   const elB = doc.createElement("div");
@@ -1612,14 +1612,14 @@ test("flipRows: writes each MOVED row's inverse-translate transform immediately,
     // "instantly at the old position first" half of FLIP.
     assert.equal(elA.style.transform, "translateY(-30px)"); // was 0, now 30 -> dy = -30
     assert.equal(elB.style.transform, "translateY(30px)"); // was 30, now 0 -> dy = 30
-    assert.equal(elA.classList.contains("wtn-lora-flip"), false);
-    assert.equal(elB.classList.contains("wtn-lora-flip"), false);
+    assert.equal(elA.classList.contains("wtn-row-flip"), false);
+    assert.equal(elB.classList.contains("wtn-row-flip"), false);
 
     rafQueue.slice().forEach((cb) => cb());
     assert.equal(elA.style.transform, "", "cleared back to nothing -- the CSS transition animates FROM the inline value TO this");
     assert.equal(elB.style.transform, "");
-    assert.equal(elA.classList.contains("wtn-lora-flip"), true);
-    assert.equal(elB.classList.contains("wtn-lora-flip"), true);
+    assert.equal(elA.classList.contains("wtn-row-flip"), true);
+    assert.equal(elB.classList.contains("wtn-row-flip"), true);
   } finally {
     delete globalThis.requestAnimationFrame;
   }
@@ -1634,7 +1634,7 @@ test("flipRows: a row whose top did NOT change is left completely untouched -- n
   // top unchanged (10 -> 10)
   flipRows(node, before);
   assert.ok(!el.style.transform, "no transform must ever be written for a row that didn't move");
-  assert.equal(el.classList.contains("wtn-lora-flip"), false);
+  assert.equal(el.classList.contains("wtn-row-flip"), false);
 });
 
 test("flipRows: with no requestAnimationFrame host (this suite's own default), the transform settles IMMEDIATELY -- never stuck mid-transform", () => {
