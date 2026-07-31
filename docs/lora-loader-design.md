@@ -1040,6 +1040,45 @@ Two consequences, both deliberate:
 - If **no** candidate passes the level, **no preview is saved.** A missing preview is correct here, never
   a fallback to an over-level image.
 
+##### The ⓘ backfill must save the image too, not just the metadata (owner, 2026-07-31)
+
+Owner: *"are we saving the image (thumbnail in full size) together with the lora (with `.preview.jpeg`)?
+if not we should (instead of hitting the civitai all the time)."*
+
+**One of the two paths does; the other does not.**
+
+| path | sidecar | preview image |
+|---|---|---|
+| download through our browser | ✅ | ✅ `download.py:874` writes `<base>.preview.<ext>` from a Content-Type map (`:776-778`) landing on exactly `find_preview_path`'s first-priority extensions |
+| **ⓘ lookup / backfill** | ✅ | ❌ **`lookup.py` contains zero references to preview or image saving** |
+
+So a model backfilled by opening ⓘ gets its metadata cached and then **re-fetches its image from Civitai
+on every single render, forever**. This is also the direct cause of the owner-reported 404 on
+`/wtn/model_browser/thumb?kind=loras&name=…`: that route serves the *local* preview file, and nothing had
+ever written one.
+
+**Fix: the backfill saves the image the same way a download does** — same `anim=false,width=450`
+(§7c-iv's settled size, deliberately not the ~4 MB original), same `.preview.<ext>` naming so
+`find_preview_path` picks it up with no changes.
+
+**Which image, and who chooses.** The same rule the download already uses: **the frontend sends the URL of
+the candidate it is displaying**, which is level-filtered by construction. Do *not* teach `lookup.py` what
+a browsing level is — one rule, one place, and the server stays level-agnostic. So this is a small
+explicit "save this preview" step the frontend issues after a lookup resolves, mirroring the download
+payload exactly, rather than something the lookup route decides on its own.
+
+Four constraints:
+- **Never overwrite an existing preview.** A file already on disk is the user's, whatever wrote it.
+- **A failed image fetch must not fail the lookup.** The metadata is the valuable part; the image is an
+  optimisation. Log and move on.
+- **No candidate passes the level ⇒ save nothing.** Same rule as the download path.
+- **§9 holds:** this is user-initiated (they clicked ⓘ), one extra request, never blocking a graph run.
+
+This closes the precedence chain properly: **local preview → Civitai candidates → `locked` → placeholder.**
+Once a model has been opened once, every later render hits the local file and Civitai is never contacted
+for that image again — which is the whole point of the request, and also makes the ⓘ panel work offline
+for anything previously viewed.
+
 ##### SETTLED: the saved preview is `anim=false,width=450` (owner, 2026-07-31)
 
 `preview_url` was the untransformed `original=true` URL, kept that way "because fidelity matters" — a
