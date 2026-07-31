@@ -869,13 +869,64 @@ maximum**, rewritten to width 256. This replaces `pick_gallery_image_url`'s curr
 "explicitly safe, then merely not-adult" fallback, whose hardcoded level-4 cutoff becomes the level
 selector's job.
 
-- Guard for **video previews.** A gallery entry carries `type`, and Civitai hosts video previews for
-  WAN-style models. A 252-image LoRA sample was 100% `type: "image"`/`.jpeg`, so this is a guard
-  against something not yet observed here, not a fix for a seen failure — prefer `type == "image"`, and
-  let the existing `onerror` placeholder catch anything that slips through.
 - `pick_gallery_image_url` is also used for the **download-time preview sidecar**. Decide explicitly
   whether that one follows the browsing level or always takes the best available image; they are
   different questions (one is display, one is a file the user keeps).
+
+#### ⚠️ Why some thumbnails fail today: VIDEO entries — and the one-parameter fix (measured 2026-07-31)
+
+Owner: *"some fail to load… this url return 301 and we don't show thumbnail… maybe there is a different
+issue and my direction is just a workaround."* Correct on the last point. **Two plausible causes were
+measured and both are dead ends — do not re-investigate them:**
+
+- **The 301 is normal.** Every `image.civitai.com` transform URL 301s to
+  `image-b2.civitai.com/file/civitai-media-cache/…`. Following it yields `200 image/jpeg`. `<img>`
+  follows 301 transparently. The reported URL works.
+- **`referrerpolicy="no-referrer"` is not hotlink-blocked.** Identical `200`/byte count with no
+  `Referer`, with `civitai.com`, and with `localhost:8188`.
+
+**The real cause: a gallery entry can be a VIDEO.** A burst of 20 thumbnail requests failed
+**1/20, identically in all three trials** — not a flaky network, one specific entry. It is
+`type: "video"`, an `.mp4`, on a WAN-style LoRA. Applying `width=256` to an mp4 makes the CDN transcode
+*video* (`200 video/mp4`, 1.66 MB, often timing out), and an `<img>` cannot render that anyway. **A
+retry does not help** — measured: 0 of the failures recovered on a second attempt, which is exactly how
+a permanently-unusable entry differs from a flaky one.
+
+> An earlier note in this section called the video case hypothetical, on the strength of a 252-image
+> sample that was 100% `type: "image"`. That sample was LoRA/Newest and simply contained no
+> video-preview models. **It is real, and it is the bug.**
+
+**The fix is one parameter: put `anim=false` in the transform.** Measured on the failing mp4 and on a
+still image:
+
+| URL | result |
+|---|---|
+| `…/width=256/135268953.mp4` | `200 video/mp4` · 1,663,240 bytes · unrenderable in `<img>` |
+| `…/anim=false,width=256/135268953.mp4` | **`200 image/jpeg` · 64,550 bytes — a poster frame** |
+| `…/anim=false,width=256/<still>.jpeg` | `200 image/jpeg` · 28,370 bytes — byte-identical to without it |
+
+So `anim=false` is a **no-op on stills and a poster-frame extractor on videos**. `_thumb_url` should
+emit `/anim=false,width=256/`, and video entries then get a real thumbnail instead of being skipped.
+
+#### Send the CANDIDATES to the frontend, not one pre-chosen URL
+
+Owner's proposal, and it is right — and it is not a workaround, because **§7c-iv needs it anyway**:
+once the level is a user setting, picking an image *is* a frontend decision, so the backend must hand
+over the candidates rather than choosing one.
+
+Each version carries an ordered list of `{url, nsfwLevel, type}` (already thumbnail-rewritten), and the
+frontend picks the first at or below the chosen level, falling forward on failure.
+
+**But `<img>.onerror` carries no status code** — a timeout, a 404 and a transcode failure are
+indistinguishable from the error event. So the fallback rule must cover both shapes without knowing
+which it hit:
+
+> **Retry the same URL once with a short backoff, then advance to the next candidate at or below the
+> level.** Exhaust the candidates → placeholder.
+
+Today `onerror` swaps in the placeholder **immediately and permanently**, so one bad entry means a grey
+square until the next re-render. With `anim=false` in place the video case stops arising at all; the
+retry-then-advance rule is the safety net for whatever is left, not the primary mechanism.
 
 #### A fifth card state: `locked`
 
