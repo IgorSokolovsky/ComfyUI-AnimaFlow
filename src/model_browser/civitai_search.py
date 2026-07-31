@@ -13,12 +13,25 @@ fetch_json_with_host_fallback`, extracted from that module specifically so
 this would be a reuse rather than a third copy of the same loop (docs/lora-
 loader-design.md's M2 brief: "extend them, don't fork them").
 
-`type` is ALWAYS derived from the caller's `kind` via `TYPE_FOR_KIND`
-(§7c-i: "type... locked to the caller's kind" for the two node-embedded
-pickers) -- callers never pass a raw Civitai `type` string, so an
-unwhitelisted `kind` can't smuggle an arbitrary `types=` value into the
-request either, extending `kinds.py`'s whitelist discipline to the search
-request the same way it already applies to every local path.
+When a caller passes a `kind`, `type` is ALWAYS derived from it via
+`TYPE_FOR_KIND` (§7c-i: "type... locked to the caller's kind" for the two
+node-embedded pickers) -- a raw Civitai `type` string never rides through
+that path, so an unwhitelisted `kind` can't smuggle an arbitrary `types=`
+value into the request either, extending `kinds.py`'s whitelist discipline
+to the search request the same way it already applies to every local path.
+
+M2b (the unscoped toolbar modal, docs/lora-loader-design.md §7c/"the
+modal"): `kind` is OPTIONAL on this whole path (`build_search_url`,
+`search_models`) -- absent, it sends no `types` parameter at all UNLESS the
+caller supplies an explicit `types` list, which IS a raw-ish client value
+(the rail's "Filter by Model Type" chips), so it's validated against
+`VALID_CIVITAI_TYPES` (`clean_types`) before it ever reaches the wire --
+same "never forward an unvalidated value raw" discipline, extended from
+`kind` to `types` for the one caller that has no `kind` to derive it from.
+`kind_for_type` is the reverse direction: given one of a search RESULT's
+own Civitai `type` values, which (if any) of our three kinds it could land
+in -- see its own docstring for why it isn't simply `TYPE_FOR_KIND`
+inverted.
 """
 from __future__ import annotations
 
@@ -30,10 +43,13 @@ from . import civitai_parse
 from .kinds import folder_for_kind
 
 # kind -> Civitai's own `types` filter value (§7a's table, extended to the
-# search request). Only `loras` is reachable from a live route today
-# (`kinds.ACTIVE_KINDS`) -- `checkpoints`/`unet` are kept, unused, for the
-# same "wire kind day one, activate later" reason `kinds.py` states for its
-# own `KIND_TO_FOLDER`.
+# search request), used when a caller LOCKS a search to one `kind` (the two
+# node-embedded pickers). All three of `loras`/`checkpoints`/`unet` are
+# active kinds as of M2b (`kinds.ACTIVE_KINDS`) -- only `loras` has a live
+# NODE picker wired to it today (the Loader Panel reuse pass, M3, is what
+# wires the other two into a picker); `checkpoints`/`unet` are already
+# reachable via this same route through the toolbar modal's UNSCOPED search
+# (which doesn't use this table at all -- see `KIND_FOR_TYPE` instead).
 TYPE_FOR_KIND: Dict[str, str] = {
     "loras": "LORA",
     "checkpoints": "Checkpoint",
@@ -65,6 +81,58 @@ _MAX_LIMIT = 50
 LEVEL_VALUES: Sequence[int] = (1, 2, 4, 8, 16)
 DEFAULT_LEVEL = 1
 
+# docs/lora-loader-design.md §7c-i's modal filter rail ("Filter by Model
+# Type"), M2b task 1: the whitelist a client-supplied `types` list is
+# validated against before it ever reaches the wire -- same "garbage/
+# unrecognised falls back / gets dropped, never forwarded raw" posture
+# `sort`/`period`/`clean_level` already take. Kept as a flat, append-only
+# tuple in one place, same reasoning as `KIND_FOR_TYPE` above -- every entry
+# `KIND_FOR_TYPE` maps somewhere is included here too, plus the wider set of
+# Civitai types we simply have no folder for yet (never guessed, always
+# `None` from `kind_for_type`).
+#
+# VERIFIED LIVE 2026-07-31 -- these are Civitai's actual API enum values,
+# not display labels. An EARLIER version of this tuple was transcribed from
+# docs/lora-loader-design.md §7c-i's description of Civitai's rail (read off
+# a screenshot of the UI, which shows LABELS, not the wire values) and got
+# two entries wrong as a result: `LyCORIS` isn't a real API value at all
+# (the API's own value for that model family is `LoCon`, already present
+# here -- `LyCORIS` is just Civitai's UI label for it) and `VLM` should have
+# been `VisionLanguage`. Both would have been worse than an unrecognised
+# value: being IN this tuple but not Civitai's own enum means `clean_types`
+# waves it through and Civitai 400s the ENTIRE search on it.
+#
+# HOW TO RE-VERIFY WHEN THIS DRIFTS: don't transcribe the rail again --
+# Civitai's own API enumerates its valid values FOR you. A request with an
+# invalid `types` value (e.g. `GET /api/v1/models?types=NotARealType`)
+# 400s with a `ZodError` body that lists every accepted enum member
+# verbatim. That response body is the source of truth for this tuple, not
+# a screenshot of the modal's own rail.
+VALID_CIVITAI_TYPES: Sequence[str] = (
+    "Checkpoint", "TextualInversion", "Hypernetwork", "AestheticGradient",
+    "LORA", "LoCon", "DoRA", "Controlnet", "Upscaler", "MotionModule", "VAE",
+    "TextEncoder", "UNet", "CLIPVision", "Poses", "Wildcards", "Workflows",
+    "Detection", "VisionLanguage", "CLIP", "LLM", "Other",
+)
+
+
+def clean_types(values: Any) -> List[str]:
+    """A client-supplied `types` filter list -> the validated subset, in the
+    order given, de-duplicated -- anything not a string in
+    `VALID_CIVITAI_TYPES` is DROPPED rather than forwarded raw (same
+    "unrecognised falls back to safe, never reaches the wire unchecked"
+    posture `clean_level` already gives the browsing-level filter). Non-list
+    input (a bare string, `None`, a dict, ...) -> `[]`. Never raises."""
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        if isinstance(value, str) and value in VALID_CIVITAI_TYPES and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
 
 def clean_level(value: Any) -> int:
     """A requested browsing level -> a valid member of `LEVEL_VALUES`, or
@@ -95,6 +163,75 @@ def type_for_kind(kind: object) -> Optional[str]:
     return TYPE_FOR_KIND.get(kind)
 
 
+# docs/lora-loader-design.md M2b task 2: the REVERSE of `TYPE_FOR_KIND` -- a
+# Civitai `type` string -> OUR kind, or absent when we don't have (yet) a
+# folder for it. NOT auto-derived from `TYPE_FOR_KIND` above by inverting
+# it: that forward map has `checkpoints` AND `unet` BOTH pointing at
+# `"Checkpoint"` (a pragmatic choice for locking a SEARCH REQUEST to the
+# closest available Civitai type when searching for standalone diffusion
+# models -- see `TYPE_FOR_KIND`'s own comment), so it isn't a clean
+# bijection and can't just be inverted. This is its own explicit, one-way
+# table instead.
+#
+# Owner direction (coordinator, after this task's first draft): most
+# Civitai types will eventually get a folder here -- this dict is the one
+# place that ever grows, kept as a plain, flat, append-only table for
+# exactly that reason (never inline a per-type `if`/`elif` anywhere else in
+# this module or its callers). `kinds.KIND_TO_FOLDER`/`kinds.ACTIVE_KINDS`
+# remain the single source of truth for which kinds exist/are wired at
+# all -- this table only ever maps INTO that set, never invents a kind of
+# its own.
+#
+# Three decisions worth naming for today's four entries, as the model for
+# how a future addition should be justified:
+#   - `Checkpoint` -> `checkpoints`, never `unet` -- Civitai's `Checkpoint`
+#     type IS a full checkpoint file in the ordinary sense, and there is no
+#     Civitai type that unambiguously means "standalone UNET/diffusion
+#     weights" the way `TYPE_FOR_KIND`'s forward mapping (pragmatically)
+#     treats them. `unet` is reachable here only via the literal `"UNet"`
+#     type string (a real API value, VERIFIED 2026-07-31 -- see
+#     `VALID_CIVITAI_TYPES`'s own comment).
+#   - `LoCon` -> `loras`, DELIBERATELY (not an accident of string matching):
+#     it's a LoRA-family variant that ComfyUI's own `LoraLoader` loads
+#     straight out of `models/loras`, same as a plain `LORA` file, so a
+#     result of that type can genuinely land there. (`LyCORIS` -- Civitai's
+#     UI LABEL for this same family, not a real API value -- used to have
+#     its own entry here too; removed 2026-07-31 once the API's own enum
+#     confirmed it doesn't exist on the wire at all. See
+#     `VALID_CIVITAI_TYPES`'s own comment for how that was verified.)
+#   - `DoRA` -> `loras`, same reasoning as `LoCon` -- it's a LoRA variant
+#     (weight-decomposed LoRA) that ComfyUI's `LoraLoader` also loads
+#     straight out of `models/loras` (owner direction, 2026-07-31: "apply
+#     the same standard" as `LoCon`/`LORA`).
+#
+# A type with NO entry here maps to `None` (see `kind_for_type` below) --
+# the safety net that stops a Workflow JSON (or anything else we can't
+# place) being written into `models/loras/`. Per the owner's own framing,
+# that case is expected to become RARE (unsupported types are meant to be
+# removed from the search options entirely) rather than something worth
+# building further machinery around -- so nothing here tries to be clever
+# about it beyond returning `None`.
+KIND_FOR_TYPE: Dict[str, str] = {
+    "LORA": "loras",
+    "LoCon": "loras",
+    "DoRA": "loras",
+    "Checkpoint": "checkpoints",
+    "UNet": "unet",
+}
+
+
+def kind_for_type(civitai_type: object) -> Optional[str]:
+    """A Civitai `type` string (as carried on a search result / model
+    record) -> our `kind`, or `None` when we have no folder for it (an
+    unmapped type like `"Workflows"`, or anything not a recognised string at
+    all) -- see `KIND_FOR_TYPE`'s own comment for the reasoning behind
+    today's three entries and how a future one should be justified. Never
+    raises."""
+    if not isinstance(civitai_type, str):
+        return None
+    return KIND_FOR_TYPE.get(civitai_type)
+
+
 def _clean_limit(limit: Any) -> int:
     try:
         value = int(limit)
@@ -108,6 +245,7 @@ def build_search_url(
     kind: object,
     query: str,
     *,
+    types: Optional[Sequence[str]] = None,
     base_model: Optional[str] = None,
     sort: str = DEFAULT_SORT,
     period: str = DEFAULT_PERIOD,
@@ -116,10 +254,29 @@ def build_search_url(
     limit: int = DEFAULT_LIMIT,
 ) -> Optional[str]:
     """A full `https://<host>/api/v1/models?...` URL for this search, or
-    `None` for an unwhitelisted `kind` -- the SAME short-circuit
+    `None` for a GIVEN but unwhitelisted `kind` -- the SAME short-circuit
     `kinds.folder_for_kind` already applies to local paths, extended here
     so a bad `kind` never even reaches Civitai (never mind a local
     filesystem). Pure string-building -- no network, no `folder_paths`.
+
+    docs/lora-loader-design.md M2b task 1 -- `kind` is now OPTIONAL,
+    reflecting the toolbar modal's UNSCOPED search (§7c: "the modal ...
+    answers to nobody"):
+
+      - `kind` given (either node-embedded picker, §7c-i: "type ... locked
+        to the caller's kind") -- the SAME behaviour as before this task,
+        byte for byte: exactly one `types` value, `type_for_kind(kind)`,
+        and `types` (the parameter) is ignored -- the picker's kind IS the
+        type filter, so a second, independent one would be a contradiction
+        rather than an addition.
+      - `kind` is `None` (the modal) -- no kind to lock to, so NO `types`
+        parameter is sent at all UNLESS the caller passed one: `types` is
+        then validated (`clean_types`, never forwarded raw) and, if
+        anything survives validation, sent as one `types=` pair PER value
+        -- Civitai's own multi-value filter convention. An empty/all-
+        invalid `types` list (or none at all) means "every model type",
+        which is the modal's actual default (§7c-i's table: only the
+        picker's `type` filter is locked).
 
     Unknown/garbage `sort`/`period` values silently fall back to their
     defaults rather than being sent raw (`SORT_VALUES`/`PERIOD_VALUES`
@@ -127,17 +284,21 @@ def build_search_url(
     value, but validating here means the request we actually send always
     matches what we asked for.
     """
-    model_type = type_for_kind(kind)
-    if model_type is None or folder_for_kind(kind) is None:
-        return None
+    if kind is not None:
+        model_type = type_for_kind(kind)
+        if model_type is None or folder_for_kind(kind) is None:
+            return None
+        type_values: List[str] = [model_type]
+    else:
+        type_values = clean_types(types)
 
-    params: List[tuple] = [
-        ("types", model_type),
+    params: List[tuple] = [("types", t) for t in type_values]
+    params.extend([
         ("sort", sort if sort in SORT_VALUES else DEFAULT_SORT),
         ("period", period if period in PERIOD_VALUES else DEFAULT_PERIOD),
         ("limit", str(_clean_limit(limit))),
         ("nsfw", "true" if nsfw else "false"),
-    ]
+    ])
     if query:
         params.append(("query", str(query)))
     if base_model:
@@ -151,6 +312,7 @@ def search_models(
     kind: object,
     query: str,
     *,
+    types: Optional[Sequence[str]] = None,
     base_model: Optional[str] = None,
     sort: str = DEFAULT_SORT,
     period: str = DEFAULT_PERIOD,
@@ -172,6 +334,14 @@ def search_models(
     `offline`/`unknown` here rather than given a `notfound` meaning that
     would contradict "found with zero results".
 
+    docs/lora-loader-design.md M2b task 1 -- `kind` is now OPTIONAL (the
+    toolbar modal's unscoped search): `None` skips the whitelist check
+    entirely (there's no kind to validate) and `build_search_url` sends no
+    `types` parameter unless `types` is given -- see that function's own
+    docstring for the full kind-given-vs-absent split, which this function
+    defers to rather than duplicating. A GIVEN `kind` is validated exactly
+    as before this task (unchanged behaviour, no regression).
+
     `api_key`, when given, rides along as Civitai's own `?token=` query
     parameter (documented alternative to an `Authorization` header) rather
     than a header -- this keeps `opener(url, timeout)`'s calling convention
@@ -181,7 +351,7 @@ def search_models(
     resulting URL (with the key embedded) is NEVER logged anywhere in this
     module or its caller (`api.py`'s `search_impl`) -- keep it that way.
     """
-    if type_for_kind(kind) is None or folder_for_kind(kind) is None:
+    if kind is not None and (type_for_kind(kind) is None or folder_for_kind(kind) is None):
         return {
             "reason": "invalid_kind",
             "offline_reason": None,
@@ -192,12 +362,14 @@ def search_models(
     def build_url(host: str) -> str:
         url = build_search_url(
             host, kind, query,
-            base_model=base_model, sort=sort, period=period,
+            types=types, base_model=base_model, sort=sort, period=period,
             nsfw=nsfw, cursor=cursor, limit=limit,
         )
-        # `type_for_kind`/`folder_for_kind` were already checked above, so
-        # `build_search_url` cannot return `None` here -- this assertion
-        # documents that invariant rather than silently trusting it.
+        # A GIVEN `kind` was already validated (`type_for_kind`/
+        # `folder_for_kind`) above; `kind is None` never makes
+        # `build_search_url` return `None` either (see its own docstring) --
+        # this assertion documents that invariant rather than silently
+        # trusting it.
         assert url is not None
         if api_key:
             separator = "&" if "?" in url else "?"
@@ -487,6 +659,7 @@ def parse_search_response(raw: Any) -> Dict[str, Any]:
 
 __all__ = (
     "TYPE_FOR_KIND",
+    "KIND_FOR_TYPE",
     "SORT_VALUES",
     "PERIOD_VALUES",
     "DEFAULT_SORT",
@@ -494,8 +667,11 @@ __all__ = (
     "DEFAULT_LIMIT",
     "LEVEL_VALUES",
     "DEFAULT_LEVEL",
+    "VALID_CIVITAI_TYPES",
     "type_for_kind",
+    "kind_for_type",
     "clean_level",
+    "clean_types",
     "build_search_url",
     "search_models",
     "pick_primary_file",

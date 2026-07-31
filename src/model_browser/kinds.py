@@ -11,12 +11,18 @@ in this package (or `nodes/controls/lora_loader.py`) should ever interpolate
 a raw `kind` string into a path -- always go through `folder_for_kind` first
 and treat `None` as "reject the request".
 
-Wired: `loras` only (design doc M1). `checkpoints`/`unet` are already in the
-map -- kept, unused, rather than added later -- because retrofitting `kind`
-touches folder resolution, the sidecar path, the download destination, and
-the Civitai `type` filter all at once (design doc §7a); adding the other two
-kinds for the Loader Panel reuse pass (M3) is then just wiring, not a schema
-change.
+Wired: `loras`, `checkpoints` and `unet` are all ACTIVE as of M2b (docs/
+lora-loader-design.md §7c/"the modal") -- the toolbar modal's UNSCOPED
+search can return, and download, a result of any of the three, since its
+destination is derived from the RESULT's own type, not from a caller-locked
+kind. `checkpoints`/`unet` were already in the map (kept, unused, since M1)
+because retrofitting `kind` touches folder resolution, the sidecar path,
+the download destination, and the Civitai `type` filter all at once (design
+doc §7a); this is that deferred activation, made deliberately (see
+`ACTIVE_KINDS`'s own comment) rather than as a side effect of anything else.
+The Loader Panel reuse pass (M3) is a separate question -- wiring a NODE
+picker onto `checkpoints`/`unet` -- from whether the kind is reachable at
+all, which this activation settles.
 """
 from __future__ import annotations
 
@@ -33,12 +39,14 @@ KIND_TO_FOLDER = {
     "unet": "diffusion_models",
 }
 
-# Only `loras` is reachable from a registered node/route today (design doc
-# M1); the Loader Panel reuse pass (M3) wires `checkpoints`/`unet`. Kept as
-# its own explicit set -- not "whatever's in KIND_TO_FOLDER" -- so turning a
-# kind on for real is a one-line, deliberate change here, not an accident of
-# the whitelist growing.
-ACTIVE_KINDS = frozenset({"loras"})
+# `loras`, `checkpoints` and `unet` are all reachable today (M2b -- the
+# toolbar modal's unscoped search/download, docs/lora-loader-design.md
+# §7c). The Loader Panel reuse pass (M3) still owns wiring a NODE-embedded
+# picker onto `checkpoints`/`unet`, which is a separate step from this one.
+# Kept as its own explicit set -- not "whatever's in KIND_TO_FOLDER" -- so
+# turning a kind on for real is a one-line, deliberate change here, not an
+# accident of the whitelist growing.
+ACTIVE_KINDS = frozenset({"loras", "checkpoints", "unet"})
 
 
 def folder_for_kind(kind: object) -> Optional[str]:

@@ -62,11 +62,16 @@ def test_folder_for_kind_rejects_traversal_and_garbage():
         assert kinds.folder_for_kind(bad) is None, bad
 
 
-def test_only_loras_is_an_active_kind_today():
+def test_loras_checkpoints_and_unet_are_all_active_kinds_as_of_m2b():
+    # docs/lora-loader-design.md M2b task 3: the toolbar modal's unscoped
+    # search/download can land in any of the three configured folders, so
+    # all three are deliberately activated here -- not an accident of
+    # `KIND_TO_FOLDER` growing.
     assert kinds.is_active_kind("loras") is True
-    assert kinds.is_active_kind("checkpoints") is False
-    assert kinds.is_active_kind("unet") is False
+    assert kinds.is_active_kind("checkpoints") is True
+    assert kinds.is_active_kind("unet") is True
     assert kinds.is_active_kind("../../etc") is False
+    assert kinds.is_active_kind("not-a-real-kind") is False
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +265,36 @@ def test_resolve_model_path_rejects_a_dotdot_laden_name_that_escapes_its_root():
             assert local.resolve_model_path("loras", traversal_name) is None
         finally:
             restore()
+
+
+def test_resolve_model_path_traversal_guard_covers_the_newly_active_checkpoints_and_unet_kinds():
+    # docs/lora-loader-design.md M2b task 3: `checkpoints`/`unet` just
+    # became ACTIVE kinds -- the traversal guard is `local._is_path_under`,
+    # which is generic over `kind` already (it only ever sees the folder
+    # `kinds.folder_for_kind(kind)` resolves to), but this task's own brief
+    # asks for a REGRESSION TEST proving it, per newly-active kind, rather
+    # than trusting that genericity by inspection alone.
+    for kind, folder_key in (("checkpoints", "checkpoints"), ("unet", "diffusion_models")):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            secret_dir = os.path.join(tmp, "secret")
+            os.makedirs(model_root)
+            os.makedirs(secret_dir)
+            secret_path = os.path.join(secret_dir, "secret.safetensors")
+            open(secret_path, "wb").close()
+
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: []},
+            )
+            try:
+                traversal_name = os.path.join("..", "secret", "secret.safetensors")
+                # Sanity check: the naive join really DOES escape this
+                # kind's root and land on a real file.
+                assert os.path.isfile(os.path.join(model_root, traversal_name)), kind
+                assert local.resolve_model_path(kind, traversal_name) is None, kind
+            finally:
+                restore()
 
 
 def test_resolve_model_path_hostile_windows_separator_name_never_raises():
@@ -2244,6 +2279,170 @@ def test_build_search_url_limit_is_clamped():
 
 
 # ---------------------------------------------------------------------------
+# M2b task 1 -- unscoped search (docs/lora-loader-design.md §7c/"the
+# modal"): `kind` is optional on `build_search_url`/`search_models`, and an
+# optional `types` list is validated rather than forwarded raw.
+# ---------------------------------------------------------------------------
+
+
+def test_build_search_url_with_no_kind_sends_no_types_parameter_at_all():
+    url = civitai_search.build_search_url("civitai.com", None, "x")
+    assert url is not None
+    assert "types=" not in url
+
+
+def test_build_search_url_with_no_kind_and_no_types_still_sends_every_other_param():
+    url = civitai_search.build_search_url(
+        "civitai.com", None, "skin detail",
+        base_model="SDXL", sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
+    )
+    assert "types=" not in url
+    assert "sort=Most+Downloaded" in url
+    assert "period=Month" in url
+    assert "limit=5" in url
+    assert "nsfw=true" in url
+    assert "query=skin+detail" in url
+    assert "baseModels=SDXL" in url
+    assert "cursor=abc" in url
+
+
+def test_build_search_url_with_no_kind_and_a_types_list_sends_exactly_those_values():
+    url = civitai_search.build_search_url("civitai.com", None, "x", types=["LORA", "Checkpoint"])
+    assert url.count("types=LORA") == 1
+    assert url.count("types=Checkpoint") == 1
+
+
+def test_build_search_url_with_no_kind_drops_an_unrecognised_type_rather_than_forwarding_it():
+    url = civitai_search.build_search_url("civitai.com", None, "x", types=["LORA", "TotallyMadeUp", "<script>"])
+    assert "types=LORA" in url
+    assert "TotallyMadeUp" not in url
+    assert "<script>" not in url
+    assert "%3Cscript%3E" not in url
+
+
+def test_build_search_url_a_given_kind_ignores_the_types_parameter_and_behaves_exactly_as_before():
+    # §7c-i: "type ... locked to the caller's kind" -- a locked picker's
+    # OWN kind decides the type; a `types` value alongside it (which no
+    # real caller sends today, but must never be trusted if one did) is
+    # simply ignored, never merged or overridden.
+    url = civitai_search.build_search_url("civitai.com", "loras", "x", types=["Checkpoint", "Workflows"])
+    assert url.count("types=") == 1
+    assert "types=LORA" in url
+    assert "types=Checkpoint" not in url
+
+
+def test_clean_types_keeps_only_recognised_values_in_order_deduplicated():
+    assert civitai_search.clean_types(["LORA", "Checkpoint", "LORA", "Bogus"]) == ["LORA", "Checkpoint"]
+
+
+def test_clean_types_non_list_input_is_always_empty():
+    for bad in (None, "LORA", 42, {"types": ["LORA"]}, True):
+        assert civitai_search.clean_types(bad) == [], bad
+
+
+def test_clean_types_empty_list_is_empty():
+    assert civitai_search.clean_types([]) == []
+
+
+def test_valid_civitai_types_matches_the_verified_live_enum_exactly():
+    # Pins the EXACT set Civitai's own API reported, verified live
+    # 2026-07-31 via `GET /api/v1/models?types=<invalid>`'s `ZodError` body
+    # (which enumerates every accepted value) -- a future edit that
+    # reintroduces a UI LABEL instead of a real API value (the `LyCORIS`/
+    # `VLM` mistake this test guards against) must fail this, not just look
+    # plausible. If Civitai's enum ever changes, re-verify the SAME way
+    # (an invalid `types=` query 400s with the current list) rather than
+    # transcribing the rail again -- see `VALID_CIVITAI_TYPES`'s own comment.
+    assert set(civitai_search.VALID_CIVITAI_TYPES) == {
+        "Checkpoint", "TextualInversion", "Hypernetwork", "AestheticGradient",
+        "LORA", "LoCon", "DoRA", "Controlnet", "Upscaler", "MotionModule", "VAE",
+        "TextEncoder", "UNet", "CLIPVision", "Poses", "Wildcards", "Workflows",
+        "Detection", "VisionLanguage", "CLIP", "LLM", "Other",
+    }
+    assert len(civitai_search.VALID_CIVITAI_TYPES) == 22  # no accidental dupes
+
+
+def test_search_models_unscoped_kind_none_sends_no_types_and_is_not_invalid_kind():
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(json.dumps({"items": []}).encode("utf-8"))
+
+    result = civitai_search.search_models(None, "anything", opener=opener)
+    assert result["reason"] == "found"
+    assert "types=" not in seen_urls[0]
+
+
+def test_search_models_unscoped_with_types_sends_exactly_the_validated_values():
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(json.dumps({"items": []}).encode("utf-8"))
+
+    civitai_search.search_models(None, "x", types=["LORA", "Checkpoint", "NotReal"], opener=opener)
+    assert "types=LORA" in seen_urls[0]
+    assert "types=Checkpoint" in seen_urls[0]
+    assert "NotReal" not in seen_urls[0]
+
+
+def test_search_models_kind_scoped_search_is_unchanged_by_the_optional_kind_feature():
+    # Regression guard: a kind-scoped search must behave EXACTLY as before
+    # this task -- same URL shape, same result -- whether or not a `types`
+    # argument is also (incorrectly) supplied.
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(json.dumps({"items": []}).encode("utf-8"))
+
+    result = civitai_search.search_models("loras", "skin", opener=opener)
+    assert result["reason"] == "found"
+    assert "types=LORA" in seen_urls[0]
+
+
+# ---------------------------------------------------------------------------
+# M2b task 2 -- the reverse of `TYPE_FOR_KIND`: a Civitai `type` string ->
+# our `kind`, or `None` when we have no folder for it at all.
+# ---------------------------------------------------------------------------
+
+
+def test_kind_for_type_maps_every_currently_supported_type():
+    assert civitai_search.kind_for_type("LORA") == "loras"
+    assert civitai_search.kind_for_type("Checkpoint") == "checkpoints"
+    assert civitai_search.kind_for_type("UNet") == "unet"
+
+
+def test_kind_for_type_locon_and_dora_map_to_loras_by_deliberate_decision():
+    # Both are LoRA-family variants ComfyUI's own `LoraLoader` loads
+    # straight out of `models/loras` -- same standard, same reasoning,
+    # applied to both (owner direction, 2026-07-31).
+    assert civitai_search.kind_for_type("LoCon") == "loras"
+    assert civitai_search.kind_for_type("DoRA") == "loras"
+
+
+def test_kind_for_type_lycoris_is_not_a_real_civitai_api_value_and_is_none():
+    # VERIFIED 2026-07-31 (live `GET /api/v1/models?types=...` 400 body):
+    # `LyCORIS` is Civitai's UI LABEL for the `LoCon` model family, not a
+    # real API enum value -- it must NOT be in `KIND_FOR_TYPE`/
+    # `VALID_CIVITAI_TYPES` at all, or a client-supplied `LyCORIS` would
+    # wave through `clean_types` and 400 the entire search on the wire.
+    assert civitai_search.kind_for_type("LyCORIS") is None
+    assert "LyCORIS" not in civitai_search.VALID_CIVITAI_TYPES
+
+
+def test_kind_for_type_unsupported_type_is_none():
+    for unsupported in ("Workflows", "Wildcards", "VAE", "TextualInversion", "Upscaler"):
+        assert civitai_search.kind_for_type(unsupported) is None, unsupported
+
+
+def test_kind_for_type_unrecognised_or_non_string_is_none():
+    for bad in (None, 42, "", "NotARealCivitaiType", ["LORA"], True):
+        assert civitai_search.kind_for_type(bad) is None, bad
+
+
+# ---------------------------------------------------------------------------
 # docs/lora-loader-design.md §7c-iv: "Maximum browsing level" replaces the
 # NSFW checkbox -- `clean_level` is the pure validation `search_impl` calls
 # before mapping the level to Civitai's own binary `nsfw` request param.
@@ -4045,6 +4244,147 @@ def test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public
             restore_limiter()
 
 
+def test_search_impl_kind_scoped_result_carries_the_scope_kind_and_is_otherwise_unchanged():
+    # M2b task 2 -- every result now carries `kind`. A LOCKED (kind-scoped)
+    # search uses that same fixed kind for every result, unconditionally --
+    # no regression to `installed`/`gated`/etc, which this mirrors from the
+    # existing happy-path test above.
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "Skin Detail XL", "type": "LORA",
+                "modelVersions": [{"id": 10, "baseModel": "SDXL",
+                                   "files": [{"name": "skin.safetensors", "downloadUrl": "https://civitai.com/x", "primary": True}]}],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "skin"})
+            assert result["results"][0]["kind"] == "loras"
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_unscoped_kind_absent_is_not_invalid_kind_and_derives_kind_per_result():
+    # M2b task 1/2 -- the toolbar modal's unscoped search: no `kind` in the
+    # payload at all must NOT be `invalid_kind`, and each result's OWN
+    # Civitai `type` decides its derived `kind` (a LoRA result here, a
+    # Checkpoint result there, in the SAME unscoped response).
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        assert kind is None  # search_impl must pass the absent kind straight through
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [
+                {
+                    "id": 1, "name": "A LoRA", "type": "LORA",
+                    "modelVersions": [{"id": 10, "baseModel": "SDXL",
+                                       "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}]}],
+                },
+                {
+                    "id": 2, "name": "A Checkpoint", "type": "Checkpoint",
+                    "modelVersions": [{"id": 20, "baseModel": "SDXL",
+                                       "files": [{"name": "b.safetensors", "downloadUrl": "https://civitai.com/b", "primary": True}]}],
+                },
+                {
+                    "id": 3, "name": "A Workflow", "type": "Workflows",
+                    "modelVersions": [{"id": 30, "baseModel": "",
+                                       "files": [{"name": "c.json", "downloadUrl": "https://civitai.com/c", "primary": True}]}],
+                },
+            ]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    # Two DIFFERENT derived kinds ("loras" for result 1, "checkpoints" for
+    # result 2) each reach `download.destination_exists` -> `local.
+    # _model_dirs`'s own unguarded `import folder_paths` -- both need a
+    # stub in this ComfyUI-less test environment (unlike the "Workflows"
+    # result, whose derived kind is `None` and never touches it at all).
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        checkpoints_root = os.path.join(tmp, "checkpoints")
+        os.makedirs(loras_root)
+        os.makedirs(checkpoints_root)
+        restore_fp = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root], "checkpoints": [checkpoints_root]},
+            names_by_folder={"loras": [], "checkpoints": []},
+        )
+        try:
+            result = mb_api.search_impl({"query": "x"})  # no "kind" key at all
+            assert result["reason"] == "ok"
+            by_id = {r["model_id"]: r for r in result["results"]}
+            assert by_id[1]["kind"] == "loras"
+            assert by_id[2]["kind"] == "checkpoints"
+            # No folder for "Workflows" -- MUST be None, never a guessed
+            # folder (M2b task 2's own warning: never write a Workflow into
+            # loras/).
+            assert by_id[3]["kind"] is None
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_unscoped_search_never_touches_folder_paths_when_no_result_is_installable_locally():
+    # An unscoped search with a result whose derived kind is `None`
+    # (unmappable type) must never even attempt a local disk check for it --
+    # `download.destination_exists(None, ...)` short-circuits via
+    # `folder_for_kind(None) is None` long before any `folder_paths` import,
+    # so this is safe to run with NO stub installed at all (same "never
+    # touches folder_paths for an invalid kind" discipline as `local.
+    # resolve_model_path`'s own dedicated test).
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "A Workflow", "type": "Workflows",
+                "modelVersions": [{"id": 10, "baseModel": "",
+                                   "files": [{"name": "c.json", "downloadUrl": "https://civitai.com/c", "primary": True}]}],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    try:
+        result = mb_api.search_impl({"query": "x"})
+        card = result["results"][0]
+        assert card["kind"] is None
+        assert card["installed"] is False
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_unscoped_search_forwards_a_validated_types_list():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        mb_api.search_impl({"query": "x", "types": ["LORA", "NotReal"]})
+        assert seen_kwargs[-1]["types"] == ["LORA", "NotReal"]  # search_impl passes it straight through --
+        # `civitai_search.search_models`/`build_search_url` (already tested
+        # directly above) are what actually validate/drop "NotReal".
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
 def test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result():
     # 2026-07-30 "no info sidecar, no preview image" fix: these are exactly
     # the two fields `download_start_impl`'s own `civitai_meta`/`preview_url`
@@ -4643,7 +4983,7 @@ def test_download_progress_impl_and_cancel_impl_delegate_to_the_manager():
 ALL_TESTS = [
     test_folder_for_kind_known_kinds,
     test_folder_for_kind_rejects_traversal_and_garbage,
-    test_only_loras_is_an_active_kind_today,
+    test_loras_checkpoints_and_unet_are_all_active_kinds_as_of_m2b,
     test_read_safetensors_metadata_real_file,
     test_read_safetensors_metadata_missing_or_truncated_file_never_raises,
     test_read_safetensors_metadata_garbage_length_prefix_never_raises,
@@ -4654,6 +4994,7 @@ ALL_TESTS = [
     test_resolve_model_path_happy_path_and_traversal_guard,
     test_resolve_model_path_rejects_a_hostile_absolute_path_as_name,
     test_resolve_model_path_rejects_a_dotdot_laden_name_that_escapes_its_root,
+    test_resolve_model_path_traversal_guard_covers_the_newly_active_checkpoints_and_unet_kinds,
     test_resolve_model_path_hostile_windows_separator_name_never_raises,
     test_list_models_skips_a_hostile_name_that_escapes_its_root,
     test_list_models_groups_by_subfolder_and_reads_metadata,
@@ -4775,6 +5116,23 @@ ALL_TESTS = [
     test_build_search_url_rejects_unwhitelisted_kind,
     test_build_search_url_garbage_sort_and_period_fall_back_to_defaults,
     test_build_search_url_limit_is_clamped,
+    test_build_search_url_with_no_kind_sends_no_types_parameter_at_all,
+    test_build_search_url_with_no_kind_and_no_types_still_sends_every_other_param,
+    test_build_search_url_with_no_kind_and_a_types_list_sends_exactly_those_values,
+    test_build_search_url_with_no_kind_drops_an_unrecognised_type_rather_than_forwarding_it,
+    test_build_search_url_a_given_kind_ignores_the_types_parameter_and_behaves_exactly_as_before,
+    test_clean_types_keeps_only_recognised_values_in_order_deduplicated,
+    test_clean_types_non_list_input_is_always_empty,
+    test_clean_types_empty_list_is_empty,
+    test_valid_civitai_types_matches_the_verified_live_enum_exactly,
+    test_search_models_unscoped_kind_none_sends_no_types_and_is_not_invalid_kind,
+    test_search_models_unscoped_with_types_sends_exactly_the_validated_values,
+    test_search_models_kind_scoped_search_is_unchanged_by_the_optional_kind_feature,
+    test_kind_for_type_maps_every_currently_supported_type,
+    test_kind_for_type_locon_and_dora_map_to_loras_by_deliberate_decision,
+    test_kind_for_type_lycoris_is_not_a_real_civitai_api_value_and_is_none,
+    test_kind_for_type_unsupported_type_is_none,
+    test_kind_for_type_unrecognised_or_non_string_is_none,
     test_clean_level_accepts_every_real_level,
     test_clean_level_falls_back_to_pg_for_garbage,
     test_clean_level_accepts_a_numeric_string,
@@ -4874,6 +5232,10 @@ ALL_TESTS = [
     test_min_interval_limiter_seconds_until_allowed,
     test_search_impl_rejects_unwhitelisted_kind_without_any_network,
     test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
+    test_search_impl_kind_scoped_result_carries_the_scope_kind_and_is_otherwise_unchanged,
+    test_search_impl_unscoped_kind_absent_is_not_invalid_kind_and_derives_kind_per_result,
+    test_search_impl_unscoped_search_never_touches_folder_paths_when_no_result_is_installable_locally,
+    test_search_impl_unscoped_search_forwards_a_validated_types_list,
     test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result,
     test_search_impl_default_level_is_pg_and_sends_nsfw_false,
     test_search_impl_level_one_sends_nsfw_false_every_other_valid_level_sends_nsfw_true,

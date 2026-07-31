@@ -755,6 +755,20 @@ render as a grid of ~19 always-visible chips (Aesthetic Gradient, Checkpoint, Co
 DoRA, Hypernetwork, LoRA, LyCORIS, Motion, Other, Poses, Text Encoder, Embedding, UNet, Upscaler, VAE,
 VLM, Wildcards, Workflows).
 
+> ⚠️ **That chip list is UI LABELS, not API values — read off a screenshot of the rail, not a live
+> request — and two of them are wrong as literal `types=` values (caught building M2b, verified live
+> 2026-07-31).** `LyCORIS` isn't a real API enum value at all (the API's own value for that model
+> family is `LoCon`); `VLM` should be `VisionLanguage`. Civitai's actual `types` enum (22 values,
+> verified via the 400 `ZodError` body an invalid `types=` query returns — that response enumerates
+> every accepted value, and is how to re-verify this the next time it drifts, rather than
+> transcribing the rail again) is: `Checkpoint, TextualInversion, Hypernetwork, AestheticGradient,
+> LORA, LoCon, DoRA, Controlnet, Upscaler, MotionModule, VAE, TextEncoder, UNet, CLIPVision, Poses,
+> Wildcards, Workflows, Detection, VisionLanguage, CLIP, LLM, Other` — see
+> `src/model_browser/civitai_search.py`'s `VALID_CIVITAI_TYPES` (the validated whitelist a client-
+> supplied `types` value is checked against) for where this list actually lives and is tested. Whoever
+> wires the modal's `<select>` options should use THAT list's values on the wire, with this section's
+> chip labels only as display text.
+
 **Ours: a `<select>` per multi-value filter, and choosing an option appends a removable chip directly
 under that section.** The reason to diverge is that a 19-chip grid *dominates the rail* and, worse,
 leaves no way to see what is actually **applied** at a glance — every chip is present whether or not it

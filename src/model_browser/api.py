@@ -38,14 +38,24 @@ here, server-side, before anything touches a filesystem path):
     GET  /wtn/model_browser/thumb?kind=...&name=...&max_edge=...
 
 M2 -- Civitai search + the streamed download queue (docs/lora-loader-
-design.md §9). `kind` is whitelisted the SAME way on every one of these; a
-download additionally re-validates the destination (`download.
+design.md §9). A GIVEN `kind` is whitelisted the SAME way on every one of
+these; a download additionally re-validates the destination (`download.
 resolve_destination_path`) and the source URL (`download.
 is_allowed_download_url`) server-side even though the frontend is expected
 to only ever offer values it already validated -- never trust the client
 for a route that writes to disk.
 
-    GET  /wtn/model_browser/search?kind=...&query=...&...
+M2b (docs/lora-loader-design.md §7c/"the modal") -- `/search`'s own `kind`
+is now OPTIONAL: absent, it's the toolbar modal's UNSCOPED search (every
+model type, no fixed destination), and an optional `types` list (the
+modal's "Filter by Model Type" rail, §7c-i) is validated
+(`civitai_search.clean_types`) rather than forwarded raw. Every OTHER route
+below still REQUIRES a valid, whitelisted `kind` -- unscoped applies to the
+search request only, since that's the one route here that touches no
+filesystem path; `/download/start` and every local-file route keep
+requiring one, because those actually resolve/write a path.
+
+    GET  /wtn/model_browser/search?kind=...&query=...&types=...&...
     POST /wtn/model_browser/download/start     {kind, subfolder, filename, download_url, size_kb?}
     GET  /wtn/model_browser/download/progress?job_id=...
     POST /wtn/model_browser/download/cancel    {job_id}
@@ -368,6 +378,24 @@ def _annotate_search_results(results: list, kind: object) -> list:
     version-selector frontend can render any version's own download
     affordance, not only `versions[0]`'s.
 
+    docs/lora-loader-design.md M2b task 2 -- each RESULT also gets its own
+    `kind` field: the kind it would actually land in, so the frontend can
+    render an honest "can't download this type here" state instead of a
+    button that fails.
+
+      - `kind` GIVEN (either node-embedded picker, a locked search) -- every
+        result uses that SAME fixed kind for both the `installed` check AND
+        the new `kind` field, exactly as before this task (no regression):
+        a locked search's own `types` filter already means every result IS
+        that kind, so there's nothing to derive.
+      - `kind` is `None` (the modal's unscoped search) -- there is no fixed
+        kind to fall back on, so EACH result's own Civitai `type` decides,
+        via `civitai_search.kind_for_type` -- `None` when we have no folder
+        for that type at all, in which case the `installed` check also sees
+        `None` (`download.destination_exists(None, ...)` -- always `False`,
+        matching "we don't even know where this would go" rather than
+        guessing a folder to check).
+
     The top-level `primary_*`/`file_name`/`download_url`/`size_kb`/`gated`/
     `installed`/`triggers`/`preview_url`/`images` convenience set on each
     RESULT is then READ STRAIGHT OFF `versions[0]`'s own just-computed
@@ -379,18 +407,22 @@ def _annotate_search_results(results: list, kind: object) -> list:
     two code paths for the same numbers can drift; this one can't, because
     there's only one.
 
-    The `installed` check always uses the kind's ROOT (`subfolder=""`) --
-    the default destination (decision 1) -- since a search result has no
-    subfolder of its own to check until a user picks one at download time;
-    a LoRA a user keeps in a custom subfolder will show as downloadable
-    again here even though it's technically already on disk elsewhere. This
-    is a known, documented approximation, not an oversight.
+    The `installed` check always uses the (fixed-or-derived) kind's ROOT
+    (`subfolder=""`) -- the default destination (decision 1) -- since a
+    search result has no subfolder of its own to check until a user picks
+    one at download time; a LoRA a user keeps in a custom subfolder will
+    show as downloadable again here even though it's technically already on
+    disk elsewhere. This is a known, documented approximation, not an
+    oversight.
     """
     for result in results:
+        result_kind = kind if kind is not None else civitai_search.kind_for_type(result.get("type"))
+        result["kind"] = result_kind
+
         versions = result.get("versions") or []
         for version in versions:
             for file in version.get("files", []):
-                file["installed"] = download.destination_exists(kind, "", file.get("name"))
+                file["installed"] = download.destination_exists(result_kind, "", file.get("name"))
 
             # This version's own chosen file -- computed for EVERY version,
             # not just the primary one, so a version-selector card can show
@@ -458,7 +490,8 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     Always returns `{"reason": ..., "message": str, "results": [...],
     "next_cursor": str|None, "public_only": bool}`:
 
-      - `invalid_kind`   -- same whitelist short-circuit as every route here;
+      - `invalid_kind`   -- a GIVEN but unwhitelisted `kind` -- same
+        whitelist short-circuit as every route here;
       - `rate_limited`   -- §9's own rate limiter refused this call (never
         Civitai's 429 -- that one surfaces as `offline`/`rate_limited` from
         `civitai_search.search_models` itself, kept distinct on purpose);
@@ -466,6 +499,25 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         `offline_reason` for the specific cause, same vocabulary as
         `civitai_client`);
       - `ok`             -- `results`/`next_cursor` are populated.
+
+    docs/lora-loader-design.md M2b task 1 -- `payload["kind"]` is now
+    OPTIONAL, reflecting the toolbar modal's UNSCOPED search (§7c: "the
+    modal ... answers to nobody"). `None`/absent is NOT `invalid_kind` --
+    it means "every model type", and skips the whitelist check entirely
+    (there's nothing to whitelist). A GIVEN `kind` is still validated
+    exactly as before this task (unchanged behaviour, no regression) --
+    this route resolves paths downstream (the `installed` check), so a
+    GIVEN kind is never trusted raw regardless of how permissive the
+    unscoped case is.
+
+    `payload["types"]` (the modal's "Filter by Model Type" rail, §7c-i) is
+    the multi-value Civitai `types` filter for an UNSCOPED search only --
+    ignored when `kind` is given (the picker's `kind` already locks the
+    type; §7c-i: "type ... locked to the caller's kind"). Passed straight
+    to `civitai_search.search_models`, which validates it
+    (`civitai_search.clean_types`) before it ever reaches the wire -- this
+    route never does that validation itself, so there is exactly one place
+    it happens.
 
     `public_only` (the CORRECTION's "no API key set -- public results only"
     banner) is set from `keys.resolve_api_key()` on EVERY branch, including
@@ -488,7 +540,7 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     payload = payload or {}
     kind = payload.get("kind")
-    if folder_for_kind(kind) is None:
+    if kind is not None and folder_for_kind(kind) is None:
         return {**_INVALID_KIND, "results": [], "next_cursor": None, "public_only": True}
 
     resolved_key = keys.resolve_api_key()
@@ -506,6 +558,7 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     result = civitai_search.search_models(
         kind,
         payload.get("query") or "",
+        types=payload.get("types"),
         base_model=payload.get("base_model") or None,
         sort=payload.get("sort") or civitai_search.DEFAULT_SORT,
         period=payload.get("period") or civitai_search.DEFAULT_PERIOD,
@@ -749,8 +802,18 @@ try:
         query = request.query
         limit_raw = query.get("limit")
         payload = {
+            # `kind` is OPTIONAL (M2b, docs/lora-loader-design.md §7c/"the
+            # modal") -- absent (`None`) is an unscoped search, not
+            # `invalid_kind`; `search_impl` is what draws that distinction.
             "kind": query.get("kind"),
             "query": query.get("query", ""),
+            # `types` (the modal's "Filter by Model Type" rail, §7c-i) is
+            # MULTI-VALUE -- `getall` collects every repeated `types=` pair
+            # from the query string, same convention `civitai_search.
+            # build_search_url` emits one on the way out. `search_impl`/
+            # `civitai_search.clean_types` validate it; this route never
+            # forwards it unchecked.
+            "types": list(query.getall("types", [])),
             "base_model": query.get("base_model") or None,
             "sort": query.get("sort") or None,
             "period": query.get("period") or None,
