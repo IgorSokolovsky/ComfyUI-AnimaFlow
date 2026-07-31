@@ -1357,6 +1357,27 @@ surface you *live in* while authoring. A browser is a "look something up, take i
 so 90% with the graph visible at the edges keeps you oriented. Follow its *mechanism* (own overlay
 root, scrim, Escape, focus handling), not its dimensions.
 
+#### Destination for an unscoped download — deferred, deliberately (owner, 2026-07-31)
+
+The modal has no caller to take its kind from, so a download's folder is derived from **the result's own
+Civitai type**. Civitai has roughly 19 types; `KIND_TO_FOLDER` has **three** (`loras`, `checkpoints`,
+`unet`). Owner: *"about destination we will align on it afterwards, i think most of them has a place, and
+for those that we don't need will be removed from the option to search, we will see when we get to it."*
+
+So the settled direction is **trim the searchable Model Type options to the types we can place**, rather
+than showing results the user cannot act on. Two consequences for anything built before that lands:
+
+- **`kind: null` for an unmapped type stays, and must never be guessed.** It is the guard that stops a
+  Workflow JSON being written into `models/loras/`. Keep it, keep it tested — but keep the UI for it
+  minimal, because it is on its way to being rare rather than load-bearing.
+- **The type→kind table and the rail's type options are each ONE list, in one place.** Both are going to
+  grow and be trimmed respectively. Neither should be inlined into logic, and nothing anywhere may encode
+  "there are exactly three kinds" — `KIND_TO_FOLDER` and `ACTIVE_KINDS` remain the only sources of truth.
+
+`LoCon`/`LyCORIS` → `loras` is the first judgement call of this kind (LoRA-family, and ComfyUI loads them
+from that folder). Whatever is decided, the reasoning belongs in the comment, because it sets the standard
+for every type added later.
+
 ### Where the button goes, and the budget constraint that shapes it
 
 Beside the **Rule Builder's** toolbar button, following the same pattern its `index.js` already
