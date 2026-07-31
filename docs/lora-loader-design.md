@@ -908,6 +908,46 @@ still image:
 So `anim=false` is a **no-op on stills and a poster-frame extractor on videos**. `_thumb_url` should
 emit `/anim=false,width=256/`, and video entries then get a real thumbnail instead of being skipped.
 
+#### The level governs the ⓘ panel too — a THIRD consumer, on a different path (owner, 2026-07-31)
+
+Owner: *"our NSFW config should affect the lora info too."* Correct, and it is not the same code path,
+so it does not come for free.
+
+There are **three** independent image-selection sites, and it is worth naming all three because two of
+them are easy to forget:
+
+| surface | picks via | level-aware? |
+|---|---|---|
+| search result card | the new `images` candidate list | ✅ this task |
+| **ⓘ info panel** (58px thumb) | `parse_model_version`'s single `thumbnail` key, from `pick_thumbnail_url` | ❌ **this section** |
+| download-time preview sidecar | `pick_gallery_image_url` (untransformed) | ❌ still an open owner decision |
+
+The ⓘ panel **already inherits the `anim=false` video fix for free**, since it shares `_thumb_url`.
+Only the *level* is missing.
+
+⚠️ **The blocker is the cache, not the picking.** `lookup.py` writes `parse_model_version`'s output —
+including one already-chosen `thumbnail` **string** — to `<base>.civitai.info`. So the level in force at
+*write* time is baked into the cached record: raise the level later and a cached panel keeps showing the
+old pick, with no re-fetch to correct it. Picking at render time is therefore not an optimisation here,
+it is the only thing that actually works.
+
+**The fix mirrors the search one:** store the ordered `[{url, nsfw_level, type}]` candidates in the
+sidecar and pick at render time, exactly as the card does — same retry-then-advance rule, same `locked`
+state, same "unknown level counts as 16".
+
+**Legacy sidecars migrate without a re-fetch.** Existing files carry only the single `thumbnail` key. It
+is tempting to treat that as unknown-level and therefore hide it, but that is wrong and needlessly
+destructive: the *old* selection rule only ever accepted `nsfwLevel` in `(None, 0, 1, 2)` or a
+`not _is_adult_image` fallback (`level < 4`), and since the real levels are `1, 2, 4, 8, 16`, **a legacy
+`thumbnail` is always level ≤ 2**. So grandfather it as **level 2 (PG-13)**, which is provable from the
+rule that produced it rather than assumed. Bump the sidecar's schema marker so the two shapes stay
+tellable apart.
+
+Forward note: §7c-ii's community **gallery** in the info panel (not in M2) must honour the level too when
+it lands — same candidate list, same rule. And the level is **orthogonal** to §7b's `Show preview
+thumbnails` on/off switch: that one decides whether a thumbnail element is built at all, this one decides
+*which image* goes in it.
+
 #### Send the CANDIDATES to the frontend, not one pre-chosen URL
 
 Owner's proposal, and it is right — and it is not a workaround, because **§7c-iv needs it anyway**:
