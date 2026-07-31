@@ -828,12 +828,41 @@ client-side by the model's `nsfwLevel`**, or an XXX model's name appears in an R
 
 #### Thumbnail selection, and where the thumbnail comes from
 
-Unchanged mechanism, newly level-aware. Civitai serves gallery images as
-`https://image.civitai.com/<hash>/<uuid>/original=true/<id>.jpeg`, and `_thumb_url`
-(`civitai_parse.py:221`) rewrites the `/original=true/` segment to `/width=256/` — **~55 KB instead of
-~1.5 MB**, ported from Pixaroma. `preview_url` keeps the untransformed URL because it is saved to disk
-at download time, where fidelity matters; `thumb_url` is the rewritten one, for live display. The two
-stay separate keys.
+Unchanged mechanism, newly level-aware.
+
+**We use the URL Civitai gives us — we do not build one.** Every gallery entry in
+`modelVersions[].images[]` carries a `url`, and we take it verbatim. The only change is a **single
+path-segment substitution** on that string: `_thumb_url` (`civitai_parse.py:221`) rewrites
+`/original=true/` to `/width=256/`, asking the CDN for a smaller rendition of the same image. The hash,
+UUID and filename are never parsed or reassembled, and a URL not matching that pattern passes through
+untouched.
+
+```
+from response : https://image.civitai.com/<hash>/<uuid>/original=true/1917130.jpeg
+after rewrite : https://image.civitai.com/<hash>/<uuid>/width=256/1917130.jpeg
+```
+
+**Measured live 2026-07-31** (one real LoRA gallery image, both HTTP 200):
+
+| | Content-Type | bytes |
+|---|---|---|
+| `original=true` | `image/png` | **4,192,036** |
+| `width=256` | `image/jpeg` | **20,522** |
+
+That is **204×**, well beyond the ~1.5 MB → ~55 KB Pixaroma measured — `original=true` returns the
+uploader's source file, so it can be arbitrarily large. Two consequences:
+
+- **The rewrite is load-bearing, not an optimisation.** A results page of 20 cards at original size
+  would be ~80 MB.
+- ⚠️ **Revisit what the download-time preview sidecar saves.** `preview_url` currently keeps the
+  *untransformed* URL, so a saved preview can be a 4 MB PNG per model. That was specified when the cost
+  was assumed to be ~1.5 MB. A mid-size transform (`width=450`, say) is very likely the right choice for
+  a file kept on disk — **owner's call**, and it is the same open question as "does the sidecar follow
+  the browsing level".
+
+We depend on the CDN continuing to honour `/width=<n>/`. If that ever changed, the rewritten URL 404s
+and `buildThumb`'s `onerror` falls back to the placeholder — degraded, not broken, but **silently**, so
+it would present as "thumbnails stopped working" with no error.
 
 The selection rule becomes: **the first image whose `nsfwLevel` is at or below the user's chosen
 maximum**, rewritten to width 256. This replaces `pick_gallery_image_url`'s current two-tier
