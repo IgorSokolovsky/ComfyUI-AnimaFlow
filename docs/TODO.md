@@ -28,6 +28,41 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
+### 📦 The queued Civitai work — two passes, waiting only on the builders in flight (owner, 2026-07-31)
+
+Both `src/` and `js/` are currently owned by in-flight builders (model-browser logging; and the
+settings-dialog cleanup + label seam + console logging + rail fixes). These five items are decided,
+specced and blocked **only** on that. Grouped into two passes because each group shares its files and its
+reasoning, not for tidiness.
+
+**Backend pass — two file-writing routes, one security story.**
+
+1. **Remove an installed model.** Decisions taken 2026-07-30, below in this file: type-to-confirm so a
+   mis-click cannot delete gigabytes; ⓘ panel and search menu now, the global browser later; all kinds.
+   **The path guard is the entire security story** — `kinds.py`'s whitelist plus `local._is_path_under`'s
+   realpath containment, on a client-supplied name. A LoRA row pointing at the deleted file must fall into
+   the existing red missing-file state, not vanish or throw.
+2. **The ⓘ backfill saves the preview image** (`docs/lora-loader-design.md` §7c-iv). `lookup.py` writes the
+   sidecar and no image, so that path re-fetches from Civitai on every render forever — and it is the
+   direct cause of the owner's reported 404 on `/wtn/model_browser/thumb`, which serves the *local* file.
+
+**Frontend pass — three changes to the same search surfaces.**
+
+3. **The `Search` button** (§7c-i). Explicit action, Enter equivalent, disabled while the query is
+   unchanged, filters still immediate, pagination untouched, debounce removed rather than left dangling.
+4. **Wire `Search Civitai by name →`** (§7e's `notfound` action). M1 shipped it disabled because search
+   did not exist; it does now. By-hash failing is the *common* case — re-saving, merging or quantising a
+   LoRA changes its hash — so this turns the most frequent dead end into the feature already built.
+5. **The delete affordance** for item 1, with its type-to-confirm.
+
+> **2 and 4 compound, which is why they are queued together.** Once opening ⓘ saves a local preview, and
+> `notfound` hands the user into search-by-name, a LoRA that arrived from nowhere becomes fully identified
+> in two clicks and then renders offline from its own disk forever after.
+
+Still further out, in the order they are worth doing: **§1a-vii** (show the Civitai name), **§7c-ii** (the
+picker's info panel — the last outstanding piece of M2), **M2b slice 2** (detail swap + community gallery
++ copy-prompt), **installed-by-kind in the modal**, and **M3** (Loader Panel reuse).
+
 ### 🐛 `Hide file extension` is honoured by the picker but not by the row label (owner, 2026-07-31)
 
 Owner: *"hide file extension is on but our field label show it while the picker doesn't."* Root cause is
