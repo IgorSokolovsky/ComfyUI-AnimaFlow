@@ -27,7 +27,9 @@
  * time, server-side, never blocking a graph run). Docs task 2026-07-31 added
  * two more: a live 40px THUMBNAIL per result (`thumb_url`, the 256px gallery
  * rewrite — `buildThumb`) and a per-result VERSION PICKER (`resolveVersionView`
- * + the `<select>` in `buildCard`'s own metarow, only rendered for a
+ * + the `<select>` in `buildCard`'s own right-hand ACTION COLUMN, stacked
+ * directly above that card's action element — moved there 2026-07-31, owner:
+ * "the version should be above the download button" — only rendered for a
  * multi-version result) — every render/download-payload decision in
  * `buildCard` reads the SELECTED version's own flat view, never the raw
  * multi-version result directly.
@@ -246,11 +248,37 @@ const CSS = `
 .wtn-cs-metarow { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .wtn-cs-chip { flex: none; font-size: 9.5px; padding: 1px 7px; }
 .wtn-cs-metarow .wtn-cs-sub { flex: 1 1 auto; min-width: 0; margin-top: 0; }
-/* The per-result version picker (docs task 2026-07-31) -- ONLY for a
-   multi-version result, appended to the SAME metarow as the base-model chip
-   and download count so the card's height never changes. \`flex: none\` +
-   a cap so a long version name never pushes the row's other content off. */
-.wtn-cs-version-sel { flex: none; max-width: 110px; }
+/* The right-hand ACTION COLUMN (owner, 2026-07-31: "the version should be
+   above the download button") -- holds the per-result version picker (when
+   present) stacked directly above whichever action element the card's own
+   state renders (Download / \`installed\` badge / \`key required\` badge / the
+   %-plus-Cancel pair), both right-aligned. \`buildCard\` appends this ONE
+   element to the card in place of appending the action directly, so the
+   action and (when present) the version select stay vertically grouped in
+   every one of the four card states -- see that function's own comment for
+   why the downloading state's %/Cancel pair is wrapped in
+   \`.wtn-cs-actioncol-row\` rather than appended as two loose siblings.
+   \`flex: none\` + a \`max-width\` (this card's meta column, not the action
+   column, is what should absorb any extra width) so neither a long model
+   name nor a long version name ever widens the card -- \`align-items:
+   flex-end\` is what right-aligns every child regardless of its own width. */
+.wtn-cs-actioncol { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 100px; }
+/* The %/Cancel pair (downloading state) reads as one row stacked under the
+   version select, not two independently-wrapping siblings. */
+.wtn-cs-actioncol-row { display: flex; align-items: center; gap: 4px; }
+/* The per-result version picker (docs task 2026-07-31; moved into
+   \`.wtn-cs-actioncol\` above 2026-07-31) -- ONLY for a multi-version result.
+   Re-tuned from the metarow's own 110px cap for its new, narrower home
+   (\`.wtn-cs-actioncol\`'s own 100px). A bare \`max-width\` alone clips a
+   \`<select>\`'s rendered value with no ellipsis (unlike a block element, a
+   native select needs its own \`white-space\`/\`overflow\`/\`text-overflow\`
+   to render one) -- \`box-sizing: border-box\` so the cap is the select's
+   FULL width (border + padding included), matching how \`max-width\` already
+   behaves on every other bordered element in this file. */
+.wtn-cs-version-sel {
+  flex: none; max-width: 100px; box-sizing: border-box;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .wtn-cs-sub { font-family: var(--wtn-font-mono, monospace); font-size: 10px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtn-cs-cardmsg { font-size: 10px; color: var(--wtn-bad, ${TOKENS.bad}); margin-top: 2px; }
 .wtn-cs-bar { height: 4px; border-radius: 2px; background: var(--wtn-console, ${TOKENS.console}); overflow: hidden; margin-top: 4px; }
@@ -1281,12 +1309,45 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     const sub = el(doc, "div", "wtn-cs-sub");
     sub.textContent = state === "gated" ? gatedSubtitle() : resultSubtitle(view);
     metaRow.appendChild(sub);
+    meta.appendChild(metaRow);
 
-    // The version picker itself -- ONLY when there's a genuine choice
-    // (`result.versions.length > 1`); a single-version (or legacy, no-
-    // `versions`-array) result never shows a select at all. Appended to the
-    // SAME metarow as the chip/subtitle above so the card's height doesn't
-    // change (task brief).
+    if (state === "downloading") {
+      const pct = downloadPercent(job.bytes, job.total);
+      const bar = el(doc, "div", "wtn-cs-bar");
+      const fill = el(doc, "i");
+      fill.style.width = `${pct == null ? 0 : pct}%`;
+      bar.appendChild(fill);
+      meta.appendChild(bar);
+    }
+    const msg = cardMessages.get(rKey);
+    // A version with no downloadable file at all (`pick_primary_file` was
+    // `None` server-side) gets a readable reason under the card instead of
+    // a Download button that would fire a request with `filename: null` --
+    // only in the "available" state, since installed/downloading/gated
+    // already have their own, more specific messaging.
+    const missingFile = !view.file_name || !view.download_url;
+    if (msg) {
+      const msgEl = el(doc, "div", "wtn-cs-cardmsg");
+      msgEl.textContent = msg;
+      meta.appendChild(msgEl);
+    } else if (state === "available" && missingFile) {
+      const msgEl = el(doc, "div", "wtn-cs-cardmsg");
+      msgEl.textContent = "No downloadable file for this version.";
+      meta.appendChild(msgEl);
+    }
+    card.appendChild(meta);
+
+    // The right-hand ACTION COLUMN (owner, 2026-07-31: "the version should be
+    // above the download button") -- the version picker (when there's a
+    // genuine choice, `result.versions.length > 1`; a single-version or
+    // legacy no-`versions`-array result never shows one at all) stacked
+    // directly above whichever action element this card's state renders
+    // below, both right-aligned via `.wtn-cs-actioncol`'s own `align-items:
+    // flex-end`. One element (`actionCol`) is appended to the card in place
+    // of the action alone, so the two stay grouped regardless of how tall
+    // either one is.
+    const actionCol = el(doc, "div", "wtn-cs-actioncol");
+
     const versions = Array.isArray(result.versions) ? result.versions : null;
     if (versions && versions.length > 1) {
       const versionSel = el(doc, "select", "wtn-cs-sel wtn-cs-version-sel");
@@ -1317,46 +1378,23 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         selectedVersions.set(result.model_id, chosenId);
         renderList();
       });
-      metaRow.appendChild(versionSel);
+      actionCol.appendChild(versionSel);
     }
-    meta.appendChild(metaRow);
-
-    if (state === "downloading") {
-      const pct = downloadPercent(job.bytes, job.total);
-      const bar = el(doc, "div", "wtn-cs-bar");
-      const fill = el(doc, "i");
-      fill.style.width = `${pct == null ? 0 : pct}%`;
-      bar.appendChild(fill);
-      meta.appendChild(bar);
-    }
-    const msg = cardMessages.get(rKey);
-    // A version with no downloadable file at all (`pick_primary_file` was
-    // `None` server-side) gets a readable reason under the card instead of
-    // a Download button that would fire a request with `filename: null` --
-    // only in the "available" state, since installed/downloading/gated
-    // already have their own, more specific messaging.
-    const missingFile = !view.file_name || !view.download_url;
-    if (msg) {
-      const msgEl = el(doc, "div", "wtn-cs-cardmsg");
-      msgEl.textContent = msg;
-      meta.appendChild(msgEl);
-    } else if (state === "available" && missingFile) {
-      const msgEl = el(doc, "div", "wtn-cs-cardmsg");
-      msgEl.textContent = "No downloadable file for this version.";
-      meta.appendChild(msgEl);
-    }
-    card.appendChild(meta);
 
     if (state === "installed") {
       const badge = el(doc, "span", "wtn-cs-action wtn-cs-action-installed");
       badge.textContent = "✓ installed"; // ✓ installed -- NOT the mockup's "have" (owner, §7c-iii)
-      card.appendChild(badge);
+      actionCol.appendChild(badge);
     } else if (state === "downloading") {
+      // The %/Cancel pair reads as ONE row stacked under the version select
+      // (task brief: "make sure that pair still reads sensibly stacked under
+      // a version select") -- `.wtn-cs-actioncol-row` (CSS, above) keeps them
+      // side-by-side rather than each wrapping onto its own line.
       const pct = downloadPercent(job.bytes, job.total);
+      const row = el(doc, "div", "wtn-cs-actioncol-row");
       const pctLabel = el(doc, "span", "wtn-cs-sub");
-      pctLabel.style.marginRight = "4px";
       pctLabel.textContent = pct == null ? "…" : `${pct}%`;
-      card.appendChild(pctLabel);
+      row.appendChild(pctLabel);
       const cancelBtn = el(doc, "button", "wtn-cs-action wtn-cs-action-cancel");
       cancelBtn.type = "button";
       cancelBtn.textContent = "Cancel";
@@ -1364,14 +1402,15 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         e.stopPropagation();
         cancelActiveDownloadJob();
       });
-      card.appendChild(cancelBtn);
+      row.appendChild(cancelBtn);
+      actionCol.appendChild(row);
     } else if (state === "gated") {
       const btn = el(doc, "button", "wtn-cs-action wtn-cs-action-gated");
       btn.type = "button";
       btn.textContent = "key required"; // amber -- see .wtn-cs-action-gated (§7c-iii)
       btn.disabled = true;
       btn.title = "Add a Civitai API key in Settings → AnimaFlow → Controls to download this file.";
-      card.appendChild(btn);
+      actionCol.appendChild(btn);
     } else {
       const btn = el(doc, "button", "wtn-cs-action");
       btn.type = "button";
@@ -1403,9 +1442,10 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         }
         renderList();
       });
-      card.appendChild(btn);
+      actionCol.appendChild(btn);
     }
 
+    card.appendChild(actionCol);
     return card;
   }
 

@@ -2031,6 +2031,82 @@ await asyncTest("openCivitaiSearch: a selected version with no downloadable file
   }
 });
 
+await asyncTest("openCivitaiSearch: the version <select> and the card's action element are siblings in the same right-hand action column, select first, and the metarow no longer holds it (owner, 2026-07-31: 'version should be above the download button')", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeMultiVersionSearchResult({ modelId: 40, name: "Column Test" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(versionSelect, "the multi-version card must render a version select");
+    assert.ok(downloadBtn, "the multi-version card must render its own action element (Download, in this default state)");
+
+    const col = versionSelect.parentNode;
+    assert.equal(col.className, "wtn-cs-actioncol", "the version select must live in the new right-hand action column, not the metarow");
+    assert.equal(downloadBtn.parentNode, col, "the select and the action element must be siblings in that same column");
+    assert.equal(col.children.indexOf(versionSelect), 0, "the version select must come first, above the action element");
+    assert.equal(col.children.indexOf(downloadBtn), 1, "the action element must be the very next (and only other) child, stacked below the select");
+
+    // Confirms the move actually happened, not just that a NEW column
+    // happens to exist alongside the old placement.
+    const metarow = findAll(handle.overlay, "wtn-cs-metarow")[0];
+    assert.equal(findAll(metarow, "wtn-cs-version-sel").length, 0, "the metarow must no longer hold the version select");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: the downloading state's %+Cancel pair renders as one row inside the same action column, stacked below the version select", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 41, name: "Downloading Column" });
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-column" });
+    }
+    return jsonResponse({ reason: "ok", status: "downloading", bytes: 10, total: 100, message: "" });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10000 });
+    await settle();
+
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    const cancelBtn = findAll(handle.overlay, "wtn-cs-action-cancel")[0];
+    assert.ok(versionSelect, "the select must still render while this card's own version is downloading");
+    assert.ok(cancelBtn, "this card's own Cancel must render (its own job, not the module-level persistent banner)");
+
+    const col = versionSelect.parentNode;
+    assert.equal(col.className, "wtn-cs-actioncol");
+    const row = cancelBtn.parentNode;
+    assert.equal(row.className, "wtn-cs-actioncol-row", "the %+Cancel pair must be wrapped in its own row, not two loose siblings");
+    assert.equal(row.parentNode, col, "that row must itself be a child of the same action column as the select");
+    assert.equal(col.children.indexOf(versionSelect), 0, "the select comes first");
+    assert.equal(col.children.indexOf(row), 1, "the %+Cancel row is stacked directly below it");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
 // =========================================================================
 
 console.log(`\n${count - failures}/${count} passed`);
