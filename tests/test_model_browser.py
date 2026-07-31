@@ -586,6 +586,17 @@ def test_pick_thumbnail_still_transforms_its_own_result():
     assert civitai_parse._pick_thumbnail(images) == "https://example.com/width=256/safe.jpg"
 
 
+def test_pick_thumbnail_url_is_the_promoted_public_name_and_stays_in_all():
+    # docs task 2026-07-31 "Civitai search panel thumbnails": `_pick_thumbnail`
+    # was promoted to a public `pick_thumbnail_url` -- both names must resolve
+    # to the exact same function (an alias, not a divergent copy), and the
+    # public one must be advertised in `__all__`.
+    assert civitai_parse.pick_thumbnail_url is civitai_parse._pick_thumbnail
+    assert "pick_thumbnail_url" in civitai_parse.__all__
+    images = [{"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1}]
+    assert civitai_parse.pick_thumbnail_url(images) == "https://example.com/width=256/safe.jpg"
+
+
 def test_civitai_shape_from_search_meta_typical_fields():
     meta = {
         "model_id": 999, "version_id": 12345, "name": "My Character LoRA",
@@ -2058,6 +2069,62 @@ def test_parse_search_response_no_trigger_words_or_images_omits_neither_field_bu
 
 
 # ---------------------------------------------------------------------------
+# docs task 2026-07-31 "Civitai search panel thumbnails": `thumb_url` is the
+# LIVE in-browser thumbnail (256px rewrite), a deliberate SIBLING of
+# `preview_url` (the untransformed, download-time-preview pick) -- the two
+# must never collapse into the same value by accident.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_search_response_thumb_url_is_256px_while_preview_url_stays_untransformed():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "images": [{"url": "https://image.civitai.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1}],
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["preview_url"] == "https://image.civitai.com/original=true/safe.jpg"
+    assert version["thumb_url"] == "https://image.civitai.com/width=256/safe.jpg"
+    assert version["thumb_url"] != version["preview_url"]
+
+
+def test_parse_search_response_no_images_leaves_thumb_url_none_same_as_preview_url():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["thumb_url"] is None
+    assert version["preview_url"] is None
+
+
+def test_parse_search_response_all_explicit_gallery_yields_no_thumb_url_either():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "images": [{"url": "https://image.civitai.com/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}],
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["thumb_url"] is None
+    assert version["preview_url"] is None
+
+
+# ---------------------------------------------------------------------------
 # M2 -- download.py: sanitisation, destination resolution, the streamed
 # downloader, and the serial DownloadManager.
 # ---------------------------------------------------------------------------
@@ -3395,6 +3462,136 @@ def test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the
             restore_limiter()
 
 
+# ---------------------------------------------------------------------------
+# docs task 2026-07-31 "Civitai search panel version picker": every version
+# (not just the primary) gets its own `file_name`/`download_url`/`size_kb`/
+# `gated`/`installed`/`thumb_url`, and the top-level flatten reads THOSE same
+# per-version fields back off `versions[0]` -- one code path, not two.
+# ---------------------------------------------------------------------------
+
+
+def test_annotate_search_results_computes_all_five_fields_for_every_version_not_just_the_primary():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "Multi Version LoRA",
+                "modelVersions": [
+                    {
+                        "id": 10, "baseModel": "SDXL",
+                        "images": [{"url": "https://image.civitai.com/original=true/one.jpg", "nsfw": False, "nsfwLevel": 1}],
+                        "files": [{"name": "not_installed.safetensors", "sizeKB": 500,
+                                   "downloadUrl": "https://civitai.com/a", "primary": True}],
+                    },
+                    {
+                        "id": 9, "baseModel": "Pony", "earlyAccessEndsAt": "2099-01-01",
+                        "images": [{"url": "https://image.civitai.com/original=true/two.jpg", "nsfw": False, "nsfwLevel": 1}],
+                        "files": [{"name": "already_installed.safetensors", "sizeKB": 900,
+                                   "downloadUrl": "https://civitai.com/b", "primary": True}],
+                    },
+                ],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        open(os.path.join(loras_root, "already_installed.safetensors"), "wb").close()
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "x"})
+            versions = result["results"][0]["versions"]
+            assert len(versions) == 2
+
+            v0, v1 = versions[0], versions[1]
+            # The PRIMARY (first) version -- not gated, not installed.
+            assert v0["file_name"] == "not_installed.safetensors"
+            assert v0["download_url"] == "https://civitai.com/a"
+            assert v0["size_kb"] == 500
+            assert v0["gated"] is False
+            assert v0["installed"] is False
+            assert v0["thumb_url"] == "https://image.civitai.com/width=256/one.jpg"
+
+            # The SECOND version -- gated (earlyAccessEndsAt) AND already on
+            # disk. Both computed independently of the primary version's own
+            # values -- a version picker needs each version's OWN truth.
+            assert v1["file_name"] == "already_installed.safetensors"
+            assert v1["download_url"] == "https://civitai.com/b"
+            assert v1["size_kb"] == 900
+            assert v1["gated"] is True
+            assert v1["installed"] is True
+            assert v1["thumb_url"] == "https://image.civitai.com/width=256/two.jpg"
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_annotate_search_results_top_level_flatten_matches_versions_zero_exactly():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "Two Versions",
+                "modelVersions": [
+                    {
+                        "id": 10, "baseModel": "SDXL", "trainedWords": ["trig"],
+                        "images": [{"url": "https://image.civitai.com/original=true/one.jpg", "nsfw": False, "nsfwLevel": 1}],
+                        "files": [{"name": "primary.safetensors", "sizeKB": 123,
+                                   "downloadUrl": "https://civitai.com/a", "primary": True}],
+                    },
+                    {
+                        "id": 9, "baseModel": "Pony",
+                        "files": [{"name": "second.safetensors", "sizeKB": 456,
+                                   "downloadUrl": "https://civitai.com/b", "primary": True}],
+                    },
+                ],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore_fp = _install_fake_folder_paths(roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []})
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "x"})
+            card = result["results"][0]
+            primary = card["versions"][0]
+
+            # The published top-level contract's key set/meaning is
+            # untouched -- these now read STRAIGHT OFF `versions[0]`'s own
+            # just-computed fields (this function's own docstring), so they
+            # must match it byte-for-byte, never merely "close".
+            assert card["file_name"] == primary["file_name"] == "primary.safetensors"
+            assert card["download_url"] == primary["download_url"] == "https://civitai.com/a"
+            assert card["size_kb"] == primary["size_kb"] == 123
+            assert card["gated"] == primary["gated"] is False
+            assert card["installed"] == primary["installed"] is False
+            assert card["base_model"] == primary["base_model"] == "SDXL"
+            assert card["primary_version_id"] == primary["version_id"] == 10
+            assert card["triggers"] == primary["triggers"] == ["trig"]
+            assert card["preview_url"] == primary["preview_url"] == "https://image.civitai.com/original=true/one.jpg"
+            assert card["thumb_url"] == primary["thumb_url"] == "https://image.civitai.com/width=256/one.jpg"
+
+            # The second version's own fields are untouched by the flatten
+            # -- the top level is never a blend of both.
+            second = card["versions"][1]
+            assert second["file_name"] == "second.safetensors"
+            assert second["base_model"] == "Pony"
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
 def test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk():
     restore_limiter = _install_permissive_search_limiter()
     previous_search_models = civitai_search.search_models
@@ -3797,6 +3994,7 @@ ALL_TESTS = [
     test_pick_gallery_image_url_prefers_explicitly_safe_and_is_untransformed,
     test_pick_gallery_image_url_all_explicit_yields_none,
     test_pick_thumbnail_still_transforms_its_own_result,
+    test_pick_thumbnail_url_is_the_promoted_public_name_and_stays_in_all,
     test_civitai_shape_from_search_meta_typical_fields,
     test_civitai_shape_from_search_meta_never_raises_on_malformed_input,
     test_parse_model_version_both_descriptions_present_are_returned_distinctly,
@@ -3882,6 +4080,9 @@ ALL_TESTS = [
     test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first,
     test_parse_search_response_carries_triggers_and_preview_url_per_version,
     test_parse_search_response_no_trigger_words_or_images_omits_neither_field_but_they_stay_empty_none,
+    test_parse_search_response_thumb_url_is_256px_while_preview_url_stays_untransformed,
+    test_parse_search_response_no_images_leaves_thumb_url_none_same_as_preview_url,
+    test_parse_search_response_all_explicit_gallery_yields_no_thumb_url_either,
     test_sanitize_filename_accepts_normal_names,
     test_sanitize_filename_rejects_hostile_values,
     test_sanitize_filename_rejects_an_embedded_nul_byte,
@@ -3953,6 +4154,8 @@ ALL_TESTS = [
     test_search_impl_rejects_unwhitelisted_kind_without_any_network,
     test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
     test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result,
+    test_annotate_search_results_computes_all_five_fields_for_every_version_not_just_the_primary,
+    test_annotate_search_results_top_level_flatten_matches_versions_zero_exactly,
     test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk,
     test_search_impl_marks_a_gated_result_before_any_download_attempt,
     test_search_impl_passes_through_offline_reason_and_still_reports_public_only,

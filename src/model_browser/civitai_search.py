@@ -291,12 +291,24 @@ def _parse_version(v: Any) -> Optional[Dict[str, Any]]:
         # `.civitai.info` sidecar without a fresh lookup).
         "triggers": _clean_string_list(v.get("trainedWords")),
         # The first non-adult gallery image's URL, UNTRANSFORMED (never the
-        # 256px `_thumb_url` rewrite `civitai_parse._pick_thumbnail` applies
-        # for a LIVE in-browser thumbnail -- this one is reused, as-is, to
-        # SAVE a local preview file at download time, so a higher-fidelity
-        # image is worth keeping). `None` when the gallery has no usable
-        # (non-adult) image -- never invent one.
+        # 256px `_thumb_url` rewrite `civitai_parse.pick_thumbnail_url`
+        # applies for a LIVE in-browser thumbnail, its sibling key just
+        # below -- this one is reused, as-is, to SAVE a local preview file
+        # at download time, so a higher-fidelity image is worth keeping).
+        # `None` when the gallery has no usable (non-adult) image -- never
+        # invent one.
         "preview_url": civitai_parse.pick_gallery_image_url(v.get("images")),
+        # The SAME gallery pick as `preview_url` above, but 256px-rewritten
+        # (`civitai_parse.pick_thumbnail_url`) -- the search PANEL's own
+        # live in-browser thumbnail (docs task 2026-07-31, "Civitai search
+        # panel thumbnails"), roughly 55 KB instead of ~1.5 MB. Deliberately
+        # a SEPARATE key from `preview_url`, not a client-side rewrite of it
+        # -- the two serve different consumers (a fast on-screen thumbnail
+        # here vs. a faithful saved-to-disk preview there) and must stay
+        # independently computable even if the adult-filtering pick itself
+        # ever needs to diverge between them. `None` under the exact same
+        # "no usable (non-adult) image" condition as `preview_url`.
+        "thumb_url": civitai_parse.pick_thumbnail_url(v.get("images")),
     }
 
 
@@ -366,9 +378,11 @@ def parse_search_response(raw: Any) -> Dict[str, Any]:
 
     Each result: `{model_id, name, type, creator, tags, nsfw, base_model?,
     stats: {downloads, favorites, rating}, versions: [{version_id, name,
-    base_model, published_at, gated, triggers, preview_url, files: [{name,
-    size_kb, download_url, primary, sha256, gated}]}]}`. `versions` keeps
-    EVERY version Civitai
+    base_model, published_at, gated, triggers, preview_url, thumb_url,
+    files: [{name, size_kb, download_url, primary, sha256, gated}]}]}`.
+    `preview_url`/`thumb_url` are the SAME gallery pick at two different
+    sizes (`_parse_version`'s own comment has the full reasoning) -- never
+    conflate the two when adding a caller. `versions` keeps EVERY version Civitai
     returned (a future version-selector/detail view needs all of them, not
     just the newest) -- a result with no usable version at all (every
     version failed to parse, or the list was empty/absent) is DROPPED

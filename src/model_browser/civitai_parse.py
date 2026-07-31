@@ -12,10 +12,11 @@ above mirrors that file's `:60-69`), with one DELIBERATE divergence:
 `tags` is the ONLY place a model's real category
 (character/style/concept/clothing/poses/...) lives at all -- losing them
 there is called out in the design doc as a defect to fix, not a precedent
-to repeat. `_thumb_url`/`_is_adult_image`/`_pick_thumbnail` below are also
-near-verbatim ports of that same upstream file's `:361-374`/`:346-358`/
-(the thumbnail-selection loop inside `parse_civitai_modelversion`,
-`:401-419`) respectively.
+to repeat. `_thumb_url`/`_is_adult_image`/`pick_thumbnail_url` (formerly
+`_pick_thumbnail`, promoted public 2026-07-31 -- the old name survives as a
+plain alias) below are also near-verbatim ports of that same upstream
+file's `:361-374`/`:346-358`/(the thumbnail-selection loop inside
+`parse_civitai_modelversion`, `:401-419`) respectively.
 """
 from __future__ import annotations
 
@@ -207,7 +208,7 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
     if vid is not None:
         out["version_id"] = vid
 
-    thumbnail = _pick_thumbnail(obj.get("images"))
+    thumbnail = pick_thumbnail_url(obj.get("images"))
     if thumbnail:
         out["thumbnail"] = thumbnail
 
@@ -274,7 +275,7 @@ def pick_gallery_image_url(images: Any) -> Optional[str]:
     return fallback
 
 
-def _pick_thumbnail(images: Any) -> Optional[str]:
+def pick_thumbnail_url(images: Any) -> Optional[str]:
     """The first non-adult image's URL, THUMBNAIL-sized (`_thumb_url`'s
     width-256 rewrite) -- same two-tier fallback as the thumbnail-selection
     loop inside `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:401-419`'s
@@ -282,9 +283,25 @@ def _pick_thumbnail(images: Any) -> Optional[str]:
     whose gallery is entirely explicit ends up with NO thumbnail rather than
     an explicit one. A thin wrapper over `pick_gallery_image_url` (above),
     which now holds the actual selection loop.
+
+    Public (promoted from `_pick_thumbnail`, docs task 2026-07-31, "Civitai
+    search panel thumbnails") -- `civitai_search.py`'s own `_parse_version`
+    calls this directly to seed each version's `thumb_url` (the LIVE
+    in-browser thumbnail), sibling to that same function's `preview_url`
+    (`pick_gallery_image_url`, untransformed, saved to disk at download
+    time) -- see `_parse_version`'s own comment for why the two deliberately
+    stay different sizes.
     """
     url = pick_gallery_image_url(images)
     return _thumb_url(url) if url else None
+
+
+# Old private name kept as a plain alias -- `parse_model_version` above now
+# calls the public `pick_thumbnail_url` directly, but `tests/
+# test_model_browser.py`'s own `test_pick_thumbnail_still_transforms_its_own_
+# result` (and any other existing internal call site) still reaches this
+# under its original name, unchanged.
+_pick_thumbnail = pick_thumbnail_url
 
 
 def parse_model_description(obj: Any) -> Optional[str]:
@@ -380,5 +397,5 @@ def civitai_shape_from_search_meta(meta: Any) -> Dict[str, Any]:
 
 __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
-    "pick_gallery_image_url", "civitai_shape_from_search_meta",
+    "pick_gallery_image_url", "pick_thumbnail_url", "civitai_shape_from_search_meta",
 )

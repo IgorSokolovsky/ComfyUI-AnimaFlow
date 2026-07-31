@@ -191,10 +191,22 @@ def _annotate_search_results(results: list, kind: object) -> list:
     """Adds the disk-touching fields `civitai_search.parse_search_response`
     deliberately leaves out (that function stays pure/offline-testable --
     see its own docstring): per-file `installed` (decision 2: "already on
-    disk => no download"), plus a flattened `primary_*` convenience set on
-    each RESULT (its first version's chosen file) for the simple picker
-    card -- the full per-version `files` list survives untouched underneath
-    for a future version-selector/detail view.
+    disk => no download"), then a `file_name`/`download_url`/`size_kb`/
+    `gated`/`installed` set on EVERY version (docs task 2026-07-31, "Civitai
+    search panel version picker") -- not just the primary one -- so a
+    version-selector frontend can render any version's own download
+    affordance, not only `versions[0]`'s.
+
+    The top-level `primary_*`/`file_name`/`download_url`/`size_kb`/`gated`/
+    `installed`/`triggers`/`preview_url`/`thumb_url` convenience set on each
+    RESULT is then READ STRAIGHT OFF `versions[0]`'s own just-computed
+    fields, never recomputed independently -- one code path computes every
+    version's download affordance (including the primary one), and the
+    top-level flatten is nothing more than picking `versions[0]`'s copy of
+    it back up. Before this, the top level had its OWN
+    `pick_primary_file`/`bool(...)` calls duplicating this exact logic --
+    two code paths for the same numbers can drift; this one can't, because
+    there's only one.
 
     The `installed` check always uses the kind's ROOT (`subfolder=""`) --
     the default destination (decision 1) -- since a search result has no
@@ -209,19 +221,41 @@ def _annotate_search_results(results: list, kind: object) -> list:
             for file in version.get("files", []):
                 file["installed"] = download.destination_exists(kind, "", file.get("name"))
 
-        primary_version = versions[0] if versions else None
-        primary_file = civitai_search.pick_primary_file(primary_version["files"]) if primary_version else None
+            # This version's own chosen file -- computed for EVERY version,
+            # not just the primary one, so a version-selector card can show
+            # any version's download affordance. `gated`/`installed` default
+            # to `False` with no primary file, matching the exact fallback
+            # the (now-removed) top-level-only computation used to apply --
+            # see this function's own docstring for why the top level no
+            # longer has a second copy of this rule to keep in sync.
+            version_primary_file = civitai_search.pick_primary_file(version.get("files"))
+            version["file_name"] = version_primary_file.get("name") if version_primary_file else None
+            version["download_url"] = version_primary_file.get("download_url") if version_primary_file else None
+            version["size_kb"] = version_primary_file.get("size_kb") if version_primary_file else None
+            # `gated`/`installed` are two of the flags the CORRECTION's four
+            # card states are built from (state 4 "gated"/state 1
+            # "installed") -- first-class outcomes computed here, not
+            # inferred client-side.
+            version["gated"] = bool(version_primary_file.get("gated")) if version_primary_file else False
+            version["installed"] = bool(version_primary_file.get("installed")) if version_primary_file else False
 
+        primary_version = versions[0] if versions else None
+
+        # BUG (pre-existing, left alone -- out of scope for this task):
+        # `""` rather than an absent key when unknown, even though the
+        # PARSER (`civitai_search._parse_search_item`) deliberately omits
+        # this key entirely in that case ("omit rather than invent",
+        # §1a-vi). The frontend already handles the empty string, and
+        # changing it would touch behaviour this task isn't asking for.
         result["base_model"] = primary_version["base_model"] if primary_version else ""
         result["primary_version_id"] = primary_version["version_id"] if primary_version else None
-        result["file_name"] = primary_file.get("name") if primary_file else None
-        result["download_url"] = primary_file.get("download_url") if primary_file else None
-        result["size_kb"] = primary_file.get("size_kb") if primary_file else None
-        # `gated`/`installed` are the two flags the CORRECTION's four card
-        # states are built from (state 4 "gated"/state 1 "installed") --
-        # first-class outcomes computed here, not inferred client-side.
-        result["gated"] = bool(primary_file.get("gated")) if primary_file else False
-        result["installed"] = bool(primary_file.get("installed")) if primary_file else False
+        # Every one of these now reads STRAIGHT OFF `versions[0]`'s own
+        # just-computed fields above -- see this function's own docstring.
+        result["file_name"] = primary_version.get("file_name") if primary_version else None
+        result["download_url"] = primary_version.get("download_url") if primary_version else None
+        result["size_kb"] = primary_version.get("size_kb") if primary_version else None
+        result["gated"] = primary_version.get("gated", False) if primary_version else False
+        result["installed"] = primary_version.get("installed", False) if primary_version else False
         # 2026-07-30 "no info sidecar, no preview image" fix: flattened onto
         # the result the SAME way `base_model`/`file_name`/`download_url`
         # already are, so the frontend can hand them straight back on
@@ -230,6 +264,11 @@ def _annotate_search_results(results: list, kind: object) -> list:
         # URLs -- reuse them rather than making a fresh API call".
         result["triggers"] = primary_version.get("triggers", []) if primary_version else []
         result["preview_url"] = primary_version.get("preview_url") if primary_version else None
+        # docs task 2026-07-31 "Civitai search panel thumbnails": the SAME
+        # gallery pick as `preview_url`, 256px-rewritten -- see
+        # `civitai_search._parse_version`'s own comment for why the two are
+        # deliberately separate keys, never one derived from the other here.
+        result["thumb_url"] = primary_version.get("thumb_url") if primary_version else None
     return results
 
 

@@ -24,7 +24,13 @@
  * available / gated, with the exact labels that section settles), the
  * editable destination folder (§ decision 5, defaulting to this kind's own
  * `models/<kind>` root), and the download/poll/cancel flow (§9: one job at a
- * time, server-side, never blocking a graph run).
+ * time, server-side, never blocking a graph run). Docs task 2026-07-31 added
+ * two more: a live 40px THUMBNAIL per result (`thumb_url`, the 256px gallery
+ * rewrite — `buildThumb`) and a per-result VERSION PICKER (`resolveVersionView`
+ * + the `<select>` in `buildCard`'s own metarow, only rendered for a
+ * multi-version result) — every render/download-payload decision in
+ * `buildCard` reads the SELECTED version's own flat view, never the raw
+ * multi-version result directly.
  *
  * Explicitly OUT of scope (task brief, §7c-ii): the per-result VERTICAL info
  * panel with the community gallery, and `notfound`'s search-by-name link —
@@ -226,6 +232,10 @@ const CSS = `
   mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat;
 }
 .wtn-cs-thumb-gated { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 15px; }
+/* The live in-browser thumbnail (\`thumb_url\`, docs task 2026-07-31) fills
+   the same 40px box the placeholder/padlock already occupy -- \`object-fit:
+   cover\` so a non-square gallery image never distorts. */
+.wtn-cs-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wtn-cs-meta { flex: 1 1 auto; min-width: 0; }
 .wtn-cs-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The base-model chip + download count share one row (owner, 2026-07-30) --
@@ -236,6 +246,11 @@ const CSS = `
 .wtn-cs-metarow { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .wtn-cs-chip { flex: none; font-size: 9.5px; padding: 1px 7px; }
 .wtn-cs-metarow .wtn-cs-sub { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+/* The per-result version picker (docs task 2026-07-31) -- ONLY for a
+   multi-version result, appended to the SAME metarow as the base-model chip
+   and download count so the card's height never changes. \`flex: none\` +
+   a cap so a long version name never pushes the row's other content off. */
+.wtn-cs-version-sel { flex: none; max-width: 110px; }
 .wtn-cs-sub { font-family: var(--wtn-font-mono, monospace); font-size: 10px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wtn-cs-cardmsg { font-size: 10px; color: var(--wtn-bad, ${TOKENS.bad}); margin-top: 2px; }
 .wtn-cs-bar { height: 4px; border-radius: 2px; background: var(--wtn-console, ${TOKENS.console}); overflow: hidden; margin-top: 4px; }
@@ -368,6 +383,64 @@ export function resultKey(result) {
     return "";
   }
   return `${result.model_id}:${result.primary_version_id}`;
+}
+
+/**
+ * The per-result VERSION PICKER's own pure core (docs task 2026-07-31,
+ * "Civitai search panel version picker"). Every render helper in this file
+ * (`resultKey`/`resultCardState`/`resultBaseModel`/`resultSubtitle`, the
+ * thumbnail, and the `/download/start` payload) reads this flat VIEW rather
+ * than the raw multi-version `result` directly -- so switching versions on
+ * a card is one uniform re-render, not a parallel "which version am I
+ * showing" check duplicated in each of those functions.
+ *
+ * The returned view carries the SELECTED version's own `file_name`/
+ * `download_url`/`size_kb`/`gated`/`installed`/`base_model`/`thumb_url`/
+ * `triggers`/`preview_url` (`api.py`'s `_annotate_search_results` computes
+ * every one of these per version, not just the primary), plus
+ * `primary_version_id` set to THAT version's own id -- not necessarily
+ * `result`'s own primary version. That last point is what makes
+ * `resultKey` (which reads exactly this field) follow the user's version
+ * choice for free: download-progress tracking and the session-gated set
+ * (`markResultGated`) key off whichever version is actually selected, with
+ * no separate plumbing for it.
+ *
+ * `selectedVersionId` not found among `result.versions` -- including the
+ * common "nothing picked yet" case, `undefined` -- falls back to
+ * `versions[0]`, matching a card's existing default-to-primary behaviour. A
+ * version whose own `file_name`/`download_url` are `null` (its
+ * `pick_primary_file` was `None` server-side -- no downloadable file at
+ * all) is returned AS-IS with those fields `null`; a caller (`buildCard`)
+ * is what turns that into a disabled download button with a reason, never
+ * this function's job.
+ *
+ * `result.versions` missing, non-array, or empty (including every result
+ * shape from BEFORE this feature, and this file's own single-version test
+ * fixtures) returns `result` UNCHANGED -- there is no version to select
+ * between, so nothing here should differ from today's behaviour.
+ */
+export function resolveVersionView(result, selectedVersionId) {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+  const versions = Array.isArray(result.versions) ? result.versions : null;
+  if (!versions || versions.length === 0) {
+    return result;
+  }
+  const version = versions.find((v) => v && v.version_id === selectedVersionId) || versions[0];
+  return {
+    ...result,
+    file_name: version.file_name != null ? version.file_name : null,
+    download_url: version.download_url != null ? version.download_url : null,
+    size_kb: version.size_kb != null ? version.size_kb : null,
+    gated: !!version.gated,
+    installed: !!version.installed,
+    base_model: version.base_model || "",
+    thumb_url: version.thumb_url || null,
+    triggers: Array.isArray(version.triggers) ? version.triggers : [],
+    preview_url: version.preview_url || null,
+    primary_version_id: version.version_id,
+  };
 }
 
 /**
@@ -893,20 +966,44 @@ function buildFilterSelect(doc, options, current, onChange) {
   return sel;
 }
 
-function buildThumb(doc, gated) {
+/**
+ * The 40px thumbnail box (docs task 2026-07-31, "Civitai search panel
+ * thumbnails"). `gated` still wins over everything -- §7c-iii settled that a
+ * gated card keeps the padlock and shows NO thumbnail, not reversed here,
+ * so a gated card never even looks at `thumbUrl`. Otherwise: an `<img>` for
+ * `thumbUrl` (its own `onerror` swaps in the SAME placeholder a missing URL
+ * renders, so a 404/junk URL never shows a broken-image icon), or the
+ * neutral placeholder when there's no URL at all -- matching
+ * `model_picker.mjs`'s own "no preview" convention (§1a-v).
+ */
+function buildThumb(doc, gated, thumbUrl) {
   const thumb = el(doc, "div", "wtn-cs-thumb");
   if (gated) {
     const lock = el(doc, "span", "wtn-cs-thumb-gated");
     lock.textContent = "\u{1F512}"; // 🔒 -- Civitai's own gate glyph, matching the mockup's padlock
     thumb.appendChild(lock);
-  } else {
-    // No thumbnail data exists yet -- `civitai_search.parse_search_response`
-    // doesn't carry an image URL today (Civitai's own search endpoint result
-    // has no field for one wired here); a neutral placeholder, never a
-    // broken-image icon, matching `model_picker.mjs`'s own "no preview"
-    // convention (§1a-v).
-    thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
+    return thumb;
   }
+  if (thumbUrl) {
+    const img = el(doc, "img", "wtn-cs-thumb-img");
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.alt = "";
+    img.onerror = () => {
+      // A 404/junk URL -- remove the broken `<img>` and fall back to the
+      // SAME placeholder a missing URL renders, never a broken-image icon.
+      // `removeChild` (not `.remove()`) so this works against both a real
+      // DOM element and this pack's own minimal doc-stub test double.
+      if (img.parentNode && typeof img.parentNode.removeChild === "function") {
+        img.parentNode.removeChild(img);
+      }
+      thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
+    };
+    img.src = thumbUrl;
+    thumb.appendChild(img);
+    return thumb;
+  }
+  thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
   return thumb;
 }
 
@@ -1079,6 +1176,27 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   let loadingMore = false;
   let searchSeq = 0;
   const cardMessages = new Map(); // resultKey -> a readable line under that card
+  // The version picker's own selection state (docs task 2026-07-31) -- keyed
+  // by `model_id`, value is the chosen `version_id`. Lives in THIS closure
+  // (not the module-level singletons above it) because it's per-panel
+  // browsing state, not something a download job or a different panel needs
+  // to see: preserved across `appendDedupedResults` (pagination keeps a
+  // model's own chosen version), cleared at the top of every reset-cursor
+  // `runSearch` call (a brand-new query has nothing to preserve a choice
+  // FOR yet).
+  const selectedVersions = new Map();
+
+  /** The specific version object within `result.versions` that `job.key`
+   * belongs to, or `null` for a legacy/single-version result with no
+   * `versions` array at all (the caller falls back to mutating `result`
+   * itself in that case -- see `onDownloadStateChange`). */
+  function findVersionByJobKey(result, key) {
+    const versions = Array.isArray(result.versions) ? result.versions : null;
+    if (!versions) {
+      return null;
+    }
+    return versions.find((v) => v && resultKey({ model_id: result.model_id, primary_version_id: v.version_id }) === key) || null;
+  }
 
   function renderActive() {
     activeHost.innerHTML = "";
@@ -1086,8 +1204,15 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     // Only show the PERSISTENT banner when the active job's own card is NOT
     // already visible in the current results list -- otherwise the card
     // itself (§7c-iii's "downloading" state, below) already shows the exact
-    // same progress, and duplicating it here would just be noise.
-    if (!job || results.some((r) => resultKey(r) === job.key)) {
+    // same progress, and duplicating it here would just be noise. Tests the
+    // RESOLVED, currently-displayed view of each result -- i.e. whichever
+    // version its own dropdown has selected right now -- never "any version
+    // of this result matches," which used to suppress the banner even when
+    // the version actually rendered on the card was a DIFFERENT one (regression,
+    // 2026-07-31): switch a card's dropdown away from the version that's
+    // downloading and neither the card nor this banner showed it, with no way
+    // to cancel until the dropdown was switched back.
+    if (!job || results.some((r) => resultKey(resolveVersionView(r, selectedVersions.get(r.model_id))) === job.key)) {
       return;
     }
     const row = el(doc, "div", "wtn-cs-active");
@@ -1115,17 +1240,27 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   }
 
   function buildCard(result) {
-    const card = el(doc, "div", "wtn-cs-card");
-    const rKey = resultKey(result);
-    const job = getActiveDownloadState();
-    const state = resultCardState(result, job, _sessionGatedKeys);
+    // The version-picker view (docs task 2026-07-31) -- computed ONCE, then
+    // every render decision below reads ONLY this flat `view`, never `result`
+    // directly, so a version switch is a single uniform re-render (this
+    // file's own doc comment on `resolveVersionView` has the full
+    // reasoning). `result.versions` (the raw, un-flattened list) is still
+    // consulted separately, below, for the ONE thing the view doesn't carry:
+    // whether there's more than one version to choose between at all.
+    const selectedVersionId = selectedVersions.get(result.model_id);
+    const view = resolveVersionView(result, selectedVersionId);
 
-    card.appendChild(buildThumb(doc, state === "gated"));
+    const card = el(doc, "div", "wtn-cs-card");
+    const rKey = resultKey(view);
+    const job = getActiveDownloadState();
+    const state = resultCardState(view, job, _sessionGatedKeys);
+
+    card.appendChild(buildThumb(doc, state === "gated", view.thumb_url));
 
     const meta = el(doc, "div", "wtn-cs-meta");
     const title = el(doc, "div", "wtn-cs-title");
-    title.textContent = result.name || "(untitled)";
-    title.title = result.name || "";
+    title.textContent = view.name || "(untitled)";
+    title.title = view.name || "";
     meta.appendChild(title);
 
     // Base model + download count on their own row (owner, 2026-07-30): the
@@ -1136,7 +1271,7 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     // Omitted entirely (never a placeholder) when genuinely unknown, same
     // "omit rather than invent" rule `resultBaseModel` itself documents.
     const metaRow = el(doc, "div", "wtn-cs-metarow");
-    const baseModel = resultBaseModel(result);
+    const baseModel = resultBaseModel(view);
     if (baseModel) {
       const chip = el(doc, "span", "wtn-chip wtn-chip--accent wtn-cs-chip");
       chip.textContent = baseModel;
@@ -1144,8 +1279,46 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       metaRow.appendChild(chip);
     }
     const sub = el(doc, "div", "wtn-cs-sub");
-    sub.textContent = state === "gated" ? gatedSubtitle() : resultSubtitle(result);
+    sub.textContent = state === "gated" ? gatedSubtitle() : resultSubtitle(view);
     metaRow.appendChild(sub);
+
+    // The version picker itself -- ONLY when there's a genuine choice
+    // (`result.versions.length > 1`); a single-version (or legacy, no-
+    // `versions`-array) result never shows a select at all. Appended to the
+    // SAME metarow as the chip/subtitle above so the card's height doesn't
+    // change (task brief).
+    const versions = Array.isArray(result.versions) ? result.versions : null;
+    if (versions && versions.length > 1) {
+      const versionSel = el(doc, "select", "wtn-cs-sel wtn-cs-version-sel");
+      versionSel.title = "Choose which version to download.";
+      for (const v of versions) {
+        const opt = el(doc, "option");
+        opt.value = String(v.version_id);
+        // Falls back to `#<version_id>` for a version Civitai returned with
+        // no `name` at all (rare, but `_parse_version` never invents one).
+        opt.textContent = v.name || `#${v.version_id}`;
+        if (v.version_id === view.primary_version_id) {
+          opt.selected = true;
+        }
+        versionSel.appendChild(opt);
+      }
+      versionSel.value = String(view.primary_version_id);
+      // `stopPropagation` on both `click` and `change` -- the SAME pattern
+      // the filter `<select>`s (`buildFilterSelect`, above) already use, so
+      // opening/using this dropdown never lets litegraph steal the gesture.
+      versionSel.addEventListener("click", (e) => e.stopPropagation());
+      versionSel.addEventListener("change", (e) => {
+        e.stopPropagation();
+        const chosenId = Number(versionSel.value);
+        // Switching versions never disturbs a DIFFERENT card's in-flight
+        // download -- this only ever touches this one model's own entry in
+        // the selection map, and re-renders; the module-level
+        // `_activeDownload` singleton (if any) is untouched.
+        selectedVersions.set(result.model_id, chosenId);
+        renderList();
+      });
+      metaRow.appendChild(versionSel);
+    }
     meta.appendChild(metaRow);
 
     if (state === "downloading") {
@@ -1157,9 +1330,19 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       meta.appendChild(bar);
     }
     const msg = cardMessages.get(rKey);
+    // A version with no downloadable file at all (`pick_primary_file` was
+    // `None` server-side) gets a readable reason under the card instead of
+    // a Download button that would fire a request with `filename: null` --
+    // only in the "available" state, since installed/downloading/gated
+    // already have their own, more specific messaging.
+    const missingFile = !view.file_name || !view.download_url;
     if (msg) {
       const msgEl = el(doc, "div", "wtn-cs-cardmsg");
       msgEl.textContent = msg;
+      meta.appendChild(msgEl);
+    } else if (state === "available" && missingFile) {
+      const msgEl = el(doc, "div", "wtn-cs-cardmsg");
+      msgEl.textContent = "No downloadable file for this version.";
       meta.appendChild(msgEl);
     }
     card.appendChild(meta);
@@ -1193,7 +1376,12 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       const btn = el(doc, "button", "wtn-cs-action");
       btn.type = "button";
       btn.textContent = "↓ Download"; // ↓ Download -- NOT the mockup's "get" (owner, §7c-iii)
-      if (job) {
+      if (missingFile) {
+        // This version has no downloadable file at all -- disable rather
+        // than let a click fire `/download/start` with `filename: null`.
+        btn.disabled = true;
+        btn.title = "No downloadable file for this version.";
+      } else if (job) {
         // A DIFFERENT job is already running in this panel/process -- never
         // silently queue a second one (task brief); disable rather than let
         // the click round-trip to a guaranteed `busy`.
@@ -1202,10 +1390,13 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       }
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
+        if (missingFile) {
+          return; // never fire a request with filename: null
+        }
         cardMessages.delete(rKey);
         const subfolder = subfolderFromDestinationField(destInput.value, kind);
         const resp = await startDownloadJob({
-          kind, subfolder, filename: result.file_name, downloadUrl: result.download_url, sizeKb: result.size_kb, key: rKey,
+          kind, subfolder, filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb, key: rKey,
         }, pollIntervalMs);
         if (resp.reason !== "started") {
           cardMessages.set(rKey, downloadStartMessage(resp));
@@ -1279,6 +1470,12 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     if (resetCursor) {
       nextCursor = null;
       loadingMore = false;
+      // A brand-new query/filter change REPLACES the results list wholesale
+      // -- nothing yet to preserve a version choice for (task brief:
+      // "cleared when a new query replaces the list"). Paging
+      // (`resetCursor: false`, below) never reaches this branch, which is
+      // exactly what lets a selection survive `appendDedupedResults`.
+      selectedVersions.clear();
     } else if (loadingMore || !nextCursor) {
       return;
     } else {
@@ -1369,18 +1566,37 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
    * still identifies which result it was for. Idempotent (marking a result
    * `installed` twice, or clearing an already-cleared message, is harmless),
    * so there is no "already handled" flag to maintain.
+   *
+   * `job.key` is the SELECTED version's own key (`resolveVersionView`'s own
+   * doc comment) -- `findVersionByJobKey` (this file's top-level helper,
+   * above) is what lets a multi-version result mutate exactly that ONE
+   * version's `installed`/`gated` flag rather than the whole result's, so
+   * switching versions on the SAME card afterwards still reflects each
+   * version's own, independent outcome (docs task 2026-07-31: "switching to
+   * a version that is already installed must flip the card to the installed
+   * state, and back again"). Finding `finishedResult` itself deliberately
+   * checks EVERY version of a result (the result's own key first for the
+   * single-version/legacy-shape case, then `findVersionByJobKey` across the
+   * full `versions` array) rather than only the currently-SELECTED one --
+   * unlike `renderActive`'s banner-suppression check (which must track only
+   * what's actually rendered), the job here may target a version the user has
+   * since switched the dropdown away from, and that version's own flag still
+   * needs mutating on completion.
    */
   function onDownloadStateChange() {
     const job = getActiveDownloadState();
     if (job && job.status && job.status !== "downloading" && job.status !== "cancelling") {
-      const finishedResult = results.find((r) => resultKey(r) === job.key);
+      const finishedResult = results.find((r) => resultKey(r) === job.key || !!findVersionByJobKey(r, job.key));
+      const finishedVersion = finishedResult ? findVersionByJobKey(finishedResult, job.key) : null;
       if (job.status === "ok") {
         // The atomic-rename guarantee (`download.py`'s own top doc comment)
         // means "ok" IS "the file is genuinely on disk now" -- flip this
         // card straight to the "installed" state without waiting on a fresh
         // search, matching the picker's own instant-refresh expectation
         // (task brief, deliverable 4).
-        if (finishedResult) {
+        if (finishedVersion) {
+          finishedVersion.installed = true;
+        } else if (finishedResult) {
           finishedResult.installed = true;
         }
         cardMessages.delete(job.key);
@@ -1396,7 +1612,9 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
         // gated card needs to; no separate red `cardmsg` line underneath a
         // Download button that no longer exists.
         markResultGated(job.key);
-        if (finishedResult) {
+        if (finishedVersion) {
+          finishedVersion.gated = true;
+        } else if (finishedResult) {
           finishedResult.gated = true;
         }
         cardMessages.delete(job.key);

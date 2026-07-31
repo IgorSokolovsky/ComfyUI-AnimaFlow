@@ -21,6 +21,7 @@ import {
   formatCompactCount,
   downloadPercent,
   resultKey,
+  resolveVersionView,
   resultCardState,
   resultBaseModel,
   resultSubtitle,
@@ -237,6 +238,115 @@ test("resultBaseModel: '' when genuinely absent -- never a placeholder like 'Unk
 
 test("gatedSubtitle: always the bare line -- no base model, no separator (it now lives in the same chip every other card state uses)", () => {
   assert.equal(gatedSubtitle(), "needs an API key");
+});
+
+// =========================================================================
+// resolveVersionView -- the version-picker's own pure core (docs task
+// 2026-07-31).
+// =========================================================================
+
+function makeMultiVersionResult() {
+  return {
+    model_id: 100,
+    name: "Multi Version LoRA",
+    stats: { downloads: 5, favorites: 0, rating: null },
+    // Top-level convenience fields flattened from versions[0] (the shape
+    // `api.py`'s `_annotate_search_results` produces) -- present so a test
+    // can prove `resolveVersionView` picks the SELECTED version's own copy
+    // of these, not the top-level (primary-only) ones, once a non-primary
+    // version is chosen.
+    base_model: "SDXL",
+    primary_version_id: 1,
+    file_name: "primary.safetensors",
+    download_url: "https://civitai.com/primary",
+    size_kb: 111,
+    gated: false,
+    installed: false,
+    triggers: ["from-primary"],
+    preview_url: "https://image.civitai.com/primary.jpg",
+    thumb_url: "https://image.civitai.com/width=256/primary.jpg",
+    versions: [
+      {
+        version_id: 1, name: "v1.0", base_model: "SDXL",
+        file_name: "primary.safetensors", download_url: "https://civitai.com/primary",
+        size_kb: 111, gated: false, installed: false,
+        triggers: ["from-primary"], preview_url: "https://image.civitai.com/primary.jpg",
+        thumb_url: "https://image.civitai.com/width=256/primary.jpg",
+      },
+      {
+        version_id: 2, name: "v2.0 (Pony)", base_model: "Pony",
+        file_name: "second.safetensors", download_url: "https://civitai.com/second",
+        size_kb: 222, gated: true, installed: true,
+        triggers: ["from-second"], preview_url: "https://image.civitai.com/second.jpg",
+        thumb_url: "https://image.civitai.com/width=256/second.jpg",
+      },
+      {
+        // A version with NO downloadable file at all -- `pick_primary_file`
+        // was `None` server-side.
+        version_id: 3, name: "v3.0 (no file)", base_model: "SD 1.5",
+        file_name: null, download_url: null, size_kb: null,
+        gated: false, installed: false, triggers: [], preview_url: null, thumb_url: null,
+      },
+    ],
+  };
+}
+
+test("resolveVersionView: the FOUND case -- a selected non-primary version's own fields win, primary_version_id follows the selection", () => {
+  const result = makeMultiVersionResult();
+  const view = resolveVersionView(result, 2);
+  assert.equal(view.file_name, "second.safetensors");
+  assert.equal(view.download_url, "https://civitai.com/second");
+  assert.equal(view.size_kb, 222);
+  assert.equal(view.gated, true);
+  assert.equal(view.installed, true);
+  assert.equal(view.base_model, "Pony");
+  assert.equal(view.thumb_url, "https://image.civitai.com/width=256/second.jpg");
+  assert.deepEqual(view.triggers, ["from-second"]);
+  assert.equal(view.preview_url, "https://image.civitai.com/second.jpg");
+  assert.equal(view.primary_version_id, 2, "resultKey must follow the SELECTED version, not result's own primary");
+  // Fields the version doesn't carry (name, stats, model_id) pass through
+  // from the raw result unchanged.
+  assert.equal(view.name, "Multi Version LoRA");
+  assert.equal(view.model_id, 100);
+});
+
+test("resolveVersionView: an UNKNOWN selected id falls back to versions[0] (including the common 'nothing picked yet' -- undefined)", () => {
+  const result = makeMultiVersionResult();
+  const viewUndefined = resolveVersionView(result, undefined);
+  assert.equal(viewUndefined.primary_version_id, 1);
+  assert.equal(viewUndefined.file_name, "primary.safetensors");
+
+  const viewUnknown = resolveVersionView(result, 999);
+  assert.equal(viewUnknown.primary_version_id, 1);
+  assert.equal(viewUnknown.file_name, "primary.safetensors");
+});
+
+test("resolveVersionView: NO versions (missing/non-array/empty) returns the result UNCHANGED -- a flat legacy/test-fixture result keeps working", () => {
+  const flat = { model_id: 1, primary_version_id: 1, name: "Flat", file_name: "a.safetensors" };
+  assert.equal(resolveVersionView(flat, 1), flat, "no versions key at all -- the exact same object, not a copy");
+
+  const withNullVersions = { ...flat, versions: null };
+  assert.equal(resolveVersionView(withNullVersions, 1), withNullVersions);
+
+  const withEmptyVersions = { ...flat, versions: [] };
+  assert.equal(resolveVersionView(withEmptyVersions, 1), withEmptyVersions);
+
+  const withGarbageVersions = { ...flat, versions: "not-an-array" };
+  assert.equal(resolveVersionView(withGarbageVersions, 1), withGarbageVersions);
+});
+
+test("resolveVersionView: a garbage/missing result never throws", () => {
+  assert.equal(resolveVersionView(null, 1), null);
+  assert.equal(resolveVersionView(undefined, 1), undefined);
+});
+
+test("resolveVersionView: a selected version whose pick_primary_file was None -- file_name/download_url are null, never invented", () => {
+  const result = makeMultiVersionResult();
+  const view = resolveVersionView(result, 3);
+  assert.equal(view.file_name, null);
+  assert.equal(view.download_url, null);
+  assert.equal(view.size_kb, null);
+  assert.equal(view.primary_version_id, 3);
 });
 
 // =========================================================================
@@ -748,6 +858,18 @@ function findAll(root, className) {
   return out;
 }
 
+function findAllByTag(root, tagName) {
+  const out = [];
+  const walk = (e) => {
+    if (e.tagName === tagName) {
+      out.push(e);
+    }
+    (e.children || []).forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
 function textOf(e) {
   const parts = [];
   const walk = (n) => {
@@ -760,8 +882,8 @@ function textOf(e) {
   return parts.join(" ");
 }
 
-function makeResult({ modelId, versionId, name, installed = false, gated = false, baseModel = "SDXL", downloads = 0 } = {}) {
-  return {
+function makeResult({ modelId, versionId, name, installed = false, gated = false, baseModel = "SDXL", downloads = 0, thumbUrl } = {}) {
+  const result = {
     model_id: modelId,
     name,
     creator: "someone",
@@ -775,6 +897,46 @@ function makeResult({ modelId, versionId, name, installed = false, gated = false
     size_kb: 1000,
     gated,
     installed,
+  };
+  if (thumbUrl !== undefined) {
+    result.thumb_url = thumbUrl;
+  }
+  return result;
+}
+
+/** A multi-version result shaped exactly like `api.py`'s `_annotate_search_
+ * results` output -- every version carries its own `file_name`/
+ * `download_url`/`size_kb`/`gated`/`installed`/`thumb_url`. */
+function makeMultiVersionSearchResult({ modelId, name = "Multi Version" } = {}) {
+  return {
+    model_id: modelId,
+    name,
+    creator: "someone",
+    tags: [],
+    nsfw: false,
+    stats: { downloads: 10, favorites: 0, rating: null },
+    base_model: "SDXL",
+    primary_version_id: 1,
+    file_name: "v1.safetensors",
+    download_url: "https://civitai.com/v1",
+    size_kb: 100,
+    gated: false,
+    installed: false,
+    thumb_url: "https://image.civitai.com/width=256/v1.jpg",
+    versions: [
+      {
+        version_id: 1, name: "v1.0", base_model: "SDXL",
+        file_name: "v1.safetensors", download_url: "https://civitai.com/v1",
+        size_kb: 100, gated: false, installed: false,
+        thumb_url: "https://image.civitai.com/width=256/v1.jpg",
+      },
+      {
+        version_id: 2, name: "v2.0", base_model: "Pony",
+        file_name: "v2.safetensors", download_url: "https://civitai.com/v2",
+        size_kb: 200, gated: false, installed: true,
+        thumb_url: "https://image.civitai.com/width=256/v2.jpg",
+      },
+    ],
   };
 }
 
@@ -1561,6 +1723,308 @@ await asyncTest("openCivitaiSearch: BUG G -- closing the panel removes its own s
     assert.ok((scrollArea._listeners.scroll || []).length >= 1, "opening the panel must register its own scroll listener");
     handle.close();
     assert.equal((scrollArea._listeners.scroll || []).length, 0, "closing the panel must remove its own scroll listener");
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+// =========================================================================
+// Thumbnails + the version picker (docs task 2026-07-31).
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: a result with a thumb_url renders an <img>; one with none renders the placeholder", async () => {
+  _resetDownloadStateForTests();
+  const results = [
+    makeResult({ modelId: 1, versionId: 1, name: "Has Thumb", thumbUrl: "https://image.civitai.com/width=256/x.jpg" }),
+    makeResult({ modelId: 2, versionId: 2, name: "No Thumb" }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const imgs = findAllByTag(handle.overlay, "img");
+    assert.equal(imgs.length, 1, "only the result WITH a thumb_url renders an <img>");
+    assert.equal(imgs[0].src, "https://image.civitai.com/width=256/x.jpg");
+    assert.equal(imgs[0].loading, "lazy");
+    assert.equal(imgs[0].referrerPolicy, "no-referrer");
+    assert.equal(imgs[0].alt, "");
+
+    const placeholders = findAll(handle.overlay, "wtn-cs-thumb-ph");
+    assert.equal(placeholders.length, 1, "the result with no thumb_url gets the neutral placeholder");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a thumbnail <img> that fails to load swaps in the placeholder, never a broken-image icon", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeResult({ modelId: 1, versionId: 1, name: "Junk Thumb", thumbUrl: "https://image.civitai.com/404.jpg" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const img = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(img, "the <img> must be present before it errors");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 0, "no placeholder yet -- the image hasn't failed");
+
+    img.onerror();
+    assert.equal(findAllByTag(handle.overlay, "img").length, 0, "the broken <img> must be removed");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 1, "the placeholder takes its place");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a GATED card keeps the padlock and shows no thumbnail even when thumb_url is present", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeResult({ modelId: 1, versionId: 1, name: "Gated With Thumb", gated: true, thumbUrl: "https://image.civitai.com/width=256/x.jpg" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    assert.equal(findAllByTag(handle.overlay, "img").length, 0, "a gated card must never render the thumbnail image");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-gated").length, 1, "the padlock must still render");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: the version <select> appears ONLY for a multi-version result, never for a single-version one", async () => {
+  _resetDownloadStateForTests();
+  const results = [
+    makeMultiVersionSearchResult({ modelId: 1, name: "Multi" }),
+    makeResult({ modelId: 2, versionId: 20, name: "Single" }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const versionSelects = findAll(handle.overlay, "wtn-cs-version-sel");
+    assert.equal(versionSelects.length, 1, "exactly one card (the multi-version one) gets a version <select>");
+
+    const options = versionSelects[0].children.filter((c) => c.tagName === "option");
+    assert.equal(options.length, 2);
+    assert.equal(options[0].textContent, "v1.0");
+    assert.equal(options[1].textContent, "v2.0");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a version with no name falls back to '#<version_id>' as its option label", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 5 });
+  result.versions[1].name = "";
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    const options = versionSelect.children.filter((c) => c.tagName === "option");
+    assert.equal(options[1].textContent, "#2");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: switching versions flips the card to installed (and back), never disturbs a different card's in-flight job, and stopPropagation guards the select", async () => {
+  _resetDownloadStateForTests();
+  const multi = makeMultiVersionSearchResult({ modelId: 1, name: "Multi" });
+  const other = makeResult({ modelId: 9, versionId: 90, name: "Other" });
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [multi, other], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-other" });
+    }
+    // Keep the OTHER card's job parked on "downloading" throughout.
+    return jsonResponse({ reason: "ok", status: "downloading", bytes: 1, total: 100, message: "" });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10000 });
+    await settle();
+
+    // Start the OTHER card's download first.
+    const cards = findAll(handle.overlay, "wtn-cs-card");
+    const otherCard = cards.find((c) => textOf(c).includes("Other"));
+    const otherDownloadBtn = findAll(otherCard, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    otherDownloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.ok(findAll(handle.overlay, "wtn-cs-action-cancel").length >= 1, "the other card's job must be in flight");
+
+    // Initially version v1.0 (not installed) is selected on the multi card.
+    const multiCardBefore = findAll(handle.overlay, "wtn-cs-card").find((c) => textOf(c).includes("Multi"));
+    assert.ok(findAll(multiCardBefore, "wtn-cs-action").some((e) => e.textContent === "↓ Download"), "v1.0 starts as available");
+
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    let clickPropagated = false;
+    versionSelect.dispatch("click", { stopPropagation: () => { clickPropagated = true; } });
+    assert.ok(clickPropagated, "the version select must stopPropagation on click (litegraph gesture guard)");
+
+    versionSelect.value = "2";
+    versionSelect.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    // Switched to v2.0, which is installed=true in the fixture.
+    const multiCardAfter = findAll(handle.overlay, "wtn-cs-card").find((c) => textOf(c).includes("Multi"));
+    assert.equal(findAll(multiCardAfter, "wtn-cs-action-installed").length, 1, "switching to an installed version flips the card to installed");
+
+    // The OTHER card's job must be completely undisturbed by the switch.
+    assert.ok(findAll(handle.overlay, "wtn-cs-action-cancel").length >= 1, "the other card's in-flight job must still be running");
+
+    // Switch back to v1.0 -- flips back to available.
+    const versionSelectAfter = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    versionSelectAfter.value = "1";
+    versionSelectAfter.dispatch("change", { stopPropagation() {} });
+    await settle();
+    const multiCardFinal = findAll(handle.overlay, "wtn-cs-card").find((c) => textOf(c).includes("Multi"));
+    assert.ok(findAll(multiCardFinal, "wtn-cs-action").some((e) => e.textContent === "↓ Download"), "switching back to v1.0 restores the available state");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: switching THIS SAME card's own dropdown away from the version currently downloading keeps the job visible+cancelable via the banner (regression, 2026-07-31), and switching back resumes the inline display", async () => {
+  _resetDownloadStateForTests();
+  const multi = makeMultiVersionSearchResult({ modelId: 5, name: "Same Card Switch" });
+  // Neither version installed -- isolates this regression from the
+  // switch-to-an-installed-version behaviour the test above already covers.
+  multi.versions[1].installed = false;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [multi], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-same-card" });
+    }
+    // Keep the job parked on "downloading" throughout -- this regression is
+    // about the DISPLAY, not the job's own lifecycle.
+    return jsonResponse({ reason: "ok", status: "downloading", bytes: 1, total: 100, message: "" });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10000 });
+    await settle();
+
+    // Start v1 (the card's primary/selected version) downloading.
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(downloadBtn, "v1 must start as available");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.ok(findAll(handle.overlay, "wtn-cs-action-cancel").length >= 1, "the card itself must show downloading+cancel for v1");
+    assert.equal(findAll(handle.overlay, "wtn-cs-active").length, 0, "no banner needed while the downloading version is the one displayed");
+
+    // Switch THIS SAME card's dropdown to v2, mid-flight -- the regression
+    // under test.
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    versionSelect.value = "2";
+    versionSelect.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    // The card no longer displays v1's progress (it's showing v2 now), but
+    // the job itself must still be visible and cancelable -- via the
+    // persistent banner.
+    const activeRows = findAll(handle.overlay, "wtn-cs-active");
+    assert.equal(activeRows.length, 1, "the banner must appear once the card stops displaying the in-flight version");
+    assert.ok(findAll(activeRows[0], "wtn-cs-action-cancel").length >= 1, "the banner must still offer a way to cancel");
+
+    // Switch back to v1 -- the card resumes showing it inline, and the
+    // banner steps aside again.
+    const versionSelectAfter = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    versionSelectAfter.value = "1";
+    versionSelectAfter.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-active").length, 0, "the banner must step aside once the card resumes showing the job inline");
+    assert.ok(findAll(handle.overlay, "wtn-cs-action-cancel").length >= 1, "the card itself must show the downloading state (with cancel) again for v1");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a selected version with no downloadable file disables Download and shows a readable reason, never firing filename: null", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 3, name: "No File Version" });
+  result.versions.push({
+    version_id: 3, name: "v3.0 (broken)", base_model: "SD 1.5",
+    file_name: null, download_url: null, size_kb: null,
+    gated: false, installed: false, thumb_url: null,
+  });
+  let startCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/download/start")) {
+      startCalls += 1;
+      return jsonResponse({ reason: "started", message: "", job_id: "job-x" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const versionSelect = findAll(handle.overlay, "wtn-cs-version-sel")[0];
+    versionSelect.value = "3";
+    versionSelect.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    const card = findAll(handle.overlay, "wtn-cs-card")[0];
+    const downloadBtn = findAll(card, "wtn-cs-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(downloadBtn, "a Download button still renders, just disabled");
+    assert.equal(downloadBtn.disabled, true);
+    assert.match(textOf(card), /No downloadable file for this version/);
+
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(startCalls, 0, "clicking a disabled/no-file Download must never fire /download/start");
+
+    handle.close();
   } finally {
     restoreFetch();
     _resetDownloadStateForTests();
