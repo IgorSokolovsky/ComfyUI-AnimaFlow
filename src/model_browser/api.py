@@ -35,7 +35,7 @@ here, server-side, before anything touches a filesystem path):
     GET  /wtn/model_browser/list?kind=...
     POST /wtn/model_browser/lookup   {kind, name, force_refresh?}
     POST /wtn/model_browser/forget   {kind, name}
-    GET  /wtn/model_browser/thumb?kind=...&name=...
+    GET  /wtn/model_browser/thumb?kind=...&name=...&max_edge=...
 
 M2 -- Civitai search + the streamed download queue (docs/lora-loader-
 design.md §9). `kind` is whitelisted the SAME way on every one of these; a
@@ -65,13 +65,24 @@ THEN verifies the resolved path's real location sits inside one of that
 kind's configured directories) -- this route serves file bytes straight
 off disk from a client-supplied name, so treating it as hostile input is
 not optional.
+
+Owner reversal, 2026-07-31: the saved preview file on disk is now the
+ORIGINAL, untransformed image (`civitai_parse.saved_preview_url`), so
+`/thumb` downscales it on the way OUT for the picker's small on-screen box
+instead of serving it untouched (`downscale_thumb_bytes`/`thumb_bytes_impl`
+above `thumb_path_impl`) -- Pillow (ships with ComfyUI, lazily imported,
+never a hard dependency of this package) does the resize; its absence is a
+silent fallback to the original bytes, never an error.
 """
 from __future__ import annotations
 
+import collections
+import io
 import mimetypes
+import os
 import urllib.parse
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from . import civitai_search
 from . import download
@@ -180,6 +191,166 @@ def thumb_path_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     if preview_path is None:
         return {"reason": "no_preview", "message": "No local preview image for this file.", "path": None}
     return {"reason": "ok", "path": preview_path}
+
+
+# ---------------------------------------------------------------------------
+# `/thumb` downscale-on-serve (owner, 2026-07-31): "save the ORIGINAL image
+# on disk, and downscale when serving it to a small UI box" -- see
+# `civitai_parse.saved_preview_url`'s own docstring for the save-time half
+# of this reversal. A saved preview can now genuinely be a multi-MB PNG
+# (the untransformed Civitai source), and this route serves it into the
+# picker's ~40px box -- decoding that at full size for every row in a
+# fifty-LoRA folder would be ~200 MB of unnecessary work. So THIS route
+# downscales on the way out; the file on disk is never touched.
+# ---------------------------------------------------------------------------
+
+# Sane default long edge for a 40-58px picker box at 2x DPI -- matches
+# `civitai_parse.LIVE_THUMB_TRANSFORM`'s own `width=256`, so the two
+# in-app thumbnail paths (the Civitai-sourced live one and this
+# locally-served one) land on the same effective resolution. An optional
+# `max_edge` query param can override it; no frontend change is required
+# for this to be correct on its own (see `_route_thumb` below).
+DEFAULT_THUMB_MAX_EDGE = 256
+
+# Process-wide, bounded LRU cache of ALREADY-DOWNSCALED bytes, keyed by
+# `(path, mtime, max_edge)`. Deliberately module-level -- unlike `12625c0`
+# ("the loader model cache belongs to the node, not the module"), which had
+# to move a cache OFF a module global because two different Loader Panel
+# NODE INSTANCES hold two different real MODEL/VAE/CLIP objects that must
+# not evict each other. There is no such per-instance identity here: this
+# cache holds nothing but re-encoded bytes of a file already on disk, and
+# the SAME `(path, mtime, max_edge)` always decodes to the SAME bytes no
+# matter which request or node asked -- sharing it across every request is
+# the entire point (a picker scroll re-requesting the same fifty thumbnails
+# should hit this cache instead of re-decoding each one). `mtime` in the key
+# means a file replaced on disk (re-download, hand-swapped preview) is
+# picked up with no explicit invalidation -- the old key just stops being
+# requested and eventually falls out of the bound below. Bounded so a long
+# session can't grow this into an unbounded leak.
+_THUMB_CACHE_MAX_ENTRIES = 256
+_thumb_downscale_cache: "collections.OrderedDict[Tuple[str, float, int], bytes]" = collections.OrderedDict()
+
+
+def _thumb_cache_get(key: Tuple[str, float, int]) -> Optional[bytes]:
+    """Read-through LRU lookup -- a hit is moved to the end so the eviction
+    order in `_thumb_cache_put` below is genuinely least-recently-USED, not
+    merely least-recently-inserted."""
+    cached = _thumb_downscale_cache.get(key)
+    if cached is not None:
+        _thumb_downscale_cache.move_to_end(key)
+    return cached
+
+
+def _thumb_cache_put(key: Tuple[str, float, int], data: bytes) -> None:
+    """Insert-or-replace `key`, then evict the oldest entries past
+    `_THUMB_CACHE_MAX_ENTRIES` -- the bound that keeps this a cache rather
+    than a leak."""
+    _thumb_downscale_cache[key] = data
+    _thumb_downscale_cache.move_to_end(key)
+    while len(_thumb_downscale_cache) > _THUMB_CACHE_MAX_ENTRIES:
+        _thumb_downscale_cache.popitem(last=False)
+
+
+def _load_pillow_image_module() -> Any:
+    """Lazy import of `PIL.Image` -- returns the module, or `None` if
+    Pillow isn't installed. Called ONLY from inside `downscale_thumb_bytes`
+    below, NEVER at module import time: `src/model_browser` must stay
+    importable with no ComfyUI AND no Pillow installed (this repo's own
+    test environment has neither -- `import PIL` fails here, verified --
+    which is exactly what lets this suite run at all).
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    return Image
+
+
+def downscale_thumb_bytes(
+    data: bytes,
+    max_edge: int = DEFAULT_THUMB_MAX_EDGE,
+    *,
+    image_module: Any = None,
+) -> Optional[bytes]:
+    """Shrinks `data` (a whole image file's raw bytes) so its longer edge is
+    at most `max_edge` pixels, preserving aspect ratio, and re-encodes to
+    the SAME format the source already used. Returns `None` on ANY failure
+    -- corrupt/unrecognised bytes, an unexpected decode error, or Pillow not
+    being installed at all -- so a caller (`thumb_bytes_impl` below) can
+    fall back to serving the original bytes unchanged: a degraded-but-
+    working thumbnail beats a broken route, and this fallback must be
+    silent, not an error response.
+
+    Never upscales: `Image.thumbnail` below only ever shrinks (its own
+    documented contract, never enlarges past the source's real size), so a
+    source already smaller than `max_edge` comes back re-encoded at its
+    original size rather than stretched up to it.
+
+    `image_module` is the injected imaging seam: production leaves it
+    `None` and this function lazily imports `PIL.Image` for itself
+    (`_load_pillow_image_module`, never at module scope -- see that
+    function's own docstring). Pillow itself is NOT importable in this
+    repo's test environment (verified: `import PIL` fails here), so tests
+    substitute a small stub exposing an `.open()` compatible with what this
+    function calls -- the seam that lets the actual downscale PATH be
+    exercised here, not merely its no-Pillow fallback.
+    """
+    if image_module is None:
+        image_module = _load_pillow_image_module()
+    if image_module is None:
+        return None
+    try:
+        img = image_module.open(io.BytesIO(data))
+        img.load()
+        fmt = (img.format or "PNG").upper()
+        img.thumbnail((max_edge, max_edge))
+        if fmt == "JPEG" and img.mode not in ("RGB", "L"):
+            # JPEG has no alpha channel -- a source PNG/GIF re-encoded to
+            # JPEG (its own reported format was JPEG but decoded to a mode
+            # JPEG can't save, seen on some CMYK/paletted sources) needs an
+            # explicit RGB conversion or `.save` raises.
+            img = img.convert("RGB")
+        out = io.BytesIO()
+        img.save(out, format=fmt)
+        return out.getvalue()
+    except Exception:  # noqa: BLE001 - best-effort only, must never raise
+        return None
+
+
+def thumb_bytes_impl(
+    path: str,
+    *,
+    max_edge: int = DEFAULT_THUMB_MAX_EDGE,
+    image_module: Any = None,
+) -> bytes:
+    """Reads `path` (already resolved and validated by `thumb_path_impl`
+    above) and returns the bytes to actually SERVE for
+    `GET /wtn/model_browser/thumb`: the original file downscaled to
+    `max_edge`'s longer edge when Pillow is available, or the untouched
+    original bytes when it isn't (`downscale_thumb_bytes` returning `None`
+    -- a silent, tested fallback, never an error).
+
+    Never rewrites `path` on disk -- this is a SERVE-time-only transform,
+    the entire point of the owner's 2026-07-31 reversal (see this module's
+    own "`/thumb` downscale-on-serve" comment above `DEFAULT_THUMB_MAX_
+    EDGE`). Cached in memory keyed by `(path, mtime, max_edge)`
+    (`_thumb_cache_get`/`_thumb_cache_put`) so repeat requests for the same
+    file at the same size -- a picker scrolling past the same rows again --
+    never re-read or re-decode anything.
+    """
+    mtime = os.path.getmtime(path)
+    key = (path, mtime, max_edge)
+    cached = _thumb_cache_get(key)
+    if cached is not None:
+        return cached
+
+    with open(path, "rb") as fh:
+        original = fh.read()
+
+    downscaled = downscale_thumb_bytes(original, max_edge, image_module=image_module)
+    result = downscaled if downscaled is not None else original
+    _thumb_cache_put(key, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -547,16 +718,25 @@ try:
             return web.Response(status=404)
         path = result["path"]
 
-        def _read_bytes() -> bytes:
-            with open(path, "rb") as fh:
-                return fh.read()
+        # Owner reversal, 2026-07-31: the saved preview is now the ORIGINAL
+        # image (`civitai_parse.saved_preview_url`), so this route downscales
+        # on the way OUT instead of serving it untouched -- see this
+        # module's own "`/thumb` downscale-on-serve" comment above
+        # `DEFAULT_THUMB_MAX_EDGE`. `max_edge` is an optional override; no
+        # frontend change is required, the default is right on its own.
+        max_edge_raw = request.query.get("max_edge")
+        max_edge = int(max_edge_raw) if max_edge_raw and max_edge_raw.isdigit() else DEFAULT_THUMB_MAX_EDGE
 
-        # THE offload that matters most on this route: a preview image can
-        # be several MB, and reading it is real disk I/O -- inline on the
-        # event loop it would stall ComfyUI's whole HTTP/WS server for that
-        # read, same "never block a graph run"-adjacent reasoning §9 states
-        # for the lookup route above.
-        data = await loop.run_in_executor(None, _read_bytes)
+        # THE offload that matters most on this route: a saved preview can
+        # now genuinely be a multi-MB original, and reading + decoding +
+        # re-encoding it is real CPU AND disk work -- inline on the event
+        # loop it would stall ComfyUI's whole HTTP/WS server for that whole
+        # window, same "never block a graph run"-adjacent reasoning §9
+        # states for the lookup route above. `thumb_bytes_impl` itself
+        # falls back to the untouched original bytes if Pillow isn't
+        # installed (`downscale_thumb_bytes`'s own docstring) -- still one
+        # executor hop either way, never inline.
+        data = await loop.run_in_executor(None, functools.partial(thumb_bytes_impl, path, max_edge=max_edge))
         content_type, _ = mimetypes.guess_type(path)
         return web.Response(body=data, status=200, content_type=content_type or "application/octet-stream")
 

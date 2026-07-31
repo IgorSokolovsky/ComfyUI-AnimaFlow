@@ -1057,9 +1057,11 @@ on every single render, forever**. This is also the direct cause of the owner-re
 `/wtn/model_browser/thumb?kind=loras&name=…`: that route serves the *local* preview file, and nothing had
 ever written one.
 
-**Fix: the backfill saves the image the same way a download does** — same `anim=false,width=450`
-(§7c-iv's settled size, deliberately not the ~4 MB original), same `.preview.<ext>` naming so
-`find_preview_path` picks it up with no changes.
+**Fix: the backfill saves the image the same way a download does** — whatever `civitai_parse.
+saved_preview_url` resolves to (⚠️ superseded below: as of 2026-07-31 that's the untransformed original for
+a still, deliberately no longer the ~4 MB source's `width=450` shrink this paragraph originally specced —
+downscaling for the small on-screen box moved to `/thumb`'s serve-time step instead), same `.preview.<ext>`
+naming so `find_preview_path` picks it up with no changes.
 
 **Which image, and who chooses.** The same rule the download already uses: **the frontend sends the URL of
 the candidate it is displaying**, which is level-filtered by construction. Do *not* teach `lookup.py` what
@@ -1079,7 +1081,36 @@ Once a model has been opened once, every later render hits the local file and Ci
 for that image again — which is the whole point of the request, and also makes the ⓘ panel work offline
 for anything previously viewed.
 
-##### SETTLED: the saved preview is `anim=false,width=450` (owner, 2026-07-31)
+##### SUPERSEDED (owner, 2026-07-31, later the same day): the saved preview is `anim=false,width=450`
+
+> ### ⚠️ SUPERSEDED (owner, 2026-07-31) — "save the ORIGINAL image on disk, downscale when SERVING it"
+>
+> The "SETTLED" call directly below shipped in `58a1749`, and lasted less than a day. The owner's later
+> decision reverses it: **save the ORIGINAL image on disk** (a future in-pack browser wants to display it
+> at full size — a pre-shrunk `width=450` copy can't serve that), **and downscale it when serving it to
+> a small UI box instead**. So the `width=450` transform below is no longer what gets fetched at download
+> time for a still image; `civitai_parse.saved_preview_url` now fetches `original=true` for a still,
+> and `/wtn/model_browser/thumb` (the route this same section already names as the panel's real thumbnail
+> source) downscales on the way OUT — never rewriting the file on disk.
+>
+> **One thing below still holds, unchanged: the VIDEO case.** `original=true` on a video-preview entry
+> returns the actual `video/mp4` (measured below, 2,768,985 B) — unusable as a preview image regardless of
+> which half of this reversal is in effect. A video candidate still needs `anim=false` **plus a width** to
+> get a poster frame out of the CDN at all (`anim=false` alone, no width, still returns `video/mp4` —
+> measured separately, not in the table below). So `saved_preview_url` is now **type-conditional**: a still
+> gets `original=true`; a video gets `anim=false,width=256` (the width number is a formality once
+> `anim=false` is present — see the byte table two paragraphs down, extended: identical at width=256, 450,
+> 1024 and 4096).
+>
+> The measurements immediately below (still 115× smaller at `width=450`, the video-as-preview bug, the
+> poster-frame byte count) are **unaffected by the reversal** — they're what motivated fixing the video
+> case in the first place, and that fix is exactly what survives. Only the STILL row's chosen transform
+> changed, from `anim=false,width=450` to `original=true`.
+>
+> Implemented in `src/model_browser/civitai_parse.py` (`saved_preview_url`, `SAVED_PREVIEW_VIDEO_
+> TRANSFORM`) and `src/model_browser/api.py` (`downscale_thumb_bytes`/`thumb_bytes_impl`, the new
+> serve-time downscale behind `/wtn/model_browser/thumb`, lazily importing Pillow — which ships with
+> ComfyUI — and falling back to the untouched original bytes if it isn't installed).
 
 `preview_url` was the untransformed `original=true` URL, kept that way "because fidelity matters" — a
 trade struck when the cost was assumed to be ~1.5 MB. Measured, on the same two URLs used throughout
@@ -1102,6 +1133,11 @@ to change video output.)
 So there are now **three** transforms, and they should be named as such rather than left as scattered
 literals: `width=256` for live thumbnails, `width=450` for the saved preview, and untransformed only where
 something genuinely needs the source file. All three carry `anim=false`.
+
+⚠️ **The `width=450` saved-preview transform above is itself superseded** — see the callout immediately
+above this subsection's heading. A still now saves untransformed (`original=true`); `width=450` survives
+only as the (now unused) historical measurement of "a mid-size still", and the actually-live third
+transform is `SAVED_PREVIEW_VIDEO_TRANSFORM` (`anim=false,width=256`), used for a video candidate only.
 
 > ### ⚠️ CORRECTION (2026-07-31) — this section originally described the ⓘ panel's thumbnail wrongly
 >

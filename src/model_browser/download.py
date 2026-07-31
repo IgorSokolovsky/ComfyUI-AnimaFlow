@@ -813,19 +813,24 @@ def fetch_preview_image(
     model download into a reported failure (task's own "must never fail or
     delay the model download").
 
-    docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
-    `anim=false,width=450`": `url` is normalised to `civitai_parse.
-    SAVED_PREVIEW_TRANSFORM` (`civitai_parse.saved_preview_url`) BEFORE the
-    fetch, regardless of what transform (if any) it already carried --
-    untransformed `original=true` (today's own `preview_url`), an existing
+    docs/lora-loader-design.md §7c-iv, owner reversal 2026-07-31 ("save the
+    ORIGINAL image on disk, downscale when SERVING it"): `url` is normalised
+    through `civitai_parse.saved_preview_url` BEFORE the fetch, regardless
+    of what transform (if any) it already carried -- untransformed
+    `original=true` (today's own `preview_url`), an existing
     `anim=false,width=256` (the frontend hands back the URL of the
     candidate it's ALREADY displaying, which is level-filtered by
     construction -- see that function's own docstring for why this needs no
-    second level check here), or anything else. 115x smaller than the
-    untransformed source on a still, and fixes a LIVE bug on a video-preview
-    entry that today saves 2.77 MB of raw `video/mp4` as its "preview
-    image" -- `anim=false` turns that same request into a small JPEG poster
-    frame instead.
+    second level check here), or anything else. That rewrite is TYPE-
+    CONDITIONAL now, not one fixed size: a still lands on `original=true`
+    (the untransformed source -- the owner's actual ask, so a future
+    in-pack browser can show it full-size), while a video candidate still
+    gets a poster-frame extraction (`anim=false,width=256`) -- `original=
+    true` on a video returns the actual `video/mp4` (measured 2,768,985 B),
+    which is unusable as a preview image and would never pass
+    `_PREVIEW_CONTENT_TYPES` below anyway (belt and braces: see that map's
+    own docstring for why no file gets written if one ever slipped
+    through).
 
     `timeout` reuses `stream_download`'s own existing 30s default (a
     preview fetch getting the SAME patience Civitai's other endpoints get,
@@ -894,8 +899,9 @@ def finalize_successful_download(
     network at all for this part), then fetches the community preview image
     the caller already has a URL for (one guarded network call, ONLY if
     `civitai_enabled`; `fetch_preview_image` itself normalises whatever URL
-    it's handed to `civitai_parse.SAVED_PREVIEW_TRANSFORM` before fetching).
-    Never raises, and never turns a successful download into a reported
+    it's handed via `civitai_parse.saved_preview_url` before fetching --
+    type-conditional, see that function's own docstring). Never raises,
+    and never turns a successful download into a reported
     failure -- every step here is independently best-effort.
 
     docs/lora-loader-design.md §7c-iv, "the sidecar's level applies at SAVE

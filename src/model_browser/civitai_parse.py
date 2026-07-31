@@ -19,21 +19,26 @@ file's `:361-374`/`:346-358`/(the thumbnail-selection loop inside
 `parse_civitai_modelversion`, `:401-419`) respectively.
 
 docs/lora-loader-design.md §7c-iv (2026-07-31, "the ⓘ panel's candidates
-live in the sidecar" / "SETTLED: the saved preview is
-`anim=false,width=450`"): there are now THREE named Civitai CDN transforms
-(`LIVE_THUMB_TRANSFORM`, `SAVED_PREVIEW_TRANSFORM`, `SOURCE_TRANSFORM`
-below), all sharing one rewrite helper (`_rewrite_transform`), and
-`parse_gallery_images` (moved here from `civitai_search.py`'s own
-`_parse_images`, which is now a plain alias -- same "one function, not two
-copies" rule `pick_gallery_image_url`'s own docstring already states) is
-what both `parse_model_version`'s new `images` key and the search path
-share, so the candidate-list rule lives in exactly one place.
+live in the sidecar" / "SETTLED: the saved preview is `anim=false,
+width=450`" -- SUPERSEDED, same day, by the owner's later reversal "save
+the ORIGINAL image on disk, downscale when SERVING it" -- see
+`saved_preview_url`'s own docstring below): there are now THREE named
+Civitai CDN transforms (`LIVE_THUMB_TRANSFORM`, `SAVED_PREVIEW_VIDEO_
+TRANSFORM`, `SOURCE_TRANSFORM` below), all sharing one rewrite helper
+(`_rewrite_transform`), and `parse_gallery_images` (moved here from
+`civitai_search.py`'s own `_parse_images`, which is now a plain alias --
+same "one function, not two copies" rule `pick_gallery_image_url`'s own
+docstring already states) is what both `parse_model_version`'s new
+`images` key and the search path share, so the candidate-list rule lives
+in exactly one place.
 """
 from __future__ import annotations
 
 import html as _html
+import os
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 
 def _clean_id(value: Any) -> Optional[int]:
@@ -262,15 +267,52 @@ def parse_model_version(obj: Any) -> Dict[str, Any]:
 
 
 # docs/lora-loader-design.md §7c-iv: THREE named Civitai CDN transforms,
-# not scattered literals -- every one of them carries `anim=false` (a no-op
-# on a still image, byte-identical either way; a poster-frame extractor on a
-# `type: "video"` entry, since `width=<n>` alone makes the CDN transcode
-# actual video -- `200 video/mp4`, ~1.66 MB, often timing out, and
-# unrenderable in an `<img>` regardless -- see `_rewrite_transform`'s own
-# docstring for the measured bytes).
+# not scattered literals. `LIVE_THUMB_TRANSFORM` carries `anim=false` (a
+# no-op on a still image, byte-identical either way; a poster-frame
+# extractor on a `type: "video"` entry, since `width=<n>` alone makes the
+# CDN transcode actual video -- `200 video/mp4`, ~1.66 MB, often timing out,
+# and unrenderable in an `<img>` regardless -- see `_rewrite_transform`'s
+# own docstring for the measured bytes).
 LIVE_THUMB_TRANSFORM = "anim=false,width=256"    # search card + ⓘ panel thumb
-SAVED_PREVIEW_TRANSFORM = "anim=false,width=450"  # the on-disk preview sidecar
 SOURCE_TRANSFORM = "original=true"                # the untransformed source file
+
+# Owner reversal, 2026-07-31: "save the ORIGINAL image on disk, downscale
+# when SERVING it to a small UI box" -- see `saved_preview_url`'s own
+# docstring. `SOURCE_TRANSFORM` (above) is now what a saved STILL preview
+# uses. A video candidate can't use `SOURCE_TRANSFORM` at all though --
+# measured live 2026-07-31, `original=true` on a video entry returns the
+# actual `video/mp4` (2,768,985 B), unusable as a preview image -- so a
+# video still needs a poster-frame extraction, and that needs `anim=false`
+# PLUS a width (`anim=false` alone, no width, STILL returns `video/mp4`,
+# also measured). The width VALUE below is a pure formality once
+# `anim=false` is present: measured byte-identical (64,550 B) at
+# width=256, 450, 1024 AND 4096 -- the CDN serves one stored poster frame
+# regardless of the number. Do not "optimise" this number later expecting
+# a size change; there isn't one to get.
+SAVED_PREVIEW_VIDEO_TRANSFORM = "anim=false,width=256"
+
+# `saved_preview_url`'s own "is this a video" sniff -- deliberately a small,
+# SPECIFIC list of extensions actually seen on Civitai's gallery
+# `type: "video"` entries (`.mp4`, measured), not a generic video-format
+# list, since a false positive here would needlessly poster-frame a still
+# and a false negative would let a video's raw bytes back through to
+# `SOURCE_TRANSFORM` (caught by `fetch_preview_image`'s Content-Type
+# backstop regardless -- see `saved_preview_url`'s own docstring).
+_VIDEO_URL_EXTENSIONS = frozenset({".mp4", ".webm", ".mov", ".m4v"})
+
+
+def _url_extension(url: Any) -> str:
+    """`url`'s own trailing file extension, lowercased with the leading dot
+    (e.g. `".mp4"`, `".jpeg"`, or `""` for none/non-string input) -- read off
+    the URL's PATH component only (`urlsplit`), so a query string can never
+    masquerade as the extension. None of the Civitai CDN URLs this module
+    handles carry a query string, but this keeps the check honest either
+    way rather than assuming that shape.
+    """
+    if not isinstance(url, str) or not url:
+        return ""
+    return os.path.splitext(urlsplit(url).path)[1].lower()
+
 
 # Matches ANY Civitai transform path segment -- `/original=true/`,
 # `/original=true,quality=90/`, `/width=256/`, `/anim=false,width=256/`, ...
@@ -336,24 +378,61 @@ def _thumb_url(url: str) -> str:
 
 
 def saved_preview_url(url: str) -> str:
-    """Rewrite `url` to `SAVED_PREVIEW_TRANSFORM` (`anim=false,width=450`) --
-    docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
-    `anim=false,width=450`": 115x smaller than the untransformed source on a
-    still (36,481 B vs 4,192,036 B), and fixes a LIVE bug on a video-preview
-    entry, which today saves 2.77 MB of `video/mp4` as its "preview image"
-    under whatever extension the writer chose -- `anim=false` turns that
-    same request into a 64,550 B JPEG poster frame instead, exactly like the
-    live-thumbnail rewrite already does. `download.fetch_preview_image` is
-    the only caller -- it normalises whatever URL it's handed (untransformed
-    `original=true`, an existing `anim=false,width=256` the frontend is
-    already displaying, or anything else) to this ONE size before ever
-    fetching, so the level-awareness this needs comes for free from the
-    caller already having filtered its candidate by the user's browsing
-    level (§7c-iv, "the sidecar's level applies at SAVE time... from the
-    CALLER, not from a new parameter") -- this function itself has no idea
-    what a browsing level even is, by design.
+    """Rewrite `url` to the transform the saved preview should ACTUALLY be
+    fetched at -- **type-conditional**, per the owner's 2026-07-31 reversal
+    of the same-day "SETTLED: the saved preview is `anim=false,width=450`"
+    decision (docs/lora-loader-design.md §7c-iv): *"save the ORIGINAL image
+    on disk, and downscale when serving it to a small UI box"* -- a future
+    in-pack browser wants to display the saved preview at full size, so the
+    file on disk should BE the original, not a pre-shrunk copy. Downscaling
+    for today's small on-screen box moved to SERVE time instead
+    (`api.py`'s `downscale_thumb_bytes`/`thumb_bytes_impl`, behind
+    `/wtn/model_browser/thumb`).
+
+    But `original=true` on a VIDEO entry returns the actual video
+    (`video/mp4`, measured 2,768,985 B) -- unusable as a preview image, and
+    NOT something `download.fetch_preview_image`'s Content-Type map would
+    ever accept (see that map's own docstring), so a video candidate must
+    still go through a poster-frame extraction rather than the untransformed
+    source. This function decides "is `url` a video" by sniffing the URL's
+    OWN trailing file extension (`_url_extension`) -- self-contained and
+    reliable here, since every URL this module handles ends in the real
+    media extension (`.mp4`, `.jpeg`, ...) -- rather than threading the
+    gallery entry's `type` field through from the caller, which would need
+    a second parameter on every call site for a fact the URL string already
+    carries on its own.
+
+      - a recognised video extension (`_VIDEO_URL_EXTENSIONS`) -> rewritten
+        to `SAVED_PREVIEW_VIDEO_TRANSFORM` (`anim=false,width=256`, a
+        poster frame -- see that constant's own docstring for why the
+        width number doesn't matter once `anim=false` is present);
+      - anything else (a still, or an extension this function doesn't
+        recognise) -> rewritten to `SOURCE_TRANSFORM` (`original=true`,
+        the untransformed original) -- the owner's actual ask.
+
+    Belt and braces either way: if a video ever slips through misidentified
+    as a still (an extension this function doesn't recognise, say), the
+    resulting fetch still comes back `Content-Type: video/mp4`, which
+    `download._PREVIEW_CONTENT_TYPES` does not map to an extension --
+    `fetch_preview_image` refuses to write ANY file in that case, rather
+    than saving an `.mp4` under an image extension. That backstop is what
+    made the original bug (a video's raw bytes silently saved as a
+    "preview image") possible to fix in the first place, and it still
+    holds after this reversal.
+
+    `download.fetch_preview_image` is the only caller -- it normalises
+    whatever URL it's handed (untransformed `original=true`, an existing
+    `anim=false,width=256` the frontend is already displaying, or anything
+    else) through this function before ever fetching, so the level-
+    awareness this needs comes for free from the caller already having
+    filtered its candidate by the user's browsing level (§7c-iv, "the
+    sidecar's level applies at SAVE time... from the CALLER, not from a
+    new parameter") -- this function itself has no idea what a browsing
+    level even is, by design.
     """
-    return _rewrite_transform(url, SAVED_PREVIEW_TRANSFORM)
+    if _url_extension(url) in _VIDEO_URL_EXTENSIONS:
+        return _rewrite_transform(url, SAVED_PREVIEW_VIDEO_TRANSFORM)
+    return _rewrite_transform(url, SOURCE_TRANSFORM)
 
 
 def _is_adult_image(nsfw: Any, level: Any) -> bool:
@@ -583,6 +662,6 @@ __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
     "pick_gallery_image_url", "pick_thumbnail_url", "parse_gallery_images",
     "civitai_shape_from_search_meta",
-    "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_TRANSFORM", "SOURCE_TRANSFORM",
+    "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_VIDEO_TRANSFORM", "SOURCE_TRANSFORM",
     "saved_preview_url",
 )

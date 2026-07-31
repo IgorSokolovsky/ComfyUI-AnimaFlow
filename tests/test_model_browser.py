@@ -22,6 +22,7 @@ Run directly: `python tests/test_model_browser.py` (no pytest, per project conve
 """
 from __future__ import annotations
 
+import collections
 import email.message
 import io
 import json
@@ -715,10 +716,11 @@ def test_thumb_url_passes_through_a_url_with_no_transform_segment():
 # docs/lora-loader-design.md §7c-iv: "Three named transforms, not scattered
 # literals" -- `_rewrite_transform` is the ONE shared rewrite helper behind
 # `_thumb_url` (LIVE_THUMB_TRANSFORM) and `saved_preview_url`
-# (SAVED_PREVIEW_TRANSFORM), and it must normalise ANY of the three input
-# shapes (an untransformed `original=true` source URL, an existing
-# `width=<n>` transform, or a bare URL with no transform segment at all) to
-# ANY of the three targets, not just rewrite `original=true` once.
+# (SAVED_PREVIEW_VIDEO_TRANSFORM, for a video candidate), and it must
+# normalise ANY of the three input shapes (an untransformed `original=true`
+# source URL, an existing `width=<n>` transform, or a bare URL with no
+# transform segment at all) to ANY of the three targets, not just rewrite
+# `original=true` once.
 # ---------------------------------------------------------------------------
 
 _ORIGINAL_URL = "https://image.civitai.com/xyz/original=true/1917130.jpeg"
@@ -728,52 +730,94 @@ _NO_TRANSFORM_URL = "https://image.civitai.com/xyz/1917130.jpeg"
 
 def test_rewrite_transform_named_constants_are_the_measured_values():
     assert civitai_parse.LIVE_THUMB_TRANSFORM == "anim=false,width=256"
-    assert civitai_parse.SAVED_PREVIEW_TRANSFORM == "anim=false,width=450"
+    assert civitai_parse.SAVED_PREVIEW_VIDEO_TRANSFORM == "anim=false,width=256"
     assert civitai_parse.SOURCE_TRANSFORM == "original=true"
 
 
 def test_rewrite_transform_from_original_true_to_each_target():
     assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.LIVE_THUMB_TRANSFORM) == \
         "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg"
-    assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.SAVED_PREVIEW_TRANSFORM) == \
-        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+    assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.SAVED_PREVIEW_VIDEO_TRANSFORM) == \
+        "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg"
     assert civitai_parse._rewrite_transform(_ORIGINAL_URL, civitai_parse.SOURCE_TRANSFORM) == _ORIGINAL_URL
 
 
 def test_rewrite_transform_from_an_existing_width_transform_to_each_target():
     # ⚠️ The load-bearing case: the frontend hands back a URL it is ALREADY
     # displaying -- our own `anim=false,width=256` live-thumbnail rewrite --
-    # and that has to become `width=450` (or any other target), not pass
+    # and that has to normalise cleanly to any other target, not pass
     # through untouched.
     assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.LIVE_THUMB_TRANSFORM) == \
         _ALREADY_LIVE_THUMB_URL
-    assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.SAVED_PREVIEW_TRANSFORM) == \
-        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+    assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.SAVED_PREVIEW_VIDEO_TRANSFORM) == \
+        _ALREADY_LIVE_THUMB_URL
     assert civitai_parse._rewrite_transform(_ALREADY_LIVE_THUMB_URL, civitai_parse.SOURCE_TRANSFORM) == \
         "https://image.civitai.com/xyz/original=true/1917130.jpeg"
 
 
 def test_rewrite_transform_with_no_transform_segment_passes_through_for_every_target():
-    for transform in (civitai_parse.LIVE_THUMB_TRANSFORM, civitai_parse.SAVED_PREVIEW_TRANSFORM, civitai_parse.SOURCE_TRANSFORM):
+    for transform in (civitai_parse.LIVE_THUMB_TRANSFORM, civitai_parse.SAVED_PREVIEW_VIDEO_TRANSFORM, civitai_parse.SOURCE_TRANSFORM):
         assert civitai_parse._rewrite_transform(_NO_TRANSFORM_URL, transform) == _NO_TRANSFORM_URL
 
 
-def test_saved_preview_url_emits_anim_false_width_450():
-    assert civitai_parse.saved_preview_url(_ORIGINAL_URL) == \
-        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+# ---------------------------------------------------------------------------
+# `saved_preview_url` (owner reversal, 2026-07-31): "save the ORIGINAL image
+# on disk, downscale when SERVING it" -- type-conditional, sniffed off the
+# URL's own trailing extension. A still (or an unrecognised extension)
+# rewrites to `SOURCE_TRANSFORM` (`original=true`); a recognised video
+# extension rewrites to `SAVED_PREVIEW_VIDEO_TRANSFORM`
+# (`anim=false,width=256`).
+# ---------------------------------------------------------------------------
 
 
-def test_saved_preview_url_normalises_an_already_live_thumbnail_url():
-    # The exact scenario §7c-iv calls out: the frontend sends back the URL
-    # of the candidate it's already displaying (`anim=false,width=256`).
+def test_url_extension_reads_the_path_component_only():
+    assert civitai_parse._url_extension("https://image.civitai.com/xyz/original=true/1917130.jpeg") == ".jpeg"
+    assert civitai_parse._url_extension("https://image.civitai.com/xyz/original=true/135268953.MP4") == ".mp4"
+    assert civitai_parse._url_extension("https://image.civitai.com/xyz/original=true/noext") == ""
+    assert civitai_parse._url_extension("") == ""
+    assert civitai_parse._url_extension(None) == ""
+
+
+def test_saved_preview_url_a_still_now_gets_the_untransformed_original():
+    # The owner's actual ask: the saved preview should BE the original,
+    # full-size image -- no more `width=450` shrink at save time.
+    assert civitai_parse.saved_preview_url(_ORIGINAL_URL) == _ORIGINAL_URL
+
+
+def test_saved_preview_url_normalises_an_already_live_thumbnail_url_to_the_original():
+    # The frontend sends back the URL of the candidate it's already
+    # displaying (`anim=false,width=256`) -- for a still, that now
+    # normalises all the way to the untransformed original, not to a
+    # mid-size shrink.
     assert civitai_parse.saved_preview_url(_ALREADY_LIVE_THUMB_URL) == \
-        "https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"
+        "https://image.civitai.com/xyz/original=true/1917130.jpeg"
 
 
 def test_saved_preview_url_on_a_video_entry_still_gets_the_poster_frame_transform():
+    # Unchanged by the reversal: `original=true` on a video returns the
+    # actual video, so a video candidate still needs the poster-frame
+    # extraction -- just at `width=256` now, not `width=450` (the number is
+    # a formality either way -- see `SAVED_PREVIEW_VIDEO_TRANSFORM`'s own
+    # comment for the measured byte-identical widths).
     video_url = "https://image.civitai.com/xyz/original=true/135268953.mp4"
     assert civitai_parse.saved_preview_url(video_url) == \
-        "https://image.civitai.com/xyz/anim=false,width=450/135268953.mp4"
+        "https://image.civitai.com/xyz/anim=false,width=256/135268953.mp4"
+
+
+def test_saved_preview_url_video_detection_is_case_insensitive_and_covers_webm_mov():
+    for ext in ("mp4", "MP4", "webm", "mov", "m4v"):
+        url = f"https://image.civitai.com/xyz/original=true/135268953.{ext}"
+        assert civitai_parse.saved_preview_url(url) == \
+            f"https://image.civitai.com/xyz/anim=false,width=256/135268953.{ext}"
+
+
+def test_saved_preview_url_an_unrecognised_extension_is_treated_as_a_still():
+    # Sniffing the extension is a heuristic, and this function errs toward
+    # "not a video" for anything it doesn't recognise -- the Content-Type
+    # backstop in `download.fetch_preview_image` is what actually protects
+    # against a real video slipping through under a weird extension.
+    url = "https://image.civitai.com/xyz/original=true/noext"
+    assert civitai_parse.saved_preview_url(url) == url
 
 
 def test_civitai_shape_from_search_meta_typical_fields():
@@ -1930,6 +1974,211 @@ def test_thumb_path_impl_rejects_a_traversal_name_same_guard_as_resolve_model_pa
             assert result["path"] is None
         finally:
             restore()
+
+
+# ---------------------------------------------------------------------------
+# `/thumb` downscale-on-serve (owner reversal, 2026-07-31): the saved
+# preview is now the ORIGINAL image, so `downscale_thumb_bytes`/
+# `thumb_bytes_impl` shrink it on the way OUT instead. Pillow is NOT
+# importable in this environment (verified: `import PIL` fails here), so
+# the no-Pillow fallback runs for REAL below (no monkeypatching needed --
+# `_load_pillow_image_module()` genuinely returns `None` here), and the
+# actual downscale PATH is exercised via the injected `image_module` seam
+# with a small fake stub standing in for `PIL.Image`.
+# ---------------------------------------------------------------------------
+
+
+class _FakeThumbImage:
+    """A minimal stand-in for a `PIL.Image.Image` -- just enough surface
+    for `downscale_thumb_bytes` to call: `.format`, `.mode`, `.load()`,
+    `.thumbnail((w, h))` (mutates `.size`, and -- like real Pillow -- NEVER
+    enlarges past the source size), `.convert(mode)`, `.save(fh, format=)`.
+    """
+
+    def __init__(self, fmt: str, size, mode: str = "RGB"):
+        self.format = fmt
+        self.size = size
+        self.mode = mode
+        self.loaded = False
+        self.thumbnail_calls = []
+        self.converted_to = None
+
+    def load(self):
+        self.loaded = True
+
+    def thumbnail(self, box):
+        self.thumbnail_calls.append(box)
+        max_edge = max(box)
+        w, h = self.size
+        longest = max(w, h)
+        if longest <= max_edge:
+            return  # real PIL contract: thumbnail() never enlarges
+        scale = max_edge / float(longest)
+        self.size = (max(1, int(w * scale)), max(1, int(h * scale)))
+
+    def convert(self, mode):
+        self.converted_to = mode
+        self.mode = mode
+        return self
+
+    def save(self, fh, format=None):  # noqa: A002 - matches PIL's own kwarg name
+        fh.write(f"FAKE:{format}:{self.size[0]}x{self.size[1]}:{self.mode}".encode())
+
+
+class _FakeThumbImageModule:
+    """Stand-in for `PIL.Image` -- `.open(io.BytesIO(...))` returns whatever
+    single `_FakeThumbImage` this module was built with, ignoring the actual
+    bytes (this test double is about exercising `downscale_thumb_bytes`'s
+    OWN logic, not real image decoding)."""
+
+    def __init__(self, image, *, raise_on_open=None):
+        self._image = image
+        self._raise_on_open = raise_on_open
+        self.open_calls = 0
+
+    def open(self, fh):
+        self.open_calls += 1
+        if self._raise_on_open is not None:
+            raise self._raise_on_open
+        return self._image
+
+
+def test_downscale_thumb_bytes_returns_none_when_pillow_unavailable():
+    # No `image_module` injected -- this genuinely exercises
+    # `_load_pillow_image_module()` against this environment's real absence
+    # of Pillow (verified: `import PIL` fails here), not a simulated one.
+    assert mb_api.downscale_thumb_bytes(b"any bytes at all", 256) is None
+
+
+def test_downscale_thumb_bytes_shrinks_using_the_injected_image_module():
+    fake_image = _FakeThumbImage("PNG", (4096, 2048))
+    fake_module = _FakeThumbImageModule(fake_image)
+
+    result = mb_api.downscale_thumb_bytes(b"png-bytes", 256, image_module=fake_module)
+
+    assert fake_module.open_calls == 1
+    assert fake_image.loaded is True
+    assert fake_image.thumbnail_calls == [(256, 256)]
+    assert fake_image.size == (256, 128)  # aspect ratio preserved, longer edge clamped
+    assert result == b"FAKE:PNG:256x128:RGB"
+
+
+def test_downscale_thumb_bytes_never_upscales_a_smaller_source():
+    # The source is already smaller than max_edge -- `.thumbnail()` (real
+    # Pillow's own documented contract, mirrored by the fake above) must
+    # not enlarge it.
+    fake_image = _FakeThumbImage("JPEG", (64, 32))
+    fake_module = _FakeThumbImageModule(fake_image)
+
+    result = mb_api.downscale_thumb_bytes(b"jpeg-bytes", 256, image_module=fake_module)
+
+    assert fake_image.size == (64, 32)
+    assert result == b"FAKE:JPEG:64x32:RGB"
+
+
+def test_downscale_thumb_bytes_converts_rgba_to_rgb_before_saving_as_jpeg():
+    # JPEG has no alpha channel -- an RGBA source reported as JPEG format
+    # needs an explicit conversion or a real `.save()` would raise.
+    fake_image = _FakeThumbImage("JPEG", (512, 512), mode="RGBA")
+    fake_module = _FakeThumbImageModule(fake_image)
+
+    result = mb_api.downscale_thumb_bytes(b"jpeg-bytes", 256, image_module=fake_module)
+
+    assert fake_image.converted_to == "RGB"
+    assert result == b"FAKE:JPEG:256x256:RGB"
+
+
+def test_downscale_thumb_bytes_returns_none_on_any_decode_failure():
+    fake_module = _FakeThumbImageModule(None, raise_on_open=ValueError("corrupt"))
+    assert mb_api.downscale_thumb_bytes(b"garbage", 256, image_module=fake_module) is None
+
+
+def test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        original = b"\x89PNG-fake-original-bytes"
+        with open(path, "wb") as fh:
+            fh.write(original)
+
+        # No `image_module` injected -- real absence of Pillow here.
+        result = mb_api.thumb_bytes_impl(path)
+        assert result == original
+
+
+def test_thumb_bytes_impl_uses_the_downscaled_bytes_and_never_rewrites_the_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        original = b"\x89PNG-fake-original-bytes"
+        with open(path, "wb") as fh:
+            fh.write(original)
+
+        fake_image = _FakeThumbImage("PNG", (4096, 2048))
+        fake_module = _FakeThumbImageModule(fake_image)
+
+        result = mb_api.thumb_bytes_impl(path, max_edge=256, image_module=fake_module)
+        assert result == b"FAKE:PNG:256x128:RGB"
+
+        # Serve-time-only: the file on disk is untouched.
+        with open(path, "rb") as fh:
+            assert fh.read() == original
+
+
+def test_thumb_bytes_impl_caches_by_path_mtime_and_max_edge():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        with open(path, "wb") as fh:
+            fh.write(b"original-bytes")
+
+        fake_image = _FakeThumbImage("PNG", (4096, 2048))
+        fake_module = _FakeThumbImageModule(fake_image)
+        first = mb_api.thumb_bytes_impl(path, max_edge=256, image_module=fake_module)
+        assert fake_module.open_calls == 1
+
+        # A second call for the SAME (path, mtime, max_edge) must hit the
+        # cache -- an image module that raises if ever touched proves it.
+        def _must_not_be_called(fh):
+            raise AssertionError("cache hit expected -- must not re-decode")
+
+        poisoned_module = _FakeThumbImageModule(None)
+        poisoned_module.open = _must_not_be_called
+        second = mb_api.thumb_bytes_impl(path, max_edge=256, image_module=poisoned_module)
+        assert second == first
+
+        # A DIFFERENT max_edge is a different cache key -- must re-decode.
+        fake_image_2 = _FakeThumbImage("PNG", (4096, 2048))
+        fake_module_2 = _FakeThumbImageModule(fake_image_2)
+        third = mb_api.thumb_bytes_impl(path, max_edge=128, image_module=fake_module_2)
+        assert fake_module_2.open_calls == 1
+        assert third != first
+
+        # Replacing the file (new mtime) must bust the cache too -- forced
+        # via `os.utime` rather than a sleep, so this doesn't depend on the
+        # filesystem's mtime resolution being finer than the test's timing.
+        with open(path, "wb") as fh:
+            fh.write(b"replaced-bytes")
+        os.utime(path, (time.time() + 5, time.time() + 5))
+        fake_image_3 = _FakeThumbImage("PNG", (100, 100))
+        fake_module_3 = _FakeThumbImageModule(fake_image_3)
+        fourth = mb_api.thumb_bytes_impl(path, max_edge=256, image_module=fake_module_3)
+        assert fake_module_3.open_calls == 1
+
+
+def test_thumb_cache_bounded_lru_evicts_the_oldest_entry():
+    previous_max = mb_api._THUMB_CACHE_MAX_ENTRIES
+    previous_cache = mb_api._thumb_downscale_cache
+    mb_api._THUMB_CACHE_MAX_ENTRIES = 2
+    mb_api._thumb_downscale_cache = collections.OrderedDict()
+    try:
+        mb_api._thumb_cache_put(("a", 1.0, 256), b"a")
+        mb_api._thumb_cache_put(("b", 1.0, 256), b"b")
+        mb_api._thumb_cache_put(("c", 1.0, 256), b"c")  # evicts "a" -- least recently used
+        assert mb_api._thumb_cache_get(("a", 1.0, 256)) is None
+        assert mb_api._thumb_cache_get(("b", 1.0, 256)) == b"b"
+        assert mb_api._thumb_cache_get(("c", 1.0, 256)) == b"c"
+        assert len(mb_api._thumb_downscale_cache) == 2
+    finally:
+        mb_api._THUMB_CACHE_MAX_ENTRIES = previous_max
+        mb_api._thumb_downscale_cache = previous_cache
 
 
 def test_every_impl_route_always_carries_a_reason_key():
@@ -3296,11 +3545,11 @@ def test_fetch_preview_image_success_writes_file_with_correct_extension():
         assert local.find_preview_path(dest_model) == result
 
 
-def test_fetch_preview_image_normalises_the_url_to_width_450_before_fetching():
-    # docs/lora-loader-design.md §7c-iv "SETTLED: the saved preview is
-    # anim=false,width=450" -- `fetch_preview_image` must normalise
-    # WHATEVER url it's handed (untransformed here) before the opener ever
-    # sees it.
+def test_fetch_preview_image_normalises_a_still_url_to_the_untransformed_original():
+    # Owner reversal, 2026-07-31: "save the ORIGINAL image on disk" --
+    # `fetch_preview_image` must normalise WHATEVER url it's handed
+    # (untransformed here) to `original=true` before the opener ever sees
+    # it, for a still (`.jpeg`).
     with tempfile.TemporaryDirectory() as tmp:
         dest_model = os.path.join(tmp, "a.safetensors")
         open(dest_model, "wb").close()
@@ -3313,13 +3562,14 @@ def test_fetch_preview_image_normalises_the_url_to_width_450_before_fetching():
         download.fetch_preview_image(
             "https://image.civitai.com/xyz/original=true/1917130.jpeg", dest_model, opener=opener,
         )
-        assert requested == ["https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"]
+        assert requested == ["https://image.civitai.com/xyz/original=true/1917130.jpeg"]
 
 
-def test_fetch_preview_image_normalises_an_already_transformed_url_to_width_450():
+def test_fetch_preview_image_normalises_an_already_transformed_still_url_to_the_original():
     # The frontend sends back the URL of the candidate it's already
-    # displaying, which carries `anim=false,width=256` -- must still become
-    # `width=450`, not pass through untouched.
+    # displaying, which carries `anim=false,width=256` -- for a still, that
+    # must still become the untransformed original, not pass through
+    # untouched and not stay at width=256.
     with tempfile.TemporaryDirectory() as tmp:
         dest_model = os.path.join(tmp, "a.safetensors")
         open(dest_model, "wb").close()
@@ -3332,7 +3582,47 @@ def test_fetch_preview_image_normalises_an_already_transformed_url_to_width_450(
         download.fetch_preview_image(
             "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg", dest_model, opener=opener,
         )
-        assert requested == ["https://image.civitai.com/xyz/anim=false,width=450/1917130.jpeg"]
+        assert requested == ["https://image.civitai.com/xyz/original=true/1917130.jpeg"]
+
+
+def test_fetch_preview_image_normalises_a_video_url_to_the_poster_frame_transform():
+    # Unchanged by the reversal: a video candidate can't use `original=true`
+    # (that returns the actual video) -- it still needs the poster-frame
+    # extraction, just at width=256 now instead of width=450.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        requested = []
+
+        def opener(url, timeout):
+            requested.append(url)
+            return _FakeDownloadResponse(b"jpegbytes", headers={"Content-Type": "image/jpeg"})
+
+        download.fetch_preview_image(
+            "https://image.civitai.com/xyz/original=true/135268953.mp4", dest_model, opener=opener,
+        )
+        assert requested == ["https://image.civitai.com/xyz/anim=false,width=256/135268953.mp4"]
+
+
+def test_fetch_preview_image_a_video_content_type_response_writes_no_file():
+    # Belt and braces (§7c-iv): if a video's response ever comes back as
+    # `video/mp4` -- whether because the URL sniff misidentified it, or a
+    # genuinely mislabeled candidate -- `_PREVIEW_CONTENT_TYPES` doesn't map
+    # it to an extension, so NO file is written, rather than an `.mp4`
+    # saved under an image extension.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(b"\x00\x00\x00\x18ftypmp42fake", headers={"Content-Type": "video/mp4"})
+
+        result = download.fetch_preview_image(
+            "https://image.civitai.com/xyz/original=true/135268953.mp4", dest_model, opener=opener,
+        )
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+        assert os.listdir(tmp) == ["a.safetensors"]
 
 
 def test_fetch_preview_image_rejects_non_https_url_without_calling_opener():
@@ -4400,9 +4690,12 @@ ALL_TESTS = [
     test_rewrite_transform_from_original_true_to_each_target,
     test_rewrite_transform_from_an_existing_width_transform_to_each_target,
     test_rewrite_transform_with_no_transform_segment_passes_through_for_every_target,
-    test_saved_preview_url_emits_anim_false_width_450,
-    test_saved_preview_url_normalises_an_already_live_thumbnail_url,
+    test_url_extension_reads_the_path_component_only,
+    test_saved_preview_url_a_still_now_gets_the_untransformed_original,
+    test_saved_preview_url_normalises_an_already_live_thumbnail_url_to_the_original,
     test_saved_preview_url_on_a_video_entry_still_gets_the_poster_frame_transform,
+    test_saved_preview_url_video_detection_is_case_insensitive_and_covers_webm_mov,
+    test_saved_preview_url_an_unrecognised_extension_is_treated_as_a_still,
     test_civitai_shape_from_search_meta_typical_fields,
     test_civitai_shape_from_search_meta_never_raises_on_malformed_input,
     test_parse_model_version_both_descriptions_present_are_returned_distinctly,
@@ -4467,6 +4760,15 @@ ALL_TESTS = [
     test_thumb_path_impl_no_preview_next_to_a_real_file,
     test_thumb_path_impl_ok_when_a_preview_file_sits_next_to_it,
     test_thumb_path_impl_rejects_a_traversal_name_same_guard_as_resolve_model_path,
+    test_downscale_thumb_bytes_returns_none_when_pillow_unavailable,
+    test_downscale_thumb_bytes_shrinks_using_the_injected_image_module,
+    test_downscale_thumb_bytes_never_upscales_a_smaller_source,
+    test_downscale_thumb_bytes_converts_rgba_to_rgb_before_saving_as_jpeg,
+    test_downscale_thumb_bytes_returns_none_on_any_decode_failure,
+    test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable,
+    test_thumb_bytes_impl_uses_the_downscaled_bytes_and_never_rewrites_the_file,
+    test_thumb_bytes_impl_caches_by_path_mtime_and_max_edge,
+    test_thumb_cache_bounded_lru_evicts_the_oldest_entry,
     test_every_impl_route_always_carries_a_reason_key,
     test_type_for_kind_known_and_unknown,
     test_build_search_url_shape_and_params,
@@ -4548,8 +4850,10 @@ ALL_TESTS = [
     test_download_manager_cancel_signals_should_cancel_and_reaches_cancelled_status,
     test_preview_extension_for_content_type_maps_known_types_and_rejects_unknown,
     test_fetch_preview_image_success_writes_file_with_correct_extension,
-    test_fetch_preview_image_normalises_the_url_to_width_450_before_fetching,
-    test_fetch_preview_image_normalises_an_already_transformed_url_to_width_450,
+    test_fetch_preview_image_normalises_a_still_url_to_the_untransformed_original,
+    test_fetch_preview_image_normalises_an_already_transformed_still_url_to_the_original,
+    test_fetch_preview_image_normalises_a_video_url_to_the_poster_frame_transform,
+    test_fetch_preview_image_a_video_content_type_response_writes_no_file,
     test_fetch_preview_image_rejects_non_https_url_without_calling_opener,
     test_fetch_preview_image_is_safe_redirect_refusal_never_calls_the_opener,
     test_fetch_preview_image_unknown_content_type_is_rejected_body_never_written,
