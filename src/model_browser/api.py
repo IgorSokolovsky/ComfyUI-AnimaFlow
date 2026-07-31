@@ -37,6 +37,27 @@ here, server-side, before anything touches a filesystem path):
     POST /wtn/model_browser/forget   {kind, name}
     GET  /wtn/model_browser/thumb?kind=...&name=...&max_edge=...
 
+"Remove an installed model" (docs/TODO.md, owner decisions taken
+2026-07-30) -- the first route in this pack that DESTROYS user data.
+`kind` is whitelisted the SAME way as every route above; `name` goes
+through the SAME `local.resolve_model_path` traversal/symlink guard, and
+the actual deletion (model + sidecar + preview) is `remove.delete_model`'s
+own job -- see that module's docstring for the full guarantee.
+
+    POST /wtn/model_browser/delete   {kind, name}
+
+The ⓘ backfill's own preview save (docs/lora-loader-design.md §7c-iv, "the
+ⓘ backfill must save the image too") -- `lookup_impl`'s cache-miss path
+writes metadata but never an image, so a model identified only through a
+hash lookup re-fetches its thumbnail from Civitai on every render. This
+route lets the frontend hand back the URL of the candidate it is ALREADY
+displaying (level-filtered by construction) right after a lookup resolves;
+see `lookup.save_preview`'s own docstring for the full contract (never
+overwrites an existing preview, a failed fetch never fails the call, no
+URL saves nothing).
+
+    POST /wtn/model_browser/save_preview   {kind, name, preview_url}
+
 M2 -- Civitai search + the streamed download queue (docs/lora-loader-
 design.md §9). A GIVEN `kind` is whitelisted the SAME way on every one of
 these; a download additionally re-validates the destination (`download.
@@ -111,6 +132,7 @@ from . import keys
 from . import logs as logs_mod
 from . import lookup as lookup_mod
 from . import rate_limit
+from . import remove as remove_mod
 from .kinds import folder_for_kind
 from .local import find_preview_path, list_models, resolve_model_path
 
@@ -188,6 +210,44 @@ def forget_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         return dict(_INVALID_KIND)
     name = payload.get("name")
     return {"reason": "ok", "deleted": lookup_mod.forget_cached(kind, name)}
+
+
+def delete_model_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """`POST /wtn/model_browser/delete`'s pure body -- "Remove an installed
+    model" (docs/TODO.md, owner decisions taken 2026-07-30): destroys the
+    model file `(kind, name)` resolves to, plus its `.civitai.info` sidecar
+    and local preview image if either exists. Same kind-whitelist
+    short-circuit as every route above; the actual guard (traversal,
+    absolute path, Windows separator, a directory, a symlink escaping the
+    kind's configured directories) is `remove.delete_model`'s own job, via
+    the SAME `local.resolve_model_path` every other route already reuses --
+    see that module's docstring for the full guarantee and reason
+    vocabulary (`not_found` / `write_error` / `ok`).
+    """
+    payload = payload or {}
+    kind = payload.get("kind")
+    if folder_for_kind(kind) is None:
+        return {**_INVALID_KIND, "removed": []}
+    name = payload.get("name")
+    return remove_mod.delete_model(kind, name)
+
+
+def save_preview_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """`POST /wtn/model_browser/save_preview`'s pure body -- docs/lora-
+    loader-design.md §7c-iv, "the ⓘ backfill must save the image too". Same
+    kind-whitelist short-circuit as every route above; the actual
+    resolution/save is `lookup.save_preview`'s own job -- see that
+    function's own docstring for the full contract (never overwrites an
+    existing preview, a failed fetch never fails this call, no URL saves
+    nothing).
+    """
+    payload = payload or {}
+    kind = payload.get("kind")
+    if folder_for_kind(kind) is None:
+        return {**_INVALID_KIND, "saved": False, "detail": None, "path": None}
+    name = payload.get("name")
+    preview_url = payload.get("preview_url")
+    return lookup_mod.save_preview(kind, name, preview_url)
 
 
 def thumb_path_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -868,6 +928,29 @@ try:
         # reasoning as the two routes above.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, functools.partial(forget_impl, payload))
+        return web.json_response(result, status=200)
+
+    @routes.post("/wtn/model_browser/delete")
+    async def _route_delete(request):  # noqa: ANN001 - aiohttp handler signature
+        payload = await request.json()
+        # `delete_model_impl` does real filesystem work -- resolution,
+        # containment re-verification, and up to three `os.remove` calls --
+        # same offload reasoning as every other route here, and especially
+        # non-negotiable for a route that destroys user data: it must never
+        # run inline on the event loop.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, functools.partial(delete_model_impl, payload))
+        return web.json_response(result, status=200)
+
+    @routes.post("/wtn/model_browser/save_preview")
+    async def _route_save_preview(request):  # noqa: ANN001 - aiohttp handler signature
+        payload = await request.json()
+        # `save_preview_impl` can make a synchronous `urllib` HTTP call
+        # (via `download.fetch_preview_image`) -- same `run_in_executor`
+        # reasoning as `/lookup` and `/search` above: never block ComfyUI's
+        # HTTP/WS server for this one extra, user-initiated request.
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, functools.partial(save_preview_impl, payload))
         return web.json_response(result, status=200)
 
     @routes.get("/wtn/model_browser/thumb")

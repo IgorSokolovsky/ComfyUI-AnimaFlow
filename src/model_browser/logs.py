@@ -331,7 +331,33 @@ format_sidecar_write_debug = _safe(_format_sidecar_write_debug_impl)
 
 
 # ---------------------------------------------------------------------------
-# Preview save (download.py's `fetch_preview_image` / `finalize_successful_download`).
+# Delete (remove.py's `delete_model`) -- "Remove an installed model", the
+# first code in this pack that destroys user data (docs/TODO.md, decisions
+# taken 2026-07-30). A delete is exactly the sort of thing that belongs at
+# `summary`, same one-line-per-operation convention every other feature here
+# already follows -- never `debug`-only, since this is the operation an
+# owner is most likely to want a permanent record of.
+# ---------------------------------------------------------------------------
+
+
+def _format_delete_summary_impl(*, kind: Any, name: Any, reason: str, removed: Any = None) -> str:
+    kind_text = kind if isinstance(kind, str) and kind else "(unknown kind)"
+    name_text = name if isinstance(name, str) and name else "(unknown name)"
+    removed_text = ",".join(removed) if isinstance(removed, (list, tuple)) and removed else "(none)"
+    return (
+        f"[AnimaFlow] Model Browser delete: kind={kind_text}, name='{name_text}', "
+        f"reason={reason}, removed={removed_text}"
+    )
+
+
+format_delete_summary = _safe(_format_delete_summary_impl)
+
+
+# ---------------------------------------------------------------------------
+# Preview save (download.py's `fetch_preview_image` / `finalize_successful_download`,
+# and lookup.py's `save_preview` -- the ⓘ backfill's own use of the SAME
+# `format_preview_summary` line below, docs/lora-loader-design.md §7c-iv
+# "the ⓘ backfill must save the image too").
 # ---------------------------------------------------------------------------
 
 
@@ -371,6 +397,7 @@ __all__ = (
     "format_lookup_summary",
     "format_lookup_cache_debug",
     "format_sidecar_write_debug",
+    "format_delete_summary",
     "format_preview_candidate_debug",
     "format_preview_summary",
 )

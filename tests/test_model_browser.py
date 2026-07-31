@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.model_browser import api as mb_api
 from src.model_browser import (
     civitai_client, civitai_parse, civitai_search, download, hashing, interop,
-    keys, kinds, local, lookup, rate_limit, sidecar,
+    keys, kinds, local, lookup, rate_limit, remove, sidecar,
 )
 
 # ---------------------------------------------------------------------------
@@ -1923,6 +1923,446 @@ def test_forget_impl_valid_kind_returns_ok_with_deleted_flag():
         try:
             result = mb_api.forget_impl({"kind": "loras", "name": "a.safetensors"})
             assert result == {"reason": "ok", "deleted": True}
+        finally:
+            restore()
+
+
+# ---------------------------------------------------------------------------
+# remove.py -- "Remove an installed model" (docs/TODO.md, owner decisions
+# taken 2026-07-30). The path guard IS the feature, so every adversarial
+# case below asserts BOTH that the delete was refused (`reason != "ok"`)
+# AND that the would-be target still exists on disk afterwards -- and each
+# runs across every kind the guard is generic over (`loras`/`checkpoints`/
+# `unet`), not just `loras`, per the task's own instruction.
+# ---------------------------------------------------------------------------
+
+# `(kind, folder_key)` pairs -- `unet`'s own `folder_paths` key differs from
+# its `kind` name (`kinds.KIND_TO_FOLDER`'s own docstring), same pairing
+# convention `test_resolve_model_path_traversal_guard_covers_the_newly_active_checkpoints_and_unet_kinds` above already uses.
+_DELETE_TEST_KINDS = (("loras", "loras"), ("checkpoints", "checkpoints"), ("unet", "diffusion_models"))
+
+
+def test_delete_model_refuses_unwhitelisted_kind_without_touching_folder_paths():
+    # No folder_paths stub installed at all -- proves the whitelist
+    # short-circuits before `local.resolve_model_path` ever imports it.
+    assert remove.delete_model("../../etc", "passwd")["reason"] != "ok"
+    assert remove.delete_model("not-a-real-kind", "a.safetensors")["reason"] != "ok"
+
+
+def test_delete_model_refuses_a_traversal_name_and_leaves_the_target_untouched():
+    for kind, folder_key in _DELETE_TEST_KINDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            secret_dir = os.path.join(tmp, "secret")
+            os.makedirs(model_root)
+            os.makedirs(secret_dir)
+            secret_path = os.path.join(secret_dir, "secret.safetensors")
+            open(secret_path, "wb").close()
+
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: []},
+            )
+            try:
+                traversal_name = os.path.join("..", "secret", "secret.safetensors")
+                assert os.path.isfile(os.path.join(model_root, traversal_name)), kind
+                result = remove.delete_model(kind, traversal_name)
+                assert result["reason"] != "ok", (kind, result)
+                assert result["removed"] == []
+                assert os.path.isfile(secret_path), kind
+            finally:
+                restore()
+
+
+def test_delete_model_refuses_an_absolute_path_as_name():
+    assert os.path.isfile("/etc/passwd"), "test platform assumption (POSIX /etc/passwd)"
+    for kind, folder_key in _DELETE_TEST_KINDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            os.makedirs(model_root)
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: []},
+            )
+            try:
+                result = remove.delete_model(kind, "/etc/passwd")
+                assert result["reason"] != "ok", (kind, result)
+            finally:
+                restore()
+    assert os.path.isfile("/etc/passwd")
+
+
+def test_delete_model_refuses_a_windows_separator_name():
+    for kind, folder_key in _DELETE_TEST_KINDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            os.makedirs(model_root)
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: []},
+            )
+            try:
+                for hostile in (
+                    "..\\..\\..\\Windows\\System32\\drivers\\etc\\hosts",
+                    "..\\secret.txt",
+                    "C:\\Windows\\System32\\config\\SAM",
+                ):
+                    result = remove.delete_model(kind, hostile)
+                    assert result["reason"] != "ok", (kind, hostile, result)
+            finally:
+                restore()
+
+
+def test_delete_model_refuses_a_symlink_escaping_the_models_root():
+    for kind, folder_key in _DELETE_TEST_KINDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            secret_dir = os.path.join(tmp, "secret")
+            os.makedirs(model_root)
+            os.makedirs(secret_dir)
+            secret_path = os.path.join(secret_dir, "secret.safetensors")
+            open(secret_path, "wb").close()
+            link_path = os.path.join(model_root, "link.safetensors")
+            os.symlink(secret_path, link_path)
+
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: ["link.safetensors"]},
+            )
+            try:
+                result = remove.delete_model(kind, "link.safetensors")
+                assert result["reason"] != "ok", (kind, result)
+                assert result["removed"] == []
+                assert os.path.isfile(secret_path), kind
+                assert os.path.islink(link_path), kind
+            finally:
+                restore()
+
+
+def test_delete_model_refuses_a_directory():
+    for kind, folder_key in _DELETE_TEST_KINDS:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = os.path.join(tmp, folder_key)
+            os.makedirs(model_root)
+            subdir = os.path.join(model_root, "adir")
+            os.makedirs(subdir)
+
+            restore = _install_fake_folder_paths(
+                roots_by_folder={folder_key: [model_root]},
+                names_by_folder={folder_key: ["adir"]},
+            )
+            try:
+                result = remove.delete_model(kind, "adir")
+                assert result["reason"] != "ok", (kind, result)
+                assert result["removed"] == []
+                assert os.path.isdir(subdir), kind
+            finally:
+                restore()
+
+
+def test_delete_model_not_found_for_a_nonexistent_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]}, names_by_folder={"loras": []},
+        )
+        try:
+            result = remove.delete_model("loras", "nope.safetensors")
+            assert result == {
+                "reason": "not_found",
+                "message": "That model file could not be found locally.",
+                "removed": [],
+            }
+        finally:
+            restore()
+
+
+def test_delete_model_happy_path_deletes_model_sidecar_and_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"modelId": 1})
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        open(preview_path, "wb").close()
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = remove.delete_model("loras", "a.safetensors")
+            assert result["reason"] == "ok"
+            assert sorted(result["removed"]) == ["model", "preview", "sidecar"]
+            assert not os.path.isfile(model_path)
+            assert not os.path.isfile(sidecar.sidecar_path(model_path))
+            assert not os.path.isfile(preview_path)
+        finally:
+            restore()
+
+
+def test_delete_model_missing_sidecar_and_preview_is_not_an_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = remove.delete_model("loras", "a.safetensors")
+            assert result == {"reason": "ok", "message": "", "removed": ["model"]}
+            assert not os.path.isfile(model_path)
+        finally:
+            restore()
+
+
+def test_delete_model_write_error_when_os_remove_fails_never_touches_sidecar_or_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"modelId": 1})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        previous_remove = os.remove
+
+        def failing_remove(path):
+            if path == model_path:
+                raise OSError("permission denied (simulated)")
+            previous_remove(path)
+
+        os.remove = failing_remove
+        try:
+            result = remove.delete_model("loras", "a.safetensors")
+            assert result["reason"] == "write_error"
+            assert result["removed"] == []
+            # The model file itself failed to delete -- nothing else was
+            # touched, so its sidecar must still be there too.
+            assert os.path.isfile(sidecar.sidecar_path(model_path))
+        finally:
+            os.remove = previous_remove
+            restore()
+
+
+def test_delete_model_impl_rejects_traversal_kind_without_folder_paths():
+    result = mb_api.delete_model_impl({"kind": "../../etc", "name": "passwd"})
+    assert result["reason"] == "invalid_kind"
+    assert result["removed"] == []
+
+
+def test_delete_model_impl_missing_kind_key_is_invalid():
+    assert mb_api.delete_model_impl({})["reason"] == "invalid_kind"
+    assert mb_api.delete_model_impl(None)["reason"] == "invalid_kind"
+
+
+def test_delete_model_impl_valid_kind_delegates_to_remove_delete_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = mb_api.delete_model_impl({"kind": "loras", "name": "a.safetensors"})
+            assert result == {"reason": "ok", "message": "", "removed": ["model"]}
+            assert not os.path.isfile(model_path)
+        finally:
+            restore()
+
+
+# ---------------------------------------------------------------------------
+# lookup.save_preview -- the ⓘ backfill's own preview save (docs/lora-
+# loader-design.md §7c-iv, "the ⓘ backfill must save the image too") + its
+# `save_preview_impl` route wrapper.
+# ---------------------------------------------------------------------------
+
+
+def test_save_preview_not_found_for_an_unresolvable_model():
+    result = lookup.save_preview("../../etc", "passwd", "https://image.civitai.com/x.jpeg")
+    assert result == {
+        "reason": "not_found",
+        "message": "That model file could not be found locally.",
+        "saved": False,
+        "detail": None,
+        "path": None,
+    }
+
+
+def test_save_preview_no_url_saves_nothing():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def _must_not_be_called(*args, **kwargs):
+                raise AssertionError("no preview_url must never reach the opener")
+
+            for missing in (None, "", 42):
+                result = lookup.save_preview("loras", "a.safetensors", missing, opener=_must_not_be_called)
+                assert result == {"reason": "ok", "message": "", "saved": False, "detail": "no_url", "path": None}
+            assert local.find_preview_path(model_path) is None
+        finally:
+            restore()
+
+
+def test_save_preview_never_overwrites_an_existing_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        with open(preview_path, "wb") as fh:
+            fh.write(b"existing-bytes")
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def _must_not_be_called(*args, **kwargs):
+                raise AssertionError("must never fetch when a preview already exists")
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/x.jpeg", opener=_must_not_be_called,
+            )
+            assert result == {
+                "reason": "ok", "message": "", "saved": False, "detail": "already_present", "path": None,
+            }
+            with open(preview_path, "rb") as fh:
+                assert fh.read() == b"existing-bytes"
+        finally:
+            restore()
+
+
+def test_save_preview_fetch_failure_is_a_clean_no_op():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def raising_opener(url, timeout):
+                raise urllib.error.URLError("no route to host")
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/x.jpeg", opener=raising_opener,
+            )
+            assert result == {"reason": "ok", "message": "", "saved": False, "detail": "fetch_failed", "path": None}
+            assert local.find_preview_path(model_path) is None
+        finally:
+            restore()
+
+
+def test_save_preview_happy_path_writes_the_preview_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def opener(url, timeout):
+                return _FakeDownloadResponse(b"\x89PNG-fake-bytes", headers={"Content-Type": "image/png"})
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/xyz/original=true/1.png", opener=opener,
+            )
+            expected_path = os.path.join(loras_root, "a.preview.png")
+            assert result == {"reason": "ok", "message": "", "saved": True, "detail": None, "path": expected_path}
+            assert local.find_preview_path(model_path) == expected_path
+            with open(expected_path, "rb") as fh:
+                assert fh.read() == b"\x89PNG-fake-bytes"
+        finally:
+            restore()
+
+
+def test_save_preview_refuses_the_same_hostile_inputs_as_delete():
+    # Same kind whitelist / traversal / symlink-escape guard as
+    # `remove.delete_model` above, since both go through the SAME
+    # `local.resolve_model_path` -- proven here rather than assumed.
+    result = lookup.save_preview("../../etc", "passwd", "https://image.civitai.com/x.jpeg")
+    assert result["reason"] == "not_found"
+    assert result["saved"] is False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        secret_dir = os.path.join(tmp, "secret")
+        os.makedirs(loras_root)
+        os.makedirs(secret_dir)
+        secret_path = os.path.join(secret_dir, "secret.safetensors")
+        open(secret_path, "wb").close()
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": []},
+        )
+        try:
+            traversal_name = os.path.join("..", "secret", "secret.safetensors")
+
+            def _must_not_be_called(*args, **kwargs):
+                raise AssertionError("a hostile name must never reach the fetch")
+
+            result = lookup.save_preview(
+                "loras", traversal_name, "https://image.civitai.com/x.jpeg", opener=_must_not_be_called,
+            )
+            assert result["reason"] == "not_found"
+            assert result["saved"] is False
+        finally:
+            restore()
+
+
+def test_save_preview_impl_rejects_traversal_kind_without_folder_paths():
+    result = mb_api.save_preview_impl({"kind": "../../etc", "name": "passwd", "preview_url": "https://x/1.png"})
+    assert result["reason"] == "invalid_kind"
+    assert result["saved"] is False
+
+
+def test_save_preview_impl_missing_kind_key_is_invalid():
+    assert mb_api.save_preview_impl({})["reason"] == "invalid_kind"
+    assert mb_api.save_preview_impl(None)["reason"] == "invalid_kind"
+
+
+def test_save_preview_impl_valid_kind_delegates_to_lookup_save_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = mb_api.save_preview_impl({"kind": "loras", "name": "a.safetensors", "preview_url": None})
+            assert result == {"reason": "ok", "message": "", "saved": False, "detail": "no_url", "path": None}
         finally:
             restore()
 
@@ -5260,6 +5700,28 @@ ALL_TESTS = [
     test_list_models_impl_missing_kind_key_is_invalid,
     test_list_models_impl_valid_kind_delegates_to_local_list_models,
     test_forget_impl_valid_kind_returns_ok_with_deleted_flag,
+    test_delete_model_refuses_unwhitelisted_kind_without_touching_folder_paths,
+    test_delete_model_refuses_a_traversal_name_and_leaves_the_target_untouched,
+    test_delete_model_refuses_an_absolute_path_as_name,
+    test_delete_model_refuses_a_windows_separator_name,
+    test_delete_model_refuses_a_symlink_escaping_the_models_root,
+    test_delete_model_refuses_a_directory,
+    test_delete_model_not_found_for_a_nonexistent_model,
+    test_delete_model_happy_path_deletes_model_sidecar_and_preview,
+    test_delete_model_missing_sidecar_and_preview_is_not_an_error,
+    test_delete_model_write_error_when_os_remove_fails_never_touches_sidecar_or_preview,
+    test_delete_model_impl_rejects_traversal_kind_without_folder_paths,
+    test_delete_model_impl_missing_kind_key_is_invalid,
+    test_delete_model_impl_valid_kind_delegates_to_remove_delete_model,
+    test_save_preview_not_found_for_an_unresolvable_model,
+    test_save_preview_no_url_saves_nothing,
+    test_save_preview_never_overwrites_an_existing_preview,
+    test_save_preview_fetch_failure_is_a_clean_no_op,
+    test_save_preview_happy_path_writes_the_preview_file,
+    test_save_preview_refuses_the_same_hostile_inputs_as_delete,
+    test_save_preview_impl_rejects_traversal_kind_without_folder_paths,
+    test_save_preview_impl_missing_kind_key_is_invalid,
+    test_save_preview_impl_valid_kind_delegates_to_lookup_save_preview,
     test_thumb_path_impl_rejects_traversal_kind_without_folder_paths,
     test_thumb_path_impl_missing_kind_key_is_invalid,
     test_thumb_path_impl_unresolvable_name_is_not_found,

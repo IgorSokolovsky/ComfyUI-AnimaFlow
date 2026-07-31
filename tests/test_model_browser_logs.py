@@ -249,6 +249,26 @@ def test_format_lookup_cache_debug_distinguishes_hit_and_miss():
     assert "miss" in miss
 
 
+def test_format_delete_summary_names_kind_name_reason_and_removed():
+    line = mb_logs.format_delete_summary(
+        kind="loras", name="a.safetensors", reason="ok", removed=["model", "sidecar", "preview"],
+    )
+    assert "kind=loras" in line
+    assert "a.safetensors" in line
+    assert "reason=ok" in line
+    assert "removed=model,sidecar,preview" in line
+
+
+def test_format_delete_summary_empty_removed_reads_as_none():
+    line = mb_logs.format_delete_summary(kind="loras", name="a.safetensors", reason="not_found", removed=[])
+    assert "removed=(none)" in line
+
+
+def test_format_delete_summary_fail_safe_on_garbage():
+    line = mb_logs.format_delete_summary(kind=object(), name=object(), reason=None, removed="not-a-list")
+    assert isinstance(line, str) and line
+
+
 def test_format_preview_summary_distinguishes_saved_skipped_failed():
     saved = mb_logs.format_preview_summary(status="saved", detail="/x/a.preview.png")
     skipped = mb_logs.format_preview_summary(status="skipped", detail="no preview URL")
@@ -908,6 +928,9 @@ ALL_TESTS = [
     test_format_lookup_summary_names_kind_name_and_reason,
     test_format_lookup_summary_appends_offline_reason_only_when_offline,
     test_format_lookup_cache_debug_distinguishes_hit_and_miss,
+    test_format_delete_summary_names_kind_name_reason_and_removed,
+    test_format_delete_summary_empty_removed_reads_as_none,
+    test_format_delete_summary_fail_safe_on_garbage,
     test_format_preview_summary_distinguishes_saved_skipped_failed,
     test_format_request_and_response_debug_redact_url_internally,
     test_current_level_defaults_to_off_with_no_comfyui_and_no_env_override,

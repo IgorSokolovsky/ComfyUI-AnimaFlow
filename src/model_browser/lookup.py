@@ -13,8 +13,9 @@ import logging
 from typing import Any, Dict
 
 from . import civitai_client, civitai_parse, hashing, sidecar
+from . import download as download_mod
 from . import logs as logs_mod
-from .local import resolve_model_path
+from .local import find_preview_path, resolve_model_path
 
 # One logger for the whole feature (`logs.py`'s own docstring).
 _logger = logging.getLogger(logs_mod.LOGGER_NAME)
@@ -277,6 +278,77 @@ def lookup_model_info(
     })
 
 
+def save_preview(
+    kind: object,
+    name: Any,
+    preview_url: Any,
+    *,
+    opener: Any = None,
+) -> Dict[str, Any]:
+    """"Save this preview URL for this model" -- docs/lora-loader-design.md
+    §7c-iv, "The ⓘ backfill must save the image too": a model identified
+    only through a Civitai hash lookup gets its metadata cached
+    (`lookup_model_info`) but never an image, so its thumbnail re-fetches
+    from Civitai on every render, forever -- and is the direct cause of a
+    404 on `/wtn/model_browser/thumb`, which serves the *local* preview
+    file that nothing had ever written. This closes that gap: called by the
+    frontend right after a lookup resolves, with the URL of the CANDIDATE
+    it is already displaying (level-filtered by construction -- this
+    function stays entirely level-agnostic, same reasoning `download.
+    finalize_successful_download`'s own docstring gives for the identical
+    choice on the download path: one rule, one place, never taught here a
+    second time).
+
+    Same kind-whitelist + containment guard as every other route: `name`
+    must resolve to a real, guarded local file (`local.resolve_model_path`)
+    before anything else happens.
+
+    ALWAYS returns `{"reason": ..., "message": str, "saved": bool,
+    "detail": str|None, "path": str|None}`, never raises:
+
+      - `not_found`             -- `(kind, name)` doesn't resolve to a real
+        local file.
+      - `ok`, `saved=False`     -- a correct NO-OP, never an error:
+          * `detail="no_url"`             -- no `preview_url` at all, or not
+            a non-empty string. Correct behaviour, not a failure.
+          * `detail="already_present"`    -- a preview already sits next to
+            the model (`local.find_preview_path`) -- NEVER overwritten,
+            whoever wrote it is the owner of that file now.
+          * `detail="fetch_failed"`       -- `download.fetch_preview_image`
+            (never raises on its own) came back empty-handed for any
+            reason. The metadata this lookup already resolved is the
+            valuable part; a failed image fetch must never fail THIS call.
+      - `ok`, `saved=True`      -- the preview file now exists at `path`.
+
+    `opener` is the same injectable network seam `download.
+    fetch_preview_image` already exposes for its own tests -- threaded
+    straight through, `None` meaning "use the real network".
+    """
+    def _result(reason: str, saved: bool, *, detail: Any = None, path: Any = None, message: str = "") -> Dict[str, Any]:
+        return {"reason": reason, "message": message, "saved": saved, "detail": detail, "path": path}
+
+    model_path = resolve_model_path(kind, name)
+    if model_path is None:
+        return _result("not_found", False, message="That model file could not be found locally.")
+
+    if not isinstance(preview_url, str) or not preview_url:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="no preview URL")
+        return _result("ok", False, detail="no_url")
+
+    if find_preview_path(model_path) is not None:
+        # A file on disk is the user's, whatever wrote it -- never clobber it.
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="already present")
+        return _result("ok", False, detail="already_present")
+
+    saved_path = download_mod.fetch_preview_image(preview_url, model_path, opener=opener)
+    if saved_path is None:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="failed")
+        return _result("ok", False, detail="fetch_failed")
+
+    logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="saved", detail=saved_path)
+    return _result("ok", True, path=saved_path)
+
+
 def forget_cached(kind: object, name: Any) -> bool:
     """"Forget cached" -- delete the sidecar for this model, so its info
     reverts to file-derived metadata (or a fresh Civitai lookup next time).
@@ -288,4 +360,4 @@ def forget_cached(kind: object, name: Any) -> bool:
     return sidecar.delete_sidecar(path)
 
 
-__all__ = ("lookup_model_info", "forget_cached")
+__all__ = ("lookup_model_info", "forget_cached", "save_preview")
