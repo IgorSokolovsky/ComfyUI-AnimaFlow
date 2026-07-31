@@ -919,8 +919,27 @@ them are easy to forget:
 | surface | picks via | level-aware? |
 |---|---|---|
 | search result card | the new `images` candidate list | ✅ this task |
-| **ⓘ info panel** (58px thumb) | `parse_model_version`'s single `thumbnail` key, from `pick_thumbnail_url` | ❌ **this section** |
-| download-time preview sidecar | `pick_gallery_image_url` (untransformed) | ❌ still an open owner decision |
+| **ⓘ info panel** (58px thumb) | `parse_model_version`'s single `thumbnail` key, from `pick_thumbnail_url` | ✅ **this section** |
+| **download-time preview sidecar** | `pick_gallery_image_url` (untransformed) | ✅ **owner decided 2026-07-31: "all 3 should be level aware"** |
+
+##### The sidecar's level applies at SAVE time, not display time
+
+These are not in tension with the "never filter what the user already has on disk" rule below — they are
+the two halves of it. **Choosing which image to download is a fetch, and fetches obey the level. Once the
+file is written it is a local file and is shown unconditionally.**
+
+Two consequences, both deliberate:
+
+- Download at PG and later raise the level, and the saved preview stays the PG one. **Do not re-fetch it**
+  — the user has the file; silently replacing it later would be worse than leaving it.
+- If **no** candidate passes the level, **no preview is saved.** A missing preview is correct here, never
+  a fallback to an over-level image.
+
+> **Still open — the sidecar's SIZE**, a separate question from its level. `preview_url` is currently the
+> untransformed `original=true` URL, measured at **4.19 MB of PNG** for one image; that trade was struck
+> when the cost was assumed to be ~1.5 MB. **Recommendation: `anim=false,width=450`** — ample for a
+> preview any model manager displays, a fraction of the bytes, and `anim=false` means a video-preview
+> model saves a poster frame rather than an `.mp4` written under an image extension. Not applied yet.
 
 The ⓘ panel **already inherits the `anim=false` video fix for free**, since it shares `_thumb_url`.
 Only the *level* is missing.
