@@ -943,6 +943,22 @@ destructive: the *old* selection rule only ever accepted `nsfwLevel` in `(None, 
 rule that produced it rather than assumed. Bump the sidecar's schema marker so the two shapes stay
 tellable apart.
 
+**Where the URLs go** (owner: *"we can save image urls to the lora info json or our json attached to the
+lora"* — yes, and it is ours to change): `<base>.civitai.info`, written by `sidecar.write_sidecar`, which
+holds `parse_model_version`'s output. Add the candidate list there as its own key, replacing the single
+`thumbnail` string. **Only image URLs — never image bytes.** Four sources end up in that panel, and only
+two of them need level logic:
+
+| source | file | level-aware? |
+|---|---|---|
+| our sidecar, new shape | `<base>.civitai.info` with candidates | ✅ pick at render time |
+| our sidecar, legacy shape | `<base>.civitai.info` with one `thumbnail` | ✅ grandfathered as level 2, above |
+| **Civicomfy interop** | `<base>.cminfo.json` | ➖ **nothing to do** — it stores no gallery images at all (`interop.py:105-110`); its preview is a local file |
+| **a local preview file** | `<base>.png`/`.jpeg` next to the model, via `local.find_preview_path` | ➖ **nothing to do** — it is already on the user's disk, deliberately |
+
+That last row is the general rule and worth stating once: **the browsing level governs what we fetch and
+show from Civitai, never what the user already has locally.** A file on disk was an explicit act.
+
 Forward note: §7c-ii's community **gallery** in the info panel (not in M2) must honour the level too when
 it lands — same candidate list, same rule. And the level is **orthogonal** to §7b's `Show preview
 thumbnails` on/off switch: that one decides whether a thumbnail element is built at all, this one decides
