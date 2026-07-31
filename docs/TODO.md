@@ -28,6 +28,35 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
+### 🐛 Three fixes to the Settings dialog, one small pass (2026-07-31)
+
+Held together only because they are all `js/shared/settings.mjs`, and a builder currently owns that file
+for the shared-thumbnail extraction. Do them in one pass once it lands.
+
+1. **A raw i18n key renders as a combo option** (owner screenshot). `Civitai search: base model filter`
+   shows `settings.AnimaFlow_Controls_CivitaiSearchBaseModel.options.` as its first choice.
+   `CIVITAI_SEARCH_BASE_MODEL_OPTIONS[0]` is `""` (the "any" choice); ComfyUI builds a per-option i18n key
+   `settings.<id>.options.<value>` with the option's own text as the fallback, and an empty value gives a
+   key ending in a bare `.` plus a **falsy fallback**, so it renders the key. The in-panel dropdown is
+   fine — `buildFilterSelect` maps `"" → "Any"` itself; only the Settings dialog goes through i18n.
+   Unique to this setting: sort, period and the level options are all non-empty. Fix by giving the option
+   a real label — check whether ComfyUI's combo accepts `{text, value}` objects (read the installed
+   frontend bundle, as the FLIP work did) before falling back to a sentinel value translated at the edge.
+2. **Rename the browsing-level setting to a scope-neutral id and label** — it is called
+   `CivitaiSearchLevel` but now governs the ⓘ panel and the saved preview too, and by owner intent every
+   surface that loads an image (`docs/lora-loader-design.md` §7c-iv). Renaming orphans the saved value, so
+   the level resets to PG once — acceptable **only** because the setting is one commit old.
+3. **Stop rendering the dead `Civitai search: show NSFW` boolean.** Its own tooltip says it does nothing.
+   Keep the id and default registered so an already-saved value is not discarded; drop the dialog entry.
+   **Not hypothetical: the owner's own screenshot (2026-07-31) shows this toggle switched ON** — they
+   turned on a control that is read by no code path, sitting directly above the one that works. A dead
+   control a user has already acted on is worse than clutter; it is a false explanation waiting to be
+   believed the next time something looks wrong.
+
+> Confirmed by the owner the same day: the browsing level **is** already global — it appears in
+> ComfyUI Settings → AnimaFlow → Controls, and the panel dropdown reads and writes that same value. There
+> is nothing to *add*; items 2 and 3 are the whole remaining job.
+
 ### 🧹 Collapse `model_info.mjs`'s local `repositionAfterChange` into the shared observer (unblocked 2026-07-31)
 
 `0a53398` put the re-place-on-content-growth mechanism in `overlay.mjs`, where every panel gets it for
