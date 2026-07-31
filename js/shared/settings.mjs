@@ -108,10 +108,22 @@ export const SETTING_IDS = {
   CIVITAI_SEARCH_BASE_MODEL: "AnimaFlow.Controls.CivitaiSearchBaseModel",
   CIVITAI_SEARCH_SORT: "AnimaFlow.Controls.CivitaiSearchSort",
   CIVITAI_SEARCH_PERIOD: "AnimaFlow.Controls.CivitaiSearchPeriod",
-  // NSFW ships OFF and thereafter follows the last value the user picked
-  // (owner decision, docs/lora-loader-design.md §7c-i) -- never re-defaults
-  // to off on a later session once the user has turned it on once.
+  // SUPERSEDED by CIVITAI_SEARCH_LEVEL, below (docs/lora-loader-design.md
+  // §7c-iv, owner 2026-07-31: a five-level "maximum browsing level" select
+  // replaces the NSFW checkbox, because Civitai's own `nsfw` request
+  // parameter is binary and a level selector needs the full gallery fetched
+  // client-side regardless). Kept registered and in `ANIMAFLOW_SETTINGS`
+  // below, UNUSED by any real code path now -- an id is append-only
+  // (this module's own top doc comment): removing it would silently discard
+  // whatever a user had already saved here, which is not a safe operation.
   CIVITAI_SEARCH_NSFW: "AnimaFlow.Controls.CivitaiSearchNsfw",
+  // The replacement (§7c-iv) -- five choices, `CIVITAI_SEARCH_LEVEL_OPTIONS`
+  // below, PG default. Stored as the LABEL string ("PG".."XXX"), matching
+  // `_SORT`/`_PERIOD`'s own "raw enum string, sent through a small mapping
+  // rather than the wire value itself" convention -- `civitai_search.mjs`'s
+  // own `levelLabelToInt` is the one place that turns this into the numeric
+  // bitmask value (`1`/`2`/`4`/`8`/`16`) the search route actually reads.
+  CIVITAI_SEARCH_LEVEL: "AnimaFlow.Controls.CivitaiSearchLevel",
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +165,17 @@ export const CIVITAI_SEARCH_BASE_MODEL_OPTIONS = [
 export const CIVITAI_SEARCH_SORT_OPTIONS = ["Relevancy", "Most Downloaded", "Highest Rated", "Newest"];
 export const CIVITAI_SEARCH_PERIOD_OPTIONS = ["Day", "Week", "Month", "Year", "AllTime"];
 
+// The "maximum browsing level" select (docs/lora-loader-design.md §7c-iv) --
+// five labels, in ascending order, matching Civitai's own `nsfwLevel`
+// bitmask (`1 PG · 2 PG-13 · 4 R · 8 X · 16 XXX`; `32 Blocked` is never
+// offered -- it is never browsable at any setting). The SETTING's own
+// persisted value is one of these label strings (`CIVITAI_SEARCH_LEVEL`,
+// above); `CIVITAI_SEARCH_LEVEL_TO_INT` is the one place that converts a
+// label to the numeric value the search route and the per-image
+// `nsfw_level` comparison actually use.
+export const CIVITAI_SEARCH_LEVEL_OPTIONS = ["PG", "PG-13", "R", "X", "XXX"];
+export const CIVITAI_SEARCH_LEVEL_TO_INT = { PG: 1, "PG-13": 2, R: 4, X: 8, XXX: 16 };
+
 // The documented default for each id, above — every consumer's own
 // `getSetting(id, DEFAULT)` fallback cites one of these by name rather than
 // a second literal, so "what does this setting do when unset" only has one
@@ -176,7 +199,11 @@ export const SETTING_DEFAULTS = {
   [SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL]: "",
   [SETTING_IDS.CIVITAI_SEARCH_SORT]: "Highest Rated",
   [SETTING_IDS.CIVITAI_SEARCH_PERIOD]: "AllTime",
+  // Superseded (§7c-iv) -- see CIVITAI_SEARCH_NSFW's own comment above.
   [SETTING_IDS.CIVITAI_SEARCH_NSFW]: false,
+  // PG (owner, §7c-iv) -- a genuine server-side guarantee (Civitai is never
+  // asked for adult content at all at this level), unlike the other four.
+  [SETTING_IDS.CIVITAI_SEARCH_LEVEL]: "PG",
 };
 
 // ---------------------------------------------------------------------------
@@ -376,9 +403,26 @@ export const ANIMAFLOW_SETTINGS = [
     type: "boolean",
     defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_NSFW],
     tooltip:
-      "Whether the Civitai search panel includes NSFW results. Ships OFF; "
-      + "once you turn it on, it stays on for next time -- remembered "
-      + "user-wide, the same as every other search filter here.",
+      "SUPERSEDED (docs/lora-loader-design.md §7c-iv) by 'Civitai search: "
+      + "maximum browsing level', below -- no longer read by any code path. "
+      + "Kept here, unused, only so a value you already saved isn't silently "
+      + "discarded.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_SEARCH_LEVEL,
+    name: "Civitai search: maximum browsing level",
+    category: ["AnimaFlow", "Controls", "Civitai search: maximum browsing level"],
+    type: "combo",
+    options: CIVITAI_SEARCH_LEVEL_OPTIONS,
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL],
+    tooltip:
+      "The maximum Civitai content level shown in the search panel's results "
+      + "and thumbnails (PG / PG-13 / R / X / XXX) -- remembered user-wide, "
+      + "the same as every other search filter here. Replaces the old NSFW "
+      + "checkbox (§7c-iv). PG is a genuine server-side guarantee -- Civitai "
+      + "is never asked for adult content at all -- while PG-13/R/X/XXX are "
+      + "filtered client-side from a fuller gallery fetch, since Civitai's "
+      + "own search API has no level parameter of its own.",
   },
 ];
 

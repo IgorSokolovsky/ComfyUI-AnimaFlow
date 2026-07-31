@@ -22,6 +22,7 @@ import {
   cachedInfo,
   cachedCategoryTag,
   thumbUrl,
+  searchModels,
 } from "./civitai_api.mjs";
 
 let failures = 0;
@@ -452,6 +453,45 @@ test("thumbUrl: null for a missing kind or name", () => {
   assert.equal(thumbUrl(null, "a.safetensors"), null);
   assert.equal(thumbUrl("loras", null), null);
   assert.equal(thumbUrl("", ""), null);
+});
+
+// =========================================================================
+// searchModels -- §7c-iv replaced the boolean `nsfw` request parameter with
+// the numeric `level` (Civitai's own bitmask value).
+// =========================================================================
+
+await asyncTest("searchModels: sends `level` (not `nsfw`) as a plain numeric string, always -- never conditionally", async () => {
+  let capturedUrl = null;
+  stubFetch(async (url) => {
+    capturedUrl = String(url);
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    await searchModels("loras", { level: 8 });
+    const params = new URL(capturedUrl, "http://x").searchParams;
+    assert.equal(params.get("level"), "8");
+    assert.equal(params.get("nsfw"), null, "the old boolean parameter must never be sent");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("searchModels: defaults to level=1 (PG) when omitted, and degrades a garbage level to 1 rather than sending NaN", async () => {
+  const captured = [];
+  stubFetch(async (url) => {
+    captured.push(String(url));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    await searchModels("loras", {});
+    await searchModels("loras", { level: NaN });
+    await searchModels("loras", { level: "not-a-number" });
+    for (const url of captured) {
+      assert.equal(new URL(url, "http://x").searchParams.get("level"), "1");
+    }
+  } finally {
+    restoreFetch();
+  }
 });
 
 // =========================================================================

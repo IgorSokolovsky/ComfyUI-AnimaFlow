@@ -14,6 +14,8 @@ import {
   CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
   CIVITAI_SEARCH_SORT_OPTIONS,
   CIVITAI_SEARCH_PERIOD_OPTIONS,
+  CIVITAI_SEARCH_LEVEL_OPTIONS,
+  CIVITAI_SEARCH_LEVEL_TO_INT,
   registerAnimaFlowSettings,
   _resetRegistrationForTests,
   getSetting,
@@ -35,16 +37,18 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — fifteen settings (the original ten, documented below,
+// Declaration shape — sixteen settings (the original ten, documented below,
 // plus M2's five: docs/lora-loader-design.md §8's `CIVITAI_API_KEY` and
 // §7c-i's four remembered search filters, `CIVITAI_SEARCH_BASE_MODEL`/
-// `_SORT`/`_PERIOD`/`_NSFW`), all under the AnimaFlow category, ids in the
-// documented namespace, every one with a tooltip and a default matching the
-// table. Re-count rather than trusting this number — it only ever grows.
+// `_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own `CIVITAI_SEARCH_LEVEL`, which
+// supersedes `_NSFW` but does not replace its own registered entry), all
+// under the AnimaFlow category, ids in the documented namespace, every one
+// with a tooltip and a default matching the table. Re-count rather than
+// trusting this number — it only ever grows.
 // ---------------------------------------------------------------------------
 
-test("ANIMAFLOW_SETTINGS declares exactly the fifteen documented settings", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 15);
+test("ANIMAFLOW_SETTINGS declares exactly the sixteen documented settings", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 16);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   assert.deepEqual(ids, Object.values(SETTING_IDS).sort());
 });
@@ -138,7 +142,31 @@ test("the four search-filter settings are combos/boolean matching civitai_search
 
   const nsfw = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW);
   assert.equal(nsfw.type, "boolean");
-  assert.equal(nsfw.defaultValue, false, "NSFW ships OFF (owner decision, §7c-i)");
+  assert.equal(nsfw.defaultValue, false, "NSFW ships OFF (owner decision, §7c-i) -- kept registered even though superseded (§7c-iv)");
+});
+
+// ---------------------------------------------------------------------------
+// §7c-iv -- the "maximum browsing level" select supersedes CIVITAI_SEARCH_NSFW.
+// ---------------------------------------------------------------------------
+
+test("CIVITAI_SEARCH_LEVEL: a combo of exactly PG/PG-13/R/X/XXX, defaulting to PG, remembered user-wide", () => {
+  const level = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_LEVEL);
+  assert.equal(level.type, "combo");
+  assert.deepEqual(level.options, CIVITAI_SEARCH_LEVEL_OPTIONS);
+  assert.deepEqual(CIVITAI_SEARCH_LEVEL_OPTIONS, ["PG", "PG-13", "R", "X", "XXX"]);
+  assert.equal(level.defaultValue, "PG");
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL], "PG");
+});
+
+test("CIVITAI_SEARCH_LEVEL_TO_INT: each label maps to Civitai's own bitmask value, in ascending order", () => {
+  assert.deepEqual(CIVITAI_SEARCH_LEVEL_TO_INT, { PG: 1, "PG-13": 2, R: 4, X: 8, XXX: 16 });
+});
+
+test("both the old NSFW id and the new LEVEL id stay registered -- an id is append-only, never deleted", () => {
+  assert.equal(SETTING_IDS.CIVITAI_SEARCH_NSFW, "AnimaFlow.Controls.CivitaiSearchNsfw");
+  assert.equal(SETTING_IDS.CIVITAI_SEARCH_LEVEL, "AnimaFlow.Controls.CivitaiSearchLevel");
+  assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW), "the superseded id must still be registered, not deleted");
+  assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_LEVEL));
 });
 
 // ---------------------------------------------------------------------------

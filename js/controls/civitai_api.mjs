@@ -376,16 +376,26 @@ export function thumbUrl(kind, name) {
 // ---------------------------------------------------------------------------
 
 /** `GET /wtn/model_browser/search` (docs/lora-loader-design.md §7c-i's full
- * filter set: base model / sort / period / NSFW, plus a free-text `query`
- * and pagination `cursor`). Always resolves to `{reason, message, results,
- * next_cursor, public_only}` -- `reason` is one of `invalid_kind`/
- * `rate_limited`/`offline`/`ok` from the route itself, or this function's own
- * `offline` degrade for a transport failure (never reaches the server at
- * all, or the reply isn't JSON with a usable `reason`). No client-side
- * caching here -- unlike `listModels`, a search result depends on the query
- * string, so there is nothing sensible to key a cache by that wouldn't just
- * be "the whole query string," which buys nothing over re-fetching. */
-export async function searchModels(kind, { query = "", baseModel = "", sort = "", period = "", nsfw = false, cursor = "", limit } = {}) {
+ * filter set: base model / sort / period / maximum browsing level, plus a
+ * free-text `query` and pagination `cursor`). Always resolves to `{reason,
+ * message, results, next_cursor, public_only}` -- `reason` is one of
+ * `invalid_kind`/`rate_limited`/`offline`/`ok` from the route itself, or this
+ * function's own `offline` degrade for a transport failure (never reaches
+ * the server at all, or the reply isn't JSON with a usable `reason`). No
+ * client-side caching here -- unlike `listModels`, a search result depends on
+ * the query string, so there is nothing sensible to key a cache by that
+ * wouldn't just be "the whole query string," which buys nothing over
+ * re-fetching.
+ *
+ * `level` (§7c-iv) replaces the old boolean `nsfw` parameter -- the numeric
+ * Civitai bitmask value the "maximum browsing level" select resolves to
+ * (`1` PG / `2` PG-13 / `4` R / `8` X / `16` XXX; `civitai_search.mjs`'s
+ * `levelLabelToInt` is what turns the setting's own label string into this).
+ * Always sent (never conditionally, unlike the old `nsfw` flag) -- the route
+ * needs it to decide whether to ask Civitai for adult content at all (PG) or
+ * fetch the fuller gallery for client-side filtering (everything above PG).
+ * Defaults to `1` (PG) for a garbage/missing value, never throws. */
+export async function searchModels(kind, { query = "", baseModel = "", sort = "", period = "", level = 1, cursor = "", limit } = {}) {
   if (!kind) {
     return { reason: "invalid_kind", message: "No model kind.", results: [], next_cursor: null, public_only: true };
   }
@@ -402,9 +412,7 @@ export async function searchModels(kind, { query = "", baseModel = "", sort = ""
   if (period) {
     params.set("period", period);
   }
-  if (nsfw) {
-    params.set("nsfw", "true");
-  }
+  params.set("level", String(Number.isFinite(level) ? level : 1));
   if (cursor) {
     params.set("cursor", cursor);
   }

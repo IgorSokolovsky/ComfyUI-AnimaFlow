@@ -17,22 +17,31 @@
  * ## What THIS slice builds, and what it deliberately does not
  *
  * The search input (debounced) + the full filter set (§7c-i: type locked,
- * base model / sort / period / NSFW all present, laid out as a compact row
- * of `<select>` pills rather than the modal's rail — "layout differs,
- * feature set does not"), the `public_only`/`rate_limited`/`offline` search
- * states, the four RESULT-CARD states (§7c-iii: installed / downloading /
- * available / gated, with the exact labels that section settles), the
- * editable destination folder (§ decision 5, defaulting to this kind's own
- * `models/<kind>` root), and the download/poll/cancel flow (§9: one job at a
- * time, server-side, never blocking a graph run). Docs task 2026-07-31 added
- * two more: a live 40px THUMBNAIL per result (`thumb_url`, the 256px gallery
- * rewrite — `buildThumb`) and a per-result VERSION PICKER (`resolveVersionView`
- * + the `<select>` in `buildCard`'s own right-hand ACTION COLUMN, stacked
- * directly above that card's action element — moved there 2026-07-31, owner:
- * "the version should be above the download button" — only rendered for a
- * multi-version result) — every render/download-payload decision in
- * `buildCard` reads the SELECTED version's own flat view, never the raw
- * multi-version result directly.
+ * base model / sort / period / maximum browsing level all present, laid out
+ * as a compact row of `<select>` pills rather than the modal's rail —
+ * "layout differs, feature set does not"), the `public_only`/`rate_limited`/
+ * `offline` search states, the four RESULT-CARD states (§7c-iii: installed /
+ * downloading / available / gated, with the exact labels that section
+ * settles), the editable destination folder (§ decision 5, defaulting to
+ * this kind's own `models/<kind>` root), and the download/poll/cancel flow
+ * (§9: one job at a time, server-side, never blocking a graph run). Docs task
+ * 2026-07-31 added two more: a live 40px THUMBNAIL per result and a
+ * per-result VERSION PICKER (`resolveVersionView` + the `<select>` in
+ * `buildCard`'s own right-hand ACTION COLUMN, stacked directly above that
+ * card's action element — moved there 2026-07-31, owner: "the version should
+ * be above the download button" — only rendered for a multi-version result)
+ * — every render/download-payload decision in `buildCard` reads the SELECTED
+ * version's own flat view, never the raw multi-version result directly.
+ *
+ * **§7c-iv (owner, 2026-07-31) replaced the single `thumb_url` string with an
+ * ordered `images: [{url, nsfw_level, type}, ...]` candidate list** (already
+ * thumbnail-rewritten server-side) — picking a URL out of it is now a
+ * FRONTEND decision, because it depends on the user's own "maximum browsing
+ * level" setting, which the server can't apply for anything above PG (see
+ * `levelLabelToInt`/`pickThumbCandidates`/`thumbState`'s own doc comments,
+ * and the CSS/`buildThumb` section below for the resulting FIVE thumbnail
+ * states). The old per-result `thumb_url` key is gone from the wire shape
+ * entirely — `resolveVersionView` now flattens `images`, not `thumb_url`.
  *
  * Explicitly OUT of scope (task brief, §7c-ii): the per-result VERTICAL info
  * panel with the community gallery, and `notfound`'s search-by-name link —
@@ -42,17 +51,19 @@
  * ## Filters are remembered USER-WIDE, never in the node's state blob
  *
  * `../shared/settings.mjs`'s `CIVITAI_SEARCH_BASE_MODEL`/`_SORT`/`_PERIOD`/
- * `_NSFW` ids (§7c-i: "remembered user-wide... not in the node's state
+ * `_LEVEL` ids (§7c-i: "remembered user-wide... not in the node's state
  * blob") — read on open, written back the moment the user changes one, so
  * every mount of this panel (this node, a future Loader Panel, the M2b
- * toolbar modal) opens with the SAME filters. This module reads/writes those
- * settings itself (unlike `model_picker.mjs`/`model_info.mjs`'s
- * `hideExtension`/`civitaiEnabled` convention of taking such things as a
- * caller-supplied parameter) — there is no per-node override for a browsing
- * preference like this at all, so there is nothing for a caller to inject;
- * `js/shared/settings.mjs` is itself track-agnostic (imports nothing of
- * ours), so reaching into it directly here does not violate the layering
- * guard, which only ever forbids a `lora_*` import.
+ * toolbar modal) opens with the SAME filters. `_LEVEL` (§7c-iv) supersedes
+ * the old `_NSFW` checkbox id -- see that id's own comment in `settings.mjs`
+ * for why the old one is kept registered, unused, rather than deleted. This
+ * module reads/writes those settings itself (unlike `model_picker.mjs`/
+ * `model_info.mjs`'s `hideExtension`/`civitaiEnabled` convention of taking
+ * such things as a caller-supplied parameter) — there is no per-node
+ * override for a browsing preference like this at all, so there is nothing
+ * for a caller to inject; `js/shared/settings.mjs` is itself track-agnostic
+ * (imports nothing of ours), so reaching into it directly here does not
+ * violate the layering guard, which only ever forbids a `lora_*` import.
  *
  * ## The download job is a MODULE-LEVEL singleton, not panel-local state
  *
@@ -102,6 +113,8 @@ import {
   CIVITAI_SEARCH_BASE_MODEL_OPTIONS,
   CIVITAI_SEARCH_SORT_OPTIONS,
   CIVITAI_SEARCH_PERIOD_OPTIONS,
+  CIVITAI_SEARCH_LEVEL_OPTIONS,
+  CIVITAI_SEARCH_LEVEL_TO_INT,
 } from "../shared/settings.mjs";
 
 const STYLE_ID = "wtn-cs-style";
@@ -188,8 +201,6 @@ const CSS = `
   background: var(--wtn-console, ${TOKENS.console}); cursor: pointer;
 }
 .wtn-cs-sel:hover { border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); color: var(--wtn-ink, ${TOKENS.ink}); }
-.wtn-cs-nsfw { display: inline-flex; align-items: center; gap: 4px; font-family: var(--wtn-font-mono, monospace); font-size: 10px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); cursor: pointer; }
-.wtn-cs-nsfw input { cursor: pointer; }
 
 .wtn-cs-hint { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; flex: none; }
 .wtn-cs-warn { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 10.5px; line-height: 1.35; margin: -1px 0 7px; }
@@ -234,8 +245,14 @@ const CSS = `
   mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat;
 }
 .wtn-cs-thumb-gated { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 15px; }
-/* The live in-browser thumbnail (\`thumb_url\`, docs task 2026-07-31) fills
-   the same 40px box the placeholder/padlock already occupy -- \`object-fit:
+/* §7c-iv's fifth thumb state -- deliberately NOT \`.wtn-cs-thumb-gated\`'s own
+   warn/amber colour, and a different glyph (\`buildThumb\`) -- "two padlocks
+   in one UI is a real ambiguity" (that section's own words): this one means
+   "nothing in this model's own gallery passes your browsing level", never
+   "needs an API key". */
+.wtn-cs-thumb-locked { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 15px; }
+/* The live in-browser thumbnail (an \`images[]\` candidate, §7c-iv) fills the
+   same 40px box the placeholder/padlock/lock already occupy -- \`object-fit:
    cover\` so a non-square gallery image never distorts. */
 .wtn-cs-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wtn-cs-meta { flex: 1 1 auto; min-width: 0; }
@@ -423,7 +440,7 @@ export function resultKey(result) {
  * showing" check duplicated in each of those functions.
  *
  * The returned view carries the SELECTED version's own `file_name`/
- * `download_url`/`size_kb`/`gated`/`installed`/`base_model`/`thumb_url`/
+ * `download_url`/`size_kb`/`gated`/`installed`/`base_model`/`images`/
  * `triggers`/`preview_url` (`api.py`'s `_annotate_search_results` computes
  * every one of these per version, not just the primary), plus
  * `primary_version_id` set to THAT version's own id -- not necessarily
@@ -464,7 +481,11 @@ export function resolveVersionView(result, selectedVersionId) {
     gated: !!version.gated,
     installed: !!version.installed,
     base_model: version.base_model || "",
-    thumb_url: version.thumb_url || null,
+    // §7c-iv: the ordered candidate list (`{url, nsfw_level, type}`,
+    // already thumbnail-rewritten server-side) replaces the old single
+    // `thumb_url` string -- `pickThumbCandidates`/`thumbState` are what turn
+    // this into an actual URL (or "nothing at this level"), below.
+    images: Array.isArray(version.images) ? version.images : [],
     triggers: Array.isArray(version.triggers) ? version.triggers : [],
     preview_url: version.preview_url || null,
     primary_version_id: version.version_id,
@@ -582,6 +603,117 @@ export function resultSubtitle(result) {
  * carried it as a chip would read as two different components, not one. */
 export function gatedSubtitle() {
   return "needs an API key";
+}
+
+// ---------------------------------------------------------------------------
+// §7c-iv -- the "maximum browsing level" select, thumbnail candidate
+// selection, and the retry-then-advance state machine. All pure, all
+// DOM-free, matching every other helper in this file.
+// ---------------------------------------------------------------------------
+
+/** The "maximum browsing level" setting's own label string ("PG".."XXX",
+ * `CIVITAI_SEARCH_LEVEL_OPTIONS`) -> Civitai's numeric bitmask value (`1`
+ * PG / `2` PG-13 / `4` R / `8` X / `16` XXX) -- the one place this file
+ * converts between the two. An unrecognised/garbage label (a hand-edited
+ * `comfy.settings.json`, or simply a value from before this setting existed)
+ * degrades to `1` (PG), the most conservative of the five, never throws. */
+export function levelLabelToInt(label) {
+  return CIVITAI_SEARCH_LEVEL_TO_INT[label] || 1;
+}
+
+/** The ordered candidate thumbnail URLs out of a version's own `images`
+ * array (§7c-iv) -- every entry whose `nsfw_level` is at or below `level`,
+ * in Civitai's own order, URLs only (a caller only ever needs the next URL
+ * to try, never the whole image object). **A `null`/absent per-image
+ * `nsfw_level` is treated as `16` (XXX)** -- conservative, so an unlabelled
+ * image never leaks below the user's own setting; every image measured
+ * against the live API carried a level, so this should be rare in practice
+ * (design doc §7c-iv). Garbage/non-array `images`, or a garbage/non-finite
+ * `level` (defaults to `1`, PG), degrade rather than throw. Comparing a
+ * SINGLE image's own `nsfw_level` with `<=` is safe -- unlike the model-level
+ * `nsfw_level`, which is a bitmask UNION across every image and must never
+ * be compared ordinally, one image carries exactly one level, so `1 < 2 < 4
+ * < 8 < 16` is a genuine ordering for this comparison. */
+export function pickThumbCandidates(images, level) {
+  const list = Array.isArray(images) ? images : [];
+  const lvl = Number.isFinite(level) ? level : 1;
+  return list
+    .filter((img) => img && typeof img.url === "string" && img.url)
+    .filter((img) => (Number.isFinite(img.nsfw_level) ? img.nsfw_level : 16) <= lvl)
+    .map((img) => img.url);
+}
+
+/** The thumbnail BOX's own state (§7c-iv's "fifth card state" -- about the
+ * box only, never the card's own action/download state): `"gated"` when the
+ * card itself is gated (§7c-iii, unchanged by this feature -- a gated card
+ * never shows a thumbnail regardless of `images`; `gated` wins over
+ * everything below, per that section's own "two padlocks" rule), else
+ * `"placeholder"` when `images` is genuinely empty (a model with no gallery
+ * at all -- also what an over-level model at the PG setting looks like,
+ * since the server trims its gallery to nothing before this ever runs; see
+ * this file's own top doc comment / `runSearch`'s PG note), `"locked"` when
+ * `images` is non-empty but NOTHING in it passes `level` (the model has
+ * pictures, they're all above the user's own setting), or `"image"` when at
+ * least one candidate passes -- `pickThumbCandidates` is what a caller then
+ * uses to get the actual URL list to try. */
+export function thumbState(cardState, images, level) {
+  if (cardState === "gated") {
+    return "gated";
+  }
+  const list = Array.isArray(images) ? images : [];
+  if (list.length === 0) {
+    return "placeholder";
+  }
+  return pickThumbCandidates(list, level).length > 0 ? "image" : "locked";
+}
+
+/** How long to wait before retrying the SAME failed thumbnail URL once
+ * (§7c-iv: "retry the same URL once after a short backoff (~400ms)") before
+ * advancing to the next candidate. Exported/overridable (`openCivitaiSearch`'s
+ * own `thumbRetryBackoffMs` option) purely so a test can drive this
+ * deterministically instead of waiting on a real ~400ms timer, matching this
+ * file's existing `pollIntervalMs` convention. */
+export const THUMB_RETRY_BACKOFF_MS = 400;
+
+/**
+ * Advances the retry-then-advance state machine (§7c-iv) one failure at a
+ * time. Pure and DOM-free so the SEQUENCE itself is directly testable
+ * without a real `<img>`/timer -- `buildThumb`'s own DOM driver
+ * (`attachThumbCandidate`, below) is a thin wrapper around this.
+ *
+ * `<img>.onerror` carries no status code (a timeout, a 404 and a transcode
+ * failure are indistinguishable from the error event) -- so this function
+ * never looks at WHY a candidate failed, only at how many times THIS one
+ * has.
+ *
+ * `state` is `{index, retried}` describing the candidate that just failed
+ * (its position in `candidates`, and whether IT has already been retried
+ * once) -- omit for the very first failure of `candidates[0]` (defaults to
+ * `{index: 0, retried: false}`). Returns `{action, index}`:
+ *   - `"retry"`     -- try `candidates[index]` again (the SAME url) --
+ *                      caller waits the backoff first.
+ *   - `"advance"`   -- try `candidates[index]` (a NEW, next url) -- no
+ *                      backoff; this is a fresh URL, not a repeat.
+ *   - `"exhausted"` -- every candidate has now failed (including its own
+ *                      retry) -- show the placeholder.
+ * Garbage/non-array `candidates` degrades to `[]` (immediately
+ * `"exhausted"`), never throws.
+ */
+export function advanceThumbAttempt(candidates, state) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const index = state && Number.isFinite(state.index) ? state.index : 0;
+  const retried = !!(state && state.retried);
+  if (index >= list.length) {
+    return { action: "exhausted", index };
+  }
+  if (!retried) {
+    return { action: "retry", index };
+  }
+  const nextIndex = index + 1;
+  if (nextIndex >= list.length) {
+    return { action: "exhausted", index: nextIndex };
+  }
+  return { action: "advance", index: nextIndex };
 }
 
 /**
@@ -995,42 +1127,103 @@ function buildFilterSelect(doc, options, current, onChange) {
 }
 
 /**
- * The 40px thumbnail box (docs task 2026-07-31, "Civitai search panel
- * thumbnails"). `gated` still wins over everything -- §7c-iii settled that a
- * gated card keeps the padlock and shows NO thumbnail, not reversed here,
- * so a gated card never even looks at `thumbUrl`. Otherwise: an `<img>` for
- * `thumbUrl` (its own `onerror` swaps in the SAME placeholder a missing URL
- * renders, so a 404/junk URL never shows a broken-image icon), or the
- * neutral placeholder when there's no URL at all -- matching
- * `model_picker.mjs`'s own "no preview" convention (§1a-v).
+ * Attaches (or re-attaches, on retry/advance) an `<img>` for
+ * `candidates[attempt.index]` into `thumb`. The DOM driver behind
+ * `advanceThumbAttempt`'s pure state machine (§7c-iv) -- `onerror` calls that
+ * function, then either waits `backoffMs` and re-attaches the SAME url
+ * (`"retry"`), re-attaches immediately for a NEW url (`"advance"`), or swaps
+ * in the placeholder (`"exhausted"`).
+ *
+ * `isStale()` is this card's own render-generation check
+ * (`openCivitaiSearch`'s `renderGeneration` counter) -- called before EVERY
+ * DOM mutation this function or its pending `setTimeout` ever perform, so a
+ * card that gets re-rendered mid-retry (the download poll re-renders the
+ * whole list every ~800ms) never leaves an orphaned timer writing into a
+ * thumb box that isn't showing anymore.
  */
-function buildThumb(doc, gated, thumbUrl) {
+function attachThumbCandidate(doc, thumb, candidates, attempt, isStale, backoffMs) {
+  const img = el(doc, "img", "wtn-cs-thumb-img");
+  img.loading = "lazy";
+  img.referrerPolicy = "no-referrer";
+  img.alt = "";
+  img.onerror = () => {
+    if (isStale()) {
+      return; // this card's own list-pass is no longer the current one -- never touch a detached thumb
+    }
+    // `removeChild` (not `.remove()`) so this works against both a real DOM
+    // element and this pack's own minimal doc-stub test double.
+    if (img.parentNode === thumb && typeof thumb.removeChild === "function") {
+      thumb.removeChild(img);
+    }
+    const result = advanceThumbAttempt(candidates, attempt);
+    if (result.action === "exhausted") {
+      thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
+      return;
+    }
+    const nextAttempt = { index: result.index, retried: result.action === "retry" };
+    if (result.action === "retry") {
+      // Same URL, after a short backoff (§7c-iv) -- `<img>.onerror` carries
+      // no status code, so a timeout/404/transcode failure are all handled
+      // by this ONE rule.
+      setTimeout(() => {
+        if (isStale()) {
+          return;
+        }
+        attachThumbCandidate(doc, thumb, candidates, nextAttempt, isStale, backoffMs);
+      }, backoffMs);
+      return;
+    }
+    // "advance" -- a genuinely different URL, tried immediately -- no backoff.
+    attachThumbCandidate(doc, thumb, candidates, nextAttempt, isStale, backoffMs);
+  };
+  img.src = candidates[attempt.index];
+  thumb.appendChild(img);
+}
+
+/**
+ * The 40px thumbnail box -- FIVE states now (§7c-iv's "fifth card state",
+ * `thumbState`'s own doc comment has the full priority rule):
+ *
+ *   - `"gated"`       -- §7c-iii's padlock, unchanged: no thumbnail at all.
+ *   - `"locked"`      -- NEW: a DIFFERENT lock glyph + tooltip than `gated`'s
+ *                        own (§7c-iv's own "two padlocks" warning) -- this
+ *                        model HAS images, every one is above the chosen
+ *                        browsing level.
+ *   - `"placeholder"` -- the existing neutral grey box, for a model with NO
+ *                        images at all.
+ *   - `"image"`       -- an `<img>` for `candidates[0]`, retried once on
+ *                        failure then advanced through the rest of
+ *                        `candidates` (`attachThumbCandidate`, above) before
+ *                        finally falling back to the placeholder.
+ *
+ * `isStale`/`backoffMs` are only meaningful for the `"image"` state -- see
+ * `attachThumbCandidate`'s own doc comment.
+ */
+function buildThumb(doc, state, candidates, isStale, backoffMs) {
   const thumb = el(doc, "div", "wtn-cs-thumb");
-  if (gated) {
+  if (state === "gated") {
     const lock = el(doc, "span", "wtn-cs-thumb-gated");
     lock.textContent = "\u{1F512}"; // 🔒 -- Civitai's own gate glyph, matching the mockup's padlock
+    lock.title = "Add a Civitai API key to download this file.";
     thumb.appendChild(lock);
     return thumb;
   }
-  if (thumbUrl) {
-    const img = el(doc, "img", "wtn-cs-thumb-img");
-    img.loading = "lazy";
-    img.referrerPolicy = "no-referrer";
-    img.alt = "";
-    img.onerror = () => {
-      // A 404/junk URL -- remove the broken `<img>` and fall back to the
-      // SAME placeholder a missing URL renders, never a broken-image icon.
-      // `removeChild` (not `.remove()`) so this works against both a real
-      // DOM element and this pack's own minimal doc-stub test double.
-      if (img.parentNode && typeof img.parentNode.removeChild === "function") {
-        img.parentNode.removeChild(img);
-      }
-      thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
-    };
-    img.src = thumbUrl;
-    thumb.appendChild(img);
+  if (state === "locked") {
+    // A DIFFERENT glyph than `gated`'s own 🔒 (§7c-iv: "two padlocks in one
+    // UI is a real ambiguity") -- "preview hidden", not "needs an API key".
+    const lock = el(doc, "span", "wtn-cs-thumb-locked");
+    lock.textContent = "\u{1F648}"; // 🙈 -- "see no evil", distinct from the gated padlock
+    lock.title = "Preview hidden — above your browsing level";
+    thumb.appendChild(lock);
     return thumb;
   }
+  if (state === "image" && Array.isArray(candidates) && candidates.length > 0) {
+    attachThumbCandidate(doc, thumb, candidates, { index: 0, retried: false }, isStale, backoffMs);
+    return thumb;
+  }
+  // "placeholder", or a garbage/empty candidates list reaching here anyway
+  // (defence in depth -- `buildCard` never calls this with "image" and an
+  // empty list, but this function never assumes its caller got that right).
   thumb.appendChild(el(doc, "span", "wtn-cs-thumb-ph"));
   return thumb;
 }
@@ -1041,15 +1234,21 @@ function buildThumb(doc, gated, thumbUrl) {
  * panel.
  *
  * @param {{ctx: {doc, getCanvasEl}, anchorEl: Element, kind: string,
- *   ownerKey?: string, onClose?: () => void, pollIntervalMs?: number}} opts
+ *   ownerKey?: string, onClose?: () => void, pollIntervalMs?: number,
+ *   thumbRetryBackoffMs?: number}} opts
  *   `pollIntervalMs` (default 800ms in real use) is test-only -- threaded
  *   straight through to `startDownloadJob` so a test can drive the download
  *   poll loop deterministically instead of waiting on real 800ms timers.
+ *   `thumbRetryBackoffMs` (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real
+ *   use) is the same kind of test-only override for the §7c-iv thumbnail
+ *   retry backoff.
  * @returns {object|null} the overlay handle, or `null` if this call just
  *   TOGGLED an already-open panel closed (mirrors `model_picker.mjs`'s own
  *   `openModelPicker` convention).
  */
-export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, pollIntervalMs = 800 } = {}) {
+export function openCivitaiSearch({
+  ctx, anchorEl, kind, ownerKey, onClose, pollIntervalMs = 800, thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
+} = {}) {
   const key = ownerKey || `civitai-search:${kind}`;
   if (closeOverlayIfOwnedBy(key)) {
     return null;
@@ -1108,7 +1307,9 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     baseModel: getSetting(SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL]),
     sort: getSetting(SETTING_IDS.CIVITAI_SEARCH_SORT, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_SORT]),
     period: getSetting(SETTING_IDS.CIVITAI_SEARCH_PERIOD, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_PERIOD]),
-    nsfw: !!getSetting(SETTING_IDS.CIVITAI_SEARCH_NSFW, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_NSFW]),
+    // §7c-iv: the label string ("PG".."XXX") -- `levelLabelToInt` is where
+    // this becomes the numeric value `searchModels`/thumbnail-picking need.
+    level: getSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_SEARCH_LEVEL]),
   };
 
   const baseModelSel = buildFilterSelect(doc, CIVITAI_SEARCH_BASE_MODEL_OPTIONS, currentFilters.baseModel, (v) => {
@@ -1132,21 +1333,16 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   });
   filters.appendChild(periodSel);
 
-  const nsfwLabel = el(doc, "label", "wtn-cs-nsfw");
-  const nsfwCheckbox = el(doc, "input");
-  nsfwCheckbox.type = "checkbox";
-  nsfwCheckbox.checked = currentFilters.nsfw;
-  nsfwCheckbox.addEventListener("click", (e) => e.stopPropagation());
-  nsfwCheckbox.addEventListener("change", () => {
-    currentFilters.nsfw = nsfwCheckbox.checked;
-    setSetting(SETTING_IDS.CIVITAI_SEARCH_NSFW, currentFilters.nsfw);
+  // §7c-iv: "Maximum browsing level" replaces the NSFW checkbox -- PG is a
+  // genuine server-side guarantee, PG-13/R/X/XXX are filtered client-side
+  // from a fuller gallery fetch (this file's own top doc comment).
+  const levelSel = buildFilterSelect(doc, CIVITAI_SEARCH_LEVEL_OPTIONS, currentFilters.level, (v) => {
+    currentFilters.level = v;
+    setSetting(SETTING_IDS.CIVITAI_SEARCH_LEVEL, v);
     runSearch({ resetCursor: true });
   });
-  const nsfwText = el(doc, "span");
-  nsfwText.textContent = "NSFW";
-  nsfwLabel.appendChild(nsfwCheckbox);
-  nsfwLabel.appendChild(nsfwText);
-  filters.appendChild(nsfwLabel);
+  levelSel.title = "Maximum browsing level — PG never asks Civitai for adult content at all; PG-13/R/X/XXX filter a fuller gallery client-side.";
+  filters.appendChild(levelSel);
   pinned.appendChild(filters);
 
   const hint = el(doc, "div", "wtn-cs-hint");
@@ -1203,6 +1399,14 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   // affordance appended below them (`renderList`) instead of being replaced.
   let loadingMore = false;
   let searchSeq = 0;
+  // §7c-iv's own "make sure a card that re-renders mid-retry doesn't leave a
+  // stale timer writing to a detached element" -- bumped once at the very
+  // top of every `renderList()` call (below); a thumbnail's own pending
+  // retry/advance timer (`attachThumbCandidate`'s `isStale` closure) captures
+  // the generation IT was built under and refuses to touch the DOM once a
+  // later `renderList()` has moved the generation past it, regardless of
+  // whether the old thumb box object happens to still be reachable.
+  let renderGeneration = 0;
   const cardMessages = new Map(); // resultKey -> a readable line under that card
   // The version picker's own selection state (docs task 2026-07-31) -- keyed
   // by `model_id`, value is the chosen `version_id`. Lives in THIS closure
@@ -1283,7 +1487,20 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
     const job = getActiveDownloadState();
     const state = resultCardState(view, job, _sessionGatedKeys);
 
-    card.appendChild(buildThumb(doc, state === "gated", view.thumb_url));
+    // §7c-iv: the thumbnail box's own state is a SEPARATE decision from the
+    // card's action state above -- `thumbState` folds `gated` in as the one
+    // thing that still wins over everything (§7c-iii's rule, unchanged).
+    // `gen`/`isStale` are this card's own render-generation capture (this
+    // file's own `renderGeneration` doc comment) -- captured HERE, once per
+    // card build, so every retry/advance step this card's thumb ever takes
+    // shares the same stale-check regardless of how many re-renders happen
+    // while a retry timer is still pending.
+    const levelInt = levelLabelToInt(currentFilters.level);
+    const tState = thumbState(state, view.images, levelInt);
+    const candidates = tState === "image" ? pickThumbCandidates(view.images, levelInt) : [];
+    const gen = renderGeneration;
+    const isStale = () => gen !== renderGeneration;
+    card.appendChild(buildThumb(doc, tState, candidates, isStale, thumbRetryBackoffMs));
 
     const meta = el(doc, "div", "wtn-cs-meta");
     const title = el(doc, "div", "wtn-cs-title");
@@ -1450,6 +1667,11 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
   }
 
   function renderList() {
+    // §7c-iv -- every card built by this pass shares this new generation, so
+    // a previously-built card's own thumbnail retry/advance timer (captured
+    // under the OLD generation) can tell it is now stale, even though the
+    // old thumb box object itself may still technically be reachable.
+    renderGeneration += 1;
     renderActive();
     list.innerHTML = "";
     if (loading) {
@@ -1501,6 +1723,20 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
    * own trailing call, below) and on every later search/filter change, so
    * checking the API key setting here covers both of the task's "natural
    * points" with one call.
+   *
+   * ⚠️ §7c-iv's accepted PG cost, documented rather than fixed: at the PG
+   * setting the request below sends `level: 1`, which the search route turns
+   * into `nsfw=false` -- Civitai then returns an adult model with its OWN
+   * gallery trimmed to level-1 images only (sometimes none), never the
+   * model's full set. Such a model therefore arrives with an EMPTY `images`
+   * array, indistinguishable here from a genuinely image-less one --
+   * `thumbState` renders the plain placeholder for it, not the `locked` lock,
+   * even though the real reason is "above your level," not "no pictures."
+   * That is the accepted trade for PG being a genuine server-side guarantee
+   * (Civitai is never even ASKED for adult content at that setting) rather
+   * than a cosmetic client-side filter -- see this file's own top doc
+   * comment and design doc §7c-iv for the full reasoning. Not fixable from
+   * here: the information needed to tell the two apart was never sent.
    */
   async function runSearch({ resetCursor = true } = {}) {
     reconcileGatedKeysOnApiKeySignature(
@@ -1531,7 +1767,7 @@ export function openCivitaiSearch({ ctx, anchorEl, kind, ownerKey, onClose, poll
       baseModel: currentFilters.baseModel,
       sort: currentFilters.sort,
       period: currentFilters.period,
-      nsfw: currentFilters.nsfw,
+      level: levelLabelToInt(currentFilters.level),
       cursor: resetCursor ? "" : (nextCursor || ""),
     });
     if (seq !== searchSeq) {

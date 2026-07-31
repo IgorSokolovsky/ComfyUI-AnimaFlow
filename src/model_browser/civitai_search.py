@@ -51,6 +51,40 @@ DEFAULT_PERIOD = "AllTime"
 DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
 
+# docs/lora-loader-design.md §7c-iv's "Maximum browsing level" -- Civitai's
+# own `nsfwLevel` bitmask values a user can pick as a ceiling: PG · PG-13 ·
+# R · X · XXX (32 "Blocked" is deliberately absent -- never browsable at any
+# setting, so it's not a valid REQUEST level either). PG is the default, and
+# it is the one genuine server-side guarantee: at PG we ask Civitai for
+# `nsfw=false` and never request adult content at all, rather than fetching
+# it and choosing not to render it. Every level above PG requires
+# `nsfw=true` (measured: there is no level-granular request parameter --
+# `browsingLevel=31`/`nsfw=16`/`nsfw=X` are all HTTP 400), so anything above
+# PG is filtered CLIENT-SIDE against the full gallery `nsfw=true` returns --
+# see `api.py`'s `search_impl` for where that request-level split happens.
+LEVEL_VALUES: Sequence[int] = (1, 2, 4, 8, 16)
+DEFAULT_LEVEL = 1
+
+
+def clean_level(value: Any) -> int:
+    """A requested browsing level -> a valid member of `LEVEL_VALUES`, or
+    `DEFAULT_LEVEL` (PG) for anything else -- same "garbage falls back to
+    the default" tolerance `build_search_url` already gives `sort`/`period`,
+    extended to the level query param (`api.py`'s `search_impl` is the only
+    caller). Never raises: a non-numeric value, `None`, a bool, or a valid
+    int that just isn't one of the five real levels (e.g. `32`/"Blocked",
+    or a negative/garbage number) all fall back to PG -- the safe default,
+    consistent with treating an unknown level as "not safe to assume above
+    PG" everywhere else in this module.
+    """
+    if isinstance(value, bool):
+        return DEFAULT_LEVEL
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LEVEL
+    return value if value in LEVEL_VALUES else DEFAULT_LEVEL
+
 
 def type_for_kind(kind: object) -> Optional[str]:
     """`kind` -> its Civitai `types` filter value, or `None` for anything
@@ -246,6 +280,48 @@ def _parse_files(files_raw: Any, *, gated: bool) -> List[Dict[str, Any]]:
     return out
 
 
+def _parse_images(images_raw: Any) -> List[Dict[str, Any]]:
+    """A version's raw `images` gallery -> an ordered list of
+    `{url, nsfw_level, type}` CANDIDATES, each `url` already thumbnail-
+    rewritten (`civitai_parse._thumb_url`'s `anim=false,width=256`) --
+    docs/lora-loader-design.md §7c-iv, "Send the CANDIDATES to the
+    frontend, not one pre-chosen URL". Once the browsing level is a user
+    setting, picking a single image ahead of time is a FRONTEND decision
+    (it knows the user's chosen level; this layer doesn't), so this
+    function hands over every usable entry rather than selecting one --
+    unlike `civitai_parse.pick_gallery_image_url`/`pick_thumbnail_url`,
+    it does NOT filter by adult-ness at all; every level from the response
+    is included, in the SAME order Civitai returned them, so the frontend
+    can walk it "first at or below my level, falling forward on failure".
+
+    Only entries with a truthy `url` are kept (an entry with no URL at all
+    is not a usable candidate for anything). `nsfw_level` is that entry's
+    own `nsfwLevel`, or `None` when absent -- absent means UNKNOWN, never
+    "safe": an existing sidecar/cached search result predates this field
+    entirely, and inventing a safe default for it would defeat the whole
+    point of a level ceiling. `type` is the entry's own `type` (`"image"`/
+    `"video"`), or `""` when absent -- a video entry is a normal candidate
+    here, not something to drop: `_thumb_url`'s `anim=false` is exactly what
+    makes a video's poster frame renderable, so filtering video out here
+    would throw away the fix.
+    """
+    if not isinstance(images_raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for image in images_raw:
+        if not isinstance(image, dict):
+            continue
+        url = image.get("url")
+        if not url:
+            continue
+        out.append({
+            "url": civitai_parse._thumb_url(str(url)),
+            "nsfw_level": _clean_int(image.get("nsfwLevel")),
+            "type": str(image.get("type") or ""),
+        })
+    return out
+
+
 def pick_primary_file(files: Any) -> Optional[Dict[str, Any]]:
     """The file a plain "download this" action should use: the one Civitai
     marks `primary`, or the first file if none is (every real response has
@@ -291,24 +367,27 @@ def _parse_version(v: Any) -> Optional[Dict[str, Any]]:
         # `.civitai.info` sidecar without a fresh lookup).
         "triggers": _clean_string_list(v.get("trainedWords")),
         # The first non-adult gallery image's URL, UNTRANSFORMED (never the
-        # 256px `_thumb_url` rewrite `civitai_parse.pick_thumbnail_url`
-        # applies for a LIVE in-browser thumbnail, its sibling key just
-        # below -- this one is reused, as-is, to SAVE a local preview file
-        # at download time, so a higher-fidelity image is worth keeping).
-        # `None` when the gallery has no usable (non-adult) image -- never
-        # invent one.
+        # thumbnail rewrite `_parse_images`'s own `images` list applies
+        # below) -- kept exactly as it was: reused, as-is, to SAVE a local
+        # preview file at download time, so a higher-fidelity image is
+        # worth keeping. `None` when the gallery has no usable (non-adult)
+        # image -- never invent one. The open questions about whether this
+        # sidecar image should follow the browsing level, and what size it
+        # should be saved at, are OUT OF SCOPE here (docs/lora-loader-
+        # design.md §7c-iv) -- do not touch this key for that reason.
         "preview_url": civitai_parse.pick_gallery_image_url(v.get("images")),
-        # The SAME gallery pick as `preview_url` above, but 256px-rewritten
-        # (`civitai_parse.pick_thumbnail_url`) -- the search PANEL's own
-        # live in-browser thumbnail (docs task 2026-07-31, "Civitai search
-        # panel thumbnails"), roughly 55 KB instead of ~1.5 MB. Deliberately
-        # a SEPARATE key from `preview_url`, not a client-side rewrite of it
-        # -- the two serve different consumers (a fast on-screen thumbnail
-        # here vs. a faithful saved-to-disk preview there) and must stay
-        # independently computable even if the adult-filtering pick itself
-        # ever needs to diverge between them. `None` under the exact same
-        # "no usable (non-adult) image" condition as `preview_url`.
-        "thumb_url": civitai_parse.pick_thumbnail_url(v.get("images")),
+        # docs/lora-loader-design.md §7c-iv, "Send the CANDIDATES to the
+        # frontend, not one pre-chosen URL": the version's FULL gallery,
+        # ordered exactly as Civitai returned it, each entry thumbnail-
+        # rewritten (`_parse_images`) -- replaces the old single pre-chosen
+        # `thumb_url` key entirely (deleted, not kept alongside this). Once
+        # the browsing level became a per-user setting, picking ONE image
+        # ahead of time stopped being a decision this layer can make --
+        # only the frontend knows the viewer's chosen level, so it walks
+        # this list itself ("first candidate at or below my level, falling
+        # forward on failure"). Deliberately UNFILTERED by adult-ness,
+        # unlike `preview_url` above -- see `_parse_images`'s own docstring.
+        "images": _parse_images(v.get("images")),
     }
 
 
@@ -338,7 +417,22 @@ def _parse_search_item(item: Any) -> Optional[Dict[str, Any]]:
         "type": str(item.get("type") or ""),
         "creator": str(creator.get("username") or ""),
         "tags": _clean_string_list(item.get("tags")),
+        # `nsfw` -- Civitai's legacy bool. KEPT (nothing removed), but
+        # nothing in this module or its callers may *decide* anything from
+        # it any more: docs/lora-loader-design.md §7c-iv measured twelve
+        # LoRAs from one query all reporting `nsfw: False` while carrying
+        # `nsfwLevel` 15/23/31 -- the bool simply does not track adult
+        # content reliably. `nsfw_level` below is the real signal.
         "nsfw": bool(item.get("nsfw")),
+        # The model's own `nsfwLevel` -- a BITMASK UNION of every image in
+        # its gallery (e.g. `31` means it has images at levels 1, 2, 4, 8
+        # AND 16), NOT an ordinal severity score. **Never compare this to a
+        # chosen level with `<=`/`>=`** -- that would silently misread e.g.
+        # `31 > 4` as "entirely above R" when the model actually has PG
+        # images too. `None` when the field is absent -- unknown, never
+        # assumed safe (existing sidecars/cached search results predate
+        # this field entirely).
+        "nsfw_level": _clean_int(item.get("nsfwLevel")),
         "stats": {
             "downloads": _clean_int(stats.get("downloadCount")) or 0,
             "favorites": _clean_int(stats.get("favoriteCount")) or 0,
@@ -376,13 +470,16 @@ def parse_search_response(raw: Any) -> Dict[str, Any]:
     malformed/unexpected shape degrades to `{"results": [], "next_cursor":
     None}` rather than raising.
 
-    Each result: `{model_id, name, type, creator, tags, nsfw, base_model?,
-    stats: {downloads, favorites, rating}, versions: [{version_id, name,
-    base_model, published_at, gated, triggers, preview_url, thumb_url,
-    files: [{name, size_kb, download_url, primary, sha256, gated}]}]}`.
-    `preview_url`/`thumb_url` are the SAME gallery pick at two different
-    sizes (`_parse_version`'s own comment has the full reasoning) -- never
-    conflate the two when adding a caller. `versions` keeps EVERY version Civitai
+    Each result: `{model_id, name, type, creator, tags, nsfw, nsfw_level,
+    base_model?, stats: {downloads, favorites, rating}, versions:
+    [{version_id, name, base_model, published_at, gated, triggers,
+    preview_url, images: [{url, nsfw_level, type}], files: [{name,
+    size_kb, download_url, primary, sha256, gated}]}]}`. `nsfw_level`
+    (model level) is a BITMASK UNION of the model's images, never an
+    ordinal (`_parse_search_item`'s own comment has the full "never `<=`"
+    reasoning). `preview_url`/`images` are BOTH derived from the same
+    gallery but serve different consumers and must not be conflated
+    (`_parse_version`'s own comment). `versions` keeps EVERY version Civitai
     returned (a future version-selector/detail view needs all of them, not
     just the newest) -- a result with no usable version at all (every
     version failed to parse, or the list was empty/absent) is DROPPED
@@ -426,7 +523,10 @@ __all__ = (
     "DEFAULT_SORT",
     "DEFAULT_PERIOD",
     "DEFAULT_LIMIT",
+    "LEVEL_VALUES",
+    "DEFAULT_LEVEL",
     "type_for_kind",
+    "clean_level",
     "build_search_url",
     "search_models",
     "pick_primary_file",

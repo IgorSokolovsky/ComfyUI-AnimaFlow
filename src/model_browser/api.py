@@ -198,7 +198,7 @@ def _annotate_search_results(results: list, kind: object) -> list:
     affordance, not only `versions[0]`'s.
 
     The top-level `primary_*`/`file_name`/`download_url`/`size_kb`/`gated`/
-    `installed`/`triggers`/`preview_url`/`thumb_url` convenience set on each
+    `installed`/`triggers`/`preview_url`/`images` convenience set on each
     RESULT is then READ STRAIGHT OFF `versions[0]`'s own just-computed
     fields, never recomputed independently -- one code path computes every
     version's download affordance (including the primary one), and the
@@ -264,11 +264,17 @@ def _annotate_search_results(results: list, kind: object) -> list:
         # URLs -- reuse them rather than making a fresh API call".
         result["triggers"] = primary_version.get("triggers", []) if primary_version else []
         result["preview_url"] = primary_version.get("preview_url") if primary_version else None
-        # docs task 2026-07-31 "Civitai search panel thumbnails": the SAME
-        # gallery pick as `preview_url`, 256px-rewritten -- see
-        # `civitai_search._parse_version`'s own comment for why the two are
-        # deliberately separate keys, never one derived from the other here.
-        result["thumb_url"] = primary_version.get("thumb_url") if primary_version else None
+        # docs/lora-loader-design.md §7c-iv (2026-07-31): replaces the old
+        # single pre-chosen `thumb_url` -- the version's full gallery
+        # CANDIDATE list, ordered exactly as Civitai returned it and already
+        # thumbnail-rewritten (`civitai_search._parse_images`), flattened up
+        # the SAME way `preview_url`/`triggers` already are. The frontend
+        # picks the first entry at or below the user's chosen browsing
+        # level (a setting this route has no access to at the per-image
+        # level -- see `search_impl`'s own `level` handling for the ONE
+        # thing that IS server-side: whether adult images are in this list
+        # at all).
+        result["images"] = primary_version.get("images", []) if primary_version else []
     return results
 
 
@@ -295,6 +301,19 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     failures -- the frontend can show that banner regardless of whether the
     search itself succeeded. The key's VALUE never appears anywhere in this
     return.
+
+    docs/lora-loader-design.md §7c-iv: `payload["level"]` is the "Maximum
+    browsing level" setting (PG=1/PG-13=2/R=4/X=8/XXX=16), not an `nsfw`
+    bool -- `civitai_search.clean_level` validates it (garbage/missing
+    falls back to PG, same tolerance `sort`/`period` already get). It maps
+    to Civitai's own binary `nsfw` request parameter exactly once, right
+    here: PG (`level == 1`) sends `nsfw=false` -- the one genuine server-
+    side guarantee, we never ask for adult content at all -- and every
+    level above PG sends `nsfw=true`, since Civitai has no request
+    parameter for a specific level (measured: `browsingLevel=31`/`nsfw=16`/
+    `nsfw=X` are all HTTP 400) -- the full gallery comes back and
+    per-image/per-model filtering to the chosen level is the FRONTEND's job
+    against `nsfw_level`/`images[].nsfw_level` (§7c-iv's own "Build notes").
     """
     payload = payload or {}
     kind = payload.get("kind")
@@ -311,13 +330,15 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
             "public_only": resolved_key.public_only,
         }
 
+    level = civitai_search.clean_level(payload.get("level"))
+
     result = civitai_search.search_models(
         kind,
         payload.get("query") or "",
         base_model=payload.get("base_model") or None,
         sort=payload.get("sort") or civitai_search.DEFAULT_SORT,
         period=payload.get("period") or civitai_search.DEFAULT_PERIOD,
-        nsfw=bool(payload.get("nsfw", False)),
+        nsfw=level > 1,
         cursor=payload.get("cursor") or None,
         limit=payload.get("limit", civitai_search.DEFAULT_LIMIT),
         api_key=resolved_key.api_key,
@@ -553,7 +574,12 @@ try:
             "base_model": query.get("base_model") or None,
             "sort": query.get("sort") or None,
             "period": query.get("period") or None,
-            "nsfw": (query.get("nsfw", "false") or "false").lower() == "true",
+            # docs/lora-loader-design.md §7c-iv: raw string straight through,
+            # same "let the pure layer validate/default it" pattern
+            # `sort`/`period` above already use -- `search_impl`'s
+            # `civitai_search.clean_level` is what actually falls back to
+            # PG for a missing/garbage value, not this route.
+            "level": query.get("level"),
             "cursor": query.get("cursor") or None,
             "limit": int(limit_raw) if limit_raw and limit_raw.isdigit() else civitai_search.DEFAULT_LIMIT,
         }

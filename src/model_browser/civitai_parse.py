@@ -220,13 +220,25 @@ _ORIGINAL_SEG_RE = re.compile(r"/original=true(?:,[^/]*)?/")
 
 def _thumb_url(url: str) -> str:
     """Swap Civitai's full-resolution `/original=true/` transform segment
-    for a width-256 one -- a thumbnail needs roughly 55 KB, not the ~1.5 MB
-    the original-resolution image costs (same measurement as
+    for `/anim=false,width=256/` -- a thumbnail needs roughly 55 KB, not the
+    ~1.5-4 MB the original-resolution image costs (same measurement as
     `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:361-374`'s own `_thumb_url`,
-    MIT, THIRD_PARTY_NOTICES.md). Any other URL shape (already a width
-    transform, or no transform segment at all) passes through untouched.
+    MIT, THIRD_PARTY_NOTICES.md, extended here with `anim=false`). Any other
+    URL shape (already a width transform, or no transform segment at all)
+    passes through untouched.
+
+    **`anim=false` is load-bearing, not cosmetic** (docs/lora-loader-
+    design.md §7c-iv, measured live 2026-07-31): a gallery entry can be
+    `type: "video"` (an `.mp4`), and `width=256` alone on a video makes the
+    CDN transcode *video* -- `200 video/mp4`, 1.66 MB, often timing out, and
+    unrenderable in an `<img>` regardless. Adding `anim=false` makes the
+    SAME request return `200 image/jpeg`, 64,550 bytes -- a poster frame.
+    On a still image `anim=false` is byte-identical to without it (measured:
+    28,370 bytes either way), so this is a no-op on stills and a poster-
+    frame extractor on videos -- never a reason to special-case `type`
+    here.
     """
-    return _ORIGINAL_SEG_RE.sub("/width=256/", url, count=1)
+    return _ORIGINAL_SEG_RE.sub("/anim=false,width=256/", url, count=1)
 
 
 def _is_adult_image(nsfw: Any, level: Any) -> bool:
@@ -277,20 +289,27 @@ def pick_gallery_image_url(images: Any) -> Optional[str]:
 
 def pick_thumbnail_url(images: Any) -> Optional[str]:
     """The first non-adult image's URL, THUMBNAIL-sized (`_thumb_url`'s
-    width-256 rewrite) -- same two-tier fallback as the thumbnail-selection
-    loop inside `../ComfyUI-Pixaroma/nodes/_lora_helpers.py:401-419`'s
-    `parse_civitai_modelversion` (MIT, THIRD_PARTY_NOTICES.md), so a model
-    whose gallery is entirely explicit ends up with NO thumbnail rather than
-    an explicit one. A thin wrapper over `pick_gallery_image_url` (above),
-    which now holds the actual selection loop.
+    `anim=false,width=256` rewrite) -- same two-tier fallback as the
+    thumbnail-selection loop inside `../ComfyUI-Pixaroma/nodes/_lora_helpers.py
+    :401-419`'s `parse_civitai_modelversion` (MIT, THIRD_PARTY_NOTICES.md),
+    so a model whose gallery is entirely explicit ends up with NO thumbnail
+    rather than an explicit one. A thin wrapper over `pick_gallery_image_url`
+    (above), which now holds the actual selection loop.
 
     Public (promoted from `_pick_thumbnail`, docs task 2026-07-31, "Civitai
-    search panel thumbnails") -- `civitai_search.py`'s own `_parse_version`
-    calls this directly to seed each version's `thumb_url` (the LIVE
-    in-browser thumbnail), sibling to that same function's `preview_url`
-    (`pick_gallery_image_url`, untransformed, saved to disk at download
-    time) -- see `_parse_version`'s own comment for why the two deliberately
-    stay different sizes.
+    search panel thumbnails"). `parse_model_version`'s own `thumbnail` key
+    (the by-hash lookup's single-image result, unrelated to the search
+    panel) calls this directly. **`civitai_search.py`'s own `_parse_version`
+    no longer does** (docs/lora-loader-design.md §7c-iv, 2026-07-31): once
+    the browsing level became a user setting, picking ONE image ahead of
+    time stopped being this layer's job -- `_parse_version` now hands the
+    frontend the full `images` candidate list instead (each entry still
+    thumbnail-rewritten via `civitai_parse._thumb_url` directly, not through
+    this function's own adult-filtering pick), and the frontend chooses.
+    This function's hardcoded level-4 cutoff (via `pick_gallery_image_url`)
+    remains exactly what it always was for `preview_url`/`parse_model_version`
+    -- that cutoff was never this function's problem to generalize, only
+    the search panel's live thumbnail stopped using it.
     """
     url = pick_gallery_image_url(images)
     return _thumb_url(url) if url else None

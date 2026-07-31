@@ -500,7 +500,7 @@ def test_parse_model_version_typical_response():
     assert parsed["tags"] == ["character", "anime"]  # KEPT -- our divergence from upstream
     assert parsed["model_id"] == 999
     assert parsed["version_id"] == 12345
-    assert parsed["thumbnail"] == "https://example.com/img/width=256/x.jpg"
+    assert parsed["thumbnail"] == "https://example.com/img/anim=false,width=256/x.jpg"
     # §7d-i: the version's own text is its own first-class field now, never
     # collapsed with the model's write-up (this fixture's `model` sub-object
     # carries no `description` of its own, so `model_description` is absent).
@@ -546,7 +546,7 @@ def test_parse_model_version_explicit_gallery_falls_back_to_non_adult():
         ],
     }
     # The safe image should win even though it's second, since the first is adult.
-    assert civitai_parse.parse_model_version(obj)["thumbnail"] == "https://example.com/width=256/safe.jpg"
+    assert civitai_parse.parse_model_version(obj)["thumbnail"] == "https://example.com/anim=false,width=256/safe.jpg"
 
 
 def test_parse_model_version_all_explicit_gallery_yields_no_thumbnail():
@@ -580,10 +580,11 @@ def test_pick_gallery_image_url_all_explicit_yields_none():
 
 def test_pick_thumbnail_still_transforms_its_own_result():
     # `_pick_thumbnail` is now a thin wrapper over `pick_gallery_image_url` --
-    # confirm it still applies the width=256 rewrite (regression guard for
-    # the refactor, on top of the existing dedicated thumbnail tests above).
+    # confirm it still applies the anim=false,width=256 rewrite (regression
+    # guard for the refactor, on top of the existing dedicated thumbnail
+    # tests above).
     images = [{"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1}]
-    assert civitai_parse._pick_thumbnail(images) == "https://example.com/width=256/safe.jpg"
+    assert civitai_parse._pick_thumbnail(images) == "https://example.com/anim=false,width=256/safe.jpg"
 
 
 def test_pick_thumbnail_url_is_the_promoted_public_name_and_stays_in_all():
@@ -594,7 +595,32 @@ def test_pick_thumbnail_url_is_the_promoted_public_name_and_stays_in_all():
     assert civitai_parse.pick_thumbnail_url is civitai_parse._pick_thumbnail
     assert "pick_thumbnail_url" in civitai_parse.__all__
     images = [{"url": "https://example.com/original=true/safe.jpg", "nsfw": False, "nsfwLevel": 1}]
-    assert civitai_parse.pick_thumbnail_url(images) == "https://example.com/width=256/safe.jpg"
+    assert civitai_parse.pick_thumbnail_url(images) == "https://example.com/anim=false,width=256/safe.jpg"
+
+
+# ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-iv: `_thumb_url` emits `anim=false,width=256`
+# -- a no-op on stills, a poster-frame extractor on video entries (measured
+# live 2026-07-31: `width=256` alone makes the CDN transcode a video, which
+# times out and can't render in an `<img>` anyway).
+# ---------------------------------------------------------------------------
+
+
+def test_thumb_url_emits_anim_false_width_256():
+    url = "https://image.civitai.com/xyz/original=true/135268953.mp4"
+    assert civitai_parse._thumb_url(url) == "https://image.civitai.com/xyz/anim=false,width=256/135268953.mp4"
+
+
+def test_thumb_url_still_tolerates_original_true_with_other_params():
+    # The regex's existing tolerance for `original=true,<other-params>` (not
+    # just a bare `original=true`) must survive the rewrite-target change.
+    url = "https://image.civitai.com/xyz/original=true,quality=90/1917130.jpeg"
+    assert civitai_parse._thumb_url(url) == "https://image.civitai.com/xyz/anim=false,width=256/1917130.jpeg"
+
+
+def test_thumb_url_passes_through_a_url_with_no_transform_segment():
+    url = "https://image.civitai.com/xyz/1917130.jpeg"
+    assert civitai_parse._thumb_url(url) == url
 
 
 def test_civitai_shape_from_search_meta_typical_fields():
@@ -1815,6 +1841,30 @@ def test_build_search_url_limit_is_clamped():
     assert "limit=1" in url_low
 
 
+# ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-iv: "Maximum browsing level" replaces the
+# NSFW checkbox -- `clean_level` is the pure validation `search_impl` calls
+# before mapping the level to Civitai's own binary `nsfw` request param.
+# ---------------------------------------------------------------------------
+
+
+def test_clean_level_accepts_every_real_level():
+    for level in civitai_search.LEVEL_VALUES:
+        assert civitai_search.clean_level(level) == level
+
+
+def test_clean_level_falls_back_to_pg_for_garbage():
+    for bad in (0, 3, 32, -1, "bogus", None, [], {}, True, False):
+        assert civitai_search.clean_level(bad) == civitai_search.DEFAULT_LEVEL == 1, bad
+
+
+def test_clean_level_accepts_a_numeric_string():
+    # The route hands `clean_level` a raw query-string value -- a
+    # stringified level must validate the same as the int itself.
+    assert civitai_search.clean_level("4") == 4
+    assert civitai_search.clean_level("31") == civitai_search.DEFAULT_LEVEL  # not a real level -- falls back
+
+
 def test_search_models_rejects_unwhitelisted_kind_without_any_network():
     result = civitai_search.search_models("../../etc", "x", opener=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reach the network")))
     assert result["reason"] == "invalid_kind"
@@ -2009,6 +2059,42 @@ def test_parse_search_response_multi_version_flattens_the_primary_ones_base_mode
     assert result["versions"][1]["base_model"] == "SD 1.5"
 
 
+# ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-iv: model-level `nsfwLevel` is a BITMASK
+# UNION of the model's gallery images, parsed alongside (never in place of)
+# the legacy `nsfw` bool -- neither may be used to decide anything by itself.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_search_response_nsfw_level_parsed_at_model_level():
+    raw = {
+        "items": [{
+            "id": 1, "nsfw": False, "nsfwLevel": 31,  # a real measured case: legacy bool says safe, level says otherwise
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    assert result["nsfw"] is False
+    assert result["nsfw_level"] == 31
+
+
+def test_parse_search_response_nsfw_level_none_when_absent():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    result = civitai_search.parse_search_response(raw)["results"][0]
+    assert result["nsfw_level"] is None
+
+
 def test_parse_search_response_malformed_shapes_never_raise():
     assert civitai_search.parse_search_response(None) == {"results": [], "next_cursor": None}
     assert civitai_search.parse_search_response("not-a-dict") == {"results": [], "next_cursor": None}
@@ -2069,14 +2155,15 @@ def test_parse_search_response_no_trigger_words_or_images_omits_neither_field_bu
 
 
 # ---------------------------------------------------------------------------
-# docs task 2026-07-31 "Civitai search panel thumbnails": `thumb_url` is the
-# LIVE in-browser thumbnail (256px rewrite), a deliberate SIBLING of
-# `preview_url` (the untransformed, download-time-preview pick) -- the two
-# must never collapse into the same value by accident.
+# docs/lora-loader-design.md §7c-iv (2026-07-31): `thumb_url` (one pre-chosen,
+# adult-filtered URL) is REPLACED by `images` -- the version's full gallery,
+# thumbnail-rewritten but UNFILTERED, so the frontend can pick per the user's
+# own browsing-level setting. `preview_url` (the untransformed, download-time
+# preview pick) is untouched and stays a sibling, never derived from `images`.
 # ---------------------------------------------------------------------------
 
 
-def test_parse_search_response_thumb_url_is_256px_while_preview_url_stays_untransformed():
+def test_parse_search_response_images_are_256px_while_preview_url_stays_untransformed():
     raw = {
         "items": [{
             "id": 1,
@@ -2089,11 +2176,11 @@ def test_parse_search_response_thumb_url_is_256px_while_preview_url_stays_untran
     }
     version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
     assert version["preview_url"] == "https://image.civitai.com/original=true/safe.jpg"
-    assert version["thumb_url"] == "https://image.civitai.com/width=256/safe.jpg"
-    assert version["thumb_url"] != version["preview_url"]
+    assert version["images"] == [{"url": "https://image.civitai.com/anim=false,width=256/safe.jpg", "nsfw_level": 1, "type": ""}]
+    assert version["images"][0]["url"] != version["preview_url"]
 
 
-def test_parse_search_response_no_images_leaves_thumb_url_none_same_as_preview_url():
+def test_parse_search_response_no_images_leaves_images_empty_and_preview_url_none():
     raw = {
         "items": [{
             "id": 1,
@@ -2104,24 +2191,78 @@ def test_parse_search_response_no_images_leaves_thumb_url_none_same_as_preview_u
         }],
     }
     version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
-    assert version["thumb_url"] is None
+    assert version["images"] == []
     assert version["preview_url"] is None
 
 
-def test_parse_search_response_all_explicit_gallery_yields_no_thumb_url_either():
+def test_parse_search_response_images_are_never_adult_filtered_unlike_preview_url():
+    # `images` hands over EVERY entry regardless of nsfwLevel -- filtering by
+    # the chosen browsing level is the frontend's job now (§7c-iv), so an
+    # explicit entry that `preview_url`'s own adult filter would refuse must
+    # still show up here.
     raw = {
         "items": [{
             "id": 1,
             "modelVersions": [{
                 "id": 10, "baseModel": "SDXL",
-                "images": [{"url": "https://image.civitai.com/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}],
+                "images": [{"url": "https://image.civitai.com/original=true/explicit.jpg", "nsfw": "XXX", "nsfwLevel": 16}],
                 "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
             }],
         }],
     }
     version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
-    assert version["thumb_url"] is None
+    assert version["images"] == [{"url": "https://image.civitai.com/anim=false,width=256/explicit.jpg", "nsfw_level": 16, "type": ""}]
+    # `preview_url` keeps its existing adult-filtering behaviour untouched --
+    # an all-explicit gallery still yields no download-time preview.
     assert version["preview_url"] is None
+
+
+def test_parse_search_response_images_preserve_order_and_carry_video_type():
+    # A gallery entry can be `type: "video"` (§7c-iv) -- it's a normal,
+    # renderable candidate now that `_thumb_url` includes `anim=false`, not
+    # something to drop. Order must survive exactly as Civitai sent it.
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "images": [
+                    {"url": "https://image.civitai.com/original=true/first.jpg", "nsfwLevel": 1, "type": "image"},
+                    {"url": "https://image.civitai.com/original=true/second.mp4", "nsfwLevel": 2, "type": "video"},
+                    {"url": "https://image.civitai.com/original=true/third.jpg", "nsfwLevel": 4},  # no `type` at all
+                ],
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    assert version["images"] == [
+        {"url": "https://image.civitai.com/anim=false,width=256/first.jpg", "nsfw_level": 1, "type": "image"},
+        {"url": "https://image.civitai.com/anim=false,width=256/second.mp4", "nsfw_level": 2, "type": "video"},
+        {"url": "https://image.civitai.com/anim=false,width=256/third.jpg", "nsfw_level": 4, "type": ""},
+    ]
+
+
+def test_parse_search_response_images_drop_entries_with_no_url_and_default_missing_level_to_none():
+    raw = {
+        "items": [{
+            "id": 1,
+            "modelVersions": [{
+                "id": 10, "baseModel": "SDXL",
+                "images": [
+                    {"url": "", "nsfwLevel": 1},
+                    {"nsfwLevel": 1},  # no `url` key at all
+                    "not-a-dict",
+                    {"url": "https://image.civitai.com/ok.jpg"},  # no `nsfwLevel` at all -- unknown, not PG
+                ],
+                "files": [{"name": "a.safetensors", "downloadUrl": "https://civitai.com/a", "primary": True}],
+            }],
+        }],
+    }
+    version = civitai_search.parse_search_response(raw)["results"][0]["versions"][0]
+    # No `/original=true/` segment on this one -- `_thumb_url` passes it
+    # through untouched (same tolerance the regex has always had).
+    assert version["images"] == [{"url": "https://image.civitai.com/ok.jpg", "nsfw_level": None, "type": ""}]
 
 
 # ---------------------------------------------------------------------------
@@ -3463,9 +3604,68 @@ def test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the
 
 
 # ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-iv: `search_impl` takes a `level`, not an
+# `nsfw` bool -- PG (level 1, the default) sends `nsfw=false` (the one real
+# server-side guarantee); every other valid level sends `nsfw=true` (the
+# only way to get the full gallery back, since the API has no per-level
+# request parameter); a garbage level falls back to PG, same tolerance
+# `sort`/`period` already get.
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_search_models_capturing_kwargs(seen_kwargs):
+    def fake_search_models(kind, query, **kwargs):
+        seen_kwargs.append(kwargs)
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"items": [], "metadata": {}}}
+    mb_api.civitai_search.search_models = fake_search_models
+
+
+def test_search_impl_default_level_is_pg_and_sends_nsfw_false():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        mb_api.search_impl({"kind": "loras", "query": "x"})
+        assert seen_kwargs[-1]["nsfw"] is False
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_level_one_sends_nsfw_false_every_other_valid_level_sends_nsfw_true():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        for level in civitai_search.LEVEL_VALUES:
+            mb_api.search_impl({"kind": "loras", "query": "x", "level": level})
+        assert seen_kwargs[0]["nsfw"] is False  # level 1 (PG)
+        assert all(kwargs["nsfw"] is True for kwargs in seen_kwargs[1:])  # levels 2/4/8/16
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_garbage_level_falls_back_to_pg_and_sends_nsfw_false():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        for bad in (0, 3, 32, "bogus", None):
+            mb_api.search_impl({"kind": "loras", "query": "x", "level": bad})
+        assert all(kwargs["nsfw"] is False for kwargs in seen_kwargs), seen_kwargs
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+# ---------------------------------------------------------------------------
 # docs task 2026-07-31 "Civitai search panel version picker": every version
 # (not just the primary) gets its own `file_name`/`download_url`/`size_kb`/
-# `gated`/`installed`/`thumb_url`, and the top-level flatten reads THOSE same
+# `gated`/`installed`/`images`, and the top-level flatten reads THOSE same
 # per-version fields back off `versions[0]` -- one code path, not two.
 # ---------------------------------------------------------------------------
 
@@ -3514,7 +3714,7 @@ def test_annotate_search_results_computes_all_five_fields_for_every_version_not_
             assert v0["size_kb"] == 500
             assert v0["gated"] is False
             assert v0["installed"] is False
-            assert v0["thumb_url"] == "https://image.civitai.com/width=256/one.jpg"
+            assert v0["images"] == [{"url": "https://image.civitai.com/anim=false,width=256/one.jpg", "nsfw_level": 1, "type": ""}]
 
             # The SECOND version -- gated (earlyAccessEndsAt) AND already on
             # disk. Both computed independently of the primary version's own
@@ -3524,7 +3724,7 @@ def test_annotate_search_results_computes_all_five_fields_for_every_version_not_
             assert v1["size_kb"] == 900
             assert v1["gated"] is True
             assert v1["installed"] is True
-            assert v1["thumb_url"] == "https://image.civitai.com/width=256/two.jpg"
+            assert v1["images"] == [{"url": "https://image.civitai.com/anim=false,width=256/two.jpg", "nsfw_level": 1, "type": ""}]
         finally:
             restore_fp()
             mb_api.civitai_search.search_models = previous_search_models
@@ -3579,7 +3779,9 @@ def test_annotate_search_results_top_level_flatten_matches_versions_zero_exactly
             assert card["primary_version_id"] == primary["version_id"] == 10
             assert card["triggers"] == primary["triggers"] == ["trig"]
             assert card["preview_url"] == primary["preview_url"] == "https://image.civitai.com/original=true/one.jpg"
-            assert card["thumb_url"] == primary["thumb_url"] == "https://image.civitai.com/width=256/one.jpg"
+            assert card["images"] == primary["images"] == [
+                {"url": "https://image.civitai.com/anim=false,width=256/one.jpg", "nsfw_level": 1, "type": ""},
+            ]
 
             # The second version's own fields are untouched by the flatten
             # -- the top level is never a blend of both.
@@ -3995,6 +4197,9 @@ ALL_TESTS = [
     test_pick_gallery_image_url_all_explicit_yields_none,
     test_pick_thumbnail_still_transforms_its_own_result,
     test_pick_thumbnail_url_is_the_promoted_public_name_and_stays_in_all,
+    test_thumb_url_emits_anim_false_width_256,
+    test_thumb_url_still_tolerates_original_true_with_other_params,
+    test_thumb_url_passes_through_a_url_with_no_transform_segment,
     test_civitai_shape_from_search_meta_typical_fields,
     test_civitai_shape_from_search_meta_never_raises_on_malformed_input,
     test_parse_model_version_both_descriptions_present_are_returned_distinctly,
@@ -4065,6 +4270,9 @@ ALL_TESTS = [
     test_build_search_url_rejects_unwhitelisted_kind,
     test_build_search_url_garbage_sort_and_period_fall_back_to_defaults,
     test_build_search_url_limit_is_clamped,
+    test_clean_level_accepts_every_real_level,
+    test_clean_level_falls_back_to_pg_for_garbage,
+    test_clean_level_accepts_a_numeric_string,
     test_search_models_rejects_unwhitelisted_kind_without_any_network,
     test_search_models_success_and_api_key_rides_as_token_param,
     test_search_models_no_api_key_omits_token_param,
@@ -4076,13 +4284,17 @@ ALL_TESTS = [
     test_parse_search_response_flattens_primary_base_model_onto_the_result,
     test_parse_search_response_no_base_model_on_primary_version_omits_the_key_absent_not_empty_string,
     test_parse_search_response_multi_version_flattens_the_primary_ones_base_model_not_a_later_versions,
+    test_parse_search_response_nsfw_level_parsed_at_model_level,
+    test_parse_search_response_nsfw_level_none_when_absent,
     test_parse_search_response_malformed_shapes_never_raise,
     test_pick_primary_file_prefers_primary_flag_then_falls_back_to_first,
     test_parse_search_response_carries_triggers_and_preview_url_per_version,
     test_parse_search_response_no_trigger_words_or_images_omits_neither_field_but_they_stay_empty_none,
-    test_parse_search_response_thumb_url_is_256px_while_preview_url_stays_untransformed,
-    test_parse_search_response_no_images_leaves_thumb_url_none_same_as_preview_url,
-    test_parse_search_response_all_explicit_gallery_yields_no_thumb_url_either,
+    test_parse_search_response_images_are_256px_while_preview_url_stays_untransformed,
+    test_parse_search_response_no_images_leaves_images_empty_and_preview_url_none,
+    test_parse_search_response_images_are_never_adult_filtered_unlike_preview_url,
+    test_parse_search_response_images_preserve_order_and_carry_video_type,
+    test_parse_search_response_images_drop_entries_with_no_url_and_default_missing_level_to_none,
     test_sanitize_filename_accepts_normal_names,
     test_sanitize_filename_rejects_hostile_values,
     test_sanitize_filename_rejects_an_embedded_nul_byte,
@@ -4154,6 +4366,9 @@ ALL_TESTS = [
     test_search_impl_rejects_unwhitelisted_kind_without_any_network,
     test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
     test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result,
+    test_search_impl_default_level_is_pg_and_sends_nsfw_false,
+    test_search_impl_level_one_sends_nsfw_false_every_other_valid_level_sends_nsfw_true,
+    test_search_impl_garbage_level_falls_back_to_pg_and_sends_nsfw_false,
     test_annotate_search_results_computes_all_five_fields_for_every_version_not_just_the_primary,
     test_annotate_search_results_top_level_flatten_matches_versions_zero_exactly,
     test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk,
