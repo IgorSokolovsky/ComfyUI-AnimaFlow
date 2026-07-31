@@ -108,6 +108,7 @@ import {
   reconcileGatedKeysOnApiKeySignature,
   DEFAULT_ROOT_DISPLAY,
   SCROLL_LOAD_MORE_THRESHOLD_PX,
+  searchButtonEnabled,
 } from "./civitai_search.mjs";
 import { searchUnscoped } from "./civitai_api.mjs";
 import {
@@ -363,7 +364,16 @@ const CSS = `
 
 .wtn-cm-main { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .wtn-cm-searchbar { padding: 10px 16px; flex: none; border-bottom: 1px solid var(--wtn-line, ${TOKENS.line}); display: flex; flex-direction: column; gap: 6px; }
-.wtn-cm-search { width: 100%; }
+/* An explicit \`Search\` button beside the field (§7c-i, "not a debounce") --
+   shared behaviour with civitai_search.mjs's own row, "one implementation"
+   per that section's closing line. */
+.wtn-cm-searchrow { display: flex; align-items: stretch; gap: 6px; }
+.wtn-cm-search { flex: 1 1 auto; min-width: 0; }
+.wtn-cm-search-btn {
+  flex: none; font: 12px var(--wtn-font-ui, inherit); font-weight: 600; padding: 5px 12px; border-radius: 7px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); cursor: pointer;
+}
+.wtn-cm-search-btn:disabled { cursor: default; opacity: .45; }
 .wtn-cm-warn { color: var(--wtn-warn, ${TOKENS.warn}); font-size: 12px; }
 .wtn-cm-bad { color: var(--wtn-bad, ${TOKENS.bad}); font-size: 12px; }
 .wtn-cm-info { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); font-size: 12px; }
@@ -757,12 +767,22 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   body.appendChild(main);
 
   const searchbar = el(targetDoc, "div", "wtn-cm-searchbar");
+  // An explicit `Search` button beside the field (§7c-i) -- nothing fires
+  // from typing alone; see `updateSearchButtonState`/the `search`
+  // "input"/"keydown" listeners below.
+  const searchRow = el(targetDoc, "div", "wtn-cm-searchrow");
   const search = el(targetDoc, "input", "wtn-input wtn-cm-search");
   search.type = "text";
   search.placeholder = "Search Civitai…";
   search.spellcheck = false;
   search.addEventListener("click", (e) => e.stopPropagation());
-  searchbar.appendChild(search);
+  searchRow.appendChild(search);
+  const searchBtn = el(targetDoc, "button", "wtn-cm-search-btn");
+  searchBtn.type = "button";
+  searchBtn.textContent = "Search";
+  searchBtn.title = "Run this search";
+  searchRow.appendChild(searchBtn);
+  searchbar.appendChild(searchRow);
 
   const publicOnlyLine = el(targetDoc, "div", "wtn-cm-warn");
   publicOnlyLine.textContent = "No API key set — public results only.";
@@ -790,6 +810,10 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   let searchSeq = 0;
   let renderGeneration = 0;
   const cardMessages = new Map();
+  // §7c-i's own "Search button" state -- see civitai_search.mjs's
+  // `lastSearchedQuery` doc comment; `null` until the trailing
+  // `runSearch({resetCursor:true})` call (below) runs for the first time.
+  let lastSearchedQuery = null;
 
   function renderActive() {
     activeHost.innerHTML = "";
@@ -1023,6 +1047,13 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     }
     renderGrid();
     const query = search.value.trim();
+    if (resetCursor) {
+      // §7c-i: every reset-cursor search (button, Enter, or a filter
+      // change) settles the button back to disabled for this exact text.
+      // Pagination (`resetCursor: false`) never reaches this branch.
+      lastSearchedQuery = query;
+      updateSearchButtonState();
+    }
     logDebug(
       "Civitai browser",
       `issuing ${resetCursor ? "search" : "page fetch"} (query=${JSON.stringify(query)}, `
@@ -1076,13 +1107,28 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   }
   gridWrap.addEventListener("scroll", maybeLoadMore);
 
-  const SEARCH_DEBOUNCE_MS = 400;
-  let debounceTimer = null;
-  search.addEventListener("input", () => {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+  // §7c-i: "An explicit Search button, not a debounce" -- typing alone
+  // never fires a search; it only updates whether the button is enabled.
+  function updateSearchButtonState() {
+    searchBtn.disabled = !searchButtonEnabled(search.value, lastSearchedQuery);
+  }
+  search.addEventListener("input", updateSearchButtonState);
+  searchBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (searchBtn.disabled) {
+      return;
     }
-    debounceTimer = setTimeout(() => runSearch({ resetCursor: true }), SEARCH_DEBOUNCE_MS);
+    runSearch({ resetCursor: true });
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      if (typeof e.preventDefault === "function") {
+        e.preventDefault();
+      }
+      if (!searchBtn.disabled) {
+        runSearch({ resetCursor: true });
+      }
+    }
   });
 
   function onDownloadStateChange() {
@@ -1145,9 +1191,6 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       return;
     }
     closed = true;
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
     unsubscribe();
     if (typeof gridWrap.removeEventListener === "function") {
       gridWrap.removeEventListener("scroll", maybeLoadMore);

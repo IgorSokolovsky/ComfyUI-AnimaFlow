@@ -105,7 +105,14 @@
  * where the two could ever be confused.
  */
 
-import { lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo } from "./civitai_api.mjs";
+import {
+  lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, deleteModel, savePreview,
+} from "./civitai_api.mjs";
+// "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
+// dialog is shared with `civitai_search.mjs`'s own "installed" card rather
+// than grown twice; see that module's own top doc comment for the full
+// contract.
+import { openDeleteConfirm, removedSummary } from "../shared/delete_confirm.mjs";
 import {
   openOverlayWithZoom,
   closeOverlayIfOwnedBy,
@@ -357,6 +364,16 @@ ${THUMB_SKELETON_CSS}
   background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); border: 1px dashed var(--wtn-line, ${TOKENS.line});
 }
 .wtn-mi-refetch:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+/* "Remove an installed model" (docs/TODO.md) -- the ⓘ panel's own delete
+   affordance, always offered (a local disk operation, unrelated to the
+   Civitai setting) -- styled like \`.wtn-mi-refetch\` but in the bad/red hue
+   so it reads as destructive without shouting, matching the search card's
+   own \`.wtn-cs-action-delete\` (\`civitai_search.mjs\`). */
+.wtn-mi-delete {
+  flex: none; height: 30px; padding: 0 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  background: transparent; color: var(--wtn-bad, ${TOKENS.bad}); border: 1px dashed rgba(248,113,113,.4);
+}
+.wtn-mi-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
 `;
 
 export function injectStyles(doc) {
@@ -584,11 +601,13 @@ export function lookupStateView(status) {
       headline: "This exact file isn't on Civitai",
       why: "Re-saving, merging or quantising a LoRA changes its hash, so a published LoRA won't "
         + "match once the file has been altered. Your file's own trigger words are still shown.",
+      // M2 shipped search, so this is no longer the disabled stub M1 left
+      // (`docs/TODO.md`) -- by-hash failing is the COMMON case, so this
+      // turns the most frequent dead end into the feature already built.
       actions: [{
         id: "search-by-name",
         label: "Search Civitai by name →",
-        disabled: true,
-        title: "Search-by-name lands with the Civitai browser (a later milestone) — not built yet.",
+        title: "Search Civitai using this model's name instead of its hash.",
       }],
     };
   }
@@ -651,8 +670,11 @@ function prettyTitle(name) {
  * @param {boolean} [opts.showThumbnails] - the "Show preview thumbnails" ⚙/Settings switch's CURRENT value (§7b, Slice 5) -- `false` renders NO thumbnail element at all; defaults to `true`, same convention as `civitaiEnabled`.
  * @param {string} [opts.browsingLevel] - the "Maximum browsing level" ⚙/Settings switch's CURRENT value (§7c-iv, one of `CIVITAI_SEARCH_LEVEL_OPTIONS` -- `"PG".."XXX"`), read by the CALLER the same way `civitaiEnabled`/`showThumbnails` already are -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY the Civitai-sourced fallback thumbnail (below) -- the local on-disk preview (`thumbUrl`) is never level-filtered (§7c-iv: "never what the user already has locally -- a file on disk was an explicit act"). Defaults to `"PG"`, the setting's own default.
  * @param {number} [opts.thumbRetryBackoffMs] - test-only override for the identity thumb's retry backoff (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real use), matching `civitai_search.mjs`'s own `openCivitaiSearch` convention so a test can drive the retry chain deterministically instead of waiting on a real timer.
+ * @param {number} [opts.sizeBytes] - the file's size on disk, for the "Remove an installed model" confirm dialog only.
  * @param {(nextSelected: string[], nextCustom: string[]) => void} [opts.onChange]
  * @param {() => void} [opts.onClose]
+ * @param {(kind: string, name: string) => void} [opts.onDeleted] - called after a successful delete, BEFORE this panel closes -- the caller's own re-check/re-render hook (`docs/TODO.md`: "the row still pointing at that file must fall into the existing red missing-file state").
+ * @param {(name: string) => void} [opts.onSearchByName] - `notfound`'s "Search Civitai by name →" action (§7e) -- called with this model's own file name; the CALLER opens the actual search surface (this file never imports `civitai_search.mjs`, staying track-agnostic).
  * @returns {object|null} the overlay handle, or `null` if this call just toggled an already-open panel closed.
  */
 export function openModelInfo({
@@ -669,8 +691,11 @@ export function openModelInfo({
   showThumbnails = true,
   browsingLevel = "PG",
   thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
+  sizeBytes,
   onChange,
   onClose,
+  onDeleted,
+  onSearchByName,
 } = {}) {
   const key = ownerKey || `model-info:${kind}:${name}`;
   if (closeOverlayIfOwnedBy(key)) {
@@ -886,6 +911,32 @@ export function openModelInfo({
 
   // ---- footer ---------------------------------------------------------------
   const footer = el(doc, "div", "wtn-mi-footer");
+  // "Remove an installed model" (docs/TODO.md) -- always offered, regardless
+  // of `civitaiEnabled` (a local disk operation, unrelated to the Civitai
+  // setting). Leftmost so `Done` (flex: 1 1 auto) still fills the row.
+  const deleteBtn = el(doc, "button", "wtn-mi-delete");
+  deleteBtn.type = "button";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.title = "Remove this file from disk.";
+  deleteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openDeleteConfirm({
+      doc,
+      kind,
+      name,
+      sizeBytes,
+      deleteFn: deleteModel,
+      onDeleted: (delResult) => {
+        logSummary("LoRA info", `${kind}/${name}: deleted (${removedSummary(delResult.removed)})`);
+        invalidateList(kind);
+        if (typeof onDeleted === "function") {
+          onDeleted(kind, name);
+        }
+        handle.close();
+      },
+    });
+  });
+  footer.appendChild(deleteBtn);
   const doneBtn = el(doc, "button", "wtn-mi-done");
   doneBtn.type = "button";
   doneBtn.textContent = "Done";
@@ -1241,7 +1292,17 @@ export function openModelInfo({
       runForget();
       return;
     }
-    // "search-by-name" is rendered disabled (M2 doesn't exist yet) -- no-op.
+    if (id === "search-by-name") {
+      // §7e: hand off to the CALLER, which opens the actual Civitai search
+      // surface (this file stays track-agnostic -- it never imports
+      // `civitai_search.mjs` itself). Close this panel first -- the search
+      // panel is the next thing the user actually wants to look at.
+      if (typeof onSearchByName === "function") {
+        handle.close();
+        onSearchByName(name);
+      }
+      return;
+    }
   }
 
   function renderTriggers() {
@@ -1505,6 +1566,34 @@ export function openModelInfo({
     applyLookupResponse(response);
     const outcome = response.reason === "offline" ? `offline (${response.offline_reason})` : response.reason;
     logSummary("LoRA info", `${kind}/${name}: lookup outcome = ${outcome}`);
+    if (response.reason === "found") {
+      // A real lookup just resolved "found" -- the server-side sidecar was
+      // written (or refreshed) by THIS call (`lookup.py`'s own doc comment:
+      // a sidecar write only ever happens on a "found" reason). Two things
+      // that were dead code until this call reached them:
+      //
+      //  1. invalidateList(kind) -- so a freshly-known name (§1a-vii) or
+      //     preview doesn't sit on disk unused until something else
+      //     happens to refetch the picker's list.
+      //  2. save_preview -- hand back the URL of whichever CANDIDATE this
+      //     panel is already displaying (level-filtered by construction,
+      //     `pickThumbCandidates`) so the local preview is saved too
+      //     (§7c-iv). No candidate passes ⇒ send nothing at all -- correct,
+      //     not a failure. A failure from the route itself must never
+      //     disturb this panel (`savePreview` already never rejects).
+      invalidateList(kind);
+      const images = response.data && Array.isArray(response.data.images) ? response.data.images : [];
+      const civitaiCandidates = pickThumbCandidates(images, levelLabelToInt(browsingLevel));
+      if (civitaiCandidates.length > 0) {
+        savePreview(kind, name, civitaiCandidates[0])
+          .then((saveResult) => {
+            if (saveResult && saveResult.reason === "ok" && saveResult.saved) {
+              logSummary("LoRA info", `${kind}/${name}: saved preview image`);
+            }
+          })
+          .catch(() => {}); // must never disturb the panel
+      }
+    }
     repositionAfterChange(() => {
       renderStatus();
       renderIdentity();

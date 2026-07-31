@@ -19,7 +19,7 @@ import {
   descriptionsView,
   openModelInfo,
 } from "./model_info.mjs";
-import { invalidateInfo, thumbUrl } from "./civitai_api.mjs";
+import { invalidateInfo, invalidateList, hasFile, listModels, thumbUrl } from "./civitai_api.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
@@ -236,13 +236,15 @@ test("lookupStateView: found -- Clear cache ONLY (BUG 8: Re-fetch dropped, it du
   assert.equal(view.actions[0].label, "Clear cache", "owner: 'more like clear cache' -- renamed from 'Forget cached'");
 });
 
-test("lookupStateView: notfound -- explains the hash, offers search-by-name DISABLED (M2 doesn't exist)", () => {
+test("lookupStateView: notfound -- explains the hash, offers search-by-name ENABLED (M2 shipped search)", () => {
   const view = lookupStateView({ phase: "result", response: { reason: "notfound" } });
   assert.equal(view.cssState, "notfound");
   assert.match(view.why, /changes its hash/);
   assert.match(view.why, /file's own trigger words are still shown/);
   assert.equal(view.actions.length, 1);
-  assert.equal(view.actions[0].disabled, true);
+  assert.equal(view.actions[0].id, "search-by-name");
+  assert.equal(view.actions[0].label, "Search Civitai by name →");
+  assert.equal(view.actions[0].disabled, undefined, "no longer the disabled M1 stub -- the search surface now exists");
 });
 
 test("lookupStateView: offline -- each offline_reason gets its OWN distinct headline, never collapsed", () => {
@@ -346,6 +348,14 @@ function makeDocStub() {
       },
       click() {
         (e._listeners.click || []).forEach((fn) => fn({ stopPropagation() {}, preventDefault() {} }));
+      },
+      // Generic event dispatch -- mirrors `test_civitai_search.mjs`'s/
+      // `test_civitai_modal.mjs`'s own `dispatch(t, evt)` convention (this
+      // file never needed one before the "Remove an installed model" +
+      // delete-confirm tests, which fire a plain "input" event on a typed
+      // filename).
+      dispatch(t, evt) {
+        (e._listeners[t] || []).forEach((fn) => fn(evt || { target: e, stopPropagation() {}, preventDefault() {} }));
       },
       appendChild(child) {
         const idx = e.children.indexOf(child);
@@ -2146,6 +2156,320 @@ await asyncTest("content that does NOT change size does not cause a spurious re-
     await settle();
 
     assert.equal(repositionCalls, 0, "same-size content must never trigger a spurious reposition() call");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// "Remove an installed model" -- the ⓘ panel's own delete affordance
+// (docs/TODO.md, owner decisions 2026-07-30).
+// =========================================================================
+
+await asyncTest("openModelInfo: the Delete button opens the type-to-confirm dialog naming the file/size/folder; a successful delete invalidates the list, calls onDeleted, and closes the panel", async () => {
+  const kind = "loras";
+  const name = "detail/delete-me.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  let deleteCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) };
+    }
+    if (u.includes("/delete")) {
+      deleteCalls += 1;
+      const body = JSON.parse(opts.body);
+      assert.equal(body.kind, kind);
+      assert.equal(body.name, name);
+      return { json: async () => ({ reason: "ok", message: "", removed: ["model", "sidecar"] }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name, size: 2_000_000 }] }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    await listModels(kind); // seed the client list cache so we can observe it being invalidated
+    assert.notEqual(hasFile(kind, name), null, "sanity: the list cache must be populated first");
+
+    const doc = makeDocStub();
+    let onDeletedArgs = null;
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      sizeBytes: 2_000_000,
+      onDeleted: (k, n) => {
+        onDeletedArgs = { k, n };
+      },
+    });
+    await settle();
+
+    const deleteBtn = findAll(handle.overlay, "wtn-mi-delete")[0];
+    assert.ok(deleteBtn, "the ⓘ panel must offer its own Delete button");
+    deleteBtn.click();
+
+    const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
+    assert.ok(confirmBtn, "the type-to-confirm dialog must open");
+    assert.equal(confirmBtn.disabled, true, "must start disabled");
+    assert.equal(findAll(doc.body, "wtn-dc-file")[0].textContent, name);
+    assert.match(findAll(doc.body, "wtn-dc-meta")[0].textContent, /1\.9 MB/);
+    assert.match(findAll(doc.body, "wtn-dc-meta")[0].textContent, /models\/loras\/detail/);
+
+    const input = findAll(doc.body, "wtn-dc-input")[0];
+    input.value = name;
+    input.dispatch("input");
+    assert.equal(confirmBtn.disabled, false, "the exact filename enables it");
+    confirmBtn.click();
+    await settle();
+
+    assert.equal(deleteCalls, 1);
+    assert.deepEqual(onDeletedArgs, { k: kind, n: name });
+    assert.equal(hasFile(kind, name), null, "invalidateList must have cleared the client cache back to 'unknown'");
+    assert.equal(handle.overlay.parentNode, null, "the ⓘ panel itself must close after a successful delete");
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelInfo: a write_error while deleting surfaces readably in the dialog, and the ⓘ panel stays open", async () => {
+  const kind = "loras";
+  const name = "locked.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) };
+    }
+    if (u.includes("/delete")) {
+      return { json: async () => ({ reason: "write_error", message: "Could not delete the model file: permission denied", removed: [] }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    const doc = makeDocStub();
+    let onDeletedCalls = 0;
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      onDeleted: () => {
+        onDeletedCalls += 1;
+      },
+    });
+    await settle();
+
+    findAll(handle.overlay, "wtn-mi-delete")[0].click();
+    const input = findAll(doc.body, "wtn-dc-input")[0];
+    const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
+    input.value = name;
+    input.dispatch("input");
+    confirmBtn.click();
+    await settle();
+
+    const errorLine = findAll(doc.body, "wtn-dc-error")[0];
+    assert.match(errorLine.textContent, /permission denied/);
+    assert.equal(onDeletedCalls, 0, "onDeleted must never fire on a non-ok reason");
+    assert.notEqual(handle.overlay.parentNode, null, "the ⓘ panel itself must stay open after a failed delete");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// §7e -- "Search Civitai by name →" (M2 shipped search, notfound is no
+// longer a dead end).
+// =========================================================================
+
+await asyncTest("openModelInfo: notfound's 'Search Civitai by name →' hands off to the caller with this model's own name, and closes the panel", async () => {
+  const kind = "loras";
+  const name = "renamed-lora.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    let searchByNameArg = null;
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      onSearchByName: (n) => {
+        searchByNameArg = n;
+      },
+    });
+    await settle();
+
+    const searchByNameBtn = findAll(handle.overlay, "wtn-mi-status-actions")[0].children
+      .find((b) => b.textContent === "Search Civitai by name →");
+    assert.ok(searchByNameBtn, "notfound must offer the (now enabled) search-by-name action");
+    searchByNameBtn.click();
+
+    assert.equal(searchByNameArg, name);
+    assert.equal(handle.overlay.parentNode, null, "the panel must close on hand-off, so the search surface isn't hidden behind it");
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// The ⓘ backfill saves the preview image too (docs/lora-loader-design.md
+// §7c-iv) -- and invalidates the picker's list cache on every real "found".
+// =========================================================================
+
+await asyncTest("openModelInfo: a real 'found' lookup saves the preview of the candidate it is displaying, and invalidates the picker's list cache", async () => {
+  const kind = "loras";
+  const name = "save-preview-a.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  let savePreviewCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return {
+        json: async () => ({
+          reason: "found",
+          offline_reason: null,
+          message: "",
+          data: { name: "Save Preview A", images: [{ url: "https://image.civitai.com/pg.jpg", nsfw_level: 1, type: "image" }] },
+        }),
+      };
+    }
+    if (u.includes("/save_preview")) {
+      savePreviewCalls += 1;
+      const body = JSON.parse(opts.body);
+      assert.equal(body.kind, kind);
+      assert.equal(body.name, name);
+      assert.equal(body.preview_url, "https://image.civitai.com/pg.jpg", "must send the level-passing candidate this panel is displaying");
+      return { json: async () => ({ reason: "ok", message: "", saved: true, detail: null, path: "/x" }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name, size: 10 }] }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    await listModels(kind);
+    assert.notEqual(hasFile(kind, name), null, "sanity: seeded before the lookup");
+
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+    });
+    await settle();
+    await settle();
+
+    assert.equal(savePreviewCalls, 1, "a real found lookup with a level-passing candidate must call save_preview exactly once");
+    assert.equal(hasFile(kind, name), null, "invalidateList must have run after the found lookup");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelInfo: no candidate passes the browsing level -> save_preview is never called (skipped, not a failure)", async () => {
+  const kind = "loras";
+  const name = "save-preview-locked.safetensors";
+  invalidateInfo(kind, name);
+  let savePreviewCalls = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return {
+        json: async () => ({
+          reason: "found",
+          offline_reason: null,
+          message: "",
+          // Every image is above the default "PG" browsing level -- no
+          // candidate passes, so there is nothing to save.
+          data: { name: "Locked", images: [{ url: "https://image.civitai.com/xxx.jpg", nsfw_level: 16, type: "image" }] },
+        }),
+      };
+    }
+    if (u.includes("/save_preview")) {
+      savePreviewCalls += 1;
+      return { json: async () => ({ reason: "ok", saved: false, detail: "no_url", path: null }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+    });
+    await settle();
+    await settle();
+
+    assert.equal(savePreviewCalls, 0, "no candidate passes the level -- save_preview must never even be called");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: a save_preview failure never disturbs the panel -- it still renders 'found' normally", async () => {
+  const kind = "loras";
+  const name = "save-preview-fails.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return {
+        json: async () => ({
+          reason: "found",
+          offline_reason: null,
+          message: "",
+          data: { name: "Save Preview Fails", images: [{ url: "https://image.civitai.com/pg.jpg", nsfw_level: 1, type: "image" }] },
+        }),
+      };
+    }
+    if (u.includes("/save_preview")) {
+      throw new Error("network down");
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+    });
+    await settle();
+    await settle();
+
+    // The panel itself must be entirely unaffected -- it never even calls
+    // `savePreview` in a way that can throw (`civitai_api.mjs`'s own
+    // `savePreview` already never rejects; this is the "belt and braces"
+    // half, confirming a caller that DID reject wouldn't crash this file).
+    assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Save Preview Fails");
+    assert.equal(handle.overlay.parentNode !== null, true, "the panel must still be open and healthy");
 
     handle.close();
   } finally {

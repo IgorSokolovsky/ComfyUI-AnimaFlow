@@ -82,6 +82,8 @@ const LIST_URL = "/wtn/model_browser/list";
 const THUMB_URL = "/wtn/model_browser/thumb";
 const LOOKUP_URL = "/wtn/model_browser/lookup";
 const FORGET_URL = "/wtn/model_browser/forget";
+const DELETE_URL = "/wtn/model_browser/delete";
+const SAVE_PREVIEW_URL = "/wtn/model_browser/save_preview";
 const SEARCH_URL = "/wtn/model_browser/search";
 const DOWNLOAD_START_URL = "/wtn/model_browser/download/start";
 const DOWNLOAD_PROGRESS_URL = "/wtn/model_browser/download/progress";
@@ -374,6 +376,100 @@ export function thumbUrl(kind, name) {
     return null;
   }
   return `${THUMB_URL}?kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
+}
+
+// ---------------------------------------------------------------------------
+// "Remove an installed model" + the ⓘ backfill's own preview save
+// (`docs/TODO.md`, owner decisions 2026-07-30 / `6ce43de`) -- both routes
+// existed server-side with no frontend caller until this pass. Same
+// never-throw discipline as every function above: each ALWAYS resolves to
+// the route's own shape, degrading to an `offline`-flavoured shape for a
+// transport failure (never reaches the server, or the reply isn't JSON with
+// a usable `reason`).
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /wtn/model_browser/delete` -- destroys the model `(kind, name)`
+ * resolves to, plus its sidecar/preview if either exists
+ * (`src/model_browser/remove.py`'s own doc comment has the full guarantee).
+ * Always resolves to `{reason, message, removed}` -- `reason` is one of
+ * `invalid_kind`/`not_found`/`write_error`/`ok` from the route itself, or
+ * this function's own `offline` degrade for a transport failure. `removed`
+ * names exactly which of `"model"`/`"sidecar"`/`"preview"` were actually
+ * deleted on an `"ok"` -- a missing sidecar/preview is correctly absent from
+ * that list, never an error.
+ *
+ * 🔒 This is the first network call in this pack that DESTROYS user data --
+ * every caller must go through a type-to-confirm dialog first
+ * (`../shared/delete_confirm.mjs`); this function itself has no confirmation
+ * of its own, by design (the same "the DOM layer decides when to call, this
+ * layer just calls" split every other function here already keeps).
+ */
+export async function deleteModel(kind, name) {
+  if (!kind || !name) {
+    return { reason: "invalid_kind", message: "No model selected.", removed: [] };
+  }
+  try {
+    const r = await fetch(DELETE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, name }),
+    });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return { reason: "offline", message: "The delete route sent an unreadable reply.", removed: [] };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the delete route (${err && err.message ? err.message : err}).`,
+      removed: [],
+    };
+  }
+}
+
+/**
+ * `POST /wtn/model_browser/save_preview` -- the ⓘ backfill's own missing
+ * half (`docs/lora-loader-design.md` §7c-iv, "the backfill must save the
+ * image too"): hands back the URL of whichever candidate the CALLER is
+ * already displaying (level-filtered by construction -- this function makes
+ * no leveling decision of its own) so it gets saved next to the model on
+ * disk, instead of being re-fetched from Civitai on every render forever.
+ * Always resolves to `{reason, message, saved, detail, path}` --
+ * `reason` is one of `invalid_kind`/`not_found`/`ok` from the route itself
+ * (`saved: false` on `"ok"` is a correct no-op -- `detail` names why:
+ * `"no_url"`/`"already_present"`/`"fetch_failed"` -- never an error), or this
+ * function's own `offline` degrade for a transport failure. A falsy
+ * `previewUrl` is sent through as-is (the route's own `"no_url"` no-op
+ * handles it); callers should still prefer skipping the call entirely when
+ * they have no candidate at all (`docs/TODO.md`: "no candidate passes ⇒ send
+ * nothing").
+ */
+export async function savePreview(kind, name, previewUrl) {
+  if (!kind || !name) {
+    return { reason: "invalid_kind", message: "No model selected.", saved: false, detail: null, path: null };
+  }
+  try {
+    const r = await fetch(SAVE_PREVIEW_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, name, preview_url: previewUrl }),
+    });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return { reason: "offline", message: "The save_preview route sent an unreadable reply.", saved: false, detail: null, path: null };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the save_preview route (${err && err.message ? err.message : err}).`,
+      saved: false,
+      detail: null,
+      path: null,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

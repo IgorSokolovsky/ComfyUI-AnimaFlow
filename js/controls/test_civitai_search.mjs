@@ -27,6 +27,8 @@ import {
   resultSubtitle,
   gatedSubtitle,
   subfolderFromDestinationField,
+  searchButtonEnabled,
+  queryFromModelName,
   searchReasonMessage,
   downloadStartMessage,
   downloadTerminalMessage,
@@ -1490,11 +1492,14 @@ await asyncTest("openCivitaiSearch: THE REPORTED BUG -- learned-gated with no ke
     globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.CIVITAI_API_KEY ? "sk-the-users-real-key" : undefined) } } } };
     try {
       // A brand-new search against the SAME (still gated:false) server
-      // response is the natural re-check point (`runSearch`'s own top).
+      // response is the natural re-check point (`runSearch`'s own top) --
+      // §7c-i's explicit Search button, not a debounce: typing alone fires
+      // nothing, the button click is what runs it.
       const search = findAll(handle.overlay, "wtn-cs-search")[0];
       search.value = "needs";
       search.dispatch("input");
-      await new Promise((resolve) => setTimeout(resolve, 450)); // clear the debounce timer
+      const searchBtn = findAll(handle.overlay, "wtn-cs-search-btn")[0];
+      searchBtn.dispatch("click", { stopPropagation() {} });
       await settle();
 
       assert.equal(
@@ -1517,7 +1522,7 @@ await asyncTest("openCivitaiSearch: THE REPORTED BUG -- learned-gated with no ke
   }
 });
 
-await asyncTest("openCivitaiSearch: changing a filter <select> re-searches with the new value, and the search input is debounced", async () => {
+await asyncTest("openCivitaiSearch: changing a filter <select> re-searches immediately -- typing alone fires NOTHING (§7c-i, explicit Search button, not a debounce)", async () => {
   _resetDownloadStateForTests();
   const queries = [];
   stubFetch(async (url) => {
@@ -1548,8 +1553,8 @@ await asyncTest("openCivitaiSearch: changing a filter <select> re-searches with 
     assert.equal(queries.length, 2, "changing a filter re-searches immediately, without debounce");
     assert.equal(queries[1].sort, "Newest");
 
-    // The free-text search box IS debounced -- rapid keystrokes must not
-    // fire one request per keystroke.
+    // Typing alone -- no timer, no blur -- must fire NOTHING, no matter how
+    // long we wait.
     const search = findAll(handle.overlay, "wtn-cs-search")[0];
     search.value = "s";
     search.dispatch("input");
@@ -1557,11 +1562,346 @@ await asyncTest("openCivitaiSearch: changing a filter <select> re-searches with 
     search.dispatch("input");
     search.value = "skin";
     search.dispatch("input");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(queries.length, 2, "mid-debounce keystrokes must not have fired yet");
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    assert.equal(queries.length, 3, "exactly one debounced search fires after typing settles");
-    assert.equal(queries[2].query, "skin");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(queries.length, 2, "typing must never fire a search on its own -- no debounce left running");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+// =========================================================================
+// §7c-i -- the explicit `Search` button (owner, 2026-07-31): enable/disable
+// across typing, searching, and a filter change; Enter equivalence;
+// pagination independent of it; no debounce timer left behind.
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: the Search button is disabled once its initial search has run, enables on typing, and disables again once clicked", async () => {
+  _resetDownloadStateForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push(Object.fromEntries(u.searchParams.entries()));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const searchBtn = findAll(handle.overlay, "wtn-cs-search-btn")[0];
+    const search = findAll(handle.overlay, "wtn-cs-search")[0];
+    assert.equal(searchBtn.disabled, true, "must be disabled once the initial search has already run -- nothing new to fetch");
+
+    search.value = "skin";
+    search.dispatch("input");
+    assert.equal(searchBtn.disabled, false, "typing something new must enable the button");
+    assert.equal(queries.length, 1, "typing itself must never issue a request");
+
+    searchBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(queries.length, 2, "the button click issues exactly one search");
+    assert.equal(queries[1].query, "skin");
+    assert.equal(searchBtn.disabled, true, "must settle back to disabled once the search it queued has executed");
+
+    // Clicking again while unchanged must not issue a second request.
+    searchBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(queries.length, 2, "a disabled button click must not fire a request");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: Enter in the search field runs the SAME action as the button", async () => {
+  _resetDownloadStateForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push(Object.fromEntries(u.searchParams.entries()));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const search = findAll(handle.overlay, "wtn-cs-search")[0];
+    search.value = "detail";
+    search.dispatch("input");
+    search.dispatch("keydown", { key: "Enter", preventDefault() {} });
+    await settle();
+    assert.equal(queries.length, 2, "Enter must run the search, exactly like the button");
+    assert.equal(queries[1].query, "detail");
+
+    // Enter with nothing new to fetch (button disabled) must be a no-op.
+    search.dispatch("keydown", { key: "Enter", preventDefault() {} });
+    await settle();
+    assert.equal(queries.length, 2, "Enter must be a no-op once the button itself would be disabled");
+
+    // A non-Enter key must never fire anything.
+    search.dispatch("keydown", { key: "a", preventDefault() {} });
+    await settle();
+    assert.equal(queries.length, 2);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a filter change updates the last-searched text too, so the button settles back to disabled", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const search = findAll(handle.overlay, "wtn-cs-search")[0];
+    const searchBtn = findAll(handle.overlay, "wtn-cs-search-btn")[0];
+    search.value = "skin";
+    search.dispatch("input");
+    assert.equal(searchBtn.disabled, false);
+
+    const selects = [];
+    const walk = (e) => {
+      if (e.tagName === "select") {
+        selects.push(e);
+      }
+      (e.children || []).forEach(walk);
+    };
+    walk(handle.overlay);
+    const sortSel = selects[1];
+    sortSel.value = "Newest";
+    sortSel.dispatch("change", { stopPropagation() {} });
+    await settle();
+    assert.equal(searchBtn.disabled, true, "a filter-triggered search must ALSO update the last-searched text, settling the button back to disabled for the SAME query text");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: pagination (scroll-triggered) never depends on the Search button, and never changes its state", async () => {
+  _resetDownloadStateForTests();
+  let calls = 0;
+  stubFetch(async () => {
+    calls += 1;
+    return jsonResponse({
+      reason: "ok", message: "",
+      results: [makeResult({ modelId: calls, versionId: calls, name: `R${calls}` })],
+      next_cursor: calls === 1 ? "page2" : null,
+      public_only: false,
+    });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+    const searchBtn = findAll(handle.overlay, "wtn-cs-search-btn")[0];
+    assert.equal(searchBtn.disabled, true);
+
+    const scrollArea = findAll(handle.overlay, "wtn-cs-scroll")[0];
+    scrollArea.scrollHeight = 1000;
+    scrollArea.clientHeight = 500;
+    scrollArea.scrollTop = 1000 - 500 - 10; // inside SCROLL_LOAD_MORE_THRESHOLD_PX
+    scrollArea.dispatch("scroll");
+    await settle();
+
+    assert.equal(calls, 2, "the scroll-triggered page fetch must have run");
+    assert.equal(
+      findAll(handle.overlay, "wtn-cs-title").map((e) => e.textContent).length,
+      2,
+      "both pages' results must be present",
+    );
+    assert.equal(searchBtn.disabled, true, "pagination must never re-enable OR re-disable the Search button -- it is not a new search");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: `initialQuery` pre-fills the field and starts the button disabled once the pre-filled search has run", async () => {
+  _resetDownloadStateForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push(Object.fromEntries(u.searchParams.entries()));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10,
+      initialQuery: "real skin",
+    });
+    await settle();
+    const search = findAll(handle.overlay, "wtn-cs-search")[0];
+    const searchBtn = findAll(handle.overlay, "wtn-cs-search-btn")[0];
+    assert.equal(search.value, "real skin", "the field must be pre-filled");
+    assert.equal(queries.length, 1);
+    assert.equal(queries[0].query, "real skin", "the pre-filled text must be what the panel's own opening search actually sent");
+    assert.equal(searchBtn.disabled, true, "the button must start disabled -- the pre-filled text IS the last-searched text");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+// =========================================================================
+// searchButtonEnabled / queryFromModelName -- pure helpers.
+// =========================================================================
+
+test("searchButtonEnabled: true only when the (trimmed) query differs from the (trimmed) last-searched text", () => {
+  assert.equal(searchButtonEnabled("skin", "skin"), false);
+  assert.equal(searchButtonEnabled(" skin ", "skin"), false, "whitespace-only differences don't count as a new query");
+  assert.equal(searchButtonEnabled("skinny", "skin"), true);
+  assert.equal(searchButtonEnabled("", null), false, "the resting state before any search has run");
+});
+
+test("searchButtonEnabled: garbage input degrades to '', never throws", () => {
+  assert.equal(searchButtonEnabled(null, null), false);
+  assert.equal(searchButtonEnabled(undefined, undefined), false);
+  assert.equal(searchButtonEnabled(42, 42), false, "the SAME garbage on both sides degrades to '' on both sides -- no difference");
+  assert.equal(searchButtonEnabled(42, "42"), true, "a non-string query degrades to '', which DOES differ from a real last-searched string");
+});
+
+test("queryFromModelName: strips a subfolder prefix and the extension", () => {
+  assert.equal(queryFromModelName("detail/real_skin.safetensors"), "real skin");
+  assert.equal(queryFromModelName("a/b/my_character.safetensors"), "my character");
+});
+
+test("queryFromModelName: strips ONE trailing version/step marker -- cheap, not clever", () => {
+  assert.equal(queryFromModelName("real_skin-step00000200.safetensors"), "real skin");
+  assert.equal(queryFromModelName("my_lora_v2.safetensors"), "my lora");
+  assert.equal(queryFromModelName("Character-e15.safetensors"), "Character");
+  assert.equal(queryFromModelName("Character-epoch3.safetensors"), "Character");
+});
+
+test("queryFromModelName: garbage/empty input degrades to '', never throws", () => {
+  assert.equal(queryFromModelName(""), "");
+  assert.equal(queryFromModelName(null), "");
+  assert.equal(queryFromModelName(undefined), "");
+});
+
+// =========================================================================
+// "Remove an installed model" -- the search menu's own delete affordance
+// (docs/TODO.md, owner decisions 2026-07-30).
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: an installed card's own Delete button opens the type-to-confirm dialog; success flips the card to available, invalidates the list, and calls onDeleted", async () => {
+  _resetDownloadStateForTests();
+  let deleteCalls = 0;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({
+        reason: "ok", message: "",
+        results: [makeResult({ modelId: 9, versionId: 10, name: "Installed One", installed: true })],
+        next_cursor: null, public_only: false,
+      });
+    }
+    if (u.includes("/delete")) {
+      deleteCalls += 1;
+      const body = JSON.parse(opts.body);
+      assert.equal(body.kind, "loras");
+      assert.equal(body.name, "Installed One.safetensors");
+      return jsonResponse({ reason: "ok", message: "", removed: ["model", "sidecar"] });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let onDeletedArgs = null;
+    const handle = openCivitaiSearch({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10,
+      onDeleted: (kind, name) => {
+        onDeletedArgs = { kind, name };
+      },
+    });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-action-installed").length, 1);
+    const deleteBtn = findAll(handle.overlay, "wtn-cs-action-delete")[0];
+    assert.ok(deleteBtn, "an installed card must offer its own Delete affordance");
+    deleteBtn.dispatch("click", { stopPropagation() {} });
+
+    const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
+    assert.ok(confirmBtn, "the type-to-confirm dialog must open");
+    assert.equal(confirmBtn.disabled, true, "must start disabled");
+    const input = findAll(doc.body, "wtn-dc-input")[0];
+    input.value = "Installed One.safetensors";
+    input.dispatch("input");
+    assert.equal(confirmBtn.disabled, false, "the exact filename must enable it");
+    confirmBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(deleteCalls, 1);
+    assert.equal(findAll(handle.overlay, "wtn-cs-action-installed").length, 0, "the card must fall back to available, never vanish or throw");
+    assert.equal(
+      findAll(handle.overlay, "wtn-cs-action").filter((e) => e.textContent === "↓ Download").length,
+      1,
+      "an available card offers Download again",
+    );
+    assert.deepEqual(onDeletedArgs, { kind: "loras", name: "Installed One.safetensors" });
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: a write_error while deleting surfaces readably in the dialog, and the card stays installed", async () => {
+  _resetDownloadStateForTests();
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({
+        reason: "ok", message: "",
+        results: [makeResult({ modelId: 11, versionId: 12, name: "Locked File", installed: true })],
+        next_cursor: null, public_only: false,
+      });
+    }
+    if (u.includes("/delete")) {
+      return jsonResponse({ reason: "write_error", message: "Could not delete the model file: permission denied", removed: [] });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", pollIntervalMs: 10 });
+    await settle();
+
+    const deleteBtn = findAll(handle.overlay, "wtn-cs-action-delete")[0];
+    deleteBtn.dispatch("click", { stopPropagation() {} });
+    const input = findAll(doc.body, "wtn-dc-input")[0];
+    const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
+    input.value = "Locked File.safetensors";
+    input.dispatch("input");
+    confirmBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const errorLine = findAll(doc.body, "wtn-dc-error")[0];
+    assert.match(errorLine.textContent, /permission denied/);
+    assert.equal(findAll(handle.overlay, "wtn-cs-action-installed").length, 1, "a failed delete must leave the card exactly as it was");
 
     handle.close();
   } finally {

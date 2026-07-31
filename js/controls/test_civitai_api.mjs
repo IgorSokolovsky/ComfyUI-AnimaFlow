@@ -26,6 +26,8 @@ import {
   searchModels,
   searchUnscoped,
   startDownload,
+  deleteModel,
+  savePreview,
 } from "./civitai_api.mjs";
 
 let failures = 0;
@@ -673,6 +675,146 @@ await asyncTest("startDownload: a garbage civitaiMeta/previewUrl is dropped rath
     });
     assert.equal("civitai_meta" in capturedBody, false);
     assert.equal("preview_url" in capturedBody, false);
+  } finally {
+    restoreFetch();
+  }
+});
+
+// =========================================================================
+// deleteModel -- POST /wtn/model_browser/delete ("Remove an installed
+// model", docs/TODO.md).
+// =========================================================================
+
+await asyncTest("deleteModel: posts {kind, name}, returns the route's own {reason, message, removed}", async () => {
+  let capturedUrl = null;
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    capturedUrl = String(url);
+    capturedBody = JSON.parse(opts.body);
+    return jsonResponse({ reason: "ok", message: "", removed: ["model", "sidecar"] });
+  });
+  try {
+    const resp = await deleteModel("loras", "gone.safetensors");
+    assert.equal(capturedUrl, "/wtn/model_browser/delete");
+    assert.deepEqual(capturedBody, { kind: "loras", name: "gone.safetensors" });
+    assert.equal(resp.reason, "ok");
+    assert.deepEqual(resp.removed, ["model", "sidecar"]);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("deleteModel: a missing kind/name never reaches the network -- resolves to invalid_kind locally", async () => {
+  let fetchCalls = 0;
+  stubFetch(async () => {
+    fetchCalls += 1;
+    return jsonResponse({ reason: "ok", removed: [] });
+  });
+  try {
+    const resp1 = await deleteModel("", "a.safetensors");
+    const resp2 = await deleteModel("loras", "");
+    assert.equal(resp1.reason, "invalid_kind");
+    assert.equal(resp2.reason, "invalid_kind");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("deleteModel: a transport failure degrades to reason 'offline', never throws", async () => {
+  stubFetch(async () => {
+    throw new Error("network down");
+  });
+  try {
+    const resp = await deleteModel("loras", "a.safetensors");
+    assert.equal(resp.reason, "offline");
+    assert.match(resp.message, /network down/);
+    assert.deepEqual(resp.removed, []);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("deleteModel: an unreadable reply (no usable 'reason') degrades to 'offline' rather than throwing", async () => {
+  stubFetch(async () => ({ json: async () => ({ garbage: true }) }));
+  try {
+    const resp = await deleteModel("loras", "a.safetensors");
+    assert.equal(resp.reason, "offline");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("deleteModel: surfaces write_error/not_found unchanged", async () => {
+  stubFetch(async () => jsonResponse({ reason: "write_error", message: "permission denied", removed: [] }));
+  try {
+    const resp = await deleteModel("loras", "a.safetensors");
+    assert.equal(resp.reason, "write_error");
+    assert.match(resp.message, /permission denied/);
+  } finally {
+    restoreFetch();
+  }
+});
+
+// =========================================================================
+// savePreview -- POST /wtn/model_browser/save_preview (the ⓘ backfill's own
+// missing half, docs/lora-loader-design.md §7c-iv).
+// =========================================================================
+
+await asyncTest("savePreview: posts {kind, name, preview_url}, returns the route's own {reason, saved, detail, path}", async () => {
+  let capturedUrl = null;
+  let capturedBody = null;
+  stubFetch(async (url, opts) => {
+    capturedUrl = String(url);
+    capturedBody = JSON.parse(opts.body);
+    return jsonResponse({ reason: "ok", message: "", saved: true, detail: null, path: "/models/loras/a.preview.jpeg" });
+  });
+  try {
+    const resp = await savePreview("loras", "a.safetensors", "https://image.civitai.com/pg.jpg");
+    assert.equal(capturedUrl, "/wtn/model_browser/save_preview");
+    assert.deepEqual(capturedBody, { kind: "loras", name: "a.safetensors", preview_url: "https://image.civitai.com/pg.jpg" });
+    assert.equal(resp.reason, "ok");
+    assert.equal(resp.saved, true);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("savePreview: a no-op ('already_present'/'no_url'/'fetch_failed') is reason 'ok', saved: false -- never surfaced as an error", async () => {
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", saved: false, detail: "already_present", path: null }));
+  try {
+    const resp = await savePreview("loras", "a.safetensors", "https://image.civitai.com/pg.jpg");
+    assert.equal(resp.reason, "ok");
+    assert.equal(resp.saved, false);
+    assert.equal(resp.detail, "already_present");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("savePreview: a missing kind/name never reaches the network", async () => {
+  let fetchCalls = 0;
+  stubFetch(async () => {
+    fetchCalls += 1;
+    return jsonResponse({ reason: "ok", saved: false });
+  });
+  try {
+    const resp = await savePreview("", "a.safetensors", "https://x/y.jpg");
+    assert.equal(resp.reason, "invalid_kind");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("savePreview: a transport failure degrades to reason 'offline', never throws, and a failure must never disturb the caller", async () => {
+  stubFetch(async () => {
+    throw new Error("dns failure");
+  });
+  try {
+    const resp = await savePreview("loras", "a.safetensors", "https://x/y.jpg");
+    assert.equal(resp.reason, "offline");
+    assert.equal(resp.saved, false);
   } finally {
     restoreFetch();
   }

@@ -1041,6 +1041,92 @@ test("civitai_modal.mjs itself is NOT one of the 5 auto-loaded .js files", () =>
   assert.ok(!fs.existsSync(path.join(here, "civitai_modal.js")));
 });
 
+// =========================================================================
+// §7c-i -- the explicit `Search` button, shared behaviour with
+// civitai_search.mjs's own panel ("one implementation").
+// =========================================================================
+
+await asyncTest("openCivitaiModal: typing alone fires nothing; the Search button (and Enter) run the search, and it settles back to disabled", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push(Object.fromEntries(u.searchParams.entries()));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    assert.equal(queries.length, 1, "opening the modal runs one initial search");
+
+    const search = findAll(handle.panel, "wtn-cm-search")[0];
+    const searchBtn = findAll(handle.panel, "wtn-cm-search-btn")[0];
+    assert.equal(searchBtn.disabled, true, "must start disabled -- the initial search already ran");
+
+    search.value = "skin";
+    search.dispatch("input");
+    assert.equal(searchBtn.disabled, false, "typing something new enables the button");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(queries.length, 1, "typing must never fire a search on its own, no matter how long we wait -- no debounce left running");
+
+    searchBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(queries.length, 2, "the button click issues exactly one search");
+    assert.equal(queries[1].query, "skin");
+    assert.equal(searchBtn.disabled, true, "settles back to disabled once that search has executed");
+
+    search.value = "detail";
+    search.dispatch("input");
+    search.dispatch("keydown", { key: "Enter", preventDefault() {} });
+    await settle();
+    assert.equal(queries.length, 3, "Enter runs the SAME action as the button");
+    assert.equal(queries[2].query, "detail");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: a filter change re-searches immediately and updates the last-searched text, settling the button back to disabled", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const queries = [];
+  stubFetch(async (url) => {
+    const u = new URL(String(url), "http://x");
+    queries.push(Object.fromEntries(u.searchParams.entries()));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    const search = findAll(handle.panel, "wtn-cm-search")[0];
+    const searchBtn = findAll(handle.panel, "wtn-cm-search-btn")[0];
+    search.value = "skin";
+    search.dispatch("input");
+    assert.equal(searchBtn.disabled, false);
+
+    const selects = findAllByTag(handle.scrim, "select");
+    const sortSel = selects[0];
+    sortSel.value = "Newest";
+    sortSel.dispatch("change", { stopPropagation() {} });
+    await settle();
+    assert.equal(queries.length, 2, "changing a filter re-searches immediately");
+    assert.equal(searchBtn.disabled, true, "a filter-triggered search updates the last-searched text too");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
 console.log(`\n${count - failures}/${count} passed`);
 if (failures > 0) {
   process.exitCode = 1;

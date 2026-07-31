@@ -131,7 +131,7 @@ import { openModelPicker } from "./model_picker.mjs";
 import { openModelInfo } from "./model_info.mjs";
 // `civitai_search.mjs` is M2's own addition to that same reuse boundary (its
 // own top doc comment) -- the header's 🔍 wires it below (`wireHeader`).
-import { openCivitaiSearch } from "./civitai_search.mjs";
+import { openCivitaiSearch, queryFromModelName } from "./civitai_search.mjs";
 import {
   openOverlayWithZoom,
   closeActiveOverlay,
@@ -551,6 +551,10 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
     civitaiEnabled,
     showThumbnails,
     browsingLevel,
+    // "Remove an installed model" (docs/TODO.md) -- the confirm dialog's own
+    // size/folder line reads the already-cached list entry's `size`, same
+    // source as `baseModel`/`fileTriggers` above (no extra network call).
+    sizeBytes: entry && Number.isFinite(entry.size) ? entry.size : undefined,
     onChange: (nextSelected, nextCustom) => {
       const s = ensureState(node, ctx);
       const r = s.rows.find((entry2) => entry2.id === rowId);
@@ -560,6 +564,32 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
       r.triggers = nextSelected;
       r.customTriggers = nextCustom;
       persistState(node, ctx);
+    },
+    onDeleted: () => {
+      // The row still pointing at the just-deleted file must fall into the
+      // existing red missing-file state, not vanish or throw -- the SAME
+      // invalidate-then-refetch-then-repaint path the `R`/reconnect refresh
+      // hook already uses (`refreshLoraModels`, this module's own export),
+      // applied to THIS node's own rows (the graph-wide walk lives in
+      // `index.js`, a `.js` entry point, out of scope here).
+      refreshLoraModels().then(() => syncRows(node, ctx));
+    },
+    onSearchByName: (rawName) => {
+      // §7e's `notfound` action -- hand off to the same Civitai search
+      // panel the header's own 🔍 opens, pre-filled with a cheap, non-clever
+      // guess at the model's real name (`civitai_search.mjs`'s own
+      // `queryFromModelName`).
+      const headerRefs = node._lrRefs;
+      openCivitaiSearch({
+        ctx,
+        anchorEl: (headerRefs && headerRefs.searchBtn) || refs.info,
+        kind: "loras",
+        ownerKey: `lora-civitai-search:${node.id != null ? node.id : ""}`,
+        initialQuery: queryFromModelName(rawName),
+        onDeleted: () => {
+          refreshLoraModels().then(() => syncRows(node, ctx));
+        },
+      });
     },
   });
 }
@@ -971,7 +1001,15 @@ function wireHeader(node, ctx, refs) {
   // re-check the setting itself: a hidden button has no way to be clicked.
   refs.searchBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    openCivitaiSearch({ ctx, anchorEl: refs.searchBtn, kind: "loras", ownerKey: `lora-civitai-search:${node.id != null ? node.id : ""}` });
+    openCivitaiSearch({
+      ctx, anchorEl: refs.searchBtn, kind: "loras", ownerKey: `lora-civitai-search:${node.id != null ? node.id : ""}`,
+      onDeleted: () => {
+        // "Remove an installed model" (docs/TODO.md) -- a row on THIS node
+        // may already point at the file just deleted from the search menu;
+        // re-check it the same way `onDeleted` above does.
+        refreshLoraModels().then(() => syncRows(node, ctx));
+      },
+    });
   });
 }
 

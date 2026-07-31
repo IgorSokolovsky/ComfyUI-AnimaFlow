@@ -104,7 +104,11 @@ import {
   POPOVER_ANCHOR_GAP_PX,
   POPOVER_VIEWPORT_MARGIN_PX,
 } from "../shared/overlay.mjs";
-import { searchModels, startDownload, downloadProgress, cancelDownload, invalidateList } from "./civitai_api.mjs";
+import { searchModels, startDownload, downloadProgress, cancelDownload, invalidateList, deleteModel } from "./civitai_api.mjs";
+// "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
+// dialog is shared with `model_info.mjs`'s ⓘ panel rather than grown twice;
+// see that module's own top doc comment for the full contract.
+import { openDeleteConfirm, removedSummary } from "../shared/delete_confirm.mjs";
 import {
   getSetting,
   setSetting,
@@ -201,7 +205,11 @@ const CSS = `
 .wtn-cs-pinned { flex: none; }
 .wtn-cs-scroll { flex: 1 1 auto; min-height: 120px; /* keep in sync with MIN_RESULTS_HEIGHT_PX below */ overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
 
-.wtn-cs-search-wrap { position: relative; margin-bottom: 7px; }
+/* An explicit \`Search\` button beside the field (§7c-i, "not a debounce") --
+   \`.wtn-cs-searchrow\` holds both, so the row grows/shrinks together; the
+   field itself keeps its own \`margin-bottom\` moved onto the row. */
+.wtn-cs-searchrow { display: flex; align-items: stretch; gap: 6px; margin-bottom: 7px; }
+.wtn-cs-search-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
 .wtn-cs-search-icon {
   position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
   width: 12px; height: 12px; background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
@@ -213,6 +221,13 @@ const CSS = `
   border: 1px solid var(--wtn-accent-deep, ${TOKENS.accentDeep}); color: var(--wtn-ink, ${TOKENS.ink});
   padding: 6px 8px 6px 24px; border-radius: 6px; font-size: 12px;
 }
+.wtn-cs-search-btn {
+  flex: none; font-family: var(--wtn-font-mono, monospace); font-size: 11px; padding: 0 10px; border-radius: 6px;
+  cursor: pointer; background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent});
+  border: 1px solid var(--wtn-accent, ${TOKENS.accent});
+}
+.wtn-cs-search-btn:hover:not(:disabled) { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
+.wtn-cs-search-btn:disabled { opacity: .45; cursor: default; }
 
 .wtn-cs-filters { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
 .wtn-cs-pill {
@@ -358,6 +373,14 @@ ${THUMB_SKELETON_CSS}
 .wtn-cs-action-gated:hover { background: transparent; }
 .wtn-cs-action-cancel { background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); border: 1px dashed var(--wtn-line, ${TOKENS.line}); }
 .wtn-cs-action-cancel:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
+/* An installed card's own delete affordance (docs/TODO.md, "Remove an
+   installed model" -- buttons in the ⓘ panel AND the search menu). Sits
+   BESIDE the ✓ installed badge, never replacing it -- the badge still says
+   what the card's action column already told the user; this is a second,
+   independent action, styled like the cancel button (transparent, dashed)
+   but in the bad/red hue so it reads as destructive without shouting. */
+.wtn-cs-action-delete { background: transparent; color: var(--wtn-bad, ${TOKENS.bad}); border: 1px dashed rgba(248,113,113,.4); }
+.wtn-cs-action-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
 `;
 
 function el(doc, tag, className) {
@@ -658,6 +681,46 @@ export function gatedSubtitle() {
  * re-validates this regardless (`download.validate_subfolder`) -- this is a
  * convenience guess, never the guard (task brief).
  */
+/**
+ * Whether the explicit `Search` button (§7c-i, "An explicit Search button,
+ * not a debounce") should be ENABLED -- true only when the current query
+ * text differs from the text of the last EXECUTED search. Typing alone must
+ * never fire a search; this is the one thing that tells the user "there is
+ * something new to fetch," and is also why it's disabled the instant a
+ * search actually runs (the caller updates `lastSearchedText` at that same
+ * moment). Both arguments are trimmed before comparing -- leading/trailing
+ * whitespace alone is not a meaningfully different query -- and a
+ * non-string argument degrades to `""` rather than throwing. Shared by both
+ * search surfaces (this file's own panel, and `civitai_modal.mjs`'s) -- "one
+ * implementation," per that section's own closing line.
+ */
+export function searchButtonEnabled(queryText, lastSearchedText) {
+  const q = typeof queryText === "string" ? queryText.trim() : "";
+  const last = typeof lastSearchedText === "string" ? lastSearchedText.trim() : "";
+  return q !== last;
+}
+
+/**
+ * A search query derived from an installed file's own NAME -- §7e's
+ * `notfound` action, "Search Civitai by name" (by-hash failing is the
+ * *common* case: re-saving/merging/quantising a LoRA changes its hash, so a
+ * published LoRA won't match once the file has been altered). Strips any
+ * subfolder prefix and the extension, then ONE common trailing version/step
+ * marker if present (`-v2`, `_step00001200`, `-e15`, `_epoch3`) -- cheap, not
+ * clever (task brief: "a slightly imperfect query the user can edit beats a
+ * magic transform that quietly searches for the wrong thing"). Whatever
+ * remains has `_`/`-` collapsed to spaces, matching `model_info.mjs`'s own
+ * `prettyTitle`. `""` for a garbage/empty `name`, never throws.
+ */
+export function queryFromModelName(name) {
+  if (typeof name !== "string" || !name) {
+    return "";
+  }
+  let base = name.split("/").pop().replace(/\.[^./]+$/, "");
+  base = base.replace(/[-_](v\d+(?:\.\d+)?|step\d+|e\d+|epoch\d+)$/i, "");
+  return base.replace(/[_-]+/g, " ").trim();
+}
+
 export function subfolderFromDestinationField(value, kind) {
   const root = DEFAULT_ROOT_DISPLAY[kind] || "";
   if (typeof value !== "string") {
@@ -1160,19 +1223,29 @@ function buildThumb(doc, state, candidates, isStale, backoffMs) {
  *
  * @param {{ctx: {doc, getCanvasEl}, anchorEl: Element, kind: string,
  *   ownerKey?: string, onClose?: () => void, pollIntervalMs?: number,
- *   thumbRetryBackoffMs?: number}} opts
+ *   thumbRetryBackoffMs?: number, initialQuery?: string,
+ *   onDeleted?: (kind: string, name: string) => void}} opts
  *   `pollIntervalMs` (default 800ms in real use) is test-only -- threaded
  *   straight through to `startDownloadJob` so a test can drive the download
  *   poll loop deterministically instead of waiting on real 800ms timers.
  *   `thumbRetryBackoffMs` (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real
  *   use) is the same kind of test-only override for the §7c-iv thumbnail
- *   retry backoff.
+ *   retry backoff. `initialQuery` (§7e's `notfound` action, "Search Civitai
+ *   by name") pre-fills the search field before the panel's own initial
+ *   search runs -- the button starts disabled exactly as it would after any
+ *   other completed search, since that IS the search this call makes.
+ *   `onDeleted(kind, name)` -- called after a card's own delete affordance
+ *   (an "installed" card only) succeeds, so a caller (e.g. a LoRA row
+ *   pointing at the just-deleted file) can trigger its own missing-file
+ *   re-check; this panel already handles its own re-render + `invalidateList`
+ *   regardless of whether a caller supplies this.
  * @returns {object|null} the overlay handle, or `null` if this call just
  *   TOGGLED an already-open panel closed (mirrors `model_picker.mjs`'s own
  *   `openModelPicker` convention).
  */
 export function openCivitaiSearch({
   ctx, anchorEl, kind, ownerKey, onClose, pollIntervalMs = 800, thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
+  initialQuery = "", onDeleted,
 } = {}) {
   const key = ownerKey || `civitai-search:${kind}`;
   if (closeOverlayIfOwnedBy(key)) {
@@ -1210,14 +1283,27 @@ export function openCivitaiSearch({
   const pinned = el(doc, "div", "wtn-cs-pinned");
   body.appendChild(pinned);
 
+  // An explicit `Search` button beside the field (§7c-i, "not a debounce")
+  // -- nothing fires from typing alone; see `updateSearchButtonState`/the
+  // `search` "input"/"keydown" listeners below.
+  const searchRow = el(doc, "div", "wtn-cs-searchrow");
   const searchWrap = el(doc, "div", "wtn-cs-search-wrap");
   searchWrap.appendChild(el(doc, "span", "wtn-cs-search-icon"));
   const search = el(doc, "input", "wtn-cs-search");
   search.type = "text";
   search.placeholder = "Search Civitai…";
   search.spellcheck = false;
+  if (initialQuery) {
+    search.value = initialQuery;
+  }
   searchWrap.appendChild(search);
-  pinned.appendChild(searchWrap);
+  searchRow.appendChild(searchWrap);
+  const searchBtn = el(doc, "button", "wtn-cs-search-btn");
+  searchBtn.type = "button";
+  searchBtn.textContent = "Search";
+  searchBtn.title = "Run this search";
+  searchRow.appendChild(searchBtn);
+  pinned.appendChild(searchRow);
 
   // ---- filters (§7c-i: the FULL set, `type` locked, laid out as a compact
   // row of dropdown pills -- a node panel is ~340px, no room for the
@@ -1324,6 +1410,12 @@ export function openCivitaiSearch({
   // affordance appended below them (`renderList`) instead of being replaced.
   let loadingMore = false;
   let searchSeq = 0;
+  // §7c-i's own "Search button" state -- the text of the last EXECUTED
+  // search (never the field's own live value). `null` until the panel's
+  // trailing `runSearch({resetCursor:true})` call (below) runs for the
+  // first time; `searchButtonEnabled`/`updateSearchButtonState` compare
+  // against it, never the field directly.
+  let lastSearchedQuery = null;
   // §7c-iv's own "make sure a card that re-renders mid-retry doesn't leave a
   // stale timer writing to a detached element" -- bumped once at the very
   // top of every `renderList()` call (below); a thumbnail's own pending
@@ -1544,6 +1636,45 @@ export function openCivitaiSearch({
       const badge = el(doc, "span", "wtn-cs-action wtn-cs-action-installed");
       badge.textContent = "✓ installed"; // ✓ installed -- NOT the mockup's "have" (owner, §7c-iii)
       actionCol.appendChild(badge);
+      // "Remove an installed model" (docs/TODO.md) -- the search menu's own
+      // delete affordance, beside the badge (a second, independent action,
+      // not a replacement for it). `view.file_name` is the on-disk name
+      // `installed` was itself computed against (`api.py`'s own
+      // `_annotate_search_results` checks the destination at the kind's
+      // ROOT, subfolder `""`), so it resolves the same file.
+      const deleteBtn = el(doc, "button", "wtn-cs-action wtn-cs-action-delete");
+      deleteBtn.type = "button";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.title = "Delete this file from disk.";
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openDeleteConfirm({
+          doc,
+          kind,
+          name: view.file_name,
+          sizeBytes: Number.isFinite(view.size_kb) ? view.size_kb * 1024 : null,
+          deleteFn: deleteModel,
+          onDeleted: (delResult) => {
+            logSummary("LoRA search", `deleted ${view.file_name} (${removedSummary(delResult.removed)})`);
+            // The file is gone -- flip THIS version back to "available"
+            // (never vanish/throw the card) and invalidate the client list
+            // cache so the picker stops offering it (docs/TODO.md).
+            const versions = Array.isArray(result.versions) ? result.versions : null;
+            const matchedVersion = versions && versions.find((v) => v && v.version_id === view.primary_version_id);
+            if (matchedVersion) {
+              matchedVersion.installed = false;
+            } else {
+              result.installed = false;
+            }
+            invalidateList(kind);
+            if (typeof onDeleted === "function") {
+              onDeleted(kind, view.file_name);
+            }
+            renderList();
+          },
+        });
+      });
+      actionCol.appendChild(deleteBtn);
     } else if (state === "downloading") {
       // The %/Cancel pair reads as ONE row stacked under the version select
       // (task brief: "make sure that pair still reads sensibly stacked under
@@ -1729,6 +1860,16 @@ export function openCivitaiSearch({
     }
     renderList();
     const query = search.value.trim();
+    if (resetCursor) {
+      // §7c-i: "each filter-triggered search updates the last-searched
+      // text, so the button settles back to disabled afterwards" -- true
+      // here of every reset-cursor search regardless of what triggered it
+      // (the button itself, Enter, or a filter change), since all three
+      // reach this one function. Pagination (`resetCursor: false`) never
+      // reaches this branch -- untouched, per spec.
+      lastSearchedQuery = query;
+      updateSearchButtonState();
+    }
     logDebug(
       "LoRA search",
       `${kind}: issuing ${resetCursor ? "search" : "page fetch"} (query=${JSON.stringify(query)}, `
@@ -1798,13 +1939,33 @@ export function openCivitaiSearch({
   scrollArea.addEventListener("scroll", maybeLoadMore);
 
   search.addEventListener("click", (e) => e.stopPropagation());
-  const SEARCH_DEBOUNCE_MS = 400;
-  let debounceTimer = null;
-  search.addEventListener("input", () => {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+
+  // §7c-i: "An explicit Search button, not a debounce" -- typing alone never
+  // fires a search (no timer, no blur); it only updates whether the button
+  // itself is enabled. `runSearch` is what updates `lastSearchedQuery` once
+  // a search actually executes (its own doc comment).
+  function updateSearchButtonState() {
+    searchBtn.disabled = !searchButtonEnabled(search.value, lastSearchedQuery);
+  }
+  search.addEventListener("input", updateSearchButtonState);
+  searchBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (searchBtn.disabled) {
+      return;
     }
-    debounceTimer = setTimeout(() => runSearch({ resetCursor: true }), SEARCH_DEBOUNCE_MS);
+    runSearch({ resetCursor: true });
+  });
+  // Enter runs the SAME action -- "an explicit button keyboard users cannot
+  // reach is a downgrade for them" (§7c-i).
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      if (typeof e.preventDefault === "function") {
+        e.preventDefault();
+      }
+      if (!searchBtn.disabled) {
+        runSearch({ resetCursor: true });
+      }
+    }
   });
 
   /**
@@ -1909,9 +2070,6 @@ export function openCivitaiSearch({
   let anchorPollHandle = null;
 
   const handle = openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, panel, "below", () => {
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
     unsubscribe();
     if (typeof scrollArea.removeEventListener === "function") {
       scrollArea.removeEventListener("scroll", maybeLoadMore);
