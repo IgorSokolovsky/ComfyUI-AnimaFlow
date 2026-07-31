@@ -271,10 +271,32 @@ alongside this makes it live.
 So the population story is much better than "wait until the user opens ⓘ": **anything downloaded through
 our browser gets its real name immediately and for free**, on the same request that fetches the file.
 
-**Coverage is still partial, and the fallback must be silent.** A model that arrived any other way — a
-manual copy, another downloader, a file predating all of this — has no sidecar and no name. Fall back to
-the existing `displayModelName` with no marker, no placeholder, no "unknown": the row must look
-intentional, not degraded. A user with a mixed folder should not be able to tell which rows "failed".
+**Opening ⓘ backfills the rest** (owner: *"once someone click info for lora then we can update and apply
+our setup in case it was not exist before"*). A model that arrived any other way — a manual copy, another
+downloader, a file predating all of this — has no sidecar. Opening its ⓘ panel already runs the full
+hash → fetch → **`sidecar.write_sidecar`** path (`lookup.py:243`), so the name lands on disk as a side
+effect of something the user was doing anyway. **The backfill mechanism is already built; only the
+refresh is missing.**
+
+> **The one thing to add: invalidate the list cache after a lookup writes a sidecar.**
+> `civitai_api.mjs` caches the model list per kind (`_listCache`, `:96`) and already exports
+> `invalidateList(kind)` (`:156`). Without that call the newly-known name sits on disk, unused, until
+> something else happens to refetch the list — so the feature would look broken in exactly the case the
+> user just took an action to fix, which is the worst possible moment for it to look broken.
+
+So the two population paths cover different populations, and together they compound: **downloads seed
+names automatically; opening ⓘ backfills anything else, one model at a time, permanently.** A folder
+therefore gets *better* the more it is used, with no scan step and no bulk job.
+
+Deliberately **not** proposed: a background "scan the whole folder" pass. Each backfill costs a SHA256 of
+a multi-hundred-MB file plus a network round trip, and doing that unprompted across a folder is exactly
+the kind of thing §9's network policy exists to prevent. Keep it user-initiated. If bulk is ever wanted it
+should be an explicit, cancellable, visibly-progressing action — a separate decision, not a default.
+
+**Coverage is still partial, and the fallback must be silent.** Until a model has been downloaded through
+the browser or had its ⓘ opened, it has no name. Fall back to the existing `displayModelName` with no
+marker, no placeholder, no "unknown": the row must look intentional, not degraded. A user with a mixed
+folder should not be able to tell which rows "failed".
 
 **The setting.** A boolean in Settings → AnimaFlow → Controls, alongside the existing `Hide file
 extension` it composes with, defaulting to **off** (filenames — today's behaviour, and the thing that
