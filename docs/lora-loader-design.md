@@ -922,6 +922,30 @@ them are easy to forget:
 | **ⓘ info panel** (58px thumb) | `parse_model_version`'s single `thumbnail` key, from `pick_thumbnail_url` | ✅ **this section** |
 | **download-time preview sidecar** | `pick_gallery_image_url` (untransformed) | ✅ **owner decided 2026-07-31: "all 3 should be level aware"** |
 
+##### The setting is GLOBAL, and must be named that way (owner, 2026-07-31)
+
+Owner: *"lets add the NSFW level to our settings (so it will be global settings for all places that load
+images)."* It already is one — `d1274a4` registered it in Settings → AnimaFlow → Controls and the panel's
+own dropdown reads and writes that same value, so there is no per-surface copy. But two things about it
+are now wrong and should be fixed together:
+
+- **The id and label say "search".** `AnimaFlow.Controls.CivitaiSearchLevel` / *"Civitai search: maximum
+  browsing level"* was accurate when only the search panel used it. It now governs the ⓘ panel and the
+  saved preview as well, and by owner intent **every surface that loads an image**. Rename to a
+  scope-neutral id and label, and say in the tooltip that it applies everywhere.
+- **The dead `Civitai search: show NSFW` boolean is still rendered** in the dialog, with a tooltip
+  admitting it does nothing. A visible control that does nothing is worse than no control: keep the id
+  and default registered so an already-saved value is not discarded, but **drop its dialog entry** so it
+  stops being offered.
+
+Renaming the id orphans any saved value, so the level resets to its PG default once. That is acceptable
+**only because the setting is a single commit old**; the same rename in a month would not be. Settings
+ids are otherwise append-only, for the same reason widget order is.
+
+Restating the boundary this setting does *not* cross, since "global" invites the mistake: it governs what
+we **fetch and show from Civitai**. It never filters a file already on the user's disk — see the
+four-source table above.
+
 ##### The sidecar's level applies at SAVE time, not display time
 
 These are not in tension with the "never filter what the user already has on disk" rule below — they are
