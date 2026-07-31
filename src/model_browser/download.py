@@ -52,14 +52,31 @@ reported as `"key_required"` (the SAME reason a confirmed 401/403 body
 produces, `_is_key_required_body`/`_http_error_result`) with NO `.part` file
 ever created for this path -- see `_is_html_content_type`/
 `_html_login_page_result` below.
+
+**Console logging** (task: "wire the model browser into the pack's existing
+console-logging setting"): `stream_download` is now a thin logging wrapper
+(`debug`: resolved request URL + a failure's own reason/message/bytes;
+`summary`: exactly one file/status/bytes/duration line per download,
+whatever the outcome) over `_stream_download_core`, which is this module's
+entire pre-existing transfer logic, UNCHANGED -- see that function's own
+docstring for the actual streaming/integrity-gate behaviour, still
+documented there rather than here. `fetch_preview_image`/
+`finalize_successful_download` gained the same kind of lines for the
+preview-image side (candidate URL at `debug`; `saved`/`skipped`/`failed`
+at `summary`). Every new log call goes through `logs.log_summary`/
+`logs.log_debug` (never raise, `off` does zero work) and `logs.redact_url`
+for any URL (strips a `?token=...` API key before it's ever formatted into
+a string) -- see `logs.py`'s own module docstring for the full contract.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,8 +85,12 @@ from typing import Any, Callable, Dict, Optional
 from . import civitai_client
 from . import civitai_parse
 from . import local
+from . import logs as logs_mod
 from . import sidecar
 from .kinds import folder_for_kind
+
+# One logger for the whole feature (`logs.py`'s own docstring).
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 # Real LoRAs are tens-hundreds of MB; a checkpoint (M3's eventual `kind`) can
 # be several GB. 20 GiB is a generous ceiling that still refuses a
@@ -583,6 +604,65 @@ def stream_download(
     progress_cb: Optional[Callable[[int, Optional[int]], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
+    """Console-logging wrapper (task: "wire the model browser into the
+    pack's existing console-logging setting") over `_stream_download_core`
+    below, which is this function's ENTIRE previous body, unchanged --
+    logging is purely additive at the call boundary, never inside the
+    actual transfer logic, so every existing branch/return in the core
+    keeps behaving byte-for-byte as before this task.
+
+    - `debug` -- one line BEFORE the transfer starts, naming the resolved
+      request URL (`logs.format_request_debug`, always redacted -- `url`
+      here can carry a Civitai `?token=...` API key, appended by `api.py`'s
+      `download_start_impl` right before this is ever called); one more
+      line AFTER, for any outcome OTHER than `"ok"`, naming the reason/
+      message/bytes written -- this is where `"incomplete"`/`"corrupt"`/
+      `"key_required"`/`"too_large"` (the task's own named failure
+      branches) become distinguishable in the log.
+    - `summary` -- exactly ONE line per download, ALWAYS, regardless of
+      outcome: the file name, final status, bytes written, and duration.
+
+    `logs.log_summary`/`logs.log_debug` are themselves the fail-safe
+    guard (never raise, and do zero work at `"off"`) -- see their own
+    docstrings; this wrapper adds no `try/except` of its own on top,
+    same trust `civitai_client.fetch_json_with_host_fallback`'s own
+    logging calls already place in them.
+    """
+    file_name = os.path.basename(dest_path) if isinstance(dest_path, str) else None
+    logs_mod.log_debug(_logger, logs_mod.format_request_debug, url=url)
+    started = time.monotonic()
+    result = _stream_download_core(
+        url, dest_path,
+        max_size_bytes=max_size_bytes, timeout=timeout, chunk_size=chunk_size,
+        opener=opener, progress_cb=progress_cb, should_cancel=should_cancel,
+    )
+    duration_ms = (time.monotonic() - started) * 1000
+    reason = result.get("reason") if isinstance(result, dict) else None
+    bytes_written = result.get("bytes_written", 0) if isinstance(result, dict) else 0
+    logs_mod.log_summary(
+        _logger, logs_mod.format_download_summary,
+        file_name=file_name, reason=reason, bytes_written=bytes_written, duration_ms=duration_ms,
+    )
+    if reason != "ok":
+        logs_mod.log_debug(
+            _logger, logs_mod.format_download_failure_debug,
+            reason=reason, message=(result.get("message", "") if isinstance(result, dict) else ""),
+            bytes_written=bytes_written,
+        )
+    return result
+
+
+def _stream_download_core(
+    url: str,
+    dest_path: str,
+    *,
+    max_size_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+    timeout: float = 30.0,
+    chunk_size: int = _CHUNK_SIZE,
+    opener: Optional[Callable[[str, float], Any]] = None,
+    progress_cb: Optional[Callable[[int, Optional[int]], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
     """Stream `url` to `<dest_path>.part`, then atomically rename it to
     `dest_path` on success (§9) -- ALWAYS returns a dict, never raises for a
     network/write-level failure, matching `civitai_client`'s own "always
@@ -856,6 +936,12 @@ def fetch_preview_image(
     if not isinstance(url, str) or not url:
         return None
     url = civitai_parse.saved_preview_url(url)
+    # Debug-only: the ACTUAL candidate URL this fetch is about to request,
+    # after the type-conditional rewrite above -- the detail the task asks
+    # for ("the chosen candidate URL for a preview"). No secret ever rides
+    # on a preview-image URL, but `redact_url` (inside the formatter) is
+    # applied uniformly anyway, same as every other URL this module logs.
+    logs_mod.log_debug(_logger, logs_mod.format_preview_candidate_debug, url=url)
     if not _is_safe_redirect(url):
         return None
 
@@ -935,13 +1021,25 @@ def finalize_successful_download(
         if translated:
             sidecar.write_sidecar(dest_path, translated)
 
+    # Summary-level: exactly ONE "preview save" outcome line (task: "a
+    # preview save (saved / skipped / failed)") -- every early `return`
+    # below is a documented SKIP reason, and the one real fetch attempt at
+    # the bottom reports `saved`/`failed` from what it actually returned.
     if not civitai_enabled:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="Civitai disabled")
         return
     if not preview_url:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="no preview URL")
         return
     if local.find_preview_path(dest_path) is not None:
-        return  # something's already there -- ours or another tool's, never clobber it
-    fetch_preview_image(preview_url, dest_path, opener=preview_opener)
+        # something's already there -- ours or another tool's, never clobber it
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="already present")
+        return
+    saved_path = fetch_preview_image(preview_url, dest_path, opener=preview_opener)
+    if saved_path:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="saved", detail=saved_path)
+    else:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="failed")
 
 
 # ---------------------------------------------------------------------------

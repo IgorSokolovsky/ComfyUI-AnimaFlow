@@ -60,11 +60,38 @@ these a value it never validated.
 tensors, no full settings-blob dumps — every function below only ever
 touches counts, names, dimensions, and provenance flags, by construction (no
 function here even accepts a "the whole settings tree" argument).
+
+**2026-07-31: the level core moved to `src/console_logging.py`.**
+`CONSOLE_LOGGING_SETTING_ID`, `LOG_LEVELS`, `DEFAULT_LOG_LEVEL`,
+`normalize_log_level`, `effective_log_level`, `is_debug_enabled`, and the
+`_safe` decorator used to be DEFINED here; `src/model_browser/logs.py` (the
+Civitai browser's own console log, wired to this SAME "Console logging"
+Settings-dialog control) needed the identical vocabulary, and copying it a
+second time -- or having one feature import the other's internals -- would
+have been exactly the coupling `.claude/CLAUDE.md`'s `src/<feature>/` rule
+exists to prevent. So that generic half moved out to a small, feature-
+agnostic sibling module (`src/console_logging.py`'s own docstring has the
+full reasoning), and this module now just RE-EXPORTS it below -- a move,
+not a redesign: every name still resolves through `logs_mod.<name>` exactly
+as before, `pipeline.py`/`nodes/anima/preview.py`/this module's own test
+suite (`tests/test_anima_logs.py`) are unmodified, and behaviour (including
+the `ANIMAFLOW_DEBUG` precedence) is byte-identical to before this move.
+Everything BELOW this re-export block is unchanged: the anima-specific
+message builders this module still owns.
 """
 from __future__ import annotations
 
-import functools
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+from ..console_logging import (
+    CONSOLE_LOGGING_SETTING_ID,
+    DEFAULT_LOG_LEVEL,
+    LOG_LEVELS,
+    _safe,
+    effective_log_level,
+    is_debug_enabled,
+    normalize_log_level,
+)
 
 # The shared logger name `pipeline.py`/`nodes/anima/preview.py` both create
 # via `logging.getLogger(LOGGER_NAME)` — one name for the whole track, so
@@ -74,102 +101,6 @@ from typing import Any, Callable, Dict, List, Optional
 # `ModelFileMissing`), not just the logger name, since a lot of ComfyUI
 # console formatters don't print the logger name at all.
 LOGGER_NAME = "AnimaFlow.anima"
-
-# Truthy spellings for `ANIMAFLOW_DEBUG` — case-insensitive, matching every
-# other "is this env var on" convention in this ecosystem.
-_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
-
-
-def is_debug_enabled(env: Optional[Any] = None) -> bool:
-    """Is `ANIMAFLOW_DEBUG` set to a truthy value in `env` (a plain mapping —
-    pass `os.environ` at the real call site; `pipeline.py`/`preview.py` are
-    the only two places that do)? Fails CLOSED (`False`) for `None`, a
-    non-mapping, or a `.get` that itself raises — never crashes, and never
-    turns debug logging on by accident for a garbage input.
-    """
-    try:
-        if env is None:
-            return False
-        value = env.get("ANIMAFLOW_DEBUG")
-    except Exception:
-        return False
-    if value is None:
-        return False
-    try:
-        return str(value).strip().lower() in _TRUTHY_ENV_VALUES
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Three-level verbosity (module docstring's "Verbosity contract" section) --
-# the "Console logging" Settings-dialog combo, plus ANIMAFLOW_DEBUG as an
-# override.
-# ---------------------------------------------------------------------------
-
-# The id `src/anima/frontend_settings.py` reads from `comfy.settings.json`,
-# and the id `js/shared/settings.mjs`'s `SETTING_IDS.CONSOLE_LOGGING`
-# declares on the frontend side — the two literals MUST match byte-for-byte;
-# there is no shared module between the two languages, so this is duplicated
-# by necessity (same convention as `GENERATION_SETTINGS_SCHEMA` existing in
-# both `settings.py` and `state.mjs`). Exported so `pipeline.py` cites this
-# constant instead of a second hardcoded copy of the string.
-CONSOLE_LOGGING_SETTING_ID = "AnimaFlow.General.ConsoleLogging"
-
-# The three legal levels, in increasing verbosity order, and the default for
-# anything unset/garbage — mirrors `js/shared/settings.mjs`'s own
-# `SETTING_DEFAULTS[SETTING_IDS.CONSOLE_LOGGING]`.
-LOG_LEVELS = ("off", "summary", "debug")
-DEFAULT_LOG_LEVEL = "off"
-
-
-def normalize_log_level(value: Any) -> str:
-    """Coerce whatever `comfy.settings.json` (or a hand-edited config) handed
-    back for the console-logging setting into one of `LOG_LEVELS`, falling
-    back to `DEFAULT_LOG_LEVEL` for anything else at all (`None`, the wrong
-    type, an unrecognised string, a `str()`/`.lower()` call that itself
-    raises) — never throws, matching this module's own fail-safe posture.
-    """
-    try:
-        text = str(value).strip().lower()
-    except Exception:
-        return DEFAULT_LOG_LEVEL
-    return text if text in LOG_LEVELS else DEFAULT_LOG_LEVEL
-
-
-def effective_log_level(env: Optional[Any] = None, setting_value: Any = None) -> str:
-    """The console-logging level a caller should actually use THIS call,
-    combining both inputs with the documented precedence (module docstring's
-    "Two ways to set the level" section): `ANIMAFLOW_DEBUG` truthy in `env`
-    forces `"debug"`, unconditionally, regardless of `setting_value` — the
-    override for a headless run with no browser attached. Otherwise,
-    `setting_value` (whatever the caller's own settings-file read handed
-    back, typically `frontend_settings.get_setting(CONSOLE_LOGGING_SETTING_ID,
-    DEFAULT_LOG_LEVEL)`) is normalized via `normalize_log_level` and used as-is.
-    Never raises — both halves already fail closed on their own.
-    """
-    if is_debug_enabled(env):
-        return "debug"
-    return normalize_log_level(setting_value)
-
-
-def _safe(fn: Callable[..., str]) -> Callable[..., str]:
-    """Wrap a message builder so ANY exception it raises degrades to a
-    short fallback string naming the builder, never propagates. This is the
-    mechanism behind this module's whole "fail-safe by construction"
-    contract (module docstring) — every public function below is defined as
-    a plain `_*_impl` and exported through this decorator, so the fail-safe
-    behaviour can't be forgotten function-by-function.
-    """
-
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> str:
-        try:
-            return fn(*args, **kwargs)
-        except Exception:  # noqa: BLE001 - a log line must never raise.
-            return f"[AnimaFlow] (log message unavailable: {fn.__name__})"
-
-    return wrapper
 
 
 # ---------------------------------------------------------------------------

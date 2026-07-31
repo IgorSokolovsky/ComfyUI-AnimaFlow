@@ -29,11 +29,19 @@ Verbatim details from the design doc, all load-bearing:
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, Optional, Sequence
+
+from . import logs as logs_mod
+
+# One logger for the whole feature (`logs.py`'s own docstring) -- every
+# debug-level request/response line below goes through this.
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 # `.com` is the real home; `.red` serves the IDENTICAL API on separate DNS,
 # so it's a useful backup when a network/ISP blocks civitai.com by name.
@@ -150,6 +158,22 @@ def fetch_json_with_host_fallback(
 
     for host in hosts:
         url = build_url(host)
+        # Debug-only (task: "wire the model browser into the pack's
+        # existing console-logging setting") -- `logs_mod.log_debug` itself
+        # is the guard (resolves the level, returns immediately when it
+        # isn't "debug", never raises), so this costs nothing at `off`/
+        # `summary`. `url` is ALWAYS redacted (`format_request_debug` ->
+        # `redact_url`) before it's ever formatted into a string, since a
+        # SEARCH caller's `build_url` can embed `?token=<api key>` (module
+        # docstring's own "never logged" note) -- see `logs.py`'s own
+        # top docstring for why this redaction happens unconditionally
+        # rather than only for callers known to carry a key.
+        logs_mod.log_debug(_logger, logs_mod.format_request_debug, url=url)
+        _request_started = time.monotonic()
+
+        def _duration_ms() -> float:
+            return (time.monotonic() - _request_started) * 1000
+
         try:
             with opener(url, timeout) as response:
                 # Cap the body so a malfunctioning endpoint can't spike
@@ -157,6 +181,10 @@ def fetch_json_with_host_fallback(
                 # "exactly at the cap" from "over it" without a second read.
                 body = response.read(max_body_bytes + 1)
                 if len(body) > max_body_bytes:
+                    logs_mod.log_debug(
+                        _logger, logs_mod.format_response_debug,
+                        url=url, outcome="offline:unreadable", duration_ms=_duration_ms(),
+                    )
                     return {
                         "reason": "offline",
                         "offline_reason": "unreadable",
@@ -166,16 +194,28 @@ def fetch_json_with_host_fallback(
                 try:
                     data = json.loads(body)
                 except (ValueError, TypeError):
+                    logs_mod.log_debug(
+                        _logger, logs_mod.format_response_debug,
+                        url=url, outcome="offline:unreadable", byte_count=len(body), duration_ms=_duration_ms(),
+                    )
                     return {
                         "reason": "offline",
                         "offline_reason": "unreadable",
                         "message": "Civitai sent an unreadable reply (a login or block page?).",
                         "data": None,
                     }
+                logs_mod.log_debug(
+                    _logger, logs_mod.format_response_debug,
+                    url=url, outcome="found", byte_count=len(body), duration_ms=_duration_ms(),
+                )
                 return {"reason": "found", "offline_reason": None, "message": "", "data": data}
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 # DEFINITIVE -- do NOT try the backup host (module docstring).
+                logs_mod.log_debug(
+                    _logger, logs_mod.format_response_debug,
+                    url=url, outcome="notfound", status=404, duration_ms=_duration_ms(),
+                )
                 return {
                     "reason": "notfound",
                     "offline_reason": None,
@@ -185,6 +225,10 @@ def fetch_json_with_host_fallback(
             if exc.code == 429:
                 last_offline_reason = "rate_limited"
                 last_message = "Civitai returned 429 (rate limited)."
+                logs_mod.log_debug(
+                    _logger, logs_mod.format_response_debug,
+                    url=url, outcome="offline:rate_limited", status=429, duration_ms=_duration_ms(),
+                )
                 continue
             if exc.code in (401, 403):
                 # NOT `key_required` -- this read-only path has never
@@ -194,9 +238,17 @@ def fetch_json_with_host_fallback(
                 # docstring), not evidence any particular key would help.
                 last_offline_reason = "forbidden"
                 last_message = f"Civitai refused the request (HTTP {exc.code})."
+                logs_mod.log_debug(
+                    _logger, logs_mod.format_response_debug,
+                    url=url, outcome="offline:forbidden", status=exc.code, duration_ms=_duration_ms(),
+                )
                 continue
             last_offline_reason = "unknown"
             last_message = f"Civitai returned {exc.code}."
+            logs_mod.log_debug(
+                _logger, logs_mod.format_response_debug,
+                url=url, outcome="offline:unknown", status=exc.code, duration_ms=_duration_ms(),
+            )
             continue
         except urllib.error.URLError as exc:
             last_offline_reason = _classify_urlerror(exc)
@@ -204,14 +256,26 @@ def fetch_json_with_host_fallback(
                 "Civitai timed out." if last_offline_reason == "timeout"
                 else "Couldn't reach Civitai (DNS/TLS)."
             )
+            logs_mod.log_debug(
+                _logger, logs_mod.format_response_debug,
+                url=url, outcome=f"offline:{last_offline_reason}", duration_ms=_duration_ms(),
+            )
             continue
         except (socket.timeout, TimeoutError):
             last_offline_reason = "timeout"
             last_message = "Civitai timed out."
+            logs_mod.log_debug(
+                _logger, logs_mod.format_response_debug,
+                url=url, outcome="offline:timeout", duration_ms=_duration_ms(),
+            )
             continue
         except Exception as exc:  # noqa: BLE001 - degrade to offline, never raise
             last_offline_reason = "unknown"
             last_message = f"Could not reach Civitai ({type(exc).__name__})."
+            logs_mod.log_debug(
+                _logger, logs_mod.format_response_debug,
+                url=url, outcome="offline:unknown", duration_ms=_duration_ms(),
+            )
             continue
 
     return {"reason": "offline", "offline_reason": last_offline_reason, "message": last_message, "data": None}

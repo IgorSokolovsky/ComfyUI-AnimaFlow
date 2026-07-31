@@ -98,6 +98,7 @@ from __future__ import annotations
 
 import collections
 import io
+import logging
 import mimetypes
 import os
 import urllib.parse
@@ -107,10 +108,18 @@ from typing import Any, Dict, Optional, Tuple
 from . import civitai_search
 from . import download
 from . import keys
+from . import logs as logs_mod
 from . import lookup as lookup_mod
 from . import rate_limit
 from .kinds import folder_for_kind
 from .local import find_preview_path, list_models, resolve_model_path
+
+# One logger for the whole feature (`logs.py`'s own docstring) -- `search_impl`
+# below is this module's one console-logging call site (task: "wire the
+# model browser into the pack's existing console-logging setting"); every
+# other route in this package logs through `download.py`/`lookup.py`
+# instead, closer to where their own outcome is actually decided.
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 _INVALID_KIND: Dict[str, Any] = {
     "reason": "invalid_kind",
@@ -623,12 +632,25 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     payload = payload or {}
     kind = payload.get("kind")
+    query = payload.get("query") or ""
     if kind is not None and folder_for_kind(kind) is None:
+        # Debug-only: the ONE extra thing worth knowing about this
+        # short-circuit beyond the summary line below (task: "the reason
+        # short-circuits (invalid_kind, rate_limited)") -- which kind was
+        # rejected, since the summary's `reason=invalid_kind` alone doesn't
+        # say what was actually sent.
+        logs_mod.log_debug(_logger, logs_mod.format_search_shortcircuit_debug, reason="invalid_kind", detail=f"kind={kind!r}")
+        logs_mod.log_summary(_logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason="invalid_kind")
         return {**_INVALID_KIND, "results": [], "next_cursor": None, "public_only": True}
 
     resolved_key = keys.resolve_api_key()
 
     if not _SEARCH_LIMITER.allow():
+        logs_mod.log_debug(
+            _logger, logs_mod.format_search_shortcircuit_debug,
+            reason="rate_limited", detail=f"minimum interval is {_SEARCH_MIN_INTERVAL_SECONDS}s",
+        )
+        logs_mod.log_summary(_logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason="rate_limited")
         return {
             "reason": "rate_limited",
             "message": "Searching too quickly -- wait a moment and try again.",
@@ -640,7 +662,7 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     result = civitai_search.search_models(
         kind,
-        payload.get("query") or "",
+        query,
         types=payload.get("types"),
         # `payload["base_model"]` is always a LIST (see this function's own
         # docstring) -- an empty one (`[]`, the common "no filter" case)
@@ -657,6 +679,9 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         api_key=resolved_key.api_key,
     )
     if result["reason"] != "found":
+        logs_mod.log_summary(
+            _logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason=result["reason"],
+        )
         return {
             "reason": result["reason"],
             "message": result.get("message", ""),
@@ -667,6 +692,9 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     parsed = civitai_search.parse_search_response(result["data"])
     results = _annotate_search_results(parsed["results"], kind)
+    logs_mod.log_summary(
+        _logger, logs_mod.format_search_summary, kind=kind, query=query, count=len(results), reason="ok",
+    )
     return {
         "reason": "ok",
         "message": "",
