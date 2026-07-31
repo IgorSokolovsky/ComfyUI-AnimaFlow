@@ -28,23 +28,14 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 📦 The queued Civitai work — two passes, waiting only on the builders in flight (owner, 2026-07-31)
+### 📦 The queued Civitai work — the FRONTEND pass is what's left (owner, 2026-07-31)
 
-Both `src/` and `js/` are currently owned by in-flight builders (model-browser logging; and the
-settings-dialog cleanup + label seam + console logging + rail fixes). These five items are decided,
-specced and blocked **only** on that. Grouped into two passes because each group shares its files and its
-reasoning, not for tidiness.
-
-**Backend pass — two file-writing routes, one security story.**
-
-1. **Remove an installed model.** Decisions taken 2026-07-30, below in this file: type-to-confirm so a
-   mis-click cannot delete gigabytes; ⓘ panel and search menu now, the global browser later; all kinds.
-   **The path guard is the entire security story** — `kinds.py`'s whitelist plus `local._is_path_under`'s
-   realpath containment, on a client-supplied name. A LoRA row pointing at the deleted file must fall into
-   the existing red missing-file state, not vanish or throw.
-2. **The ⓘ backfill saves the preview image** (`docs/lora-loader-design.md` §7c-iv). `lookup.py` writes the
-   sidecar and no image, so that path re-fetches from Civitai on every render forever — and it is the
-   direct cause of the owner's reported 404 on `/wtn/model_browser/thumb`, which serves the *local* file.
+The backend pass **landed in `6ce43de`**: `remove.py`'s `delete_model` and `lookup.save_preview`, both
+behind the same resolve-then-verify-containment guard, verified adversarially against a *naive*
+`get_full_path` (traversal, absolute path, a symlink escaping the models root, a Windows-separator name,
+a directory, and a traversal spelled as the **kind**) — all refused, target untouched, control case still
+deleting correctly. **Both routes exist and neither is reachable from the UI**, which is what the
+remaining pass changes.
 
 **Frontend pass — three changes to the same search surfaces.**
 
@@ -62,65 +53,6 @@ reasoning, not for tidiness.
 Still further out, in the order they are worth doing: **§1a-vii** (show the Civitai name), **§7c-ii** (the
 picker's info panel — the last outstanding piece of M2), **M2b slice 2** (detail swap + community gallery
 + copy-prompt), **installed-by-kind in the modal**, and **M3** (Loader Panel reuse).
-
-### 🐛 `Hide file extension` is honoured by the picker but not by the row label (owner, 2026-07-31)
-
-Owner: *"hide file extension is on but our field label show it while the picker doesn't."* Root cause is
-one line — `js/controls/lora_render.mjs:952`:
-
-```js
-refs.nameLabel.textContent = row.name || "(pick a LoRA)";
-```
-
-The label writes `row.name` **raw**. `lora_interaction.mjs` reads the setting in three places and none of
-them is this one: `:498` hands it to the **picker** (which honours it, hence the mismatch), `:831` drives
-the ⚙ switch's own on/off visual, `:895` toggles the value. Nothing routes it to the row.
-
-**Two parts, and the second is the one that gets forgotten:**
-1. Paint the label through a display-name function that applies the setting, read at paint time — the
-   same "live on every open, no change listener" convention `:498` already documents.
-2. **The ⚙ toggle must repaint the rows**, not just flip its own switch class. Today `:895` changes the
-   value and `refreshFromSettings` updates only the switch, so even after part 1 the label would not
-   change until something else forced a repaint.
-
-Also give the label a `title` tooltip carrying the full untruncated name while in there, and check the
-**Loader/Control Panel** rows for the same gap — `render.mjs`/`interaction.mjs` contain **no**
-`HIDE_FILE_EXTENSION` reference at all, so those row labels look likely to ignore it too.
-
-> **Build this as the seam §1a-vii needs.** That spec (show the Civitai name instead of the filename,
-> behind a setting) has to change this exact line, and for the same underlying reason: **the label is a
-> display concern, `row.name` is identity and must never change.** Routing the label through one
-> settings-aware display function now means §1a-vii adds a *source* to it rather than touching `paintRow`
-> a second time.
-
-### 🐛 Three fixes to the Settings dialog, one small pass (2026-07-31)
-
-Held together only because they are all `js/shared/settings.mjs`, and a builder currently owns that file
-for the shared-thumbnail extraction. Do them in one pass once it lands.
-
-1. **A raw i18n key renders as a combo option** (owner screenshot). `Civitai search: base model filter`
-   shows `settings.AnimaFlow_Controls_CivitaiSearchBaseModel.options.` as its first choice.
-   `CIVITAI_SEARCH_BASE_MODEL_OPTIONS[0]` is `""` (the "any" choice); ComfyUI builds a per-option i18n key
-   `settings.<id>.options.<value>` with the option's own text as the fallback, and an empty value gives a
-   key ending in a bare `.` plus a **falsy fallback**, so it renders the key. The in-panel dropdown is
-   fine — `buildFilterSelect` maps `"" → "Any"` itself; only the Settings dialog goes through i18n.
-   Unique to this setting: sort, period and the level options are all non-empty. Fix by giving the option
-   a real label — check whether ComfyUI's combo accepts `{text, value}` objects (read the installed
-   frontend bundle, as the FLIP work did) before falling back to a sentinel value translated at the edge.
-2. **Rename the browsing-level setting to a scope-neutral id and label** — it is called
-   `CivitaiSearchLevel` but now governs the ⓘ panel and the saved preview too, and by owner intent every
-   surface that loads an image (`docs/lora-loader-design.md` §7c-iv). Renaming orphans the saved value, so
-   the level resets to PG once — acceptable **only** because the setting is one commit old.
-3. **Stop rendering the dead `Civitai search: show NSFW` boolean.** Its own tooltip says it does nothing.
-   Keep the id and default registered so an already-saved value is not discarded; drop the dialog entry.
-   **Not hypothetical: the owner's own screenshot (2026-07-31) shows this toggle switched ON** — they
-   turned on a control that is read by no code path, sitting directly above the one that works. A dead
-   control a user has already acted on is worse than clutter; it is a false explanation waiting to be
-   believed the next time something looks wrong.
-
-> Confirmed by the owner the same day: the browsing level **is** already global — it appears in
-> ComfyUI Settings → AnimaFlow → Controls, and the panel dropdown reads and writes that same value. There
-> is nothing to *add*; items 2 and 3 are the whole remaining job.
 
 ### 🧹 Collapse `model_info.mjs`'s local `repositionAfterChange` into the shared observer (unblocked 2026-07-31)
 
@@ -382,8 +314,6 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit | What would confirm it |
 |---|---|---|
-| **Control Panel drag now settles with a FLIP animation**, and the core is shared with the LoRA track (`js/shared/flip.mjs`, class renamed `.wtn-row-flip`) | `bedeae4` | **Drag a Control Panel row and watch the others glide rather than jump.** The one thing tests can't settle: whether a *single* `requestAnimationFrame` defer is enough on this frontend build. The Control Panel needs that defer at all because its rows are per-row DOM widgets repositioned by ComfyUI's draw cycle, not by the reorder itself. If one frame isn't enough the animation simply doesn't appear — no breakage, same as before |
-| **Search result thumbnails** — `thumb_url`, the 256px gallery rewrite, kept separate from the full-size `preview_url` that gets saved to disk | `cd04e97` | Result cards show real images instead of the grey placeholder. **Needs a restarted ComfyUI** — the field is computed in Python |
 | A short download was renamed over the real filename — `Content-Length` was read and used ONLY for the progress bar, so a dropped connection produced a truncated file reported as `ok`. Two gates now run before the rename | `68a2998` | An interrupted download leaves NO file behind, and reports "ended early" rather than succeeding. **The `corrupt` half IS confirmed** (via `d70942b` below); only the LENGTH gate is untested |
 | The loader model cache was module-level, so two Loader Panels with different UNETs evicted each other every run | `12625c0` | Two Loader Panels, different UNETs, both stay warm across runs. Only worth checking if that setup is ever actually run |
 | A state input receiving foreign data now says so, loudly, on all five stateful nodes | `205d9fd` | It has never actually fired in the owner's console — unproven in the wild, and hopefully stays that way |
@@ -442,6 +372,11 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit |
 |---|---|
+| **The global Civitai browser** — toolbar button, 90% modal, filter rail, result grid, downloads routed by the result's own type. Unscoped search + the corrected 22-value type enum underneath it | `68f7316` + `a6bc45b` — owner: **"toolbar button confirmed"**, **"global browser search working"** |
+| **Control Panel drag settles with a FLIP animation**, core shared with the LoRA track. The Control Panel needed a one-frame defer the LoRA track does not, because its rows are per-row DOM widgets repositioned by ComfyUI's draw cycle rather than by the reorder itself | `bedeae4` — owner: **"control panel drag - confirmed"** |
+| **Previews saved at ORIGINAL size and downscaled on serve** — type-conditional, since `original=true` on a video returns the video; Pillow lazily imported with a silent no-Pillow fallback | `2baed3e` — owner: **"original size confirmed, confirm downgraded on serve"** |
+| **A download writes a real preview file** — the sidecar path had been dead code since `4965389` because the frontend never sent `civitai_meta`/`preview_url` | `58a1749` — owner: **"preview save (i see the jpeg)"** |
+| **The Settings dialog stops offering things that do nothing** — a raw i18n key as a combo option, the dead NSFW toggle the owner had switched ON, and the modal rail's two internal chip-state fields. All keep their ids and defaults; only the dialog entries go | `261ca21` — owner: **"setting clean"**, **"no settings NSFW"** |
 | Class B sizing: `GENERATOR_MIN_H` (356 at the 14px base) + `clampGeneratorSize` clamping both axes, and the fresh-node default guarded against the floor at large font scales | `be6ea69` |
 | Hover tint + `cursor: pointer` scoped to genuinely clickable headers (Sampler, Save row) — not switch-bearing sections, not the Compare card | `61716f9` |
 | `colab/` folder, sanitized notebook, layer 1 extraction + the layering guard test | `a630ae4` |
