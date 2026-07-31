@@ -118,12 +118,14 @@ silent fallback to the original bytes, never an error.
 from __future__ import annotations
 
 import collections
+import hashlib
 import io
 import logging
 import mimetypes
 import os
 import urllib.parse
 import uuid
+from email.utils import formatdate
 from typing import Any, Dict, Optional, Tuple
 
 from . import civitai_search
@@ -440,6 +442,115 @@ def thumb_bytes_impl(
     result = downscaled if downscaled is not None else original
     _thumb_cache_put(key, result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# `/thumb` HTTP caching (owner, live-measured 2026-07-31): "seems cache is
+# not working, thumb is called each 1-2 sec" -- the route answered with NO
+# validator at all (no `ETag`/`Last-Modified`/`Cache-Control`), so a browser
+# has nothing to revalidate against and re-downloads on essentially every
+# render. Fixed with real conditional-GET support below, kept in agreement
+# with the in-process downscale cache's own `(path, mtime, max_edge)` key
+# just above -- both answer the same question, "what determines the bytes".
+# ---------------------------------------------------------------------------
+
+# A preview file can genuinely be replaced out from under this route --
+# `save_preview` overwrites it, and so does a fresh download -- so a NAIVE
+# long `max-age` risks serving a stale image after either. That risk is
+# already closed by the ETag being mtime-derived: replacing the file always
+# mints a new tag, so the very next conditional request misses and gets the
+# new bytes. Given that, `max-age=60` is safe AND is what actually fixes the
+# reported symptom -- a picker reopened/scrolled within a minute now costs
+# the browser zero network round trips instead of a full re-decode every
+# 1-2s. `must-revalidate` makes the 60s boundary a hard one (no serving
+# stale-while-revalidating past it) rather than "stale but usable".
+#
+# `private`, deliberately NOT `public` -- this route's bytes are read
+# straight out of the user's own model folders, and this pack is routinely
+# reached through a public tunnel (pinggy) rather than plain localhost --
+# that's how the owner runs it, and how they reported this very bug.
+# `public` licenses ANY shared cache sitting between the browser and this
+# server (the tunnel, a corporate proxy, whatever else is in the path) to
+# store and re-serve that content; `private` confines reuse to the
+# requesting browser's own cache, which is all the fix actually needs --
+# the ETag + `max-age=60` are already doing the real work here, so `public`
+# would buy close to nothing while quietly opting local filesystem content
+# into being cached by an intermediary. Don't "optimise" this back to
+# `public`.
+THUMB_CACHE_CONTROL = "private, max-age=60, must-revalidate"
+
+# The 404 case ("no preview for this file" -- the common case for a model
+# never looked up) must NOT be cacheable as though it were a real image:
+# a save_preview call minutes later would otherwise stay invisible to a
+# browser that cached the miss. `no-store` is unambiguous -- no freshness
+# window to reason about, no validator to (mis)reuse.
+THUMB_404_CACHE_CONTROL = "no-store"
+
+
+def thumb_stat_impl(path: str) -> Optional[Tuple[float, int]]:
+    """`os.stat`-only pure(ish) helper for the `/thumb` route's conditional-
+    GET check -- returns `(mtime, size)`, or `None` if `path` vanished
+    between `thumb_path_impl` resolving it and this call (a benign race:
+    `forget`/`delete`/a re-download racing a render, same shape as every
+    other filesystem race already tolerated elsewhere in this module).
+    Deliberately separate from `thumb_bytes_impl`'s own `os.path.getmtime`
+    call so the route can decide "304, do nothing else" BEFORE paying for
+    the read+downscale that function does -- the whole point of a
+    conditional GET is skipping that work, not just skipping the response
+    body.
+    """
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return None
+    return (stat_result.st_mtime, stat_result.st_size)
+
+
+def thumb_etag(mtime: float, size: int, max_edge: int) -> str:
+    """Builds a quoted HTTP `ETag` for `/thumb` from exactly the three
+    things that determine the bytes actually served: the source file's
+    `mtime` and `size` (replacing the file -- `save_preview`, a re-download,
+    a hand-swapped preview -- changes at least one of these), and
+    `max_edge` (the SAME file served at two sizes is two different
+    payloads -- easy to miss, non-negotiable per the fix brief). Matches
+    the in-process downscale cache's own `(path, mtime, max_edge)` key
+    above; `path` itself isn't part of the tag because HTTP already scopes
+    an `ETag` to the URL that answered it, and this route's URL already
+    encodes `(kind, name)`.
+    """
+    digest = hashlib.sha1(f"{mtime!r}:{size}:{max_edge}".encode("ascii")).hexdigest()
+    return f'"{digest}"'
+
+
+def if_none_match_hits(if_none_match: Optional[str], etag: str) -> bool:
+    """True if the request's `If-None-Match` header value -- a single tag,
+    a comma-separated list of tags (RFC 7232 §3.2), or `*` -- already
+    covers `etag`, meaning the route should answer `304` instead of
+    resending the body. Weak (`W/`-prefixed) tags are compared by their
+    underlying value on either side: a weak match is exactly what a
+    conditional GET for a resource like this (never a "must be byte-
+    identical" use case) should accept.
+    """
+    if not if_none_match:
+        return False
+    normalised_etag = etag[2:] if etag.startswith("W/") else etag
+    for candidate in if_none_match.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        normalised_candidate = candidate[2:] if candidate.startswith("W/") else candidate
+        if normalised_candidate == normalised_etag:
+            return True
+    return False
+
+
+def thumb_last_modified(mtime: float) -> str:
+    """RFC 7231 `Last-Modified` formatting for `mtime` -- cheap alongside
+    the `ETag` and helps any proxy in the path (the deployment goes through
+    a tunnel, so this is not theoretical) make its own freshness decision
+    without re-asking this route.
+    """
+    return formatdate(mtime, usegmt=True)
 
 
 # ---------------------------------------------------------------------------
@@ -967,8 +1078,11 @@ try:
             # file"/"no preview for this file" alike. This is the ONE route
             # in this module that does NOT answer 200-with-a-reason for a
             # failure (see this module's own top doc comment): there is no
-            # sensible image body to send back for "not found".
-            return web.Response(status=404)
+            # sensible image body to send back for "not found". `no-store`
+            # (`THUMB_404_CACHE_CONTROL`) keeps a browser from caching this
+            # miss as though it were a real image -- a `save_preview` call
+            # minutes later must still be visible on the next request.
+            return web.Response(status=404, headers={"Cache-Control": THUMB_404_CACHE_CONTROL})
         path = result["path"]
 
         # Owner reversal, 2026-07-31: the saved preview is now the ORIGINAL
@@ -979,6 +1093,31 @@ try:
         # frontend change is required, the default is right on its own.
         max_edge_raw = request.query.get("max_edge")
         max_edge = int(max_edge_raw) if max_edge_raw and max_edge_raw.isdigit() else DEFAULT_THUMB_MAX_EDGE
+
+        # Conditional-GET check (owner, live-measured 2026-07-31 re-fetch
+        # bug -- see this module's own "`/thumb` HTTP caching" comment
+        # above `THUMB_CACHE_CONTROL`): stat `path` FIRST and decide 304
+        # before paying for the read+downscale below -- that offload is
+        # exactly what a repeat, already-cached render should skip.
+        stat = await loop.run_in_executor(None, functools.partial(thumb_stat_impl, path))
+        if stat is None:
+            # Vanished between `thumb_path_impl` resolving it and this stat
+            # -- same benign race `thumb_stat_impl` itself documents.
+            return web.Response(status=404, headers={"Cache-Control": THUMB_404_CACHE_CONTROL})
+        mtime, size = stat
+        etag = thumb_etag(mtime, size, max_edge)
+        cache_headers = {
+            "ETag": etag,
+            "Cache-Control": THUMB_CACHE_CONTROL,
+            "Last-Modified": thumb_last_modified(mtime),
+        }
+        if if_none_match_hits(request.headers.get("If-None-Match"), etag):
+            # Empty-body round trip instead of a full image transfer --
+            # this is the actual fix for the reported "re-fetches every
+            # 1-2s" symptom on any request that DOES reach the server (the
+            # `max-age` window above is what stops most of them from even
+            # doing that).
+            return web.Response(status=304, headers=cache_headers)
 
         # THE offload that matters most on this route: a saved preview can
         # now genuinely be a multi-MB original, and reading + decoding +
@@ -991,7 +1130,12 @@ try:
         # executor hop either way, never inline.
         data = await loop.run_in_executor(None, functools.partial(thumb_bytes_impl, path, max_edge=max_edge))
         content_type, _ = mimetypes.guess_type(path)
-        return web.Response(body=data, status=200, content_type=content_type or "application/octet-stream")
+        return web.Response(
+            body=data,
+            status=200,
+            content_type=content_type or "application/octet-stream",
+            headers=cache_headers,
+        )
 
     @routes.get("/wtn/model_browser/search")
     async def _route_search(request):  # noqa: ANN001 - aiohttp handler signature
