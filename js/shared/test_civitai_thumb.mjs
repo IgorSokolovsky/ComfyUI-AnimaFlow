@@ -23,6 +23,7 @@ import {
   levelLabelToInt,
   pickThumbCandidates,
   thumbState,
+  hasNsfwAboveLevel,
   advanceThumbAttempt,
   THUMB_RETRY_BACKOFF_MS,
   attachThumbCandidate,
@@ -129,6 +130,66 @@ test("thumbState: 'locked' when images is non-empty but NOTHING passes the chose
 test("thumbState: 'image' once at least one candidate passes", () => {
   const images = [{ url: "xxx.jpg", nsfw_level: 16 }, { url: "pg.jpg", nsfw_level: 1 }];
   assert.equal(thumbState("available", images, 1), "image");
+});
+
+// =========================================================================
+// hasNsfwAboveLevel / thumbState's 4th arg -- the model-level `nsfw_level`
+// bitmask union disambiguates an EMPTY `images` list (owner-reported,
+// 2026-07-31: "why some images are not shown?" -- §7c-iv's PG-trims-the-
+// gallery-to-nothing consequence, indistinguishable from "genuinely no
+// gallery" without this).
+// =========================================================================
+
+test("hasNsfwAboveLevel: true iff a DEFINED bit strictly greater than level is set -- never a plain numeric/ordinal comparison of the whole mask", () => {
+  assert.equal(hasNsfwAboveLevel(1 | 16, 1), true, "PG union XXX -- the XXX bit is above PG");
+  assert.equal(hasNsfwAboveLevel(1, 1), false, "only PG in the union -- nothing above PG");
+  assert.equal(hasNsfwAboveLevel(1 | 2 | 4 | 8 | 16, 16), false, "even the full union has nothing ABOVE the max level, XXX");
+  assert.equal(hasNsfwAboveLevel(2, 1), true, "PG-13 alone is above the PG setting");
+});
+
+test("hasNsfwAboveLevel: the bitmask-union trap -- a mask of 31 (every level) is not '> 1' in any ordinal sense; only the actual bits matter", () => {
+  // A naive `mask > level` (or `mask <= level`) comparison would treat 31 as
+  // "worse" than a bare 2, and would treat 17 (1|16 -- PG union XXX) as
+  // trivially ">1" -- both true here, but for the RIGHT reason (an actual
+  // bit above level is set), not because of the raw magnitude.
+  assert.equal(hasNsfwAboveLevel(31, 16), false, "the full union has no bit ABOVE XXX (16 is the highest defined bit)");
+  assert.equal(hasNsfwAboveLevel(17, 1), true, "1|16 -- the 16 bit is above PG, even though the model also has PG images");
+});
+
+test("hasNsfwAboveLevel: a falsy/non-finite/non-positive mask (no nsfw_level at all) is always false -- 'we don't know', never a guessed 'locked'", () => {
+  assert.equal(hasNsfwAboveLevel(null, 1), false);
+  assert.equal(hasNsfwAboveLevel(undefined, 1), false);
+  assert.equal(hasNsfwAboveLevel(0, 1), false);
+  assert.equal(hasNsfwAboveLevel(-5, 1), false);
+  assert.equal(hasNsfwAboveLevel(NaN, 1), false);
+});
+
+test("hasNsfwAboveLevel: a garbage/non-finite level degrades to 1 (PG), never throws", () => {
+  assert.equal(hasNsfwAboveLevel(2, NaN), true, "PG-13 is above the PG default a garbage level falls back to");
+  assert.equal(hasNsfwAboveLevel(2, undefined), true);
+});
+
+test("thumbState: an EMPTY images list with an nsfw_level bit above the chosen level is 'locked', not 'placeholder'", () => {
+  assert.equal(thumbState("available", [], 1, 1 | 16), "locked", "XXX is hidden at the PG setting -- provably NOT an empty gallery");
+  assert.equal(thumbState("installed", [], 1, 16), "locked", "the caller's own state never changes this, matching every other thumbState case");
+});
+
+test("thumbState: an EMPTY images list with no bit above the chosen level, or no modelNsfwLevel at all, stays 'placeholder' -- an honest 'we don't know'", () => {
+  assert.equal(thumbState("available", [], 1, 1), "placeholder", "only PG in the union -- nothing hidden");
+  assert.equal(thumbState("available", [], 1), "placeholder", "modelNsfwLevel omitted entirely -- every existing 3-arg call site keeps this exact behaviour");
+  assert.equal(thumbState("available", [], 1, undefined), "placeholder");
+  assert.equal(thumbState("available", [], 1, 0), "placeholder");
+});
+
+test("thumbState: 'gated' still wins over modelNsfwLevel entirely -- the 4th arg never overrides the caller's own gated flag", () => {
+  assert.equal(thumbState("gated", [], 1, 1 | 16), "gated");
+});
+
+test("thumbState: a NON-empty images list is unaffected by modelNsfwLevel -- it only ever disambiguates the EMPTY case", () => {
+  const images = [{ url: "xxx.jpg", nsfw_level: 16 }];
+  assert.equal(thumbState("available", images, 1, 1), "locked", "images itself already fails the level -- modelNsfwLevel changes nothing here");
+  const passing = [{ url: "pg.jpg", nsfw_level: 1 }];
+  assert.equal(thumbState("available", passing, 1, 1 | 16), "image", "a passing candidate wins regardless of what modelNsfwLevel says");
 });
 
 test("advanceThumbAttempt: a single candidate -- first failure retries the SAME index, second failure exhausts (no more candidates)", () => {

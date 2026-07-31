@@ -41,6 +41,21 @@
  * `"locked"` — a candidate that passed the level but 404s is "broken", not
  * "hidden by your setting", and conflating the two would misreport the
  * reason. Both call sites keep this same split.
+ *
+ * ## An EMPTY `images` list can also mean "locked" (owner-reported, 2026-07-31)
+ *
+ * "Blank thumbnails in the modal" — several cards rendered a bare placeholder
+ * that was actually the §7c-iv PG consequence: at level PG the server sends
+ * `nsfw=false`, Civitai trims the gallery to level-1 images, and a model with
+ * none passing arrives with `images: []`, indistinguishable from a model that
+ * genuinely has no gallery at all. `hasNsfwAboveLevel`, below, is what breaks
+ * the tie: each search result ALSO carries its own top-level `nsfw_level`, a
+ * bitmask UNION of every level the model's *whole* gallery spans (not just
+ * what a `images: []`-trimmed response returned) — if any bit above the
+ * user's level is set there, the model provably has hidden pictures, and
+ * `thumbState` now renders `"locked"` for that case instead of the plain
+ * placeholder. Never compared with `<=`/`<` (that trap is this function's own
+ * doc comment) — a model-level mask is a union, not an ordinal.
  */
 
 import { CIVITAI_SEARCH_LEVEL_TO_INT } from "./settings.mjs";
@@ -83,27 +98,73 @@ export function pickThumbCandidates(images, level) {
     .map((img) => img.url);
 }
 
+/** Civitai's own per-image `nsfwLevel` bit values, in ascending order -- the
+ * five single bits a MODEL-level `nsfw_level` can union together (see
+ * `hasNsfwAboveLevel`'s own doc comment, below). Kept as one named list
+ * rather than re-deriving it from `CIVITAI_SEARCH_LEVEL_TO_INT` so this
+ * file's own bit-test never depends on `settings.mjs`'s label strings. */
+const NSFW_LEVEL_BITS = [1, 2, 4, 8, 16];
+
+/**
+ * Whether `mask` (a model's own top-level `nsfw_level` -- a BITMASK UNION of
+ * every level its gallery spans, `civitai_search.py`'s `_parse_search_item`)
+ * has ANY bit set above `level`, i.e. whether the model genuinely has at
+ * least one gallery image the user's own browsing-level setting would hide.
+ *
+ * **A bitmask union must never be compared with `<=`/`<` as if it were an
+ * ordinal** (owner brief, §7c-iv's own trap): a model whose gallery spans PG
+ * AND XXX carries `mask === 17` (`1 | 16`), which is numerically `> 1` even
+ * at the PG level though it plainly has PG images too, and a model at the
+ * union `31` (every level) is not "worse" than one at `16` in any ordinal
+ * sense. This function therefore tests each of Civitai's five DEFINED single
+ * bits individually -- true iff at least one bit STRICTLY GREATER than
+ * `level` is actually set in `mask`.
+ *
+ * `mask` absent/non-finite/`<= 0` (no `nsfw_level` at all, or a model with
+ * a `0`/negative one) degrades to `false` -- "we don't know of anything
+ * above the level" is the only honest answer without a real mask, and the
+ * caller's existing `"placeholder"` fallback already covers "genuinely don't
+ * know". Never throws.
+ */
+export function hasNsfwAboveLevel(mask, level) {
+  const m = Number.isFinite(mask) ? mask : 0;
+  if (m <= 0) {
+    return false;
+  }
+  const lvl = Number.isFinite(level) ? level : 1;
+  return NSFW_LEVEL_BITS.some((bit) => bit > lvl && (m & bit) !== 0);
+}
+
 /** The thumbnail BOX's own state (§7c-iv's "fifth card state" -- about the
  * box only, never a caller's own action/download state, which is why
  * `cardState` is the only caller-specific input): `"gated"` when the caller
  * says so (§7c-iii, unchanged by this feature -- a gated card never shows a
  * thumbnail regardless of `images`; `gated` wins over everything below, per
  * that section's own "two padlocks" rule; the ⓘ panel has no such concept and
- * simply never passes it), else `"placeholder"` when `images` is genuinely
- * empty (a model with no gallery at all -- also what an over-level model at
- * the PG setting looks like, since the server trims its gallery to nothing
- * before this ever runs), `"locked"` when `images` is non-empty but NOTHING
- * in it passes `level` (the model has pictures, they're all above the user's
- * own setting), or `"image"` when at least one candidate passes --
- * `pickThumbCandidates` is what a caller then uses to get the actual URL
- * list to try. */
-export function thumbState(cardState, images, level) {
+ * simply never passes it), else, when `images` is genuinely empty: `"locked"`
+ * if `modelNsfwLevel` (the MODEL's own top-level `nsfw_level` bitmask union,
+ * §7c-iv's build notes -- optional, and distinct from a per-image level)
+ * has any bit set above `level` -- the server trimmed this model's gallery to
+ * nothing at the caller's own browsing level, but the model plainly HAS
+ * pictures above it, so this is the SAME "hidden by your setting" case as a
+ * non-empty gallery that all fails the filter, not a genuine absence
+ * (owner-reported, 2026-07-31: "why some images are not shown?" -- an empty
+ * `images` list is otherwise indistinguishable from a model with no gallery
+ * at all). Falls back to the plain `"placeholder"` when `modelNsfwLevel` is
+ * absent or carries no bit above `level` -- an honest "we don't know" or
+ * "genuinely no gallery," never a guessed reason. Non-empty `images`
+ * (unaffected by `modelNsfwLevel`, which only ever disambiguates the EMPTY
+ * case) is `"locked"` when NOTHING in it passes `level` (the model has
+ * pictures, they're all above the user's own setting), or `"image"` when at
+ * least one candidate passes -- `pickThumbCandidates` is what a caller then
+ * uses to get the actual URL list to try. */
+export function thumbState(cardState, images, level, modelNsfwLevel) {
   if (cardState === "gated") {
     return "gated";
   }
   const list = Array.isArray(images) ? images : [];
   if (list.length === 0) {
-    return "placeholder";
+    return hasNsfwAboveLevel(modelNsfwLevel, level) ? "locked" : "placeholder";
   }
   return pickThumbCandidates(list, level).length > 0 ? "image" : "locked";
 }

@@ -2017,7 +2017,30 @@ test("BUG 19: the settings button renders the pack's plain '⚙' textContent gly
   const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{([^}]*)\}/);
   assert.ok(gearRuleMatch, "a plain-glyph rule for '.wtn-lora-icon.wtn-lora-gear' must exist");
   assert.doesNotMatch(gearRuleMatch[1], /mask-image/, "the gear must not be a CSS-mask SVG any more");
-  assert.match(gearRuleMatch[1], /font-size:\s*14px/, "matches render.mjs's own .wtn-ctl-gear glyph size");
+});
+
+// -- owner screenshot, 2026-07-31: the ⚙ was visibly smaller than the 🔍
+// beside it in the SAME 18px icon box -- a font-size fix (this file's own top
+// doc comment), not a box-size or mask-size one; both icons keep sharing
+// '.wtn-lora-icon' unchanged. ------------------------------------------------
+
+test("owner screenshot, 2026-07-31: the ⚙ glyph's font-size (18px) now equals the shared 18px icon box, not the old 14px that read smaller than the 🔍 mask icon beside it", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((e) => e.tagName === "style").textContent;
+
+  const gearRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-gear\s*\{([^}]*)\}/);
+  assert.ok(gearRuleMatch, "a plain-glyph rule for '.wtn-lora-icon.wtn-lora-gear' must exist");
+  assert.match(gearRuleMatch[1], /font-size:\s*18px/, "bumped from 14px -- the glyph's own heavy internal whitespace read small at the old size next to a mask icon that fills its box");
+
+  const iconBoxMatch = css.match(/\.wtn-lora-icon\s*\{([^}]*)\}/);
+  assert.ok(iconBoxMatch, "the shared 🔍/⚙ box rule must still exist");
+  assert.match(iconBoxMatch[1], /width:\s*18px/, "the box itself is untouched -- this is a font-size fix, not a box-size one");
+  assert.match(iconBoxMatch[1], /height:\s*18px/);
+
+  const searchRuleMatch = css.match(/\.wtn-lora-icon\.wtn-lora-search\s*\{([^}]*)\}/);
+  assert.ok(searchRuleMatch, "the 🔍 rule must still exist");
+  assert.match(searchRuleMatch[1], /mask-size:\s*contain/, "the 🔍 stays a mask-size:contain glyph -- this fix never touched mask-size either");
 });
 
 // -- BUG 7: the row floor, sepStrengths' own higher floor, the rows-card,

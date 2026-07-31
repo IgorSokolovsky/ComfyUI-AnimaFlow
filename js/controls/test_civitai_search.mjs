@@ -914,7 +914,7 @@ function img(url, level = 1, type = "image") {
   return { url, nsfw_level: level, type };
 }
 
-function makeResult({ modelId, versionId, name, installed = false, gated = false, baseModel = "SDXL", downloads = 0, images } = {}) {
+function makeResult({ modelId, versionId, name, installed = false, gated = false, baseModel = "SDXL", downloads = 0, images, nsfwLevel } = {}) {
   const result = {
     model_id: modelId,
     name,
@@ -936,6 +936,13 @@ function makeResult({ modelId, versionId, name, installed = false, gated = false
   };
   if (images !== undefined) {
     result.images = images;
+  }
+  if (nsfwLevel !== undefined) {
+    // The MODEL's own top-level `nsfw_level` -- a bitmask UNION across its
+    // whole gallery, distinct from any per-image level inside `images[]`
+    // (§7c-iv) -- survives `resolveVersionView`'s per-version spread
+    // untouched, since only per-version fields are overridden there.
+    result.nsfw_level = nsfwLevel;
   }
   return result;
 }
@@ -2267,6 +2274,54 @@ await asyncTest("openCivitaiSearch: 'locked' -- images exist but every one is ab
     assert.ok(locked, "the locked glyph must render");
     assert.match(locked.title, /above your browsing level/i);
     assert.equal(findAll(handle.overlay, "wtn-cs-thumb-gated").length, 0, "must use a DIFFERENT element/glyph than the gated padlock");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: an EMPTY images list with an nsfw_level bit above the chosen level is 'locked', not the plain placeholder", async () => {
+  _resetDownloadStateForTests();
+  const results = [makeResult({
+    // Default level is PG (1) -- a model whose own union includes XXX (16)
+    // has provably-hidden pictures even though its trimmed gallery arrived
+    // empty (owner-reported, 2026-07-31: "why some images are not shown?").
+    modelId: 9, versionId: 9, name: "Hidden At PG", images: [], nsfwLevel: 1 | 16,
+  })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 0, "locked must win over the plain placeholder once nsfw_level proves hidden images exist");
+    assert.ok(findAll(handle.overlay, "wtn-cs-thumb-locked")[0], "the locked glyph must render");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openCivitaiSearch: an EMPTY images list with NO nsfw_level bit above the chosen level (or none reported) keeps the honest placeholder", async () => {
+  _resetDownloadStateForTests();
+  const results = [
+    makeResult({ modelId: 10, versionId: 10, name: "Only PG In Union", images: [], nsfwLevel: 1 }),
+    makeResult({ modelId: 11, versionId: 11, name: "No Level Reported", images: [] }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-locked").length, 0, "no bit above PG for either card -- must never claim 'locked' without proof");
+    assert.equal(findAll(handle.overlay, "wtn-cs-thumb-ph").length, 2, "both cards fall back to the honest placeholder");
 
     handle.close();
   } finally {

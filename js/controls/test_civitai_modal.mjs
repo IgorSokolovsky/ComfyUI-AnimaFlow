@@ -208,18 +208,19 @@ test("injectModalStyles: a no-op (never throws) with no doc and no global docume
 });
 
 // =========================================================================
-// D1 -- no per-section card/box chrome on the rail (owner, 2026-07-31): a
-// SCOPED reset of the shared '.wtn-collapse' class, never an edit to that
-// class itself (which every other consumer -- e.g. the Rule Builder -- must
-// keep unchanged).
+// D1/D5 -- the rail's own section chrome (owner, 2026-07-31): D1 first
+// reset the shared '.wtn-collapse' class SCOPED to the rail only (never an
+// edit to that class itself -- every other consumer, e.g. the Rule Builder,
+// keeps it unchanged); D5 then replaced the <details>/<summary> mechanism
+// entirely with a plain heading -- see civitai_modal.mjs's own CSS doc
+// comment for why this is a second, independent reversal, not a revert of
+// D1's own conclusion.
 // =========================================================================
 
-test("D1: '.wtn-cm-rail .wtn-collapse' resets background/border/radius to none -- scoped, never editing the shared '.wtn-collapse' class itself", () => {
+test("D5: the rail no longer targets '.wtn-collapse' at all -- D1's own scoped reset has nothing left to reset", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const src = fs.readFileSync(path.join(here, "civitai_modal.mjs"), "utf8");
-  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*background:\s*none/s);
-  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*border:\s*none/s);
-  assert.match(src, /\.wtn-cm-rail \.wtn-collapse\s*\{[^}]*border-radius:\s*0/s);
+  assert.doesNotMatch(src, /\.wtn-cm-rail \.wtn-collapse/, "the rail must not reference '.wtn-collapse' in any form once it stops using <details>");
 });
 
 test("D4: the '.wtn-cm-badge' CSS rule itself is gone (not merely the element)", () => {
@@ -391,8 +392,11 @@ function findAllByTag(root, tagName) {
   return out;
 }
 
-function makeResult({ modelId, versionId, name, kind = "loras", type = "LORA", installed = false, gated = false, baseModel = "SDXL", downloads = 0 } = {}) {
-  return {
+function makeResult({
+  modelId, versionId, name, kind = "loras", type = "LORA", installed = false, gated = false, baseModel = "SDXL",
+  downloads = 0, images = [], nsfwLevel,
+} = {}) {
+  const result = {
     model_id: modelId,
     name,
     kind,
@@ -409,8 +413,15 @@ function makeResult({ modelId, versionId, name, kind = "loras", type = "LORA", i
     gated,
     installed,
     triggers: [],
-    images: [],
+    images,
   };
+  if (nsfwLevel !== undefined) {
+    // The MODEL's own top-level `nsfw_level` -- a bitmask UNION across its
+    // whole gallery (`civitai_search.py`'s `_parse_search_item`), distinct
+    // from any per-image level inside `images[]` (§7c-iv).
+    result.nsfw_level = nsfwLevel;
+  }
+  return result;
 }
 
 await asyncTest("openCivitaiModal: 90%-viewport shell (scrim + panel, NOT full-bleed), focused search box, renders results", async () => {
@@ -866,6 +877,103 @@ await asyncTest("openCivitaiModal: D4 -- no header subtitle badge; the title alo
     assert.equal(findAll(handle.scrim, "wtn-cm-badge").length, 0, "the subtitle badge element must be gone entirely");
     const headSpans = findAllByTag(handle.scrim, "span").filter((e) => e.textContent === "Browse Civitai");
     assert.equal(headSpans.length, 1, "the title itself still renders");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: D5 -- rail sections are plain headings, never a collapsible <details>/<summary>", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    assert.equal(findAllByTag(handle.scrim, "details").length, 0, "the rail must never use <details> any more -- D5 reverses D1's collapsible mechanism, not just its chrome");
+    assert.equal(findAllByTag(handle.scrim, "summary").length, 0, "no disclosure triangle left to render");
+    const headings = findAll(handle.scrim, "wtn-cm-rail-heading");
+    assert.equal(headings.length, 5, "one plain heading per rail section: sort, period, level, base model, model type");
+    const labels = headings.map((h) => h.textContent);
+    assert.deepEqual(labels, ["Sort models by", "Period", "Maximum browsing level", "Filter by Base Model", "Filter by Model Type"]);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+// =========================================================================
+// §7c-iv thumbnails -- an empty `images` list is "locked" (hidden images
+// PROVEN by the model's own `nsfw_level` bitmask), never the bare placeholder,
+// and the placeholder itself now actually paints an icon (owner-reported,
+// 2026-07-31: "why some images are not shown?" / "near-invisible in the
+// modal's large box").
+// =========================================================================
+
+test("'.wtn-cm-thumb-ph' actually paints an icon -- it used to be a bare, invisible <span> with only color/font-size and no glyph at all", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const src = fs.readFileSync(path.join(here, "civitai_modal.mjs"), "utf8");
+  const idx = src.indexOf(".wtn-cm-thumb-ph {");
+  assert.ok(idx !== -1, "the rule must exist");
+  // A bounded window, not `[^}]*` up to the rule's own closing brace -- this
+  // file's `${TOKENS...}` template interpolations contain a literal `}`
+  // themselves, which would terminate `[^}]*` long before the rule's real
+  // closing brace and produce a false negative.
+  assert.match(src.slice(idx, idx + 400), /mask-image:/, "the placeholder must render an actual icon, sized for this box, not the 40px card's");
+});
+
+await asyncTest("openCivitaiModal: an empty images list with an nsfw_level bit ABOVE the chosen level renders 'locked', not the blank placeholder", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [
+    // Default browsing level is PG (1) -- a model whose OWN union has an XXX
+    // (16) bit set has provably-hidden pictures even though its trimmed
+    // `images` arrived empty.
+    makeResult({ modelId: 6, versionId: 6, name: "Hidden Gallery", images: [], nsfwLevel: 1 | 16 }),
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    assert.equal(findAllByTag(handle.scrim, "img").length, 0, "a locked card never renders an <img>");
+    assert.equal(findAll(handle.scrim, "wtn-cm-thumb-ph").length, 0, "locked must win over the plain placeholder once nsfw_level proves hidden images exist");
+    const locked = findAll(handle.scrim, "wtn-cm-thumb-locked")[0];
+    assert.ok(locked, "the locked glyph must render");
+    assert.match(locked.title, /above your browsing level/i);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: an empty images list with NO nsfw_level bit above the chosen level (or no nsfw_level at all) keeps the honest placeholder", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [
+    makeResult({ modelId: 7, versionId: 7, name: "Genuinely No Gallery", images: [], nsfwLevel: 1 }), // only PG in the union -- nothing hidden at the default PG setting
+    makeResult({ modelId: 8, versionId: 8, name: "No Level Reported", images: [] }), // no nsfw_level at all -- an older backend build, or genuinely absent
+  ];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    assert.equal(findAll(handle.scrim, "wtn-cm-thumb-locked").length, 0, "no bit above PG is set for either card -- must never claim 'locked' without proof");
+    assert.equal(findAll(handle.scrim, "wtn-cm-thumb-ph").length, 2, "both cards fall back to the honest placeholder");
+
     handle.close();
   } finally {
     restoreFetch();

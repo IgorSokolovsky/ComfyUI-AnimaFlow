@@ -1421,7 +1421,13 @@ export function openCivitaiSearch({
     // shares the same stale-check regardless of how many re-renders happen
     // while a retry timer is still pending.
     const levelInt = levelLabelToInt(currentFilters.level);
-    const tState = thumbState(state, view.images, levelInt);
+    // `view.nsfw_level` -- the MODEL's own top-level bitmask union (survives
+    // `resolveVersionView`'s spread untouched, since only per-VERSION fields
+    // are overridden there) -- is what lets `thumbState` tell "genuinely no
+    // gallery" apart from "gallery trimmed to nothing at this level" for an
+    // empty `view.images` (owner-reported, 2026-07-31: "why some images are
+    // not shown?" -- see `civitai_thumb.mjs`'s own doc comment).
+    const tState = thumbState(state, view.images, levelInt, view.nsfw_level);
     const candidates = tState === "image" ? pickThumbCandidates(view.images, levelInt) : [];
     const gen = renderGeneration;
     const isStale = () => gen !== renderGeneration;

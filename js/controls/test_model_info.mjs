@@ -894,6 +894,52 @@ await asyncTest("openModelInfo: a re-render mid-retry (e.g. a forced ↻ Civitai
   }
 });
 
+await asyncTest("openModelInfo: a redundant re-render of an already-successfully-loaded thumb leaves the existing <img> alone -- never re-assigns an unchanged src (owner-reported, 2026-07-31)", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-idempotent.safetensors";
+  invalidateInfo(kind, name);
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    // The SAME response every time -- nothing about the underlying data
+    // ever changes across the forced refetch below.
+    return { json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) };
+  };
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+    });
+    await settle();
+
+    const firstImg = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(firstImg, "the local preview must render");
+    firstImg.onload(); // the local preview genuinely renders -- a COMPLETED, successful load
+    assert.equal(findAllByTag(handle.overlay, "img").length, 1);
+
+    // A forced "↻ Civitai" refetch that resolves to the identical data (still
+    // `notfound`, same local `name`/`kind`) -- `candidates[0]` (the local
+    // url) is therefore unchanged, and the box is ALREADY showing it,
+    // completed, not mid-retry.
+    const refetchBtn = findAll(handle.overlay, "wtn-mi-refetch")[0];
+    refetchBtn.click();
+    await settle();
+
+    assert.equal(fetchCalls, 2, "the refetch itself must still genuinely happen -- this guard is about the THUMBNAIL element, never about suppressing the lookup");
+    const imgAfter = findAllByTag(handle.overlay, "img")[0];
+    assert.equal(imgAfter, firstImg, "the SAME <img> element must still be there -- a redundant render must never tear down and rebuild an already-loaded, unchanged thumbnail");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
 await asyncTest("openModelInfo: a selected word with NO matching candidate is never silently lost -- it renders as a deletable chip", async () => {
   const kind = "loras";
   const name = "info-dom-orphan.safetensors";

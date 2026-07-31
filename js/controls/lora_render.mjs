@@ -137,6 +137,31 @@
  * in needing explicit `display:flex`/centering (a row's gear is centred by
  * its OWN row's `align-items: center`; this header icon has no such parent
  * rule, so it centres itself).
+ *
+ * ## BUG (owner screenshot, 2026-07-31): the ⚙ is visibly smaller than the 🔍
+ * beside it, in the SAME 18px `.wtn-lora-icon` box
+ *
+ * Diagnosed by comparing the two icons' own sizing MECHANISM, not by nudging
+ * a number until it looked right: 🔍 is an SVG `mask-image` sized via
+ * `mask-size: contain`, so its ink fills essentially the whole 18px box (the
+ * search glyph's own bounding box already covers ~75%×63% of its 24×24
+ * viewBox, and `contain` scales that viewBox to fill the box exactly). ⚙,
+ * by contrast, is a plain-text glyph sized via `font-size` — and per this
+ * file's OWN doc comment two paragraphs up (echoing `fields.mjs`'s "chevron/
+ * gear legibility fix"), the Unicode gear symbol renders with heavy internal
+ * whitespace inside its own em-square, so a `font-size` that LOOKS like it
+ * should match a same-size mask icon renders visibly smaller in practice —
+ * this was a font-size problem, not a box size (both icons already share the
+ * same 18px `.wtn-lora-icon`) or a mask-size one (⚙ was never a mask at all,
+ * so there was no `mask-size` to be wrong). The 14px this file previously
+ * used was only a mild boost over the 12px body font it was set alongside
+ * (`.wtn-lora-root`'s own `font: 12px/1 ...`) — nowhere near enough once
+ * sitting directly beside a mask icon that fills its box. Fixed by applying
+ * this SAME codebase's own already-validated correction ratio
+ * (`fields.mjs`'s `FLD_GEAR_SIZE = Math.round(FLD_FONT * 1.26)`) to this
+ * icon's own prior size rather than guessing fresh: `Math.round(14 * 1.26)`
+ * = 18, which conveniently lands exactly on the shared icon box's own
+ * height — see `.wtn-lora-icon.wtn-lora-gear`'s own `font-size` below.
  */
 
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
@@ -479,7 +504,12 @@ const CSS = `
    comment: "adjust the sizing, not the glyph"). */
 .wtn-lora-icon.wtn-lora-gear {
   display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
+  /* 18px, not 14px (owner screenshot, 2026-07-31: "the ⚙ is smaller than the
+     🔍") -- this file's own top doc comment has the full diagnosis: a
+     font-size bump, not a box or mask-size change (14 * 1.26, the same
+     ratio fields.mjs already validated for this exact glyph, rounds to 18,
+     which happens to equal the shared icon box's own height). */
+  font-size: 18px; line-height: 1; color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
 }
 .wtn-lora-icon.wtn-lora-gear:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
 

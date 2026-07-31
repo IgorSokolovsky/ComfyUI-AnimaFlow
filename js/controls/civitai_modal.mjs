@@ -159,6 +159,15 @@ const TOKENS = {
   bad: "#f87171",
 };
 
+// The "no image" glyph -- same picture-frame silhouette as `civitai_search.
+// mjs`'s own `IMAGE_PLACEHOLDER_SVG` (a duplicated hardcoded copy, matching
+// this file's own "every render module keeps its own copy" convention,
+// above), sized for THIS surface's own, much larger grid thumb box below
+// rather than the 40px card's 16px icon (owner-reported, 2026-07-31: "the
+// placeholder itself is near-invisible in the modal's large box").
+const IMAGE_PLACEHOLDER_SVG =
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2H4zm0 2h16v9.59l-3.79-3.8a1 1 0 00-1.42 0L11 15.59l-2.29-2.3a1 1 0 00-1.42 0L4 16.59V6zm4 2a2 2 0 100 4 2 2 0 000-4z'/%3E%3C/svg%3E";
+
 // ---------------------------------------------------------------------------
 // Pure -- no DOM, no `doc`/`window` reference anywhere below. Directly
 // testable under plain `node` (`test_civitai_modal.mjs`).
@@ -315,18 +324,37 @@ const CSS = `
 /* D1 (REVERSED 2026-07-31, owner, docs/lora-loader-design.md section 7c-i's
    own "no card/box chrome per section" correction): each rail section used
    to be its own bordered, filled '.wtn-collapse' panel -- five of those
-   stacked read as five separate widgets, not one rail. Overridden here,
-   SCOPED to '.wtn-cm-rail' only -- '.wtn-collapse' itself (js/shared/
-   theme.css) stays unchanged for every OTHER consumer (the Rule Builder,
-   etc.); this is a local reset, not a shared-class edit. The section
-   HEADING ('<summary>') and this rail's own 'gap' (widened above, 10px ->
-   14px, to keep sections visually distinct with no border to do that job
-   any more) are what separate one section from the next now. */
-.wtn-cm-rail .wtn-collapse {
-  font-size: 12px; background: none; border: none; border-radius: 0;
+   stacked read as five separate widgets, not one rail. This was FIRST fixed
+   by scoping a reset onto '.wtn-collapse' itself (still a <details>, just
+   unstyled) -- D5, immediately below, replaces that <details>/<summary>
+   entirely with a plain heading, so this rule no longer has anything to
+   match; kept here, as dead weight, ONLY because D5's own "record the
+   reversal, don't delete the trail" convention (below) applies to this one
+   too -- '.wtn-collapse' itself (js/shared/theme.css) was never touched,
+   scoped or otherwise; every OTHER consumer (the Rule Builder, etc.) keeps
+   its own look unchanged regardless. */
+/* D5 (owner, 2026-07-31, approved: "remove collapse and use plain heading in
+   the browser"): D1 above already established "no card/box chrome" by
+   scoping a reset onto the shared '.wtn-collapse' <details>/<summary> --
+   faithful to §7c-i's own "Civitai's own rail is the reference for
+   structure -- collapsible sections", which earns its place on Civitai's OWN
+   rail (19 model-type chips under one heading) but not on ours, where every
+   section holds exactly one <select>: collapsing a single control saves
+   ~30px and costs a click for nothing. This is a SECOND, independent
+   reversal of that same §7c-i clause -- not a restoration of D1 (D1's own
+   "no chrome" conclusion stands; this instead drops the disclosure widget
+   the chrome used to live inside). ⚠️ Recorded here so a later pass never
+   "fixes" this back to collapsible sections as though the triangle's
+   disappearance were a regression -- it is deliberate, matching D2/D3/D4's
+   own "reversal, not an oversight" convention immediately below. '.wtn-cm-
+   rail-heading' is a plain, non-interactive label; '.wtn-collapse' itself
+   (js/shared/theme.css) is UNTOUCHED -- other surfaces (the Rule Builder,
+   etc.) keep using it exactly as before; only this rail stops. */
+.wtn-cm-rail-section { display: flex; flex-direction: column; }
+.wtn-cm-rail-heading {
+  font-size: 12px; font-weight: 650; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  margin: 0 0 6px;
 }
-.wtn-cm-rail .wtn-collapse > summary { padding: 0 0 4px; }
-.wtn-cm-rail .wtn-collapse__bd { padding: 0; }
 .wtn-cm-rail select { width: 100%; margin-top: 6px; }
 .wtn-cm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .wtn-cm-chip { display: inline-flex; align-items: center; gap: 5px; }
@@ -356,7 +384,22 @@ const CSS = `
   background: var(--wtn-surface, ${TOKENS.surface}); display: flex; align-items: center; justify-content: center;
 }
 .wtn-cm-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.wtn-cm-thumb-ph, .wtn-cm-thumb-locked, .wtn-cm-thumb-gated { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 20px; }
+/* The 🔒/🙈 glyphs (locked/gated) are real text content (\`buildThumb\`) --
+   20px reads clearly against this box's own aspect-ratio-1/1 size (much
+   bigger than the 40px search card's 15px). \`.wtn-cm-thumb-ph\`, unlike
+   those two, used to carry NO glyph at all -- an empty \`<span>\` with only
+   this rule's \`color\`/\`font-size\`, neither of which does anything without
+   actual content (owner-reported, 2026-07-31: "why some images are not
+   shown?" -- several cards were a genuinely blank box, not merely a small
+   icon). It now gets the SAME picture-frame mask \`.wtn-cs-thumb-ph\` uses,
+   sized for this box rather than the 40px card's 16px. */
+.wtn-cm-thumb-locked, .wtn-cm-thumb-gated { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 20px; }
+.wtn-cm-thumb-ph {
+  width: 34px; height: 34px; background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
+  mask-image: url("${IMAGE_PLACEHOLDER_SVG}"); -webkit-mask-image: url("${IMAGE_PLACEHOLDER_SVG}");
+  mask-size: contain; -webkit-mask-size: contain; mask-repeat: no-repeat; -webkit-mask-repeat: no-repeat;
+  mask-position: center; -webkit-mask-position: center;
+}
 ${THUMB_SKELETON_CSS}
 .wtn-cm-title { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wtn-cm-metarow { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -531,16 +574,20 @@ function buildChipFilterSection(doc, { placeholder, options, getCurrent, setCurr
   return { el: wrap, refresh };
 }
 
+/**
+ * A rail section: a plain heading (never a disclosure triangle) directly
+ * above `contentEl` -- D5, this file's own top-of-CSS doc comment. Used to
+ * build a `<details class="wtn-collapse">`/`<summary>` pair (D1); every
+ * existing call site keeps the same `(doc, label, contentEl)` signature
+ * unchanged, so this is a body-only edit.
+ */
 function buildRailSection(doc, label, contentEl) {
-  const details = el(doc, "details", "wtn-collapse");
-  details.open = true;
-  const summary = el(doc, "summary");
-  summary.textContent = label;
-  details.appendChild(summary);
-  const body = el(doc, "div", "wtn-collapse__bd");
-  body.appendChild(contentEl);
-  details.appendChild(body);
-  return details;
+  const section = el(doc, "div", "wtn-cm-rail-section");
+  const heading = el(doc, "div", "wtn-cm-rail-heading");
+  heading.textContent = label;
+  section.appendChild(heading);
+  section.appendChild(contentEl);
+  return section;
 }
 
 function buildThumb(doc, state, candidates, isStale, backoffMs) {
@@ -788,7 +835,13 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     const state = resultCardState(view, job, sessionGatedKeys());
 
     const levelInt = levelLabelToInt(currentFilters.level);
-    const tState = thumbState(state, view.images, levelInt);
+    // `view.nsfw_level` -- the MODEL's own top-level bitmask union, untouched
+    // by `resolveVersionView`'s per-version spread -- lets `thumbState` tell
+    // "genuinely no gallery" apart from "gallery trimmed to nothing at this
+    // level" for an empty `view.images` (owner-reported, 2026-07-31: "why
+    // some images are not shown?" -- see `civitai_thumb.mjs`'s own doc
+    // comment for the bitmask-union trap this must never fall into).
+    const tState = thumbState(state, view.images, levelInt, view.nsfw_level);
     const candidates = tState === "image" ? pickThumbCandidates(view.images, levelInt) : [];
     const gen = renderGeneration;
     const isStale = () => gen !== renderGeneration;

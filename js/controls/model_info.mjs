@@ -724,6 +724,17 @@ export function openModelInfo({
   // is still pending -- e.g. clicking `↻ Civitai` while the local preview's
   // own onerror/retry chain hasn't settled yet.
   let thumbGeneration = 0;
+  // Owner, 2026-07-31, measured live: "/wtn/model_browser/thumb?... is
+  // called each 1-2 sec." A signature of exactly the inputs `renderThumb`'s
+  // own decision reads (the full candidate URL list, in order, plus the
+  // locked flag) as of the LAST render that actually proceeded past its own
+  // idempotency guard (never touched by a render the guard skipped) -- see
+  // that guard's own doc comment, at `renderThumb`'s call site, for why an
+  // unchanged signature ALONE is not enough on its own (a stale closure
+  // silently dropping a newly-available fallback candidate) and must be
+  // paired with "the box is currently showing a REAL `<img>`, not mid-retry
+  // or a terminal glyph." `null` until the first real render.
+  let lastThumbSignature = null;
 
   function notify() {
     if (typeof onChange === "function") {
@@ -1022,10 +1033,6 @@ export function openModelInfo({
     if (!thumbHost) {
       return; // showThumbnails === false (§7b) -- no element exists to fill
     }
-    thumbHost.innerHTML = "";
-    thumbGeneration += 1;
-    const gen = thumbGeneration;
-    const isStale = () => gen !== thumbGeneration;
 
     const localUrl = thumbUrl(kind, name);
     const civitaiImages = civitaiRecord && Array.isArray(civitaiRecord.images) ? civitaiRecord.images : [];
@@ -1037,6 +1044,49 @@ export function openModelInfo({
     // local file (or a level-passing Civitai candidate) subsequently fails
     // to LOAD.
     const locked = civitaiImages.length > 0 && civitaiCandidates.length === 0;
+
+    // Idempotency guard (owner-reported, 2026-07-31, measured live:
+    // "/wtn/model_browser/thumb?... is called each 1-2 sec"). A full
+    // `thumbHost.innerHTML = ""` teardown always builds a BRAND NEW `<img>`,
+    // which re-requests its `src` even when the URL string is byte-identical
+    // to the one already showing -- nothing about the ELEMENT itself is
+    // reused across a rebuild. Skip the rebuild when BOTH:
+    //
+    //   1. this render's OWN signature (the full candidate list + locked
+    //      flag -- `lastThumbSignature`'s own doc comment) is unchanged from
+    //      the last render that actually proceeded, AND
+    //   2. `thumbHost`'s LAST child is a genuine `<img>` (never a `<span>`
+    //      skeleton/placeholder/locked glyph) whose `src` already matches
+    //      `candidates[0]` -- the box is showing (loaded, or already
+    //      in-flight) exactly what a fresh render would hand
+    //      `attachThumbCandidate` as its very first attempt anyway.
+    //
+    // BOTH conditions matter, not just one: (1) alone would wrongly skip a
+    // render whose CANDIDATE LIST changed but whose first entry happens to
+    // be unchanged (the local file failed, a NEW Civitai fallback just
+    // became available, but `candidates[0]` -- the local url -- is still
+    // the same one already showing; skipping would leave the OLD, shorter
+    // candidate list live in the existing retry chain's own closure,
+    // silently dropping that fallback the next time it fails -- confirmed
+    // against this file's own "falls through to Civitai" regression test).
+    // (2) alone would wrongly skip a render caught mid-retry, where the
+    // in-flight attempt just failed and `attachThumbCandidate`'s own
+    // `onerror` already REMOVED the `<img>` (only the skeleton remains) --
+    // that is exactly the case an EXPLICIT "↻ Civitai" refetch must still be
+    // free to restart from scratch, confirmed against this file's own
+    // "leaves no stale timer" regression test.
+    const signature = `${locked ? "L" : ""}|${candidates.join(" ")}`;
+    const kids = thumbHost.children || [];
+    const currentImg = kids[kids.length - 1];
+    if (signature === lastThumbSignature && candidates[0] && currentImg && currentImg.tagName === "img" && currentImg.src === candidates[0]) {
+      return;
+    }
+    lastThumbSignature = signature;
+
+    thumbHost.innerHTML = "";
+    thumbGeneration += 1;
+    const gen = thumbGeneration;
+    const isStale = () => gen !== thumbGeneration;
 
     if (candidates.length === 0) {
       thumbHost.appendChild(locked ? buildLockedGlyph() : buildPlaceholderGlyph());
