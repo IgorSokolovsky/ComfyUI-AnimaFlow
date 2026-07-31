@@ -260,9 +260,21 @@ rows show real names and the rest show filenames reads as broken, not as progres
 or downloaded" and is stable across sessions. Sidecar reads are local and already on the executor; if the
 cost shows up on a large folder, cache per `(kind, mtime)` rather than dropping the feature.
 
-**Coverage will be partial regardless, and the fallback must be silent.** A model with no sidecar has no
-Civitai name, and that is the common case until the user has browsed or downloaded. Fall back to the
-existing `displayModelName` with no marker, no placeholder, no "unknown" — the row must look intentional.
+**A download already knows the name — no lookup, no hashing** (owner: *"we get name with the search, when
+downloading we can save it to the info json and use it, if it exist if not fallback to the filename"*).
+This is not just true, it is **already written**: `civitai_parse.civitai_shape_from_search_meta:565-567`
+maps the search result's own `name` into `model.name` in the sidecar shape, and that shape is read back
+through the exact same `parse_model_version` a live by-hash lookup goes through. The code has simply never
+run, because the frontend has never sent `civitai_meta` on `/download/start` — the wiring being added
+alongside this makes it live.
+
+So the population story is much better than "wait until the user opens ⓘ": **anything downloaded through
+our browser gets its real name immediately and for free**, on the same request that fetches the file.
+
+**Coverage is still partial, and the fallback must be silent.** A model that arrived any other way — a
+manual copy, another downloader, a file predating all of this — has no sidecar and no name. Fall back to
+the existing `displayModelName` with no marker, no placeholder, no "unknown": the row must look
+intentional, not degraded. A user with a mixed folder should not be able to tell which rows "failed".
 
 **The setting.** A boolean in Settings → AnimaFlow → Controls, alongside the existing `Hide file
 extension` it composes with, defaulting to **off** (filenames — today's behaviour, and the thing that
