@@ -28,6 +28,36 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
+### 🐛 `Hide file extension` is honoured by the picker but not by the row label (owner, 2026-07-31)
+
+Owner: *"hide file extension is on but our field label show it while the picker doesn't."* Root cause is
+one line — `js/controls/lora_render.mjs:952`:
+
+```js
+refs.nameLabel.textContent = row.name || "(pick a LoRA)";
+```
+
+The label writes `row.name` **raw**. `lora_interaction.mjs` reads the setting in three places and none of
+them is this one: `:498` hands it to the **picker** (which honours it, hence the mismatch), `:831` drives
+the ⚙ switch's own on/off visual, `:895` toggles the value. Nothing routes it to the row.
+
+**Two parts, and the second is the one that gets forgotten:**
+1. Paint the label through a display-name function that applies the setting, read at paint time — the
+   same "live on every open, no change listener" convention `:498` already documents.
+2. **The ⚙ toggle must repaint the rows**, not just flip its own switch class. Today `:895` changes the
+   value and `refreshFromSettings` updates only the switch, so even after part 1 the label would not
+   change until something else forced a repaint.
+
+Also give the label a `title` tooltip carrying the full untruncated name while in there, and check the
+**Loader/Control Panel** rows for the same gap — `render.mjs`/`interaction.mjs` contain **no**
+`HIDE_FILE_EXTENSION` reference at all, so those row labels look likely to ignore it too.
+
+> **Build this as the seam §1a-vii needs.** That spec (show the Civitai name instead of the filename,
+> behind a setting) has to change this exact line, and for the same underlying reason: **the label is a
+> display concern, `row.name` is identity and must never change.** Routing the label through one
+> settings-aware display function now means §1a-vii adds a *source* to it rather than touching `paintRow`
+> a second time.
+
 ### 🐛 Three fixes to the Settings dialog, one small pass (2026-07-31)
 
 Held together only because they are all `js/shared/settings.mjs`, and a builder currently owns that file
