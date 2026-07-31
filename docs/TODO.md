@@ -28,20 +28,30 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 🐛 The ⓘ info panel overflows once its content loads (CONFIRMED live 2026-07-30)
+### 🐛 Every async-populated popover overflows — the ⓘ fix was one instance of a systemic gap (owner, 2026-07-31)
 
-Owner, after `eea739b` fixed every other popover: *"Fixed on all except lora info as its shown correctly
-but after info loaded it expand and then overflows."*
+The ⓘ panel fix (`b92eff0`, now confirmed) treated this as one panel's problem. It isn't. Owner then
+reported the same thing twice more: the Civitai search panel *"expand and overflow the bottom"* when
+results load, and *"select lora also overflows"*.
 
-Exactly the shape predicted when this was deferred, now observed. `js/controls/model_info.mjs:149`
-(`max-height: 78vh`) is the **only** popover that renders first and populates **asynchronously**
-afterwards, from the Civitai lookup — and it never calls `reposition()` or re-clamps when that data
-lands. The row context menu and the ⚙ dialog build their content synchronously, so the overlay's own
-placement already sees their final height; this one is placed against a near-empty box and then grows.
+**One cause, three panels.** An anchored panel calls `handle.reposition(...)` exactly once, right
+after opening — while it's still short and showing "Loading…". `reposition()` caps the height **only
+if neither side fits**, and a short panel fits, so no cap is applied. The async content then arrives,
+the panel grows past the viewport, and nothing re-places it. The cap is what makes the inner
+`overflow-y: auto` region engage, so an uncapped panel overflows instead of scrolling.
 
-**Sequenced deliberately after the side-choice/flip fix**, which is rewriting the very mechanism this
-needs (measure natural height → choose the side → cap). Doing both at once would have them fighting.
-Once that lands, this is "re-place after the content changes" and should be small.
+Confirmed call sites: `js/controls/model_picker.mjs:522` (repositions once, no other trigger) and
+`js/controls/civitai_search.mjs:1693` (repositions at open, plus window-resize and anchor-move — but
+nothing for a *content* change). `model_info.mjs` hit it first and grew a local `repositionAfterChange`
+workaround, which is why it looked like a one-panel bug.
+
+**Fixed once in `js/shared/overlay.mjs`** with a `ResizeObserver` on the content element, so no panel
+has to wire this up and every future one inherits it. The hard part is convergence, not detection:
+repositioning applies a cap, the cap resizes the content, and that fires the observer again.
+
+> **Follow-up once all three are owner-confirmed:** `model_info.mjs`'s local `repositionAfterChange`
+> becomes redundant and should be deleted. Deliberately left in place during this fix — the owner had
+> just confirmed it works, and refactoring it in the same pass would muddy that verification.
 
 ### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
 
@@ -100,6 +110,50 @@ rather than in a suite.
 > porting only the first one is a decision that needs a trigger, not a footnote.
 
 ## Next
+
+### 🏛️ **Shells and Core Mechanics** — one shared chassis, per-node logic on top (owner, 2026-07-31, *"a very important thing"*)
+
+Owner's framing: **"we need to create Shells and Core Mechanics so it's reused, and not different across
+nodes, while the underlying logic of the node can be different based on the node."**
+
+The split is the whole point. A node's **logic** — what a LoRA row applies to a `MODEL`, what a Control
+Panel row emits on a socket, what the Generator does with a seed — is legitimately per-node and should
+stay that way. Its **shell and mechanics** — how a row is dragged, how a popover is placed, how state is
+persisted, how a node is sized — are the same problem every time, and today each track solves it again.
+
+**This is not a hypothesis. Every item below was observed, most of them today:**
+
+| duplicated mechanic | what actually happened |
+|---|---|
+| **Re-place a popover when its content grows** | Three panels, three treatments: `model_info.mjs` grew a local `repositionAfterChange`, `model_picker.mjs:522` and `civitai_search.mjs:1693` had nothing. Owner reported all three overflowing, separately. Being fixed once in `overlay.mjs` — but only after shipping a per-panel fix first |
+| **Detached row objects / stale closures** | Fixed in the Loader Panel, then **shipped again** in the Control Panel — `4e2c3ac`'s own note reads *"same detached-row-object bug as the Loader Panel"*. The same bug twice because the row-wiring mechanic wasn't shared |
+| **Drag-reorder FLIP animation** | Exists only in `lora_interaction.mjs`. Owner: *"our Control Panel drag doesn't have animation like our Loras"* |
+| **The row entry's own shape** | LoRA rows use `entry.refs.root`, Control Panel rows use `entry.refs.row` — the same concept under two names, which is why the shared FLIP helper has to be parameterised over an accessor instead of just taking a list |
+| **CSS class ownership** | `.wtn-ctl-row.wtn-lora-flip` — a `wtn-lora-` class applied to a Control Panel row, because the rule was written for one track and reached by the other |
+| **Class A node sizing** | Five separate layers (`getMaxHeight`/`setSize`/per-frame/load-path/`onResize`), re-implemented per track. The `Array.isArray(node.size)` bug defeated **five** of them at once precisely because there was no single place to get it right |
+
+**What exists already** (the boundary is real, just incomplete): `js/shared/` has `overlay.mjs`,
+`size.mjs`, `settings.mjs`, `node_chrome.mjs`, `graph_loading.mjs`, `canvas_zoom.mjs`, `theme.css`,
+`fields.mjs`/`field_logic.mjs`, `refresh.mjs`, `api.mjs`. The gap is not "no shared code" — it's that
+**the row/panel chassis itself was never named as a thing**, so each track grew its own.
+
+**Roughly what a shell would own** (to be designed, not settled here): the row list and its entry
+contract (one `refs` shape, one id rule), drag-reorder + FLIP, the state handshake
+(hidden widget → `properties` → persist), the sizing class, the popover/menu vocabulary, and the
+`syncRows`/`repaint` split. What it must **not** own: what a row means, what it emits, or what it
+applies.
+
+**Two hard constraints** any design must respect, both learned the expensive way:
+- **The tracks are genuinely different where it counts.** The Control Panel is one `addDOMWidget` **per
+  row** (each row parks an output socket at its own `.y`, and legacy litegraph reads `output.pos`
+  verbatim); the LoRA loader is **one** widget for the whole body. A shell that assumes either shape
+  breaks the other — see `render.mjs:9-19` and `lora_render.mjs:10-27`, which each explain their choice.
+- **The 5-auto-loaded-`.js` ceiling.** A shared chassis must live in `.mjs` modules, lazily imported.
+
+**Sequencing.** This is refactor-under-load: three tracks ship and the owner is testing daily. Do it
+**incrementally, behind live use** — extract one mechanic at a time, at the moment a second track needs
+it (which is exactly how `overlay.mjs`'s auto-reposition and `js/shared/flip.mjs` are being extracted
+right now), rather than one big restructuring pass. Nothing here justifies a freeze.
 
 ### ✍️ Revisit the Prompt track — Rule Builder fixes + UI changes, and the Prompt Builder (owner, 2026-07-30)
 
@@ -368,7 +422,8 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
-| **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (see *Now* — that one is a different, confirmed bug) |
+| **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (that one was `b92eff0`, below) |
+| **The ⓘ info panel grew after opening and overflowed** — the only popover placed against a near-empty box and then populated asynchronously from the Civitai lookup. Re-measures and re-places when the content lands, guarded so a detached panel is a silent no-op and a same-size change never re-places | `b92eff0` — owner: **"lora info expand overflow fixed"**. Note: this turned out to be *one instance* of a systemic gap — see *Now* |
 | **Adding an API key could not un-gate a card, and the "key required" chip lit up on hover.** `_sessionGatedKeys` learned correctly from a live failure but nothing ever re-evaluated it; the only thing that cleared it was a test-only helper, and the button is `disabled`, so there was no retry either | `030b579` — owner: **"fixed"** |
 | **Civitai's login page was saved as the model** — a gated download answers with HTML and a genuine `200`, and the length gate was structurally incapable because the page's own `Content-Length` was correct. `Content-Type` is now parsed before a single byte is read | `d70942b` — owner: **"Works"** |
 | **The Control Panel dropped edits after a reload** — same detached-row-object bug as the Loader Panel, masked for months because a random seed changed the payload every run anyway | `4e2c3ac` — owner: **"works"** (steps/cfg changed after a reload, no structural edit) |
