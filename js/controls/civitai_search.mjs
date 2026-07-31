@@ -828,6 +828,22 @@ export function markResultGated(key) {
 }
 
 /**
+ * The module-level session-gated-key `Set` itself (BUG F) — exported so a
+ * DIFFERENT surface sharing this file's own download-job singleton (the M2b
+ * toolbar modal, `civitai_modal.mjs`) can pass the SAME set into its own
+ * `resultCardState` calls, rather than maintaining a second, out-of-sync
+ * copy of "what did we learn is gated this session." Nothing in THIS file
+ * changes because of this export — `markResultGated`/
+ * `reconcileGatedKeysOnApiKeySignature` remain the only writers, and every
+ * existing call site here keeps reading/writing the identical reference.
+ * Read-only in effect for a caller (no method on the returned `Set` this
+ * module doesn't already use itself).
+ */
+export function sessionGatedKeys() {
+  return _sessionGatedKeys;
+}
+
+/**
  * BUG (owner, 2026-07-30): "i entered key but it still say key required
  * (and i cant redownload it)". `_sessionGatedKeys` above is correctly
  * LEARNED from a live `key_required` failure, but nothing ever

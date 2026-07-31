@@ -124,6 +124,21 @@ export const SETTING_IDS = {
   // own `levelLabelToInt` is the one place that turns this into the numeric
   // bitmask value (`1`/`2`/`4`/`8`/`16`) the search route actually reads.
   CIVITAI_SEARCH_LEVEL: "AnimaFlow.Controls.CivitaiSearchLevel",
+  // M2b (docs/lora-loader-design.md §7c-i's rail): the toolbar MODAL's own
+  // multi-value filters -- "Filter by Base Model"/"Filter by Model Type" are
+  // `<select>`-adds-a-chip, unlike the picker's own single-value
+  // `CIVITAI_SEARCH_BASE_MODEL` combo above, so they need their OWN id
+  // (a single-value id can't hold a list without changing what the picker's
+  // existing combo means). Still "remembered user-wide... not in the node's
+  // state blob" (§7c-i), same ownership boundary as every filter above --
+  // just a JSON-array-of-strings STRING value rather than a bare enum,
+  // because ComfyUI's Settings-dialog widget types (`combo`/`boolean`/
+  // `text`/`number`) have no native multi-select -- `type: "text"` stores
+  // the serialized array, and `civitai_modal.mjs`'s own `parseStoredList`/
+  // `serializeList` are the one place that (de)serializes it; the dialog
+  // field itself is not meant to be hand-edited (see its own tooltip below).
+  CIVITAI_MODAL_BASE_MODELS: "AnimaFlow.Controls.CivitaiModalBaseModels",
+  CIVITAI_MODAL_MODEL_TYPES: "AnimaFlow.Controls.CivitaiModalModelTypes",
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +219,11 @@ export const SETTING_DEFAULTS = {
   // PG (owner, §7c-iv) -- a genuine server-side guarantee (Civitai is never
   // asked for adult content at all at this level), unlike the other four.
   [SETTING_IDS.CIVITAI_SEARCH_LEVEL]: "PG",
+  // Empty JSON array -- "no chips yet" (§7c-i: "an empty group shows a faint
+  // `any`"), matching `CIVITAI_SEARCH_BASE_MODEL`'s own "" = "any" default in
+  // spirit, just serialized (this id's own `SETTING_IDS` comment).
+  [SETTING_IDS.CIVITAI_MODAL_BASE_MODELS]: "[]",
+  [SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES]: "[]",
 };
 
 // ---------------------------------------------------------------------------
@@ -423,6 +443,30 @@ export const ANIMAFLOW_SETTINGS = [
       + "is never asked for adult content at all -- while PG-13/R/X/XXX are "
       + "filtered client-side from a fuller gallery fetch, since Civitai's "
       + "own search API has no level parameter of its own.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_MODAL_BASE_MODELS,
+    name: "Civitai browser: base model filters (internal)",
+    category: ["AnimaFlow", "Controls", "Civitai browser: base model filters (internal)"],
+    type: "text",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_BASE_MODELS],
+    tooltip:
+      "Internal storage for the toolbar Civitai browser's own 'Filter by "
+      + "Base Model' rail chips (a JSON array of strings) -- edited from the "
+      + "browser's own filter rail, not this field. Remembered user-wide, "
+      + "same as every other Civitai search filter.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES,
+    name: "Civitai browser: model type filters (internal)",
+    category: ["AnimaFlow", "Controls", "Civitai browser: model type filters (internal)"],
+    type: "text",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES],
+    tooltip:
+      "Internal storage for the toolbar Civitai browser's own 'Filter by "
+      + "Model Type' rail chips (a JSON array of strings) -- edited from the "
+      + "browser's own filter rail, not this field. Remembered user-wide, "
+      + "same as every other Civitai search filter.",
   },
 ];
 

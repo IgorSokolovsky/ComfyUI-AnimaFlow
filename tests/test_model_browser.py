@@ -2247,7 +2247,7 @@ def test_type_for_kind_known_and_unknown():
 def test_build_search_url_shape_and_params():
     url = civitai_search.build_search_url(
         "civitai.com", "loras", "skin detail",
-        base_model="SDXL", sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
+        base_model=["SDXL"], sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
     )
     assert url.startswith("https://civitai.com/api/v1/models?")
     assert "types=LORA" in url
@@ -2258,6 +2258,50 @@ def test_build_search_url_shape_and_params():
     assert "query=skin+detail" in url
     assert "baseModels=SDXL" in url
     assert "cursor=abc" in url
+
+
+def test_build_search_url_a_single_base_model_is_byte_for_byte_identical_to_the_old_string_call(  # noqa: E501
+):
+    # The anchored panel's own single-value filter must be UNCHANGED by this
+    # fix (task constraint: "no behaviour change to the anchored panel") --
+    # a one-element list emits exactly the SAME one `baseModels=` pair the
+    # old bare-string call used to.
+    url = civitai_search.build_search_url("civitai.com", "loras", "x", base_model=["SDXL"])
+    assert url.count("baseModels=") == 1
+    assert "baseModels=SDXL" in url
+
+
+def test_build_search_url_several_base_models_send_one_repeated_pair_per_value_never_comma_joined():
+    url = civitai_search.build_search_url(
+        "civitai.com", None, "x", base_model=["SDXL 1.0", "Pony"],
+    )
+    assert url.count("baseModels=") == 2
+    assert "baseModels=SDXL+1.0" in url
+    assert "baseModels=Pony" in url
+    assert "baseModels=SDXL+1.0%2CPony" not in url  # the old, buggy comma-joined shape
+
+
+def test_build_search_url_no_base_models_sends_no_baseModels_param_at_all():
+    url = civitai_search.build_search_url("civitai.com", "loras", "x")
+    assert "baseModels=" not in url
+    url_empty = civitai_search.build_search_url("civitai.com", "loras", "x", base_model=[])
+    assert "baseModels=" not in url_empty
+
+
+def test_clean_base_models_dedupes_strips_and_drops_non_strings_in_order():
+    assert civitai_search.clean_base_models(["SDXL", " Pony ", "SDXL", "", "  ", 42, None]) == ["SDXL", "Pony"]
+
+
+def test_clean_base_models_non_list_input_is_always_empty():
+    for bad in (None, "SDXL", 42, {"base_model": ["SDXL"]}, True):
+        assert civitai_search.clean_base_models(bad) == [], bad
+
+
+def test_clean_base_models_has_no_fixed_enum_unlike_clean_types():
+    # Unlike `clean_types`, ANY non-empty string survives -- Civitai's base
+    # models are free text, not a small closed set this module could
+    # meaningfully whitelist.
+    assert civitai_search.clean_base_models(["TotallyMadeUpBaseModel"]) == ["TotallyMadeUpBaseModel"]
 
 
 def test_build_search_url_rejects_unwhitelisted_kind():
@@ -2294,7 +2338,7 @@ def test_build_search_url_with_no_kind_sends_no_types_parameter_at_all():
 def test_build_search_url_with_no_kind_and_no_types_still_sends_every_other_param():
     url = civitai_search.build_search_url(
         "civitai.com", None, "skin detail",
-        base_model="SDXL", sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
+        base_model=["SDXL"], sort="Most Downloaded", period="Month", nsfw=True, cursor="abc", limit=5,
     )
     assert "types=" not in url
     assert "sort=Most+Downloaded" in url
@@ -2385,6 +2429,24 @@ def test_search_models_unscoped_with_types_sends_exactly_the_validated_values():
     assert "types=LORA" in seen_urls[0]
     assert "types=Checkpoint" in seen_urls[0]
     assert "NotReal" not in seen_urls[0]
+
+
+def test_search_models_unscoped_with_several_base_models_sends_repeated_baseModels_pairs_never_comma_joined():
+    # Pins the ACTUAL request URL `search_models` sends -- not a hand-built
+    # kwargs dict -- so a regression back to comma-joining (the M2b
+    # wire-contract bug, 2026-07-31) would fail this the same way it would
+    # fail the real Civitai request.
+    seen_urls = []
+
+    def opener(url, timeout):
+        seen_urls.append(url)
+        return _FakeResponse(json.dumps({"items": []}).encode("utf-8"))
+
+    civitai_search.search_models(None, "x", base_model=["SDXL 1.0", "Pony"], opener=opener)
+    assert seen_urls[0].count("baseModels=") == 2
+    assert "baseModels=SDXL+1.0" in seen_urls[0]
+    assert "baseModels=Pony" in seen_urls[0]
+    assert "SDXL+1.0%2CPony" not in seen_urls[0]  # the old, buggy comma-joined shape
 
 
 def test_search_models_kind_scoped_search_is_unchanged_by_the_optional_kind_feature():
@@ -4188,6 +4250,83 @@ def _install_permissive_search_limiter():
     return lambda: setattr(mb_api, "_SEARCH_LIMITER", previous)
 
 
+class _FakeAiohttpQuery:
+    """A minimal `aiohttp.MultiDictProxy`-shaped stand-in, built from a REAL,
+    already-ENCODED query string via stdlib `urllib.parse.parse_qs` --
+    exposes exactly the two methods `_search_query_to_payload` calls
+    (`.get(key, default)`/`.getall(key, default)`), so the tests below
+    exercise that function's OWN parsing of a real wire format rather than a
+    hand-built payload dict (this repo's own test environment has neither
+    `aiohttp` nor `multidict` installed -- verified -- which is why this
+    class exists rather than importing `aiohttp.web.Request.query`
+    directly). `keep_blank_values=True` matches aiohttp's own multidict: a
+    `foo=` pair is a real, present, empty-string value, not an absent key."""
+
+    def __init__(self, query_string):
+        self._parsed = urllib.parse.parse_qs(query_string, keep_blank_values=True)
+
+    def get(self, key, default=None):
+        values = self._parsed.get(key)
+        return values[0] if values else default
+
+    def getall(self, key, default=None):
+        return self._parsed.get(key, default if default is not None else [])
+
+
+def test_search_query_to_payload_reads_repeated_types_and_base_model_from_a_real_query_string():
+    # This is the exact wire format `civitai_api.mjs`'s `searchUnscoped`
+    # sends (verified against that module's own test) -- pinning this
+    # against a REAL query string, not a hand-built payload dict, is what
+    # would have caught the M2b mismatch (2026-07-31): each side was
+    # written against its own idea of the request shape.
+    qs = (
+        "kind=&query=skin+detail&types=LORA&types=Checkpoint"
+        "&base_model=SDXL+1.0&base_model=Pony&sort=Newest&period=Month"
+        "&level=4&cursor=abc&limit=10"
+    )
+    payload = mb_api._search_query_to_payload(_FakeAiohttpQuery(qs))
+    assert payload == {
+        "kind": "",
+        "query": "skin detail",
+        "types": ["LORA", "Checkpoint"],
+        "base_model": ["SDXL 1.0", "Pony"],
+        "sort": "Newest",
+        "period": "Month",
+        "level": "4",
+        "cursor": "abc",
+        "limit": 10,
+    }
+
+
+def test_search_query_to_payload_a_single_base_model_arrives_as_a_one_element_list():
+    # The anchored panel's own single-value `base_model=X` -- must arrive as
+    # a ONE-ELEMENT list, not a bare string, so `search_impl`/`civitai_
+    # search.build_search_url` see exactly one shape for this field
+    # regardless of caller.
+    payload = mb_api._search_query_to_payload(_FakeAiohttpQuery("kind=loras&base_model=SDXL"))
+    assert payload["base_model"] == ["SDXL"]
+    assert payload["kind"] == "loras"
+
+
+def test_search_query_to_payload_no_base_model_or_types_at_all_is_an_empty_list_not_none():
+    payload = mb_api._search_query_to_payload(_FakeAiohttpQuery("kind=loras&query=x"))
+    assert payload["base_model"] == []
+    assert payload["types"] == []
+
+
+def test_search_query_to_payload_no_kind_param_at_all_is_none_not_an_empty_string():
+    # An absent `kind=` param (the modal's own request) must be `None` --
+    # `search_impl` treats `None` as "unscoped" and `""` would be a
+    # different (and wrong) thing to whitelist-check.
+    payload = mb_api._search_query_to_payload(_FakeAiohttpQuery("query=x"))
+    assert payload["kind"] is None
+
+
+def test_search_query_to_payload_missing_limit_falls_back_to_the_default():
+    payload = mb_api._search_query_to_payload(_FakeAiohttpQuery("kind=loras"))
+    assert payload["limit"] == civitai_search.DEFAULT_LIMIT
+
+
 def test_search_impl_rejects_unwhitelisted_kind_without_any_network():
     restore = _install_permissive_search_limiter()
     try:
@@ -4380,6 +4519,32 @@ def test_search_impl_unscoped_search_forwards_a_validated_types_list():
         assert seen_kwargs[-1]["types"] == ["LORA", "NotReal"]  # search_impl passes it straight through --
         # `civitai_search.search_models`/`build_search_url` (already tested
         # directly above) are what actually validate/drop "NotReal".
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_forwards_a_base_model_list_straight_through():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        mb_api.search_impl({"query": "x", "base_model": ["SDXL 1.0", "Pony"]})
+        assert seen_kwargs[-1]["base_model"] == ["SDXL 1.0", "Pony"]
+    finally:
+        mb_api.civitai_search.search_models = previous_search_models
+        restore_limiter()
+
+
+def test_search_impl_an_empty_base_model_list_collapses_to_none_same_as_no_filter():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    seen_kwargs = []
+    _install_fake_search_models_capturing_kwargs(seen_kwargs)
+    try:
+        mb_api.search_impl({"query": "x", "base_model": []})
+        assert seen_kwargs[-1]["base_model"] is None
     finally:
         mb_api.civitai_search.search_models = previous_search_models
         restore_limiter()
@@ -5113,6 +5278,12 @@ ALL_TESTS = [
     test_every_impl_route_always_carries_a_reason_key,
     test_type_for_kind_known_and_unknown,
     test_build_search_url_shape_and_params,
+    test_build_search_url_a_single_base_model_is_byte_for_byte_identical_to_the_old_string_call,
+    test_build_search_url_several_base_models_send_one_repeated_pair_per_value_never_comma_joined,
+    test_build_search_url_no_base_models_sends_no_baseModels_param_at_all,
+    test_clean_base_models_dedupes_strips_and_drops_non_strings_in_order,
+    test_clean_base_models_non_list_input_is_always_empty,
+    test_clean_base_models_has_no_fixed_enum_unlike_clean_types,
     test_build_search_url_rejects_unwhitelisted_kind,
     test_build_search_url_garbage_sort_and_period_fall_back_to_defaults,
     test_build_search_url_limit_is_clamped,
@@ -5127,6 +5298,7 @@ ALL_TESTS = [
     test_valid_civitai_types_matches_the_verified_live_enum_exactly,
     test_search_models_unscoped_kind_none_sends_no_types_and_is_not_invalid_kind,
     test_search_models_unscoped_with_types_sends_exactly_the_validated_values,
+    test_search_models_unscoped_with_several_base_models_sends_repeated_baseModels_pairs_never_comma_joined,
     test_search_models_kind_scoped_search_is_unchanged_by_the_optional_kind_feature,
     test_kind_for_type_maps_every_currently_supported_type,
     test_kind_for_type_locon_and_dora_map_to_loras_by_deliberate_decision,
@@ -5230,12 +5402,19 @@ ALL_TESTS = [
     test_resolve_api_key_blank_values_are_treated_as_unset,
     test_min_interval_limiter_allows_then_refuses_then_allows_again,
     test_min_interval_limiter_seconds_until_allowed,
+    test_search_query_to_payload_reads_repeated_types_and_base_model_from_a_real_query_string,
+    test_search_query_to_payload_a_single_base_model_arrives_as_a_one_element_list,
+    test_search_query_to_payload_no_base_model_or_types_at_all_is_an_empty_list_not_none,
+    test_search_query_to_payload_no_kind_param_at_all_is_none_not_an_empty_string,
+    test_search_query_to_payload_missing_limit_falls_back_to_the_default,
     test_search_impl_rejects_unwhitelisted_kind_without_any_network,
     test_search_impl_happy_path_annotates_installed_and_gated_and_reports_public_only,
     test_search_impl_kind_scoped_result_carries_the_scope_kind_and_is_otherwise_unchanged,
     test_search_impl_unscoped_kind_absent_is_not_invalid_kind_and_derives_kind_per_result,
     test_search_impl_unscoped_search_never_touches_folder_paths_when_no_result_is_installable_locally,
     test_search_impl_unscoped_search_forwards_a_validated_types_list,
+    test_search_impl_forwards_a_base_model_list_straight_through,
+    test_search_impl_an_empty_base_model_list_collapses_to_none_same_as_no_filter,
     test_search_impl_flattens_primary_versions_triggers_and_preview_url_onto_the_result,
     test_search_impl_default_level_is_pg_and_sends_nsfw_false,
     test_search_impl_level_one_sends_nsfw_false_every_other_valid_level_sends_nsfw_true,

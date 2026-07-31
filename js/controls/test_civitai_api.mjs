@@ -23,6 +23,7 @@ import {
   cachedCategoryTag,
   thumbUrl,
   searchModels,
+  searchUnscoped,
   startDownload,
 } from "./civitai_api.mjs";
 
@@ -490,6 +491,91 @@ await asyncTest("searchModels: defaults to level=1 (PG) when omitted, and degrad
     for (const url of captured) {
       assert.equal(new URL(url, "http://x").searchParams.get("level"), "1");
     }
+  } finally {
+    restoreFetch();
+  }
+});
+
+// =========================================================================
+// searchUnscoped -- M2b's toolbar modal (no `kind` lock, multi-value
+// `baseModels`/`modelTypes`).
+// =========================================================================
+
+await asyncTest("searchUnscoped: never sends a `kind` param at all -- its absence is the 'search every type' signal", async () => {
+  let capturedUrl = null;
+  stubFetch(async (url) => {
+    capturedUrl = String(url);
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    await searchUnscoped({ query: "skin" });
+    const params = new URL(capturedUrl, "http://x").searchParams;
+    assert.equal(params.get("kind"), null);
+    assert.equal(params.get("query"), "skin");
+    assert.equal(params.get("level"), "1", "defaults to PG like searchModels");
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("searchUnscoped: sends baseModels/modelTypes as REPEATED base_model/types params -- never comma-joined, never an invented plural key", async () => {
+  // Pins the ACTUAL encoded query string, not just a parsed `.get()` read --
+  // a comma-joined single value would ALSO satisfy a `.get()`-based
+  // assertion for a one-element list, which is exactly how the M2b
+  // wire-contract bug (2026-07-31) got through: each side was tested
+  // against its own idea of the wire format, never the real one.
+  const captured = [];
+  stubFetch(async (url) => {
+    captured.push(String(url));
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    await searchUnscoped({ baseModels: ["SDXL 1.0", "Pony"], modelTypes: ["LORA", "Checkpoint"] });
+    const rawQuery0 = captured[0].split("?")[1];
+    // The exact encoded pairs `api.py`'s `_search_query_to_payload` reads
+    // with `getall` -- one repeated `base_model=`/`types=` pair per value.
+    assert.ok(
+      rawQuery0.includes("base_model=SDXL+1.0&base_model=Pony"),
+      `expected repeated base_model= pairs in the raw query string, got: ${rawQuery0}`,
+    );
+    assert.ok(
+      rawQuery0.includes("types=LORA&types=Checkpoint"),
+      `expected repeated types= pairs in the raw query string, got: ${rawQuery0}`,
+    );
+    const p0 = new URL(captured[0], "http://x").searchParams;
+    assert.deepEqual(p0.getAll("base_model"), ["SDXL 1.0", "Pony"], "the SAME singular key searchModels sends for its own single value -- never an invented `base_models` plural");
+    assert.deepEqual(p0.getAll("types"), ["LORA", "Checkpoint"]);
+    assert.equal(p0.get("base_models"), null, "the old comma-joined plural key must never be sent");
+
+    await searchUnscoped({});
+    const p1 = new URL(captured[1], "http://x").searchParams;
+    assert.deepEqual(p1.getAll("base_model"), [], "an empty filter is omitted, never sent as an empty string");
+    assert.deepEqual(p1.getAll("types"), []);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("searchUnscoped: a transport failure degrades to a well-shaped offline response, never rejects", async () => {
+  stubFetch(async () => {
+    throw new Error("network down");
+  });
+  try {
+    const r = await searchUnscoped({ query: "x" });
+    assert.equal(r.reason, "offline");
+    assert.deepEqual(r.results, []);
+    assert.equal(r.next_cursor, null);
+    assert.equal(r.public_only, true);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("searchUnscoped: an unreadable reply also degrades to offline rather than throwing", async () => {
+  stubFetch(async () => jsonResponse({ garbage: true }));
+  try {
+    const r = await searchUnscoped({});
+    assert.equal(r.reason, "offline");
   } finally {
     restoreFetch();
   }

@@ -49,11 +49,21 @@ M2b (docs/lora-loader-design.md §7c/"the modal") -- `/search`'s own `kind`
 is now OPTIONAL: absent, it's the toolbar modal's UNSCOPED search (every
 model type, no fixed destination), and an optional `types` list (the
 modal's "Filter by Model Type" rail, §7c-i) is validated
-(`civitai_search.clean_types`) rather than forwarded raw. Every OTHER route
-below still REQUIRES a valid, whitelisted `kind` -- unscoped applies to the
-search request only, since that's the one route here that touches no
-filesystem path; `/download/start` and every local-file route keep
-requiring one, because those actually resolve/write a path.
+(`civitai_search.clean_types`) rather than forwarded raw. `base_model` is
+the OTHER multi-value rail filter ("Filter by Base Model") and, since
+2026-07-31, shares `types`'s exact wire convention: read with `.getall`
+(repeated `base_model=` query params, the SAME key the anchored panel's
+own single-value filter already used) and cleaned by
+`civitai_search.clean_base_models` before it ever reaches Civitai -- see
+`search_impl`'s own docstring for the wire-contract bug this fixed (both
+filters were silently no-ops: `types` because the modal comma-joined a
+single value that then failed the enum check, `base_model` because the
+modal sent it under an invented `base_models` plural key this route never
+read at all). Every OTHER route below still REQUIRES a valid, whitelisted
+`kind` -- unscoped applies to the search request only, since that's the
+one route here that touches no filesystem path; `/download/start` and
+every local-file route keep requiring one, because those actually
+resolve/write a path.
 
     GET  /wtn/model_browser/search?kind=...&query=...&types=...&...
     POST /wtn/model_browser/download/start     {kind, subfolder, filename, download_url, size_kb?}
@@ -481,6 +491,66 @@ def _annotate_search_results(results: list, kind: object) -> list:
     return results
 
 
+def _search_query_to_payload(query: Any) -> Dict[str, Any]:
+    """`GET /wtn/model_browser/search`'s QUERY STRING -> `search_impl`'s
+    payload dict -- pulled out of `_route_search` below into its own
+    function so this parsing step is unit-testable against a REAL, encoded
+    query string with no aiohttp installed at all (this repo's own test
+    environment has neither `aiohttp` nor `multidict` -- verified). `query`
+    only needs to duck-type the two methods `aiohttp`'s own
+    `MultiDictProxy` (`request.query`) exposes and this function calls --
+    `.get(key, default)` and `.getall(key, default)` --
+    `tests/test_model_browser.py`'s own fake wraps stdlib `urllib.parse.
+    parse_qs` for exactly that, so the SAME assertions that pin this
+    route's wire contract run against this pure function with no extra
+    dependency.
+
+    `types`/`base_model` are BOTH read via `.getall` -- the fix for the
+    M2b wire-contract bug (2026-07-31): the frontend's
+    `civitai_api.mjs` sends repeated `types=`/`base_model=` pairs for BOTH
+    multi-value filters (never comma-joined, and never an invented
+    `base_models` plural), so this side reads them the same way
+    `civitai_search.build_search_url` writes them -- one key, one meaning,
+    one-or-many values, for both filters alike. A single value (the
+    anchored panel's own `base_model=X`) arrives here as a ONE-ELEMENT
+    list; `search_impl`/`civitai_search.build_search_url` (see that
+    function's own docstring) treat that identically to how the old
+    single-value code path worked, so the anchored panel's own behaviour
+    is unchanged, byte for byte.
+    """
+    limit_raw = query.get("limit")
+    return {
+        # `kind` is OPTIONAL (M2b, docs/lora-loader-design.md §7c/"the
+        # modal") -- absent (`None`) is an unscoped search, not
+        # `invalid_kind`; `search_impl` is what draws that distinction.
+        "kind": query.get("kind"),
+        "query": query.get("query", ""),
+        # `types` (the modal's "Filter by Model Type" rail, §7c-i) is
+        # MULTI-VALUE -- `getall` collects every repeated `types=` pair
+        # from the query string, same convention `civitai_search.
+        # build_search_url` emits one on the way out. `search_impl`/
+        # `civitai_search.clean_types` validate it; this function never
+        # forwards it unchecked.
+        "types": list(query.getall("types", [])),
+        # `base_model` (the modal's "Filter by Base Model" rail, AND the
+        # anchored panel's own single-value filter -- one key, shared by
+        # both) is ALSO multi-value, same `.getall` convention as `types`
+        # immediately above -- see this function's own docstring for the
+        # bug this replaces.
+        "base_model": list(query.getall("base_model", [])),
+        "sort": query.get("sort") or None,
+        "period": query.get("period") or None,
+        # docs/lora-loader-design.md §7c-iv: raw string straight through,
+        # same "let the pure layer validate/default it" pattern
+        # `sort`/`period` above already use -- `search_impl`'s
+        # `civitai_search.clean_level` is what actually falls back to
+        # PG for a missing/garbage value, not this function.
+        "level": query.get("level"),
+        "cursor": query.get("cursor") or None,
+        "limit": int(limit_raw) if limit_raw and limit_raw.isdigit() else civitai_search.DEFAULT_LIMIT,
+    }
+
+
 def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     """`GET /wtn/model_browser/search`'s pure-enough body (touches local
     disk for the `installed` annotation and the network for the search
@@ -518,6 +588,19 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     (`civitai_search.clean_types`) before it ever reaches the wire -- this
     route never does that validation itself, so there is exactly one place
     it happens.
+
+    `payload["base_model"]` (the modal's "Filter by Base Model" rail, AND
+    the anchored panel's own single-value filter -- ONE key, shared by
+    both callers) is ALWAYS a list, never a bare string: `_route_search`
+    below reads it with `.getall`, the SAME multi-value convention `types`
+    already uses, so a caller with one value (the anchored panel) arrives
+    here as a one-element list and a caller with several (the modal)
+    arrives as several -- no special-casing either shape. Passed straight
+    to `civitai_search.search_models`, same "validated downstream, not
+    here" discipline as `types` (`civitai_search.clean_base_models`).
+    Fixed 2026-07-31 -- see `civitai_search.clean_base_models`'s own
+    docstring for the wire-contract bug this replaces (a comma-joined
+    value under an invented `base_models` plural key nothing ever read).
 
     `public_only` (the CORRECTION's "no API key set -- public results only"
     banner) is set from `keys.resolve_api_key()` on EVERY branch, including
@@ -559,6 +642,12 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         kind,
         payload.get("query") or "",
         types=payload.get("types"),
+        # `payload["base_model"]` is always a LIST (see this function's own
+        # docstring) -- an empty one (`[]`, the common "no filter" case)
+        # collapses to `None` here, same "omit rather than send an empty
+        # filter" convention `query`/`sort`/`period`/`cursor` below already
+        # follow; a non-empty list rides straight through to
+        # `civitai_search.search_models`/`clean_base_models` unchanged.
         base_model=payload.get("base_model") or None,
         sort=payload.get("sort") or civitai_search.DEFAULT_SORT,
         period=payload.get("period") or civitai_search.DEFAULT_PERIOD,
@@ -799,33 +888,12 @@ try:
         # `/lookup` above): `search_impl` makes a synchronous `urllib` HTTP
         # call with up to a 30s timeout -- inline on the event loop, that
         # stalls ComfyUI's entire HTTP/WS server for the whole window.
-        query = request.query
-        limit_raw = query.get("limit")
-        payload = {
-            # `kind` is OPTIONAL (M2b, docs/lora-loader-design.md §7c/"the
-            # modal") -- absent (`None`) is an unscoped search, not
-            # `invalid_kind`; `search_impl` is what draws that distinction.
-            "kind": query.get("kind"),
-            "query": query.get("query", ""),
-            # `types` (the modal's "Filter by Model Type" rail, §7c-i) is
-            # MULTI-VALUE -- `getall` collects every repeated `types=` pair
-            # from the query string, same convention `civitai_search.
-            # build_search_url` emits one on the way out. `search_impl`/
-            # `civitai_search.clean_types` validate it; this route never
-            # forwards it unchecked.
-            "types": list(query.getall("types", [])),
-            "base_model": query.get("base_model") or None,
-            "sort": query.get("sort") or None,
-            "period": query.get("period") or None,
-            # docs/lora-loader-design.md §7c-iv: raw string straight through,
-            # same "let the pure layer validate/default it" pattern
-            # `sort`/`period` above already use -- `search_impl`'s
-            # `civitai_search.clean_level` is what actually falls back to
-            # PG for a missing/garbage value, not this route.
-            "level": query.get("level"),
-            "cursor": query.get("cursor") or None,
-            "limit": int(limit_raw) if limit_raw and limit_raw.isdigit() else civitai_search.DEFAULT_LIMIT,
-        }
+        # The query-string -> payload parsing itself lives in
+        # `_search_query_to_payload` above (pulled out of this handler so
+        # it's unit-testable with no aiohttp installed) -- `request.query`
+        # is aiohttp's `MultiDictProxy`, which already duck-types the
+        # `.get`/`.getall` interface that function calls.
+        payload = _search_query_to_payload(request.query)
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, functools.partial(search_impl, payload))
         return web.json_response(result, status=200)

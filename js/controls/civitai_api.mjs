@@ -439,6 +439,92 @@ export async function searchModels(kind, { query = "", baseModel = "", sort = ""
   }
 }
 
+/**
+ * `GET /wtn/model_browser/search` with NO `kind` locked -- the M2b toolbar
+ * MODAL's own search (`js/controls/civitai_modal.mjs`), unlike `searchModels`
+ * above, which is always kind-LOCKED (the two node-embedded pickers,
+ * `docs/lora-loader-design.md` §7c: "the modal is unscoped"). Sends no
+ * `kind` query param at all (rather than some sentinel string) -- the
+ * absence of the param IS the "search every supported type" signal.
+ *
+ * `baseModels`/`modelTypes` are ARRAYS (§7c-i's rail: "a `<select>` per
+ * multi-value filter" -- unlike the picker's own single-value `baseModel`
+ * string). Each non-empty value is sent as its OWN REPEATED query-string
+ * pair (`params.append`, one call per value) -- NEVER comma-joined -- under
+ * the SAME singular keys `searchModels` above already uses (`base_model`/
+ * `types`): one key, one meaning, one-or-many values, for both filters
+ * alike. An empty array sends no pair for that filter at all (mirrors
+ * `searchModels`'s own "omit rather than send an empty filter" convention
+ * for `baseModel`/`sort`/`period`). Response shape is the SAME `{reason,
+ * message, results, next_cursor, public_only}` `searchModels` already
+ * returns, with one addition this function doesn't itself read: each
+ * result carries its own `kind` (this pack's derived folder for that
+ * Civitai model type, or `null` when we have none) -- `civitai_modal.mjs`'s
+ * own `resultKind` is what reads that key, never this one.
+ *
+ * **Wire-contract fix, 2026-07-31**: this function used to comma-join both
+ * filters under an invented plural key (`base_models`) for one of them --
+ * the backend (`src/model_browser/api.py`/`civitai_search.py`) reads
+ * REPEATED params via aiohttp's `getall`, so a comma-joined `types` value
+ * failed `VALID_CIVITAI_TYPES` membership and was dropped, and
+ * `base_models` (plural) was never read under any key at all (the route
+ * reads `base_model`, singular) -- both filters silently did nothing. Fixed
+ * by matching the wire format the backend actually parses; see
+ * `src/model_browser/api.py`'s `_search_query_to_payload` and
+ * `civitai_search.build_search_url` for the other end of this contract.
+ */
+export async function searchUnscoped({ query = "", baseModels = [], modelTypes = [], sort = "", period = "", level = 1, cursor = "", limit } = {}) {
+  const params = new URLSearchParams();
+  if (query) {
+    params.set("query", query);
+  }
+  if (Array.isArray(baseModels)) {
+    for (const value of baseModels) {
+      if (value) {
+        params.append("base_model", value);
+      }
+    }
+  }
+  if (Array.isArray(modelTypes)) {
+    for (const value of modelTypes) {
+      if (value) {
+        params.append("types", value);
+      }
+    }
+  }
+  if (sort) {
+    params.set("sort", sort);
+  }
+  if (period) {
+    params.set("period", period);
+  }
+  params.set("level", String(Number.isFinite(level) ? level : 1));
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  if (limit) {
+    params.set("limit", String(limit));
+  }
+  try {
+    const r = await fetch(`${SEARCH_URL}?${params.toString()}`, { cache: "no-store" });
+    const j = await r.json();
+    if (j && typeof j.reason === "string") {
+      return j;
+    }
+    return {
+      reason: "offline",
+      message: "The search route sent an unreadable reply.",
+      results: [], next_cursor: null, public_only: true,
+    };
+  } catch (err) {
+    return {
+      reason: "offline",
+      message: `Could not reach the search route (${err && err.message ? err.message : err}).`,
+      results: [], next_cursor: null, public_only: true,
+    };
+  }
+}
+
 /** `POST /wtn/model_browser/download/start` -- kicks off a server-side
  * streamed download (docs/lora-loader-design.md §9: "downloads are
  * server-side Python... this pack's frontend cannot write to `models/`

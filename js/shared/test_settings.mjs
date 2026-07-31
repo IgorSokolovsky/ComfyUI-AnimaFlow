@@ -37,18 +37,20 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — sixteen settings (the original ten, documented below,
+// Declaration shape — eighteen settings (the original ten, documented below,
 // plus M2's five: docs/lora-loader-design.md §8's `CIVITAI_API_KEY` and
 // §7c-i's four remembered search filters, `CIVITAI_SEARCH_BASE_MODEL`/
 // `_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own `CIVITAI_SEARCH_LEVEL`, which
-// supersedes `_NSFW` but does not replace its own registered entry), all
-// under the AnimaFlow category, ids in the documented namespace, every one
-// with a tooltip and a default matching the table. Re-count rather than
-// trusting this number — it only ever grows.
+// supersedes `_NSFW` but does not replace its own registered entry, plus
+// M2b's own two internal multi-value rail filters, `CIVITAI_MODAL_BASE_
+// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`), all under the AnimaFlow category,
+// ids in the documented namespace, every one with a tooltip and a default
+// matching the table. Re-count rather than trusting this number — it only
+// ever grows.
 // ---------------------------------------------------------------------------
 
-test("ANIMAFLOW_SETTINGS declares exactly the sixteen documented settings", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 16);
+test("ANIMAFLOW_SETTINGS declares exactly the eighteen documented settings", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 18);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   assert.deepEqual(ids, Object.values(SETTING_IDS).sort());
 });
@@ -167,6 +169,31 @@ test("both the old NSFW id and the new LEVEL id stay registered -- an id is appe
   assert.equal(SETTING_IDS.CIVITAI_SEARCH_LEVEL, "AnimaFlow.Controls.CivitaiSearchLevel");
   assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_NSFW), "the superseded id must still be registered, not deleted");
   assert.ok(ANIMAFLOW_SETTINGS.some((s) => s.id === SETTING_IDS.CIVITAI_SEARCH_LEVEL));
+});
+
+// ---------------------------------------------------------------------------
+// M2b -- the toolbar modal's own multi-value rail filters (docs/lora-loader-
+// design.md §7c-i's rail: "select-adds-a-chip"). Stored as a JSON-array-of-
+// strings STRING (no native multi-select settings-dialog widget type), never
+// hand-edited from the dialog itself -- `civitai_modal.mjs`'s own rail is the
+// real editor.
+// ---------------------------------------------------------------------------
+
+test("CIVITAI_MODAL_BASE_MODELS / CIVITAI_MODAL_MODEL_TYPES: text settings defaulting to an empty JSON array, remembered user-wide", () => {
+  for (const id of [SETTING_IDS.CIVITAI_MODAL_BASE_MODELS, SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES]) {
+    const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === id);
+    assert.ok(setting, id);
+    assert.equal(setting.type, "text");
+    assert.equal(setting.defaultValue, "[]");
+    assert.equal(SETTING_DEFAULTS[id], "[]");
+    assert.match(setting.id, /^AnimaFlow\.Controls\./);
+  }
+});
+
+test("CIVITAI_MODAL_BASE_MODELS / CIVITAI_MODAL_MODEL_TYPES are distinct ids from the picker's own single-value filters", () => {
+  assert.notEqual(SETTING_IDS.CIVITAI_MODAL_BASE_MODELS, SETTING_IDS.CIVITAI_SEARCH_BASE_MODEL);
+  assert.equal(SETTING_IDS.CIVITAI_MODAL_BASE_MODELS, "AnimaFlow.Controls.CivitaiModalBaseModels");
+  assert.equal(SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES, "AnimaFlow.Controls.CivitaiModalModelTypes");
 });
 
 // ---------------------------------------------------------------------------

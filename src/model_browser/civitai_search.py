@@ -32,6 +32,19 @@ same "never forward an unvalidated value raw" discipline, extended from
 own Civitai `type` values, which (if any) of our three kinds it could land
 in -- see its own docstring for why it isn't simply `TYPE_FOR_KIND`
 inverted.
+
+`base_model` is the modal's OTHER multi-value rail filter ("Filter by Base
+Model"), and follows `types`'s exact convention: a list, cleaned
+(`clean_base_models` -- shape only, no fixed enum unlike `types`) before it
+ever reaches the wire, sent as one repeated `baseModels=` pair per value,
+never comma-joined. Fixed 2026-07-31 -- the M2b wire-contract mismatch: the
+modal's frontend and this backend were built in parallel against a contract
+that pinned the RESPONSE shape but not the REQUEST shape for either
+multi-value filter, so both `types` and `base_model` silently did nothing
+(`types` because a comma-joined single value fails `VALID_CIVITAI_TYPES`
+membership and gets dropped; `base_model` because it rode under a plural
+`base_models` key this module never read at all). See `clean_base_models`'s
+own docstring for the fix.
 """
 from __future__ import annotations
 
@@ -131,6 +144,42 @@ def clean_types(values: Any) -> List[str]:
         if isinstance(value, str) and value in VALID_CIVITAI_TYPES and value not in seen:
             seen.add(value)
             out.append(value)
+    return out
+
+
+def clean_base_models(values: Any) -> List[str]:
+    """A client-supplied `base_model` filter -> the cleaned list, in the
+    order given, de-duplicated -- same SHAPE-only posture `clean_types`
+    gives `types` (list in, list out, non-string/empty entries dropped,
+    non-list input -> `[]`, never raises), but with NO fixed enum to
+    validate against: unlike `types` (a small, closed, Civitai-enforced set
+    -- an invalid value 400s the WHOLE search), Civitai's base-model values
+    are free text drawn from a large and growing set (`js/shared/settings
+    .mjs`'s `CIVITAI_SEARCH_BASE_MODEL_OPTIONS` is the UI's own quick-filter
+    subset, deliberately NOT authoritative/closed -- its own comment: "an
+    unlisted base model simply isn't offered as a quick filter", not
+    "rejected"). So this only enforces the shape (a list of non-empty,
+    stripped strings) rather than membership.
+
+    Bug fix (2026-07-31, the M2b wire-contract mismatch): the frontend and
+    backend were built in parallel against a contract that pinned the
+    RESPONSE shape but not the REQUEST shape for this filter -- the modal
+    sent a single comma-joined `base_models` (plural) value, the backend
+    read a singular `base_model` key it never received, so the filter
+    silently did nothing. This function -- and `build_search_url`'s own
+    per-value `baseModels=` pairs below, mirroring `types` -- is the fix:
+    ONE key (`base_model`, the SAME one the anchored panel already sends),
+    ONE meaning, one-or-many REPEATED values, never comma-joined."""
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
     return out
 
 
@@ -246,7 +295,7 @@ def build_search_url(
     query: str,
     *,
     types: Optional[Sequence[str]] = None,
-    base_model: Optional[str] = None,
+    base_model: Optional[Sequence[str]] = None,
     sort: str = DEFAULT_SORT,
     period: str = DEFAULT_PERIOD,
     nsfw: bool = False,
@@ -278,6 +327,21 @@ def build_search_url(
         which is the modal's actual default (§7c-i's table: only the
         picker's `type` filter is locked).
 
+    `base_model` is now ALSO multi-value, the SAME "one key, repeated
+    pairs" shape `types` uses -- fixed 2026-07-31 (the M2b wire-contract
+    mismatch: the modal was sending one comma-joined value under a
+    plural key nothing ever read, so the filter silently did nothing; see
+    `clean_base_models`'s own docstring). A GIVEN list is cleaned
+    (`clean_base_models` -- non-empty strings, de-duplicated, order
+    preserved, no fixed enum: Civitai's own base-model values aren't a
+    closed set the way `types` is) and, if anything survives, sent as one
+    `baseModels=` pair PER value -- VERIFIED LIVE 2026-07-31 that Civitai's
+    real endpoint accepts repeated `baseModels` pairs (an OR across the
+    given values), the same convention `types` already uses. A single-
+    element list (the anchored panel's own one `base_model=X`) emits
+    exactly one `baseModels=X` pair -- byte-for-byte the same request this
+    function sent before this fix, when `base_model` was a single string.
+
     Unknown/garbage `sort`/`period` values silently fall back to their
     defaults rather than being sent raw (`SORT_VALUES`/`PERIOD_VALUES`
     above) -- Civitai's own API would likely just ignore an invalid enum
@@ -292,6 +356,8 @@ def build_search_url(
     else:
         type_values = clean_types(types)
 
+    base_model_values = clean_base_models(base_model)
+
     params: List[tuple] = [("types", t) for t in type_values]
     params.extend([
         ("sort", sort if sort in SORT_VALUES else DEFAULT_SORT),
@@ -301,8 +367,7 @@ def build_search_url(
     ])
     if query:
         params.append(("query", str(query)))
-    if base_model:
-        params.append(("baseModels", str(base_model)))
+    params.extend([("baseModels", bm) for bm in base_model_values])
     if cursor:
         params.append(("cursor", str(cursor)))
     return f"https://{host}/api/v1/models?{urllib.parse.urlencode(params)}"
@@ -313,7 +378,7 @@ def search_models(
     query: str,
     *,
     types: Optional[Sequence[str]] = None,
-    base_model: Optional[str] = None,
+    base_model: Optional[Sequence[str]] = None,
     sort: str = DEFAULT_SORT,
     period: str = DEFAULT_PERIOD,
     nsfw: bool = False,
@@ -341,6 +406,13 @@ def search_models(
     docstring for the full kind-given-vs-absent split, which this function
     defers to rather than duplicating. A GIVEN `kind` is validated exactly
     as before this task (unchanged behaviour, no regression).
+
+    `base_model` is a LIST (fixed 2026-07-31, the M2b wire-contract
+    mismatch -- see `clean_base_models`/`build_search_url`'s own doc
+    comments): validated/de-duplicated and sent as one repeated
+    `baseModels=` pair per value, never comma-joined. This function does no
+    validation of its own -- `build_search_url` is the one place it
+    happens, same as `types`.
 
     `api_key`, when given, rides along as Civitai's own `?token=` query
     parameter (documented alternative to an `Authorization` header) rather
@@ -672,6 +744,7 @@ __all__ = (
     "kind_for_type",
     "clean_level",
     "clean_types",
+    "clean_base_models",
     "build_search_url",
     "search_models",
     "pick_primary_file",

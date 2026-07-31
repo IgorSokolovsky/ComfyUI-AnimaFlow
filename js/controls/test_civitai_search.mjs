@@ -32,6 +32,7 @@ import {
   downloadTerminalMessage,
   appendDedupedResults,
   markResultGated,
+  sessionGatedKeys,
   apiKeySignature,
   reconcileGatedKeysOnApiKeySignature,
   subscribeDownloadState,
@@ -515,6 +516,16 @@ test("reconcileGatedKeysOnApiKeySignature: changing the key from one non-empty v
   assert.ok(gated.has("1:1"));
   reconcileGatedKeysOnApiKeySignature(apiKeySignature("sk-new-key"), gated);
   assert.equal(gated.size, 0, "swapping to a different key is also a change that must clear the stale learning");
+});
+
+test("sessionGatedKeys: returns the SAME Set markResultGated writes into -- a different surface sharing this module can read the identical learning", () => {
+  _resetDownloadStateForTests();
+  const before = sessionGatedKeys();
+  assert.equal(before.size, 0);
+  markResultGated("42:7");
+  const after = sessionGatedKeys();
+  assert.equal(after, before, "the same reference every call -- not a snapshot copy");
+  assert.ok(after.has("42:7"));
 });
 
 test("reconcileGatedKeysOnApiKeySignature: clearing the key (non-empty -> empty) does not throw and clears the learned set (treated the same as any other change)", () => {

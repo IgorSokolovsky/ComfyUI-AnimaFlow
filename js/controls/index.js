@@ -646,8 +646,139 @@ function restoreNode(node, panelConfig, mods) {
   mods.interaction.applyContentHeight(node, ctx);
 }
 
+// ---------------------------------------------------------------------------
+// M2b -- the toolbar Civitai browser modal (`docs/lora-loader-design.md`
+// §7c/"Where the button goes, and the budget constraint that shapes it").
+// Mounted from THIS entry point (not a new `js/civitai/index.js`, which
+// would be a SIXTH auto-loaded `.js` and is forbidden by `.claude/
+// CLAUDE.md`'s JS download budget) -- an icon-only toolbar button plus an
+// `app.registerExtension({ commands: [...] })` entry, exactly the pattern
+// `js/prompt_rules/rule_builder/index.js` already documents (itself lifted
+// from `../ComfyUI-Pixaroma/js/align/index.js`). The owner confirmed that
+// Rule Builder's own command is genuinely reachable via the command palette
+// (that file's own `VERIFY-IN-COMFYUI` marker is settled, not just here) --
+// so `commands` is a real, second affordance here too, not a speculative one.
+//
+// `civitai_modal.mjs` -- the modal ITSELF -- is lazily `import()`ed only when
+// the button is actually clicked or the command is actually run, mirroring
+// this file's own `loadMods`/`loadLoraMods` convention: a page with nobody
+// ever opening the browser never pays its download cost. Cached after the
+// first call (both the toolbar button and the command share one promise).
+// ---------------------------------------------------------------------------
+
+let _civitaiModalPromise = null;
+function loadCivitaiModal() {
+  if (!_civitaiModalPromise) {
+    _civitaiModalPromise = import("./civitai_modal.mjs");
+  }
+  return _civitaiModalPromise;
+}
+
+/** Opens the toolbar Civitai browser, lazily importing its `.mjs` on first
+ * use. Never throws -- a failed import is logged, matching every other
+ * lazy-load error path in this file. */
+function openCivitaiBrowser() {
+  loadCivitaiModal()
+    .then((mod) => mod.openCivitaiModal({}))
+    .catch((err) => {
+      console.error("[AnimaFlow] failed to load js/controls/civitai_modal.mjs:", err);
+    });
+}
+
+const CIVITAI_BROWSER_COMMAND_ID = "AnimaFlow.OpenCivitaiBrowser";
+
+// Icon-only glyph for the toolbar button -- a magnifying glass over a small
+// square, reading as "search a catalogue" rather than plain search (the
+// Browse button INSIDE the LoRA Loader node reuses this exact same shape,
+// `civitai_search.mjs`'s own `SEARCH_ICON_SVG` -- duplicated here as a
+// literal data-URI string, not re-implemented, since importing that (lazy,
+// heavy) module just for an icon would defeat the whole point of this file's
+// own lazy-load convention; matches this pack's existing "every render
+// module keeps its own hardcoded fallback copy" precedent for small assets
+// like this). CSS-drawn, not an emoji -- emoji render inconsistently across
+// platforms and clash with the dark theme (same reasoning
+// `js/prompt_rules/rule_builder/index.js`'s own icon comment states).
+const CIVITAI_TOOLBAR_ICON_SVG =
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M11 4a7 7 0 104.418 12.44l4.571 4.571 1.415-1.415-4.572-4.572A7 7 0 0011 4zm-5 7a5 5 0 1110 0 5 5 0 01-10 0z'/%3E%3C/svg%3E";
+
+const CIVITAI_TOOLBAR_CSS_ID = "wtn-cm-toolbar-css";
+function injectCivitaiToolbarCSS() {
+  if (document.getElementById(CIVITAI_TOOLBAR_CSS_ID)) {
+    return;
+  }
+  const style = document.createElement("style");
+  style.id = CIVITAI_TOOLBAR_CSS_ID;
+  style.textContent = `
+    .wtn-cm-toolbar-btn .wtn-cm-toolbar-icon {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      background-color: currentColor;
+      mask-image: url("${CIVITAI_TOOLBAR_ICON_SVG}");
+      -webkit-mask-image: url("${CIVITAI_TOOLBAR_ICON_SVG}");
+      mask-size: contain;
+      -webkit-mask-size: contain;
+      mask-repeat: no-repeat;
+      -webkit-mask-repeat: no-repeat;
+      mask-position: center;
+      -webkit-mask-position: center;
+      pointer-events: none;
+    }
+    .wtn-cm-toolbar-btn:hover,
+    .wtn-cm-toolbar-btn:focus-visible {
+      background-color: rgba(45, 212, 191, 0.16) !important;
+      color: #2dd4bf !important;
+      border-color: #14b8a6 !important;
+    }
+    .wtn-cm-toolbar-btn:focus-visible {
+      outline: 2px solid #2dd4bf;
+      outline-offset: 1px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+/** Best-effort toolbar button (Vue frontend only -- `app.menu` doesn't exist
+ * under legacy litegraph, so this quietly gives up after a few retries and
+ * the command-palette entry is the reliable way in). Same mount pattern as
+ * `js/prompt_rules/rule_builder/index.js`'s own `mountToolbarButton`. */
+function mountCivitaiToolbarButton(tries = 0) {
+  const settingsGroupEl = app.menu?.settingsGroup?.element;
+  if (!settingsGroupEl) {
+    if (tries > 20) {
+      return;
+    }
+    setTimeout(() => mountCivitaiToolbarButton(tries + 1), 250);
+    return;
+  }
+  if (document.querySelector('[data-wtn-cm-toolbar-btn="1"]')) {
+    return;
+  }
+
+  injectCivitaiToolbarCSS();
+
+  const btn = document.createElement("button");
+  btn.className = "comfyui-button wtn-cm-toolbar-btn";
+  btn.dataset.wtnCmToolbarBtn = "1";
+  btn.title = "Browse Civitai";
+  btn.setAttribute("aria-label", "Browse Civitai");
+  btn.innerHTML = '<span class="wtn-cm-toolbar-icon"></span>';
+  btn.addEventListener("click", () => openCivitaiBrowser());
+
+  const group = document.createElement("div");
+  group.className = "comfyui-button-group wtn-cm-toolbar-group";
+  group.appendChild(btn);
+
+  settingsGroupEl.before(group);
+}
+mountCivitaiToolbarButton();
+
 app.registerExtension({
   name: "webtoon.controls",
+
+  commands: [
+    { id: CIVITAI_BROWSER_COMMAND_ID, label: "AnimaFlow: Browse Civitai", function: () => openCivitaiBrowser() },
+  ],
 
   beforeRegisterNodeDef(nodeType, nodeData) {
     // Cheap + internally guarded (installQueuePromptHook's own
