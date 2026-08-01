@@ -28,6 +28,32 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
+### 🔌 `fetch_model_detail` must return `files` — the deleted-model Download has no target (2026-08-01)
+
+`fa27ca1` rewired the ⓘ panel's deleted-model `Download` from "open a Civitai link" (my spec error — the
+panel already has `View on Civitai ↗`, so a second link labelled Download taught users our labels lie)
+to a **real server-side download job**. The frontend half is done and tested.
+
+**It cannot run yet:** `src/model_browser/model_detail.py`'s `fetch_model_detail` does not return a
+`files` list at all. Only `civitai_search.py`'s own path produces that shape (`_parse_files` /
+`pick_primary_file`). The frontend reads it defensively and renders **no button** — the specified
+behaviour for "no resolvable download URL" — so nothing is broken, it is just absent.
+
+The fix is one field: add `files` to `fetch_model_detail`'s return, parsed the same way the search path
+already does, wire shape `[{name, download_url, size_kb, primary, gated, sha256}]`. **No frontend change
+needed once it lands** — `pickPrimaryDownloadFile` already expects exactly that.
+
+### 🧹 Retire the last hand-picked z-index values (2026-08-01)
+
+`fa27ca1` introduced a named scale (`tooltip < panel < modal < confirm`) after four uncoordinated values
+had **inverted** — the delete confirm rendered behind the panel that opened it with Cancel unreachable,
+and the browser modal's scrim sat below the panel tier, which nobody had even reported yet.
+
+The scale covers `js/controls/` and `js/shared/`. Still hand-picking their own: `js/anima/render.mjs`,
+`js/autocomplete/render.mjs`, and three `js/prompt_rules/` files. Nothing is known-wrong there today —
+but that is exactly what was true of the confirm dialog until it wasn't.
+
+
 ### 📦 The queued Civitai work — the FRONTEND pass is what's left (owner, 2026-07-31)
 
 The backend pass **landed in `6ce43de`**: `remove.py`'s `delete_model` and `lookup.save_preview`, both
