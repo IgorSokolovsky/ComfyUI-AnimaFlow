@@ -477,12 +477,38 @@ ${THUMB_SKELETON_CSS}
    action button below it) the SAME full column width, so no extra
    alignment rule is needed here; \`width: 100%\`/\`box-sizing: border-box\`
    just make that explicit for a \`<select>\` rather than relying on stretch
-   alone. */
+   alone.
+   Owner-reported, with a screenshot (2026-08-01): this select read visibly
+   TALLER than the \`↓ Download\` button beneath it -- this class also carries
+   \`wtn-select\` (see \`buildCard\`'s own \`el(targetDoc, "select", "wtn-select
+   wtn-cm-version-sel")\`), and the shared 26px control height this track
+   already used elsewhere (\`model_detail_view.mjs\`'s own \`.wtn-dv-version-
+   sel\`/\`.wtn-dv-back\`, this file's own \`.wtn-dv-topbar .wtn-cm-action\`
+   below) had only ever been declared on THOSE two per-surface classes, never
+   on the shared \`.wtn-select\` base a new select inherits by construction --
+   so this one fell through to a plain \`<select>\`'s native sizing instead.
+   Fixed on \`.wtn-select\` itself now (\`js/shared/theme.css\`), not copied a
+   third time here -- this rule needs no height of its own any more. */
 .wtn-cm-version-sel { width: 100%; box-sizing: border-box; }
 .wtn-cm-dest { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-cm-nokind { font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
-.wtn-cm-action { font: 12px var(--wtn-font-ui, inherit); font-weight: 600; padding: 5px 10px; border-radius: 7px;
-  border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); cursor: pointer; }
+/* Same report, same screenshot: the fix above only works if the Download
+   button UNDER this select actually resolves to the SAME 26px, not merely a
+   padding/line-height box that happens to look close. Pinned explicitly here
+   for the same reason \`civitai_search.mjs\`'s own \`.wtn-cs-action\` pins its
+   own height rather than leaving it to content -- a native \`<button>\` and a
+   native \`<select>\` don't size the same way from equal padding, so "equal
+   padding" was never actually a guarantee of "equal height". \`display:
+   inline-flex\`/\`align-items: center\`/\`justify-content: center\` keep the
+   label centred now that height no longer comes from line-height + padding;
+   \`appearance: none\` matches \`.wtn-cs-action\`'s own reset for the same
+   reason (a native button already carries some UA chrome of its own). */
+.wtn-cm-action {
+  height: 26px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  font: 12px var(--wtn-font-ui, inherit); font-weight: 600; padding: 0 10px; border-radius: 7px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent});
+  cursor: pointer; appearance: none; -webkit-appearance: none; margin: 0;
+}
 .wtn-cm-action:disabled { cursor: default; opacity: .6; }
 .wtn-cm-action-installed { background: transparent; border-color: rgba(74,222,128,.4); color: var(--wtn-ok, ${TOKENS.ok}); }
 .wtn-cm-action-gated { background: var(--wtn-warn, ${TOKENS.warn}); color: #201400; }
@@ -497,12 +523,18 @@ ${THUMB_SKELETON_CSS}
    the same way there. Scoped to \`.wtn-dv-topbar\` (\`model_detail_view.mjs\`'s
    own class, defined in that file's stylesheet -- CSS cascades across
    stylesheets regardless of which file declares a rule) rather than made
-   global, since THIS grid's own \`.wtn-cm-card\` action column was never
-   reported as mismatched and giving it a fixed height too is an unscoped
-   risk this task didn't ask for. Height matches \`.wtn-dv-topbar\`'s other
-   two controls (\`model_detail_view.mjs\`'s own \`.wtn-dv-back\`/\`.wtn-dv-
-   version-sel\`, 26px) exactly -- one shared number across two files' CSS,
-   not two independently-tuned ones. */
+   global, since at the time THIS grid's own \`.wtn-cm-card\` action column
+   was never reported as mismatched.
+   UPDATE (2026-08-01, later the same day): the base \`.wtn-cm-action\` rule
+   above now declares this SAME height/box-sizing/centering itself (the per-
+   card select needed the identical fix), which makes this override a true,
+   harmless duplicate -- both sides are pinned to 26px by construction, so
+   they cannot drift apart, and it stays rather than being pulled because a
+   regression test below still pins its existence and this override remains
+   correct. Height matches \`.wtn-dv-topbar\`'s other two controls
+   (\`model_detail_view.mjs\`'s own \`.wtn-dv-back\`/\`.wtn-dv-version-sel\`,
+   26px) exactly -- one shared number across two files' CSS, not two
+   independently-tuned ones. */
 .wtn-dv-topbar .wtn-cm-action {
   height: 26px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
   padding: 0 10px;

@@ -18,6 +18,9 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   versionOptionLabel,
@@ -31,6 +34,15 @@ import {
   buildModelDetailView,
   injectStyles,
 } from "./model_detail_view.mjs";
+
+// `js/shared/theme.css`'s raw text -- the shared `.wtn-select` height fix
+// (2026-08-01) lives THERE, not in this module's own injected CSS, so a
+// cross-file read is the only way to pin it (same pattern as
+// `test_civitai_modal.mjs`'s own topbar-action-height comparison).
+const themeCss = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "shared", "theme.css"),
+  "utf8",
+);
 
 let failures = 0;
 let count = 0;
@@ -669,12 +681,16 @@ test("BUG (owner, 2026-08-01): the topbar's back button and the SHARED version s
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   const backRule = css.match(/\.wtn-dv-topbar \.wtn-dv-back\s*\{([^}]*)\}/)[1];
-  const selRule = css.match(/\.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
   const backHeight = backRule.match(/height:\s*(\d+)px/)[1];
-  const selHeight = selRule.match(/height:\s*(\d+)px/)[1];
-  assert.equal(backHeight, selHeight, "the back button and the version select must share one explicit height");
   assert.match(backRule, /box-sizing:\s*border-box/, "an explicit height only measures the full box with border-box");
-  assert.match(selRule, /box-sizing:\s*border-box/);
+
+  // The version select's own height (2026-08-01, second fix) moved to the
+  // shared `.wtn-select` base in js/shared/theme.css -- `.wtn-dv-version-sel`
+  // itself must NOT redeclare it (see the regression pin below), so the
+  // number to compare against lives in the OTHER file now.
+  const selRule = themeCss.match(/\.wtn-select\s*\{([^}]*)\}/)[1];
+  const selHeight = selRule.match(/height:\s*(\d+)px/)[1];
+  assert.equal(backHeight, selHeight, "the back button and the shared select base must agree on one explicit height");
 });
 
 // =========================================================================
@@ -698,13 +714,33 @@ test("BUG (owner, 2026-08-01), regression pin: the version select's own right-pa
   const paddingMatch = rule.match(/padding:\s*0\s+(\d+)px\s+0\s+(\d+)px/);
   assert.ok(paddingMatch, "the shared .wtn-dv-version-sel rule must declare explicit top/right/bottom/left padding");
   assert.ok(Number(paddingMatch[1]) >= 16, "the right padding must clear a native <select>'s own dropdown arrow, not sit flush against the border");
-  assert.match(rule, /height:\s*26px/, "the shared height fix must live here too, not only on the modal's own back button");
-  assert.match(rule, /box-sizing:\s*border-box/);
 
   // The regression itself: a mount-scoped copy of this rule must not exist
   // AT ALL -- if it does, it's exactly the "half-landed" bug reintroduced.
   assert.doesNotMatch(css, /\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{/, "must not be re-scoped to the modal's topbar");
   assert.doesNotMatch(css, /\.wtn-dv-header \.wtn-dv-version-sel\s*\{/, "must not be re-scoped to the picker's header either");
+});
+
+test("BUG (owner, 2026-08-01), regression pin: the version select's own HEIGHT lives on the shared .wtn-select base (js/shared/theme.css), never redeclared on .wtn-dv-version-sel -- the same divergence, on the same select, one fix later", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+
+  const selSurfaceRule = css.match(/\.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(
+    selSurfaceRule,
+    /height:/,
+    ".wtn-dv-version-sel must not re-declare height -- that is exactly the per-surface duplicate that let the modal card's own select fall through to native UA sizing",
+  );
+  assert.doesNotMatch(
+    selSurfaceRule,
+    /box-sizing:/,
+    "box-sizing is already universal via the shared `.wtn *` rule -- restating border-box per-surface is the same redundant-duplicate shape",
+  );
+
+  const sharedSelRule = themeCss.match(/\.wtn-select\s*\{([^}]*)\}/)[1];
+  assert.match(sharedSelRule, /height:\s*26px/, "the shared .wtn-select base must declare the height every select in the track inherits");
 });
 
 test("regression pin: both mounts' version <select> resolve to the SAME arrow-clearance/height rule -- a picker-only select and a modal-only select both carry .wtn-dv-version-sel with nothing overriding it per-mount", () => {

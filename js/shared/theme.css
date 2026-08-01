@@ -97,7 +97,38 @@
   font-family: var(--wtn-font-mono); font-size: 12.5px; color: var(--wtn-ink);
   background: var(--wtn-console); border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius-sm);
   padding: 8px 10px; }
-.wtn-select { font-family: var(--wtn-font-ui); }
+/* Owner-reported, with a screenshot (2026-08-01): the modal grid card's
+   version `<select>` (`civitai_modal.mjs`'s own `.wtn-cm-version-sel`) read
+   visibly taller than the `↓ Download` button beneath it. Root cause: the
+   control HEIGHT this track had already standardised on -- 26px, matching
+   `model_detail_view.mjs`'s own `.wtn-dv-version-sel`/`.wtn-dv-back` and
+   `civitai_modal.mjs`'s own `.wtn-dv-topbar .wtn-cm-action` -- had only ever
+   been declared on TWO per-surface classes, never on this shared base a new
+   select inherits by construction. `.wtn-cm-version-sel` (which carries THIS
+   class, see `civitai_modal.mjs`'s own `buildCard`) declared no height of its
+   own, so it fell through to a plain `<select>`'s native UA sizing instead --
+   the same "fix landed per-surface, not on the shared rule" shape as the
+   arrow-clearance bug below, and the flex `min-*: 0` trap `.wtn-flex-bound`
+   exists for. Declared HERE now, so every `.wtn-select` -- the modal card,
+   the modal's filter-rail selects (`buildSingleSelectRow`/
+   `buildChipFilterSection`, plain `.wtn-select` with no second class), and
+   `.wtn-dv-version-sel` -- gets it by construction; `.wtn-dv-version-sel`'s
+   own former `height`/`box-sizing` duplicate is removed for the same reason
+   (see that rule, in `model_detail_view.mjs`). `padding-top`/`padding-bottom: 0`
+   go with it -- the base `.wtn-input, .wtn-select, .wtn-textarea` rule's own
+   `8px 10px` vertical padding would otherwise leave no room for a fixed 26px
+   box at this font-size, the same reason `.wtn-dv-version-sel` already zeroed
+   its own vertical padding for its arrow-clearance override. Horizontal
+   padding is untouched -- only a select that ALSO needs arrow clearance
+   (`.wtn-dv-version-sel`) overrides that further, and it still can.
+   Selects that use a DIFFERENT local vocabulary instead of this class
+   (civitai_search.mjs's own `.wtn-cs-sel`, render.mjs's own `.wtn-ctl-field
+   select`) are NOT part of this fix -- neither sits beside an action button
+   this height is meant to match (one is a small filter pill row, the other
+   an inline label+control row in the ⚙ popover), so forcing 26px onto them
+   would be a quiet, unasked-for size change to a control that was never
+   reported as wrong. */
+.wtn-select { font-family: var(--wtn-font-ui); height: 26px; padding-top: 0; padding-bottom: 0; }
 /* Owner-reported (2026-08-01): "on the select field we need to show cursor
    pointer on hover and border teal color (not shiny)" -- `--wtn-accent-deep`
    (the muted teal), never `--wtn-accent`/`--wtn-accent-strong` (both

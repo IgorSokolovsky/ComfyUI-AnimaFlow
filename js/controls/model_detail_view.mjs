@@ -503,9 +503,21 @@ ${THUMB_SKELETON_CSS}
    (the modal's stacked layout, above) each wrap this SAME select -- there is
    no longer a \`.wtn-dv-versionrow\`/\`<label>\` pair at all; the "Version"
    label itself was dropped the same pass (owner: "redundant -- the select's
-   own options read 'Hands zib v1.0 — 162 MB', self-evidently a version"). */
+   own options read 'Hands zib v1.0 — 162 MB', self-evidently a version").
+   The 26px HEIGHT itself no longer lives here (2026-08-01, second fix that
+   same day) -- it moved to the shared \`.wtn-select\` base in
+   \`js/shared/theme.css\` (this select's OTHER class, see
+   \`buildModelDetailView\`'s \`el(doc, "select", "wtn-select wtn-dv-version-
+   sel")\`) once \`civitai_modal.mjs\`'s own \`.wtn-cm-version-sel\` needed the
+   identical fix and declaring it a third time per-surface was exactly the
+   bug this whole comment already describes. \`box-sizing: border-box\` is
+   dropped too -- \`js/shared/theme.css\`'s own \`.wtn *\` rule already makes
+   it universal, so restating it here was always redundant, just never
+   removed until this pass touched the rule anyway. Only the ARROW clearance
+   (the padding override) stays -- that part genuinely IS specific to a
+   select long enough to need it, unlike height. */
 .wtn-dv-vdrow { display: flex; align-items: center; gap: 8px; }
-.wtn-dv-version-sel { flex: 1 1 auto; min-width: 0; height: 26px; box-sizing: border-box; padding: 0 22px 0 8px; }
+.wtn-dv-version-sel { flex: 1 1 auto; min-width: 0; padding: 0 22px 0 8px; }
 .wtn-dv-actionhost { flex: none; margin: 0; }
 
 /* Owner-reported (2026-08-01): "GALLERY"/"VERSION DESCRIPTION"/"MODEL

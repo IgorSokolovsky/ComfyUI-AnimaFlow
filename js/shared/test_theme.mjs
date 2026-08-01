@@ -9,12 +9,18 @@
  * bounds its own content" fix, 2026-08-01 -- civitai_modal.mjs's own
  * `.wtn-cm-main`/`.wtn-cm-detailhost` and model_detail_view.mjs's own
  * `.wtn-dv`/`.wtn-dv-body` all lean on this ONE rule rather than a fourth+
- * hand-written `min-width: 0; min-height: 0;` pair), and `.wtn-select:hover`
+ * hand-written `min-width: 0; min-height: 0;` pair), `.wtn-select:hover`
  * (owner, 2026-08-01: "on the select field we need to show cursor pointer on
  * hover and border teal color (not shiny)" -- asserted on the SHARED base
  * class, never a mount-scoped descendant selector, so a later mount can't
  * silently miss it the way the arrow-clearance fix did earlier the same
- * day).
+ * day), and `.wtn-select`'s own control HEIGHT (owner, with a screenshot,
+ * 2026-08-01: the modal grid card's version select read visibly taller than
+ * its Download button -- the 26px height this track had already picked lived
+ * on two per-surface classes and never on THIS shared one, so a new select
+ * inherited nothing and came out wrong; declared here now, with a regression
+ * guard that no per-surface select class in the controls track redeclares
+ * it).
  */
 
 import assert from "node:assert/strict";
@@ -67,6 +73,39 @@ test("`.wtn-select:not(:disabled):hover` reads --wtn-accent-deep specifically, n
   // a naive `/--wtn-accent/` search, so this checks the token name exactly.
   const borderColorDecl = rule.match(/border-color:\s*([^;]+);?/)[1].trim();
   assert.equal(borderColorDecl, "var(--wtn-accent-deep)");
+});
+
+// =========================================================================
+// Owner-reported, with a screenshot (2026-08-01): "the select field in the
+// browser modal preview height should be lower -- same height as the
+// download button." Root cause: the 26px control height this track already
+// used (model_detail_view.mjs's own `.wtn-dv-version-sel`/`.wtn-dv-back`,
+// civitai_modal.mjs's own `.wtn-dv-topbar .wtn-cm-action`) had only ever been
+// declared on per-surface classes, never on the shared `.wtn-select` base a
+// new select inherits by construction -- so civitai_modal.mjs's own
+// `.wtn-cm-version-sel` (which DOES carry `.wtn-select`) fell through to a
+// plain <select>'s native UA sizing instead. This is the fourth occurrence of
+// the same shape this session (arrow clearance, hover treatment, the flex
+// `min-*: 0` trap, now this) -- fixed on the shared class, with a guard that
+// nothing quietly re-declares it per-surface again.
+// =========================================================================
+
+test("`.wtn-select` -- the shared control height (26px) every select in the track inherits, declared on the shared base itself", () => {
+  const rule = css.match(/\.wtn-select\s*\{([^}]*)\}/);
+  assert.ok(rule, ".wtn-select must be declared in theme.css");
+  assert.match(rule[1], /height:\s*26px;?/, "the shared height fix must live on .wtn-select itself");
+});
+
+test("regression guard: no per-surface select class in the controls track re-declares its own height -- that duplication is exactly how the modal card's select fell through to native UA sizing", () => {
+  const controlsDir = path.join(here, "..", "controls");
+  const modelDetailViewSrc = fs.readFileSync(path.join(controlsDir, "model_detail_view.mjs"), "utf8");
+  const civitaiModalSrc = fs.readFileSync(path.join(controlsDir, "civitai_modal.mjs"), "utf8");
+
+  const dvVersionSelRule = modelDetailViewSrc.match(/\.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(dvVersionSelRule, /height:/, ".wtn-dv-version-sel must not re-declare height -- it must inherit the shared .wtn-select base instead");
+
+  const cmVersionSelRule = civitaiModalSrc.match(/\.wtn-cm-version-sel\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(cmVersionSelRule, /height:/, ".wtn-cm-version-sel must not re-declare height -- same regression, one select later");
 });
 
 const total = count;

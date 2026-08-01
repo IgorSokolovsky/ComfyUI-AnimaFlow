@@ -30,6 +30,14 @@ import { _resetDownloadStateForTests, sessionGatedKeys, injectStyles as injectSe
 import { invalidateModelDetail } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
+// `js/shared/theme.css`'s raw text -- the shared `.wtn-select` height fix
+// (2026-08-01) lives THERE, not in this module's own injected CSS, so a
+// cross-file read is the only way to pin it.
+const themeCss = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "shared", "theme.css"),
+  "utf8",
+);
+
 let failures = 0;
 let count = 0;
 function test(name, fn) {
@@ -274,6 +282,51 @@ test("BUG (owner, 2026-08-01): in the detail view's fixed top bar, this action's
   const dvSrc = fs.readFileSync(path.join(here, "model_detail_view.mjs"), "utf8");
   const backHeight = dvSrc.match(/\.wtn-dv-topbar \.wtn-dv-back\s*\{[^}]*height:\s*(\d+)px/)[1];
   assert.equal(actionHeight, backHeight, "the action's height must match the topbar's other controls exactly");
+});
+
+// =========================================================================
+// Owner-reported, with a screenshot (2026-08-01): "the select field in the
+// browser modal preview height should be lower -- same height as the
+// download button" -- the modal GRID CARD's own version select
+// (.wtn-cm-version-sel, distinct from the topbar test above) read visibly
+// taller than the `↓ Download` button beneath it.
+// =========================================================================
+
+test("BUG (owner, with a screenshot, 2026-08-01): the modal grid card's version select and its Download button resolve to the SAME height, read from the ONE shared rule each depends on -- not two hand-tuned numbers happening to agree", () => {
+  const modalSrc = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "civitai_modal.mjs"),
+    "utf8",
+  );
+
+  // The select's own per-surface rule must declare no height of its own --
+  // it inherits one, from `.wtn-select`, via the OTHER class the element
+  // carries (`buildCard`'s own "wtn-select wtn-cm-version-sel").
+  const cardSelRule = modalSrc.match(/\.wtn-cm-version-sel\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(
+    cardSelRule,
+    /height:/,
+    ".wtn-cm-version-sel must not declare its own height -- that is exactly the per-surface duplicate this bug came from",
+  );
+
+  // The Download button's own base rule (unscoped -- NOT the .wtn-dv-topbar
+  // override, which is a different mount) must declare an explicit height,
+  // for the same reason `civitai_search.mjs`'s own `.wtn-cs-action` does --
+  // a native <button>'s box does not size the same way a native <select>'s
+  // does from equal padding, so nothing can be "confirmed equal" unless both
+  // sides are pinned numbers rather than assumed-close ones.
+  const cardActionRule = modalSrc.match(/(?<!\.wtn-dv-topbar )\.wtn-cm-action\s*\{([^}]*)\}/)[1];
+  const actionHeightMatch = cardActionRule.match(/height:\s*(\d+)px/);
+  assert.ok(actionHeightMatch, "the base .wtn-cm-action rule must pin an explicit height, not leave it to content/line-height");
+
+  const sharedSelRule = themeCss.match(/\.wtn-select\s*\{([^}]*)\}/)[1];
+  const selHeightMatch = sharedSelRule.match(/height:\s*(\d+)px/);
+  assert.ok(selHeightMatch, "the shared .wtn-select base (js/shared/theme.css) must pin the height every select in the track inherits");
+
+  assert.equal(
+    selHeightMatch[1],
+    actionHeightMatch[1],
+    "the modal card's select (via the shared .wtn-select base) and its Download button must resolve to the identical height",
+  );
 });
 
 // =========================================================================
