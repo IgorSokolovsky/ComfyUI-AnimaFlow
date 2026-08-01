@@ -49,8 +49,9 @@ import {
   SCROLL_LOAD_MORE_THRESHOLD_PX,
   injectStyles,
   openCivitaiSearch,
+  openModelDetailPanel,
 } from "./civitai_search.mjs";
-import { invalidateList, hasFile, listModels } from "./civitai_api.mjs";
+import { invalidateList, hasFile, listModels, invalidateModelDetail } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 
@@ -2961,6 +2962,178 @@ await asyncTest("openCivitaiSearch: the downloading state's %+Cancel pair render
     assert.equal(row.parentNode, col, "that row must itself be a child of the same action column as the select");
     assert.equal(col.children.indexOf(versionSelect), 0, "the select comes first");
     assert.equal(col.children.indexOf(row), 1, "the %+Cancel row is stacked directly below it");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+// =========================================================================
+// §7c-ii -- the picker's own detail panel, opened by a card click
+// (`openModelDetailPanel`, "The detail view" -- one component, this is the
+// picker's own mount of it).
+// =========================================================================
+
+await asyncTest("openCivitaiSearch: a card click OUTSIDE its own controls opens the vertical detail panel, fetching model_detail for the primary version", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 50, name: "Detail Open Test" });
+  invalidateModelDetail(50, 1);
+  let detailCalls = [];
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results: [result], next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      detailCalls.push(u);
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: "The write-up.", model_description_checked: true,
+        version_description: "Trained on preview3.", gallery: [{ url: "g1.jpg", nsfw_level: 1, prompt: "1girl" }],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const searchHandle = openCivitaiSearch({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras" });
+    await settle();
+
+    const card = findAll(searchHandle.overlay, "wtn-cs-card")[0];
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(detailCalls.some((u) => u.includes("model_id=50") && u.includes("version_id=1")),
+      "the detail panel must fetch the PRIMARY version's own detail data");
+    // The search panel stays open underneath -- a nested overlay, not a
+    // replacement (decision 21: "not the modal, not an in-panel swap").
+    assert.ok(searchHandle.overlay.parentNode, "the search panel must remain open behind the detail panel");
+
+    const titles = findAll(doc.body, "wtn-dv-title");
+    assert.equal(titles.length, 1);
+    assert.equal(titles[0].textContent, "Detail Open Test");
+
+    const descBodies = findAll(doc.body, "wtn-dv-desc").map((e) => e.textContent);
+    assert.ok(descBodies.includes("The write-up."));
+    assert.ok(descBodies.includes("Trained on preview3."));
+
+    const civLink = findAll(doc.body, "wtn-dv-civlink")[0];
+    assert.match(civLink.href, /modelVersionId=1/);
+
+    searchHandle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelDetailPanel: switching the version INSIDE the panel re-fetches detail for the new version and persists the choice outward", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 51, name: "Version Switch Test" });
+  invalidateModelDetail(51, 1);
+  invalidateModelDetail(51, 2);
+  const detailRequests = [];
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/model_detail")) {
+      detailRequests.push(u);
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true,
+        version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let persistedTo = null;
+    const handle = openModelDetailPanel({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 1,
+      onVersionPersist: (id) => { persistedTo = id; },
+    });
+    await settle();
+    assert.ok(detailRequests.some((u) => u.includes("version_id=1")));
+
+    const sel = findAll(handle.overlay, "wtn-dv-version-sel")[0];
+    sel.value = "2";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(persistedTo, 2, "a version switch inside the panel must persist outward to the card's own selection");
+    assert.ok(detailRequests.some((u) => u.includes("version_id=2")), "switching versions must re-fetch detail for the NEW version");
+
+    // The download target changed too -- View on Civitai now points at v2.
+    const civLink = findAll(handle.overlay, "wtn-dv-civlink")[0];
+    assert.match(civLink.href, /modelVersionId=2/);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelDetailPanel: '← back to results' closes the detail panel only", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 52, name: "Back Button Test" });
+  invalidateModelDetail(52, 1);
+  stubFetch(async (url) => {
+    if (String(url).includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelDetailPanel({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 1 });
+    await settle();
+
+    const backBtn = findAll(handle.overlay, "wtn-dv-back")[0];
+    assert.ok(backBtn, "the detail panel must offer a back affordance");
+    assert.equal(backBtn.textContent, "← back to results");
+    backBtn.dispatch("click", { stopPropagation() {} });
+
+    assert.equal(handle.overlay.parentNode, null, "the detail panel itself must be gone");
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelDetailPanel: an installed version shows the installed badge, never a download button", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 53, name: "Installed Detail Test" });
+  invalidateModelDetail(53, 2);
+  stubFetch(async (url) => {
+    if (String(url).includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    // version 2 in `makeMultiVersionSearchResult` is `installed: true`.
+    const handle = openModelDetailPanel({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 2 });
+    await settle();
+
+    const badge = findAll(handle.overlay, "wtn-cs-action-installed")[0];
+    assert.ok(badge, "the installed badge must render for an already-installed version");
+    assert.equal(badge.textContent, "✓ installed");
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent && e.textContent.includes("Download"));
+    assert.equal(downloadBtn, undefined, "no download button for an already-installed version");
 
     handle.close();
   } finally {

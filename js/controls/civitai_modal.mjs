@@ -46,11 +46,12 @@
  * sort/period/level), the result GRID (reusing the shared thumbnail
  * machinery), and download.
  *
- * Explicitly OUT of scope, a genuinely separate second pass (task brief):
- * the master→detail swap (a result card click is INERT here beyond its own
- * download action -- no version picker on the card either, since version
- * selection belongs to the detail view that doesn't exist yet), the
- * community-images gallery, and copy-prompt.
+ * The master→detail swap (decision 11) now lands too: a result card click
+ * OUTSIDE its own download action replaces the RESULTS AREA (search bar +
+ * grid) with `model_detail_view.mjs`'s `buildModelDetailView` (`layout:
+ * "grid"`), while the filter rail stays put -- "your filters are the
+ * context you came from" -- with a `← results` affordance to swap back. See
+ * `openDetail`/`closeDetail`/`renderSwap`, below.
  *
  * ## The `kind: null` state is a SAFETY NET, kept deliberately minimal
  *
@@ -110,7 +111,12 @@ import {
   SCROLL_LOAD_MORE_THRESHOLD_PX,
   searchButtonEnabled,
 } from "./civitai_search.mjs";
-import { searchUnscoped } from "./civitai_api.mjs";
+import { searchUnscoped, fetchModelDetail } from "./civitai_api.mjs";
+// "The detail view" -- one component, mounted twice (this modal's own
+// master→detail swap, decision 11, and the picker's vertical sibling panel,
+// `civitai_search.mjs`'s `openModelDetailPanel`). See that file's own top
+// doc comment for the full "one component" contract.
+import { buildModelDetailView } from "./model_detail_view.mjs";
 import {
   getSetting,
   setSetting,
@@ -382,6 +388,10 @@ const CSS = `
 .wtn-cm-bar i { position: absolute; inset: 0; width: 0; background: var(--wtn-accent, ${TOKENS.accent}); display: block; }
 
 .wtn-cm-gridwrap { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
+/* The master->detail swap's own host (decision 11) -- takes over the SAME
+   flex slot searchbar+gridWrap occupy when a card is clicked; the rail
+   stays untouched (it's body's own sibling, not main's). */
+.wtn-cm-detailhost { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
 .wtn-cm-empty { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12.5px; padding: 20px 4px; }
 .wtn-cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
 .wtn-cm-card {
@@ -802,6 +812,16 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   gridWrap.appendChild(grid);
   main.appendChild(gridWrap);
 
+  // ---- the master→detail swap's own host (decision 11) -- a THIRD child
+  // of `main`, alongside `searchbar`/`gridWrap`; `renderSwap` toggles which
+  // of the two is visible. Kept as a separate host rather than replacing
+  // `main`'s children outright so `searchbar`'s own state (the query text,
+  // the filter selects) survives a round trip through the detail view with
+  // no re-render of its own.
+  const detailHost = el(targetDoc, "div", "wtn-cm-detailhost");
+  detailHost.style.display = "none";
+  main.appendChild(detailHost);
+
   // ---- state ------------------------------------------------------------
   let results = [];
   let nextCursor = null;
@@ -809,6 +829,14 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   let loadingMore = false;
   let searchSeq = 0;
   let renderGeneration = 0;
+  // §"The detail view" -- the master→detail swap's own state. `detailResult`
+  // is the raw search result the user clicked into; `null` means "list mode"
+  // (`renderSwap`'s own single source of truth for which half of `main` is
+  // visible -- never a separate boolean to keep in sync).
+  let detailResult = null;
+  let detailVersionId = null;
+  let detailData = { status: "loading", gallery: [] };
+  let detailActionMessage = null;
   const cardMessages = new Map();
   // §7c-i's own "Search button" state -- see civitai_search.mjs's
   // `lastSearchedQuery` doc comment; `null` until the trailing
@@ -999,6 +1027,15 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     }
 
     card.appendChild(actionCol);
+
+    // Decision 11 -- a card click OUTSIDE its own controls swaps to the
+    // detail view. Every interactive child above already `stopPropagation`s
+    // its own click (the version select, the download/cancel/delete
+    // buttons), so this only ever fires for the card's own body/thumb/title.
+    card.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDetail(result);
+    });
     return card;
   }
 
@@ -1026,6 +1063,186 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       msg.textContent = "Loading more…";
       grid.appendChild(msg);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // The master→detail swap (decision 11) -- `model_detail_view.mjs` supplies
+  // the actual content (`buildModelDetailView`, `layout: "grid"`); everything
+  // here is this MOUNT's own wiring: which half of `main` is visible, the
+  // fetch/re-render loop for the two extra fields a search result doesn't
+  // already carry (`civitai_api.mjs`'s `fetchModelDetail`), and this
+  // surface's own primary action -- download to the DERIVED destination
+  // folder (§7c: "the modal answers to nobody", unlike the picker's "returns
+  // to the row").
+  // -------------------------------------------------------------------------
+
+  /** Swaps the results area for the detail view. The RAIL is untouched --
+   * "your filters are the context you came from" (task brief) -- only
+   * `searchbar`/`gridWrap` hide and `detailHost` takes their place. */
+  function renderSwap() {
+    const inDetail = detailResult != null;
+    searchbar.style.display = inDetail ? "none" : "";
+    gridWrap.style.display = inDetail ? "none" : "";
+    detailHost.style.display = inDetail ? "" : "none";
+    if (inDetail) {
+      renderDetailHost();
+    } else {
+      detailHost.innerHTML = "";
+    }
+  }
+
+  function buildDetailAction(doc, view, result) {
+    const rKey = resultKey(view);
+    const detailKind = resultKind(result);
+    const job = getActiveDownloadState();
+    const state = resultCardState(view, job, sessionGatedKeys());
+    const wrap = el(doc, "div", "wtn-cm-actioncol");
+
+    if (!detailKind) {
+      const line = el(doc, "div", "wtn-cm-nokind");
+      line.textContent = NOT_INSTALLABLE_MESSAGE;
+      wrap.appendChild(line);
+      return wrap;
+    }
+    if (state === "installed") {
+      const badge = el(doc, "span", "wtn-cm-action wtn-cm-action-installed");
+      badge.textContent = "✓ installed";
+      wrap.appendChild(badge);
+      return wrap;
+    }
+    if (state === "downloading") {
+      const pct = downloadPercent(job.bytes, job.total);
+      const row = el(doc, "div", "wtn-cm-actioncol-row");
+      const pctLabel = el(doc, "span", "wtn-cm-sub");
+      pctLabel.textContent = pct == null ? "…" : `${pct}%`;
+      row.appendChild(pctLabel);
+      const cancelBtn = el(doc, "button", "wtn-cm-action wtn-cm-action-cancel");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cancelActiveDownloadJob();
+      });
+      row.appendChild(cancelBtn);
+      wrap.appendChild(row);
+      return wrap;
+    }
+    if (state === "gated") {
+      const btn = el(doc, "button", "wtn-cm-action wtn-cm-action-gated");
+      btn.type = "button";
+      btn.textContent = "key required";
+      btn.disabled = true;
+      btn.title = "Add a Civitai API key in Settings → AnimaFlow → Controls to download this file.";
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    const dest = el(doc, "div", "wtn-cm-dest");
+    dest.textContent = destinationLabelForKind(detailKind);
+    wrap.appendChild(dest);
+    const missingFile = !view.file_name || !view.download_url;
+    const btn = el(doc, "button", "wtn-cm-action");
+    btn.type = "button";
+    btn.textContent = "↓ Download";
+    if (missingFile) {
+      btn.disabled = true;
+      btn.title = "No downloadable file for this version.";
+    } else if (job) {
+      btn.disabled = true;
+      btn.title = "Another download is already running.";
+    }
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (missingFile) {
+        return;
+      }
+      detailActionMessage = null;
+      const civitaiMeta = {
+        model_id: result.model_id, version_id: view.primary_version_id, name: view.name,
+        type: result.type, base_model: view.base_model, tags: result.tags, triggers: view.triggers,
+      };
+      const previewCandidates = pickThumbCandidates(view.images, levelLabelToInt(currentFilters.level));
+      const resp = await startDownloadJob({
+        kind: detailKind, subfolder: "", filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
+        key: rKey, civitaiMeta, previewUrl: previewCandidates.length > 0 ? previewCandidates[0] : null,
+      }, pollIntervalMs);
+      if (resp.reason !== "started") {
+        detailActionMessage = downloadStartMessage(resp);
+        logSummary("Civitai browser", `download NOT started: ${view.file_name} (${resp.reason})`);
+      } else {
+        logSummary("Civitai browser", `download started: ${view.file_name} (${detailKind})`);
+      }
+      renderDetailHost();
+      renderGrid(); // keep the list's own card in sync for when the user swaps back
+    });
+    wrap.appendChild(btn);
+    if (detailActionMessage) {
+      const msgEl = el(doc, "div", "wtn-cm-cardmsg");
+      msgEl.textContent = detailActionMessage;
+      wrap.appendChild(msgEl);
+    }
+    return wrap;
+  }
+
+  function renderDetailHost() {
+    detailHost.innerHTML = "";
+    if (!detailResult) {
+      return;
+    }
+    const built = buildModelDetailView({
+      doc: targetDoc, layout: "grid", result: detailResult, versionId: detailVersionId,
+      browsingLevel: levelLabelToInt(currentFilters.level), detail: detailData,
+      buildActionEl: buildDetailAction,
+      onVersionChange: (id) => {
+        detailVersionId = id;
+        loadDetailData();
+      },
+      onBack: closeDetail,
+    });
+    detailHost.appendChild(built.el);
+  }
+
+  async function loadDetailData() {
+    if (!detailResult) {
+      return;
+    }
+    const modelId = detailResult.model_id;
+    const versionId = detailVersionId;
+    detailData = {
+      status: "loading", gallery: [],
+      modelDescription: detailData.modelDescription,
+      modelDescriptionChecked: detailData.modelDescriptionChecked,
+    };
+    renderDetailHost();
+    const resp = await fetchModelDetail(modelId, versionId);
+    // Discard a stale reply -- the user closed the detail view, or switched
+    // to a DIFFERENT model/version, while this fetch was in flight.
+    if (!detailResult || detailResult.model_id !== modelId || detailVersionId !== versionId) {
+      return;
+    }
+    detailData = {
+      status: resp.reason === "found" ? "loaded" : "error",
+      modelDescription: resp.model_description,
+      modelDescriptionChecked: resp.model_description_checked,
+      versionDescription: resp.version_description,
+      gallery: Array.isArray(resp.gallery) ? resp.gallery : [],
+    };
+    renderDetailHost();
+  }
+
+  function openDetail(result) {
+    detailResult = result;
+    detailVersionId = resolveVersionView(result).primary_version_id;
+    detailData = { status: "loading", gallery: [] };
+    detailActionMessage = null;
+    renderSwap();
+    loadDetailData();
+  }
+
+  function closeDetail() {
+    detailResult = null;
+    detailVersionId = null;
+    renderSwap();
   }
 
   async function runSearch({ resetCursor = true } = {}) {
@@ -1159,6 +1376,13 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       }
     }
     renderGrid();
+    if (detailResult) {
+      // `finished` (above) is the SAME object `detailResult` references
+      // (`openDetail` is handed a result straight out of `results`, never a
+      // copy) -- its own `installed`/`gated` flags are already updated by
+      // the mutation above; this just repaints the visible swap to reflect it.
+      renderDetailHost();
+    }
   }
   const unsubscribe = subscribeDownloadState(onDownloadStateChange);
 

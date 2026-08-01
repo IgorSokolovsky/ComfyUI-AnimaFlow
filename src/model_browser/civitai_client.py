@@ -346,4 +346,41 @@ def lookup_model_by_id(
     )
 
 
-__all__ = ("CIVITAI_HOSTS", "fetch_json_with_host_fallback", "lookup_by_hash", "lookup_model_by_id")
+def lookup_model_version_by_id(
+    version_id: Any,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    hosts: Sequence[str] = _CIVITAI_HOSTS,
+    opener: Optional[Callable[[str, float], Any]] = None,
+) -> Dict[str, Any]:
+    """Ask Civitai's public MODEL-VERSION-BY-ID endpoint
+    (`/api/v1/model-versions/{id}`) about `version_id` -- the detail view's
+    own backend (`docs/lora-loader-design.md`'s "The detail view" /
+    §7c-ii), used when a search result's own `model_id`/`version_id` are
+    already known (unlike `lookup_by_hash`, §2b's by-FILE lookup) and the
+    caller wants that exact version's own per-version description and its
+    author's gallery (measured 2026-08-01: this endpoint's own `images` carry
+    `meta`/prompt on 18/20 sampled, unlike the community `/api/v1/images`
+    endpoint's 0/40 -- see `civitai_parse.parse_author_gallery`).
+
+    Same envelope/rules as `lookup_by_hash`/`lookup_model_by_id` above (two
+    hosts with a definitive 404, 30s timeout, 4 MB body cap, distinct offline
+    reasons) -- a thin wrapper over `fetch_json_with_host_fallback`, public,
+    no API key needed (§2b's same "no key needed" rule, extended to this
+    endpoint -- verified: Civitai's model-version endpoints are all public).
+    """
+    return fetch_json_with_host_fallback(
+        lambda host: f"https://{host}/api/v1/model-versions/{version_id}",
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        hosts=hosts,
+        opener=opener,
+        notfound_message="This model version isn't on Civitai.",
+    )
+
+
+__all__ = (
+    "CIVITAI_HOSTS", "fetch_json_with_host_fallback", "lookup_by_hash", "lookup_model_by_id",
+    "lookup_model_version_by_id",
+)

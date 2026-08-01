@@ -88,6 +88,7 @@ const SEARCH_URL = "/wtn/model_browser/search";
 const DOWNLOAD_START_URL = "/wtn/model_browser/download/start";
 const DOWNLOAD_PROGRESS_URL = "/wtn/model_browser/download/progress";
 const DOWNLOAD_CANCEL_URL = "/wtn/model_browser/download/cancel";
+const MODEL_DETAIL_URL = "/wtn/model_browser/model_detail";
 
 // ---------------------------------------------------------------------------
 // Local file list -- per kind. `null`/absent-from-the-map means "never
@@ -732,6 +733,114 @@ export async function downloadProgress(jobId) {
       status: null, bytes: 0, total: null,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// The model/version DETAIL VIEW's own backend (`docs/lora-loader-design.md`
+// "The detail view" / §7c-ii / §7d-i) -- `js/controls/model_detail_view.mjs`'s
+// caller (`civitai_search.mjs`'s picker mount, `civitai_modal.mjs`'s modal
+// mount) is who actually calls this; the render component itself never
+// fetches anything on its own (that file's own top doc comment).
+//
+// Cached per `(model_id, version_id)`, mirroring `_infoCache`'s own "cache
+// the last-known response, dedupe an in-flight call" shape above -- a user
+// flipping back and forth between two versions (or reopening the same
+// model's detail view a second time this session) costs no second request.
+// ---------------------------------------------------------------------------
+
+const _modelDetailCache = new Map(); // "modelId versionId" -> the route's last response dict
+const _modelDetailPromise = new Map(); // "modelId versionId" -> in-flight promise (de-dupes concurrent callers)
+
+function modelDetailKey(modelId, versionId) {
+  return `${modelId} ${versionId}`;
+}
+
+/** Drops the cached detail for `(modelId, versionId)` -- exists for
+ * completeness/tests; no real caller forces a re-fetch today (unlike
+ * `invalidateInfo`, there is no "Forget cached"-shaped action for THIS
+ * data). */
+export function invalidateModelDetail(modelId, versionId) {
+  _modelDetailCache.delete(modelDetailKey(modelId, versionId));
+}
+
+/** The last-cached `fetchModelDetail` response for `(modelId, versionId)`,
+ * read with NO network of its own -- `null` if nothing has ever resolved
+ * this session. Never triggers a fetch (same "read-only, never causes a
+ * request" contract as `cachedInfo`). */
+export function cachedModelDetail(modelId, versionId) {
+  return _modelDetailCache.get(modelDetailKey(modelId, versionId)) || null;
+}
+
+/**
+ * `GET /wtn/model_browser/model_detail?model_id=...&version_id=...` -- the
+ * two things a search result doesn't already carry for `versionId`: its own
+ * `version_description` + the author's prompt-carrying `gallery`, plus the
+ * MODEL's own `model_description` (fetched once per model, independent of
+ * which version is selected -- `src/model_browser/model_detail.py`'s own
+ * doc comment has the full contract).
+ *
+ * Always resolves -- never rejects -- to `{reason: "found"|"notfound"|
+ * "offline"|"rate_limited", message, offline_reason, model_description,
+ * model_description_checked, version_description, gallery}`; a transport
+ * failure (unreachable dev server, an unreadable reply) degrades to the
+ * SAME `offline` shape the route itself uses, so a caller has exactly one
+ * shape to branch on regardless of which hop actually failed -- same
+ * discipline as `lookupInfo`.
+ *
+ * A GARBAGE `modelId`/`versionId` (missing, non-numeric) still reaches the
+ * network -- the ROUTE is what validates/rejects them (`notfound` for an
+ * unusable `version_id`, `src/model_browser/model_detail.py`'s own
+ * `_clean_positive_int`) -- this function has no whitelist of its own to
+ * enforce, mirroring `searchModels`'s "the backend re-validates regardless"
+ * posture for every other network call in this file.
+ */
+export async function fetchModelDetail(modelId, versionId) {
+  const key = modelDetailKey(modelId, versionId);
+  if (_modelDetailPromise.has(key)) {
+    return _modelDetailPromise.get(key);
+  }
+  const p = (async () => {
+    try {
+      const params = new URLSearchParams();
+      if (modelId != null) {
+        params.set("model_id", String(modelId));
+      }
+      if (versionId != null) {
+        params.set("version_id", String(versionId));
+      }
+      const r = await fetch(`${MODEL_DETAIL_URL}?${params.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (j && typeof j.reason === "string") {
+        _modelDetailCache.set(key, j);
+        return j;
+      }
+      return {
+        reason: "offline",
+        message: "The model_detail route sent an unreadable reply.",
+        offline_reason: null,
+        model_description: null,
+        model_description_checked: false,
+        version_description: null,
+        gallery: [],
+      };
+    } catch (err) {
+      return {
+        reason: "offline",
+        message: `Could not reach the model_detail route (${err && err.message ? err.message : err}).`,
+        offline_reason: null,
+        model_description: null,
+        model_description_checked: false,
+        version_description: null,
+        gallery: [],
+      };
+    } finally {
+      if (_modelDetailPromise.get(key) === p) {
+        _modelDetailPromise.delete(key);
+      }
+    }
+  })();
+  _modelDetailPromise.set(key, p);
+  return p;
 }
 
 /** `POST /wtn/model_browser/download/cancel` -- always resolves to

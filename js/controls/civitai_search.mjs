@@ -43,10 +43,13 @@
  * states). The old per-result `thumb_url` key is gone from the wire shape
  * entirely — `resolveVersionView` now flattens `images`, not `thumb_url`.
  *
- * Explicitly OUT of scope (task brief, §7c-ii): the per-result VERTICAL info
- * panel with the community gallery, and `notfound`'s search-by-name link —
- * both land in the next slice. A card click in the list below is therefore
- * INERT (no vertical info panel to open yet) beyond its own download action.
+ * §7c-ii's per-result VERTICAL info panel (`openModelDetailPanel`, below --
+ * version selector, both descriptions, the author's gallery with
+ * prompt-on-hover + copy) now opens on a card click that lands OUTSIDE any
+ * of the card's own interactive controls (the version `<select>`, the
+ * action button, the delete confirm) -- each of those already
+ * `stopPropagation`s its own click/change, same convention as every other
+ * nested control in this file.
  *
  * ## Filters are remembered USER-WIDE, never in the node's state blob
  *
@@ -104,7 +107,15 @@ import {
   POPOVER_ANCHOR_GAP_PX,
   POPOVER_VIEWPORT_MARGIN_PX,
 } from "../shared/overlay.mjs";
-import { searchModels, startDownload, downloadProgress, cancelDownload, invalidateList, deleteModel } from "./civitai_api.mjs";
+import {
+  searchModels, startDownload, downloadProgress, cancelDownload, invalidateList, deleteModel, fetchModelDetail,
+} from "./civitai_api.mjs";
+// §7c-ii's own VERTICAL info panel ("The detail view", built once, mounted
+// twice) -- a sibling of the ⓘ panel, opened by a result card click. See
+// `openModelDetailPanel`, below, and `model_detail_view.mjs`'s own top doc
+// comment for the full "one component, two mounts" contract; the modal's
+// own master/detail swap (`civitai_modal.mjs`) is the OTHER mount.
+import { buildModelDetailView } from "./model_detail_view.mjs";
 // "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
 // dialog is shared with `model_info.mjs`'s ⓘ panel rather than grown twice;
 // see that module's own top doc comment for the full contract.
@@ -1760,6 +1771,20 @@ export function openCivitaiSearch({
     }
 
     card.appendChild(actionCol);
+
+    // §7c-ii: a card click OUTSIDE any of its own interactive controls opens
+    // the vertical detail panel (decision 21 -- "a new VERTICAL info panel...
+    // not the modal, not an in-panel swap"). Every control above already
+    // `stopPropagation`s its own click, so this only ever fires for the
+    // card's own body/thumb/title/metarow.
+    card.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openModelDetailPanel({
+        ctx, anchorEl: card, kind, result, versionId: selectedVersionId,
+        destInput, pollIntervalMs, thumbRetryBackoffMs,
+        onVersionPersist: (id) => selectedVersions.set(result.model_id, id),
+      });
+    });
     return card;
   }
 
@@ -2135,6 +2160,232 @@ export function openCivitaiSearch({
   }
 
   runSearch({ resetCursor: true });
+
+  return handle;
+}
+
+// ---------------------------------------------------------------------------
+// §7c-ii -- the picker's own VERTICAL detail panel (decision 21): a SIBLING
+// overlay of the ⓘ panel, anchored to the CARD that was clicked, never the
+// modal and never an in-panel swap of the results list. `model_detail_view.mjs`
+// supplies the actual content (`buildModelDetailView`, `layout: "vertical"`)
+// -- this function is purely the MOUNT: the overlay shell, the fetch/
+// re-render loop for the two extra fields a search result doesn't already
+// carry (`civitai_api.mjs`'s `fetchModelDetail`), and this surface's own
+// primary action ("↓ Download & use in this row" -- returns to the row that
+// opened it, §7c, unlike the modal's destination-derived download).
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens the vertical detail panel for `result`, anchored to `anchorEl` (the
+ * clicked card). A second click on the SAME card toggles it closed
+ * (`closeOverlayIfOwnedBy`, same convention as `openCivitaiSearch`/
+ * `openModelInfo`); it nests INSIDE the still-open search panel rather than
+ * replacing it (`closeOverlaysNotAncestorOf` keeps every ANCESTOR overlay of
+ * `anchorEl` open — the search panel's own overlay element contains the
+ * card, so it survives) — the same mechanism the ⓘ panel already relies on
+ * to stay layered under the picker.
+ *
+ * @param {object} opts
+ * @param {{doc, getCanvasEl}} opts.ctx
+ * @param {Element} opts.anchorEl - the clicked card.
+ * @param {string} opts.kind
+ * @param {object} opts.result - the raw search-result object.
+ * @param {number} [opts.versionId] - the version already selected on the
+ *   card (its own per-card version `<select>`, if the user had touched it).
+ * @param {Element} [opts.destInput] - the panel's own "Save to:" field, reused
+ *   for the detail view's own download (same destination, no second field).
+ * @param {number} [opts.pollIntervalMs]
+ * @param {number} [opts.thumbRetryBackoffMs]
+ * @param {(versionId: number) => void} [opts.onVersionPersist] - lets the
+ *   picker's own per-card version `<select>` state stay in sync with a
+ *   version switch made INSIDE the detail panel.
+ * @returns {object|null}
+ */
+export function openModelDetailPanel({
+  ctx, anchorEl, kind, result, versionId, destInput, pollIntervalMs = 800,
+  thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS, onVersionPersist, onClose,
+} = {}) {
+  const key = `model-detail:${kind}:${result && result.model_id}:${result && result.primary_version_id}`;
+  if (closeOverlayIfOwnedBy(key)) {
+    return null;
+  }
+  closeOverlaysNotAncestorOf(anchorEl);
+
+  const doc = ctx.doc;
+  injectStyles(doc);
+
+  const panel = el(doc, "div", "wtn-cs-panel wtn-dv-panel wtn");
+  const host = el(doc, "div");
+  panel.appendChild(host);
+
+  // `versionId` may be `undefined` (a card whose own version <select> the
+  // user never touched) -- resolve it to the actual primary version id up
+  // front, same fallback `resolveVersionView` itself applies, so the very
+  // first `fetchModelDetail` call targets a real version id rather than
+  // `undefined`.
+  let currentVersionId = versionId != null ? versionId : resolveVersionView(result).primary_version_id;
+  let detailState = { status: "loading", gallery: [] };
+  let closed = false;
+  let actionMessage = null;
+
+  function currentLevel() {
+    return levelLabelToInt(getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]));
+  }
+
+  /**
+   * This panel's OWN primary action -- deliberately a SEPARATE, small
+   * implementation from `buildCard`'s action column rather than a shared
+   * extraction: the two surfaces' actions already differ in shape (no
+   * per-card version `<select>` here -- the SHARED version selector already
+   * lives in `buildModelDetailView` itself; no "Delete" affordance --
+   * matches an INSTALLED result having nothing left to download, not a
+   * place to manage the file from) and duplicating four states' worth of
+   * markup is a smaller risk than reworking `buildCard`'s already-tested
+   * action column to serve two call shapes at once.
+   */
+  function buildAction(d, view) {
+    const rKey = resultKey(view);
+    const job = getActiveDownloadState();
+    const state = resultCardState(view, job, sessionGatedKeys());
+    const wrap = el(d, "div", "wtn-dv-detailaction");
+
+    if (state === "installed") {
+      const badge = el(d, "span", "wtn-cs-action wtn-cs-action-installed");
+      badge.textContent = "✓ installed";
+      wrap.appendChild(badge);
+      return wrap;
+    }
+    if (state === "downloading") {
+      const pct = downloadPercent(job.bytes, job.total);
+      const row = el(d, "div", "wtn-cs-actioncol-row");
+      const pctLabel = el(d, "span", "wtn-cs-sub");
+      pctLabel.textContent = pct == null ? "…" : `${pct}%`;
+      row.appendChild(pctLabel);
+      const cancelBtn = el(d, "button", "wtn-cs-action wtn-cs-action-cancel");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cancelActiveDownloadJob();
+      });
+      row.appendChild(cancelBtn);
+      wrap.appendChild(row);
+      return wrap;
+    }
+    if (state === "gated") {
+      const btn = el(d, "button", "wtn-cs-action wtn-cs-action-gated");
+      btn.type = "button";
+      btn.textContent = "key required";
+      btn.disabled = true;
+      btn.title = "Add a Civitai API key in Settings → AnimaFlow → Controls to download this file.";
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    const missingFile = !view.file_name || !view.download_url;
+    const btn = el(d, "button", "wtn-cs-action");
+    btn.type = "button";
+    btn.textContent = "↓ Download & use in this row"; // primary action -- returns to the row that opened it (§7c)
+    if (missingFile) {
+      btn.disabled = true;
+      btn.title = "No downloadable file for this version.";
+    } else if (job) {
+      btn.disabled = true;
+      btn.title = "Another download is already running.";
+    }
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (missingFile) {
+        return;
+      }
+      actionMessage = null;
+      const subfolder = destInput ? subfolderFromDestinationField(destInput.value, kind) : "";
+      const civitaiMeta = {
+        model_id: result.model_id, version_id: view.primary_version_id, name: view.name,
+        type: result.type, base_model: view.base_model, tags: result.tags, triggers: view.triggers,
+      };
+      const previewCandidates = pickThumbCandidates(view.images, currentLevel());
+      const resp = await startDownloadJob({
+        kind, subfolder, filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
+        key: rKey, civitaiMeta, previewUrl: previewCandidates.length > 0 ? previewCandidates[0] : null,
+      }, pollIntervalMs);
+      if (resp.reason !== "started") {
+        actionMessage = downloadStartMessage(resp);
+        logSummary("LoRA search", `download NOT started: ${view.file_name} (${resp.reason})`);
+      } else {
+        logSummary("LoRA search", `download started: ${view.file_name} (${kind})`);
+      }
+      render();
+    });
+    wrap.appendChild(btn);
+    if (actionMessage) {
+      const msgEl = el(d, "div", "wtn-cs-cardmsg");
+      msgEl.textContent = actionMessage;
+      wrap.appendChild(msgEl);
+    }
+    return wrap;
+  }
+
+  function render() {
+    host.innerHTML = "";
+    const built = buildModelDetailView({
+      doc, layout: "vertical", result, versionId: currentVersionId, browsingLevel: currentLevel(),
+      detail: detailState, buildActionEl: buildAction,
+      onVersionChange: (id) => {
+        currentVersionId = id;
+        if (typeof onVersionPersist === "function") {
+          onVersionPersist(id);
+        }
+        loadDetail();
+      },
+      onBack: () => handle.close(),
+      thumbRetryBackoffMs,
+    });
+    host.appendChild(built.el);
+  }
+
+  async function loadDetail() {
+    // Keep whatever MODEL description is already known while a version
+    // switch re-fetches -- it doesn't change per version, so there's no
+    // reason to flash it away and back.
+    detailState = {
+      status: "loading", gallery: [],
+      modelDescription: detailState.modelDescription,
+      modelDescriptionChecked: detailState.modelDescriptionChecked,
+    };
+    render();
+    const resp = await fetchModelDetail(result.model_id, currentVersionId);
+    if (closed) {
+      return; // panel closed while the fetch was in flight -- discard silently
+    }
+    detailState = {
+      status: resp.reason === "found" ? "loaded" : "error",
+      modelDescription: resp.model_description,
+      modelDescriptionChecked: resp.model_description_checked,
+      versionDescription: resp.version_description,
+      gallery: Array.isArray(resp.gallery) ? resp.gallery : [],
+    };
+    render();
+  }
+
+  render();
+  loadDetail();
+
+  const unsubscribe = subscribeDownloadState(() => render());
+
+  const handle = openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, panel, "right", () => {
+    closed = true;
+    unsubscribe();
+    if (activeOverlayRef.current === handle) {
+      activeOverlayRef.current = null;
+    }
+    if (typeof onClose === "function") {
+      onClose();
+    }
+  }, "wtn-dv-overlay wtn");
+  handle.ownerKey = key;
+  activeOverlayRef.current = handle;
 
   return handle;
 }

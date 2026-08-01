@@ -331,6 +331,25 @@ format_sidecar_write_debug = _safe(_format_sidecar_write_debug_impl)
 
 
 # ---------------------------------------------------------------------------
+# Model/version detail (api.py's `model_detail_impl`, `docs/lora-loader-
+# design.md`'s "The detail view" -- the one component mounted twice, the
+# picker's vertical panel and the modal's master/detail swap).
+# ---------------------------------------------------------------------------
+
+
+def _format_model_detail_summary_impl(*, model_id: Any, version_id: Any, reason: str) -> str:
+    model_text = model_id if model_id is not None else "(unknown)"
+    version_text = version_id if version_id is not None else "(unknown)"
+    return (
+        f"[AnimaFlow] Model Browser detail view: model_id={model_text}, "
+        f"version_id={version_text}, reason={reason}"
+    )
+
+
+format_model_detail_summary = _safe(_format_model_detail_summary_impl)
+
+
+# ---------------------------------------------------------------------------
 # Delete (remove.py's `delete_model`) -- "Remove an installed model", the
 # first code in this pack that destroys user data (docs/TODO.md, decisions
 # taken 2026-07-30). A delete is exactly the sort of thing that belongs at
@@ -400,4 +419,5 @@ __all__ = (
     "format_delete_summary",
     "format_preview_candidate_debug",
     "format_preview_summary",
+    "format_model_detail_summary",
 )

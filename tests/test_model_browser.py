@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.model_browser import api as mb_api
 from src.model_browser import (
     civitai_client, civitai_parse, civitai_search, download, hashing, interop,
-    keys, kinds, local, lookup, rate_limit, remove, sidecar,
+    keys, kinds, local, lookup, model_detail, rate_limit, remove, sidecar,
 )
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1091,104 @@ def test_parse_model_description_blank_or_missing_is_none():
 
 
 # ---------------------------------------------------------------------------
+# civitai_parse.parse_author_gallery -- the detail view's own gallery source
+# (docs/lora-loader-design.md, "The detail view", the 2026-08-01 measured
+# correction: the AUTHOR's version gallery carries prompts, the community
+# endpoint doesn't).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_author_gallery_extracts_prompt_and_params():
+    images = [{
+        "url": "https://image.civitai.com/x/y/original=true/1.jpeg",
+        "nsfwLevel": 1,
+        "type": "image",
+        "meta": {
+            "prompt": "1girl, masterpiece",
+            "negativePrompt": "worst quality",
+            "sampler": "Euler a",
+            "steps": 24,
+            "cfgScale": 7.5,
+            "Size": "832x1216",
+        },
+    }]
+    gallery = civitai_parse.parse_author_gallery(images)
+    assert len(gallery) == 1
+    entry = gallery[0]
+    assert entry["prompt"] == "1girl, masterpiece"
+    assert entry["negative_prompt"] == "worst quality"
+    assert entry["params"] == {"sampler": "Euler a", "steps": 24, "cfg": 7.5, "size": "832x1216"}
+    assert entry["nsfw_level"] == 1
+    assert entry["type"] == "image"
+    # thumbnail-rewritten, same as every other gallery URL in this module.
+    assert "anim=false,width=256" in entry["url"]
+
+
+def test_parse_author_gallery_falls_back_to_width_height_when_no_size_in_meta():
+    images = [{"url": "https://image.civitai.com/x/y/original=true/1.jpeg", "width": 512, "height": 768,
+               "meta": {"prompt": "a cat"}}]
+    entry = civitai_parse.parse_author_gallery(images)[0]
+    assert entry["params"] == {"size": "512x768"}
+
+
+def test_parse_author_gallery_empty_meta_degrades_cleanly_no_prompt_no_params():
+    # The COMMUNITY endpoint's own measured shape -- `meta` is `{}` on every
+    # sampled image (design doc's own measurement) -- must never invent a
+    # prompt/params for that case; the caller reads their absence as "no
+    # hover overlay" rather than an empty one.
+    images = [{"url": "https://image.civitai.com/x/y/original=true/1.jpeg", "nsfwLevel": 1, "meta": {}}]
+    entry = civitai_parse.parse_author_gallery(images)[0]
+    assert "prompt" not in entry
+    assert "negative_prompt" not in entry
+    assert "params" not in entry
+
+
+def test_parse_author_gallery_no_meta_key_at_all_degrades_cleanly():
+    images = [{"url": "https://image.civitai.com/x/y/original=true/1.jpeg"}]
+    entry = civitai_parse.parse_author_gallery(images)[0]
+    assert "prompt" not in entry and "params" not in entry
+
+
+def test_parse_author_gallery_a_raw_lora_tag_in_the_prompt_survives_as_plain_text():
+    # The prompt legitimately contains "<lora:name:0.8>" -- this is a pure
+    # parse, so it must survive verbatim; the XSS boundary (textContent, never
+    # innerHTML) is the FRONTEND's job, not this function's, but the text
+    # itself must not be mangled on the way through.
+    images = [{"url": "https://image.civitai.com/x/y/original=true/1.jpeg",
+               "meta": {"prompt": "1girl <lora:example:0.8>, masterpiece"}}]
+    entry = civitai_parse.parse_author_gallery(images)[0]
+    assert entry["prompt"] == "1girl <lora:example:0.8>, masterpiece"
+
+
+def test_parse_author_gallery_video_entry_still_gets_the_anim_false_poster_frame_fix():
+    images = [{"url": "https://image.civitai.com/x/y/original=true/1.mp4", "type": "video",
+               "meta": {"prompt": "a dancing figure"}}]
+    entry = civitai_parse.parse_author_gallery(images)[0]
+    assert "anim=false" in entry["url"]
+    assert entry["prompt"] == "a dancing figure"
+
+
+def test_parse_author_gallery_skips_entries_with_no_url():
+    images = [{"meta": {"prompt": "no url here"}}, "not-a-dict", None]
+    assert civitai_parse.parse_author_gallery(images) == []
+
+
+def test_parse_author_gallery_non_list_input_is_empty_never_raises():
+    assert civitai_parse.parse_author_gallery(None) == []
+    assert civitai_parse.parse_author_gallery("not-a-list") == []
+    assert civitai_parse.parse_author_gallery({}) == []
+
+
+def test_parse_author_gallery_preserves_civitai_order():
+    images = [
+        {"url": "https://image.civitai.com/a/b/original=true/1.jpeg", "meta": {"prompt": "first"}},
+        {"url": "https://image.civitai.com/a/b/original=true/2.jpeg", "meta": {"prompt": "second"}},
+    ]
+    gallery = civitai_parse.parse_author_gallery(images)
+    assert [g["prompt"] for g in gallery] == ["first", "second"]
+
+
+# ---------------------------------------------------------------------------
 # civitai_client.py -- HTTP transport, via an injectable fake opener.
 # ---------------------------------------------------------------------------
 
@@ -1319,6 +1417,46 @@ def test_lookup_model_by_id_timeout_is_distinct_reason():
 
     opener, calls = _sequence_opener([raise_timeout, raise_timeout])
     result = civitai_client.lookup_model_by_id(1, opener=opener)
+    assert result["reason"] == "offline"
+    assert result["offline_reason"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# civitai_client.lookup_model_version_by_id -- the detail view's own by-id
+# version fetch (docs/lora-loader-design.md, "The detail view"). Same
+# transport rules as lookup_by_hash/lookup_model_by_id above (not re-tested
+# exhaustively -- shared implementation), just the version-specific bits.
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_model_version_by_id_success_on_first_host():
+    body = json.dumps({"id": 5, "modelId": 2, "description": "Trained on preview3."}).encode("utf-8")
+    opener, calls = _sequence_opener([lambda: _FakeResponse(body)])
+    result = civitai_client.lookup_model_version_by_id(5, opener=opener)
+    assert result["reason"] == "found"
+    assert result["data"]["description"] == "Trained on preview3."
+    assert len(calls) == 1
+    assert "/api/v1/model-versions/5" in calls[0][0]
+
+
+def test_lookup_model_version_by_id_404_is_definitive_and_never_tries_backup_host():
+    def raise_404():
+        raise urllib.error.HTTPError("url", 404, "Not Found", None, None)
+
+    opener, calls = _sequence_opener([raise_404])
+    result = civitai_client.lookup_model_version_by_id(999999, opener=opener)
+    assert result["reason"] == "notfound"
+    assert len(calls) == 1
+
+
+def test_lookup_model_version_by_id_timeout_is_distinct_reason():
+    import socket
+
+    def raise_timeout():
+        raise socket.timeout("timed out")
+
+    opener, calls = _sequence_opener([raise_timeout, raise_timeout])
+    result = civitai_client.lookup_model_version_by_id(5, opener=opener)
     assert result["reason"] == "offline"
     assert result["offline_reason"] == "timeout"
 
@@ -5431,6 +5569,224 @@ def test_search_impl_rate_limited_never_reaches_the_network():
         mb_api._SEARCH_LIMITER = previous_limiter
 
 
+# ---------------------------------------------------------------------------
+# model_detail.fetch_model_detail -- the detail view's own backend (docs/
+# lora-loader-design.md, "The detail view" / §7c-ii / §7d-i). One component,
+# mounted twice; this is where both mounts get what a search result doesn't
+# already carry -- the SELECTED version's own description + author gallery,
+# and the model's own write-up.
+# ---------------------------------------------------------------------------
+
+
+def _swap_civitai_client_fns(**fns):
+    """Swaps `civitai_client.lookup_model_version_by_id`/`lookup_model_by_id`
+    for fakes, both on the real module AND on `model_detail`'s own imported
+    reference to it (mirrors this file's existing `lookup.civitai_client....`
+    swap convention for `lookup.py`'s tests) -- returns a restore callback."""
+    previous = {name: getattr(civitai_client, name) for name in fns}
+    for name, fn in fns.items():
+        setattr(civitai_client, name, fn)
+        setattr(model_detail.civitai_client, name, fn)
+
+    def _restore():
+        for name, fn in previous.items():
+            setattr(civitai_client, name, fn)
+            setattr(model_detail.civitai_client, name, fn)
+
+    return _restore
+
+
+def test_fetch_model_detail_happy_path_both_descriptions_and_gallery():
+    def fake_version_by_id(version_id, **kw):
+        assert version_id == 5
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {
+            "id": 5, "modelId": 2, "description": "Trained on preview3.",
+            "images": [{"url": "https://image.civitai.com/a/b/original=true/1.jpeg", "nsfwLevel": 1,
+                        "meta": {"prompt": "1girl", "sampler": "Euler a", "steps": 20, "cfgScale": 7, "Size": "832x1216"}}],
+        }}
+
+    def fake_model_by_id(model_id, **kw):
+        assert model_id == 2
+        return {"reason": "found", "offline_reason": None, "message": "",
+                "data": {"id": 2, "description": "<p>The author's write-up.</p>"}}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=fake_model_by_id)
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["reason"] == "found"
+        assert result["version_description"] == "Trained on preview3."
+        assert result["model_description"] == "The author's write-up."
+        assert result["model_description_checked"] is True
+        assert len(result["gallery"]) == 1
+        assert result["gallery"][0]["prompt"] == "1girl"
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_no_version_description_only_model_description():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5, "modelId": 2}}
+
+    def fake_model_by_id(model_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 2, "description": "Write-up."}}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=fake_model_by_id)
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["version_description"] is None
+        assert result["model_description"] == "Write-up."
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_neither_description_present_never_invents_one():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5, "modelId": 2}}
+
+    def fake_model_by_id(model_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 2}}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=fake_model_by_id)
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["version_description"] is None
+        assert result["model_description"] is None
+        assert result["model_description_checked"] is True  # a DEFINITIVE "no description" answer
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_version_offline_never_calls_model_by_id():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "offline", "offline_reason": "timeout", "message": "Civitai timed out.", "data": None}
+
+    def _must_not_run(*a, **kw):
+        raise AssertionError("model_by_id must never run when the version fetch itself failed")
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=_must_not_run)
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["reason"] == "offline"
+        assert result["offline_reason"] == "timeout"
+        assert result["gallery"] == []
+        assert result["model_description_checked"] is False
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_version_notfound():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "notfound", "offline_reason": None, "message": "Gone.", "data": None}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["reason"] == "notfound"
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_garbage_version_id_is_notfound_with_no_network_call():
+    def _must_not_run(*a, **kw):
+        raise AssertionError("no network call should happen for an unusable version_id")
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=_must_not_run, lookup_model_by_id=_must_not_run)
+    try:
+        for bad in (None, "not-a-number", -1, 0, [], {}):
+            result = model_detail.fetch_model_detail(2, bad)
+            assert result["reason"] == "notfound", bad
+            assert result["gallery"] == []
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_model_description_fetch_offline_degrades_but_still_found():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5, "modelId": 2}}
+
+    def fake_model_by_id(model_id, **kw):
+        return {"reason": "offline", "offline_reason": "timeout", "message": "", "data": None}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=fake_model_by_id)
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        # The VERSION data is independently useful -- a transient failure on
+        # the MODEL description fallback must not fail the whole call.
+        assert result["reason"] == "found"
+        assert result["model_description"] is None
+        assert result["model_description_checked"] is False  # retryable, not "no description"
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_no_model_id_at_all_skips_the_fallback_and_is_checked():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5}}  # no modelId anywhere
+
+    def _must_not_run(*a, **kw):
+        raise AssertionError("nothing to fetch a model description BY")
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=_must_not_run)
+    try:
+        result = model_detail.fetch_model_detail(None, 5)
+        assert result["model_description"] is None
+        assert result["model_description_checked"] is True
+    finally:
+        restore()
+
+
+# ---------------------------------------------------------------------------
+# api.model_detail_impl -- the aiohttp-facing wrapper (rate limiting only;
+# the actual fetch is `model_detail.fetch_model_detail`, tested above).
+# ---------------------------------------------------------------------------
+
+
+def _install_permissive_model_detail_limiter():
+    previous = mb_api._MODEL_DETAIL_LIMITER
+    mb_api._MODEL_DETAIL_LIMITER = rate_limit.MinIntervalLimiter(0.0)
+    return lambda: setattr(mb_api, "_MODEL_DETAIL_LIMITER", previous)
+
+
+def test_model_detail_impl_happy_path_delegates_to_fetch_model_detail():
+    restore_limiter = _install_permissive_model_detail_limiter()
+    previous = mb_api.model_detail_mod.fetch_model_detail
+
+    def fake_fetch(model_id, version_id):
+        assert model_id == 2 and version_id == "5"  # raw query-string values, untouched by this wrapper
+        return {"reason": "found", "message": "", "offline_reason": None, "model_description": "x",
+                "model_description_checked": True, "version_description": "y", "gallery": []}
+
+    mb_api.model_detail_mod.fetch_model_detail = fake_fetch
+    try:
+        result = mb_api.model_detail_impl({"model_id": 2, "version_id": "5"})
+        assert result["reason"] == "found"
+        assert result["model_description"] == "x"
+    finally:
+        mb_api.model_detail_mod.fetch_model_detail = previous
+        restore_limiter()
+
+
+def test_model_detail_impl_rate_limited_never_reaches_fetch_model_detail():
+    previous_limiter = mb_api._MODEL_DETAIL_LIMITER
+    denying_limiter = rate_limit.MinIntervalLimiter(1000.0)
+    denying_limiter.allow()  # consume the one free call so the NEXT is refused
+    mb_api._MODEL_DETAIL_LIMITER = denying_limiter
+
+    previous = mb_api.model_detail_mod.fetch_model_detail
+
+    def _must_not_run(*a, **kw):
+        raise AssertionError("a rate-limited detail lookup must never reach fetch_model_detail")
+
+    mb_api.model_detail_mod.fetch_model_detail = _must_not_run
+    try:
+        result = mb_api.model_detail_impl({"model_id": 2, "version_id": 5})
+        assert result["reason"] == "rate_limited"
+        assert result["gallery"] == []
+    finally:
+        mb_api.model_detail_mod.fetch_model_detail = previous
+        mb_api._MODEL_DETAIL_LIMITER = previous_limiter
+
+
 # --- download_start_impl / download_progress_impl / download_cancel_impl ---
 
 
@@ -5780,6 +6136,15 @@ ALL_TESTS = [
     test_parse_model_description_extracts_top_level_field,
     test_parse_model_description_converts_html_to_plain_text,
     test_parse_model_description_blank_or_missing_is_none,
+    test_parse_author_gallery_extracts_prompt_and_params,
+    test_parse_author_gallery_falls_back_to_width_height_when_no_size_in_meta,
+    test_parse_author_gallery_empty_meta_degrades_cleanly_no_prompt_no_params,
+    test_parse_author_gallery_no_meta_key_at_all_degrades_cleanly,
+    test_parse_author_gallery_a_raw_lora_tag_in_the_prompt_survives_as_plain_text,
+    test_parse_author_gallery_video_entry_still_gets_the_anim_false_poster_frame_fix,
+    test_parse_author_gallery_skips_entries_with_no_url,
+    test_parse_author_gallery_non_list_input_is_empty_never_raises,
+    test_parse_author_gallery_preserves_civitai_order,
     test_lookup_by_hash_success_on_first_host,
     test_lookup_by_hash_404_is_definitive_and_never_tries_backup_host,
     test_lookup_by_hash_non_404_error_falls_through_to_backup_host,
@@ -5795,6 +6160,9 @@ ALL_TESTS = [
     test_lookup_model_by_id_success_on_first_host,
     test_lookup_model_by_id_404_is_definitive_and_never_tries_backup_host,
     test_lookup_model_by_id_timeout_is_distinct_reason,
+    test_lookup_model_version_by_id_success_on_first_host,
+    test_lookup_model_version_by_id_404_is_definitive_and_never_tries_backup_host,
+    test_lookup_model_version_by_id_timeout_is_distinct_reason,
     test_sha256_file_matches_hashlib_and_streams_in_chunks,
     test_sha256_file_missing_file_raises_oserror,
     test_lookup_model_info_missing_file_is_offline_missing_file,
@@ -6010,6 +6378,16 @@ ALL_TESTS = [
     test_search_impl_marks_a_gated_result_before_any_download_attempt,
     test_search_impl_passes_through_offline_reason_and_still_reports_public_only,
     test_search_impl_rate_limited_never_reaches_the_network,
+    test_fetch_model_detail_happy_path_both_descriptions_and_gallery,
+    test_fetch_model_detail_no_version_description_only_model_description,
+    test_fetch_model_detail_neither_description_present_never_invents_one,
+    test_fetch_model_detail_version_offline_never_calls_model_by_id,
+    test_fetch_model_detail_version_notfound,
+    test_fetch_model_detail_garbage_version_id_is_notfound_with_no_network_call,
+    test_fetch_model_detail_model_description_fetch_offline_degrades_but_still_found,
+    test_fetch_model_detail_no_model_id_at_all_skips_the_fallback_and_is_checked,
+    test_model_detail_impl_happy_path_delegates_to_fetch_model_detail,
+    test_model_detail_impl_rate_limited_never_reaches_fetch_model_detail,
     test_download_start_impl_rejects_unwhitelisted_kind_without_touching_the_manager,
     test_download_start_impl_rejects_hostile_destination_without_touching_the_manager,
     test_download_start_impl_rejects_a_nul_byte_filename_with_a_reason_instead_of_raising,

@@ -890,13 +890,19 @@ const __filename = fileURLToPath(import.meta.url);
 const CONTROLS_DIR = path.dirname(__filename);
 
 // `model_info.mjs` landed in Slice 4, `civitai_search.mjs` in M2,
-// `civitai_modal.mjs` in M2b -- scanned along with the others
-// unconditionally now; kept resilient to a missing file (a `continue`
-// below) only so a future rename/move degrades to "not scanned" rather than
-// a crash. `civitai_modal.mjs` is the toolbar browser -- unscoped by design
-// (it searches every supported kind at once), so it has even less business
+// `civitai_modal.mjs` in M2b, `model_detail_view.mjs` with "The detail
+// view" -- scanned along with the others unconditionally now; kept
+// resilient to a missing file (a `continue` below) only so a future
+// rename/move degrades to "not scanned" rather than a crash.
+// `civitai_modal.mjs` is the toolbar browser -- unscoped by design (it
+// searches every supported kind at once), so it has even less business
 // importing a `lora_*` module than the kind-locked picker/search files do.
-const GUARDED_FILES = ["model_picker.mjs", "civitai_api.mjs", "model_info.mjs", "civitai_search.mjs", "civitai_modal.mjs"];
+// `model_detail_view.mjs` is the ONE detail-view component mounted by BOTH
+// `civitai_search.mjs` and `civitai_modal.mjs` -- same reasoning applies.
+const GUARDED_FILES = [
+  "model_picker.mjs", "civitai_api.mjs", "model_info.mjs", "civitai_search.mjs", "civitai_modal.mjs",
+  "model_detail_view.mjs",
+];
 
 // Matches a relative import of `lora_state.mjs`/`lora_render.mjs`/
 // `lora_interaction.mjs` (or any future `lora_*.mjs`) from THIS directory --
@@ -933,12 +939,12 @@ test("model_picker.mjs / civitai_api.mjs / model_info.mjs / civitai_search.mjs /
       }
     }
   }
-  assert.ok(scanned >= 5, "sanity check: model_picker.mjs, civitai_api.mjs, model_info.mjs, civitai_search.mjs AND civitai_modal.mjs were actually scanned");
+  assert.ok(scanned >= 6, "sanity check: all six guarded files were actually scanned");
   assert.deepEqual(
     violations,
     [],
-    "model_picker.mjs/civitai_api.mjs/model_info.mjs/civitai_search.mjs/civitai_modal.mjs must never import a lora_* module -- " +
-      "these five are the reuse boundary AnimaLoaderPanel imports unchanged at M3 " +
+    "model_picker.mjs/civitai_api.mjs/model_info.mjs/civitai_search.mjs/civitai_modal.mjs/model_detail_view.mjs must never " +
+      "import a lora_* module -- these are the reuse boundary AnimaLoaderPanel imports unchanged at M3 " +
       "(docs/lora-loader-design.md); a lora_* import here means M3 needs an extraction, " +
       "not an import. Violations found:\n  " +
       violations.join("\n  "),

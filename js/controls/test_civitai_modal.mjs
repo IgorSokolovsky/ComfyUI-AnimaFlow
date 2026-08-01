@@ -27,6 +27,7 @@ import {
   _resetModalForTests,
 } from "./civitai_modal.mjs";
 import { _resetDownloadStateForTests, sessionGatedKeys } from "./civitai_search.mjs";
+import { invalidateModelDetail } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
 let failures = 0;
@@ -1118,6 +1119,172 @@ await asyncTest("openCivitaiModal: a filter change re-searches immediately and u
     await settle();
     assert.equal(queries.length, 2, "changing a filter re-searches immediately");
     assert.equal(searchBtn.disabled, true, "a filter-triggered search updates the last-searched text too");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+// =========================================================================
+// The master→detail swap (decision 11) -- one component (`model_detail_view
+// .mjs`), this modal's own mount of it. See `test_civitai_search.mjs`'s own
+// "§7c-ii" section for the PICKER's mount of the identical component.
+// =========================================================================
+
+await asyncTest("openCivitaiModal: a card click swaps the results area for the detail view, keeping the RAIL visible", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 60, versionId: 6, name: "Swap Test" })];
+  invalidateModelDetail(60, 6);
+  const detailCalls = [];
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      detailCalls.push(u);
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: "Write-up.", model_description_checked: true,
+        version_description: null, gallery: [{ url: "g.jpg", nsfw_level: 1, prompt: "a prompt" }],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const railBefore = findAll(handle.panel, "wtn-cm-rail")[0];
+    assert.ok(railBefore, "the rail must exist before opening detail");
+
+    const card = findAll(handle.scrim, "wtn-cm-card")[0];
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(detailCalls.some((u) => u.includes("model_id=60") && u.includes("version_id=6")));
+
+    const rail = findAll(handle.panel, "wtn-cm-rail")[0];
+    assert.ok(rail && rail.parentNode, "the filter rail must STAY visible while the detail view is shown");
+    assert.notEqual(rail.style.display, "none");
+
+    const searchbar = findAll(handle.panel, "wtn-cm-searchbar")[0];
+    assert.equal(searchbar.style.display, "none", "the search bar hides while the detail view is shown");
+
+    const title = findAll(handle.panel, "wtn-dv-title")[0];
+    assert.ok(title, "the swapped-in detail view must render");
+    assert.equal(title.textContent, "Swap Test");
+
+    const gridImg = findAll(handle.panel, "wtn-dv-gallery-grid")[0];
+    assert.ok(gridImg, "the modal's own mount uses the GRID layout, not the picker's vertical one");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: '← back to results' swaps back to the grid, with the rail untouched throughout", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 61, versionId: 7, name: "Back Test" })];
+  invalidateModelDetail(61, 7);
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const card = findAll(handle.scrim, "wtn-cm-card")[0];
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.ok(findAll(handle.panel, "wtn-dv-title")[0], "detail view is showing");
+
+    const backBtn = findAll(handle.panel, "wtn-dv-back")[0];
+    assert.ok(backBtn);
+    backBtn.dispatch("click", { stopPropagation() {} });
+
+    assert.equal(findAll(handle.panel, "wtn-dv-title").length, 0, "the detail view must be gone after 'back'");
+    const gridWrapEl = findAll(handle.panel, "wtn-cm-gridwrap")[0];
+    assert.notEqual(gridWrapEl.style.display, "none", "the grid must be visible again");
+    assert.equal(findAll(handle.scrim, "wtn-cm-card").length, 1, "the original result card is still there");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: the detail view's own download targets the result's DERIVED kind, never a guessed one, and a null kind shows the honest line instead of a button", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const installable = makeResult({ modelId: 62, versionId: 8, name: "Installable", kind: "checkpoints", type: "Checkpoint" });
+  const notInstallable = { ...makeResult({ modelId: 63, versionId: 9, name: "Not Installable", type: "Workflows" }), kind: null };
+  const results = [installable, notInstallable];
+  invalidateModelDetail(62, 8);
+  invalidateModelDetail(63, 9);
+  let startedKind = null;
+  stubFetch(async (url, init) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    if (u.includes("/download/start")) {
+      const payload = JSON.parse(init.body);
+      startedKind = payload.kind;
+      return jsonResponse({ reason: "started", message: "", job_id: "job-detail" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const cards = findAll(handle.scrim, "wtn-cm-card");
+    cards[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+    const downloadBtn = findAll(handle.panel, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(downloadBtn, "the installable result's detail view must show a Download button");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(startedKind, "checkpoints", "the download must target the result's own DERIVED kind");
+
+    const backBtn = findAll(handle.panel, "wtn-dv-back")[0];
+    backBtn.dispatch("click", { stopPropagation() {} });
+
+    cards[1].dispatch("click", { stopPropagation() {} });
+    await settle();
+    const detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    assert.equal(findAll(detailHostEl, "wtn-cm-nokind").length, 1, "a null-kind result's detail view shows the honest line");
+    assert.equal(findAll(detailHostEl, "wtn-cm-action").filter((e) => e.textContent.includes("Download")).length, 0);
 
     handle.close();
   } finally {
