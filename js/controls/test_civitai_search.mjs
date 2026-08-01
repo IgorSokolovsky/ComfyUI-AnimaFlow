@@ -472,6 +472,48 @@ test("BUG (owner, 2026-07-30): the CSS defines an explicit .wtn-cs-action-gated:
   );
 });
 
+test("owner-reported, with a screenshot (2026-08-01): the Delete control and the ✓ installed badge are pinned to the SAME explicit box (height/box-sizing/appearance), so they can never drift apart in size again", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  const css = styleEl.textContent;
+
+  // The shared base rule -- BOTH the badge (<span class="wtn-cs-action
+  // wtn-cs-action-installed">) and Delete (<button class="wtn-cs-action
+  // wtn-cs-action-delete">) carry this class, so an explicit height here
+  // pins them both to the same box regardless of which native element each
+  // one is.
+  assert.match(css, /\.wtn-cs-action\s*\{[^}]*box-sizing:\s*border-box;?/, "must be border-box so height is the FULL box");
+  assert.match(css, /\.wtn-cs-action\s*\{[^}]*height:\s*22px;?/, "must pin an explicit height, not leave it to content/line-height");
+  assert.match(css, /\.wtn-cs-action\s*\{[^}]*appearance:\s*none;?/, "must reset the button's native form-control chrome, which a <span> never had to begin with");
+
+  // Neither state-specific override may reintroduce a size difference --
+  // only colour/border-style/cursor are allowed to vary between them.
+  const installedRule = css.match(/\.wtn-cs-action-installed\s*\{([^}]*)\}/)[1];
+  const deleteRule = css.match(/\.wtn-cs-action-delete\s*\{([^}]*)\}/)[1];
+  for (const rule of [installedRule, deleteRule]) {
+    assert.doesNotMatch(rule, /height|padding|font-size|box-sizing/, "a state-specific override must never touch sizing -- only the shared base rule may");
+  }
+});
+
+test("owner-reported (2026-08-01): a result card signals it opens the detail view -- cursor: pointer, plus a hover elevation", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cs-card\s*\{[^}]*cursor:\s*pointer;?/,
+    "the card must show a pointer cursor -- it is a real click target (§7c-ii)",
+  );
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cs-card:hover\s*\{\s*box-shadow:[^;]+;?\s*\}/,
+    "hovering the card must apply a shadow elevation, distinct from the plain border-hover this pack uses elsewhere",
+  );
+});
+
 // =========================================================================
 // apiKeySignature / reconcileGatedKeysOnApiKeySignature -- the "un-gate on
 // key change" fix (owner, 2026-07-30): "i entered key but it still say key
@@ -1847,9 +1889,9 @@ await asyncTest("openCivitaiSearch: an installed card's own Delete button opens 
     assert.ok(confirmBtn, "the type-to-confirm dialog must open");
     assert.equal(confirmBtn.disabled, true, "must start disabled");
     const input = findAll(doc.body, "wtn-dc-input")[0];
-    input.value = "Installed One.safetensors";
+    input.value = "delete";
     input.dispatch("input");
-    assert.equal(confirmBtn.disabled, false, "the exact filename must enable it");
+    assert.equal(confirmBtn.disabled, false, "typing the confirm word must enable it");
     confirmBtn.dispatch("click", { stopPropagation() {} });
     await settle();
 
@@ -1895,7 +1937,7 @@ await asyncTest("openCivitaiSearch: a write_error while deleting surfaces readab
     deleteBtn.dispatch("click", { stopPropagation() {} });
     const input = findAll(doc.body, "wtn-dc-input")[0];
     const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
-    input.value = "Locked File.safetensors";
+    input.value = "delete";
     input.dispatch("input");
     confirmBtn.dispatch("click", { stopPropagation() {} });
     await settle();
@@ -3134,6 +3176,37 @@ await asyncTest("openModelDetailPanel: an installed version shows the installed 
     assert.equal(badge.textContent, "✓ installed");
     const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent && e.textContent.includes("Download"));
     assert.equal(downloadBtn, undefined, "no download button for an already-installed version");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelDetailPanel: the primary action reads plain '↓ Download', matching the result card's own label (owner, 2026-08-01: not 'Download and use in this row', redundant)", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 54, name: "Label Test" });
+  invalidateModelDetail(54, 1);
+  stubFetch(async (url) => {
+    if (String(url).includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    // version 1 in `makeMultiVersionSearchResult` is available, not installed.
+    const handle = openModelDetailPanel({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 1 });
+    await settle();
+
+    const downloadBtn = findAll(handle.overlay, "wtn-cs-action").find((e) => e.textContent && e.textContent.includes("Download"));
+    assert.ok(downloadBtn, "an available version must offer a download action");
+    assert.equal(downloadBtn.textContent, "↓ Download", "the label must be plain '↓ Download' -- no '& use in this row' redundancy");
 
     handle.close();
   } finally {

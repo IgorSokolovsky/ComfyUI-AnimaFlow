@@ -1174,6 +1174,19 @@ export function buildSettingsPanel(doc) {
   rowHideExt.appendChild(hideExtSwitch);
   body.appendChild(rowHideExt);
 
+  // -- Show Civitai name (Settings -> AnimaFlow) -----------------------------
+  // Owner request, 2026-08-01: "this settings should also be in the node
+  // settings (e.g. where the hide file extension ... etc)" -- the Settings
+  // dialog's own switch (`../shared/settings.mjs`'s `SHOW_CIVITAI_NAME`) was
+  // the only place to change this; it belongs beside its own fellow
+  // display-name switch, immediately after "Hide file extension" -- both
+  // govern what the row's NAME field shows, `Civitai` (below) is a
+  // different concern (whether Civitai is reachable at all).
+  const rowCivitaiName = fieldRow(doc, "Show Civitai name", "Prefer the Civitai display name over the filename, once known");
+  const civitaiNameSwitch = el(doc, "div", "wtn-lora-switch");
+  rowCivitaiName.appendChild(civitaiNameSwitch);
+  body.appendChild(rowCivitaiName);
+
   // -- Civitai (Settings -> AnimaFlow) ---------------------------------------
   // BUG 1 audit: reworded to name the SPECIFIC controls it governs in plain
   // terms (a user has no reason to know what "the header's Browse Civitai
@@ -1207,6 +1220,7 @@ export function buildSettingsPanel(doc) {
     sepInput,
     cacheModeBtns,
     hideExtSwitch,
+    civitaiNameSwitch,
     civitaiSwitch,
     thumbsSwitch,
   };

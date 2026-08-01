@@ -852,9 +852,13 @@ function settingsKeyFor(node) {
 }
 
 /**
- * Opens (or, on a second click, closes) the ⚙ dialog -- the eight settings
- * from §7b, five per-node (in `state`, persisted via `persistState`) and
- * three user-wide (`Settings -> AnimaFlow`, via `getSetting`/`setSetting`).
+ * Opens (or, on a second click, closes) the ⚙ dialog -- nine settings, five
+ * per-node (in `state`, persisted via `persistState`) and four user-wide
+ * (`Settings -> AnimaFlow`, via `getSetting`/`setSetting`) -- §7b's original
+ * three (Hide file extension / Civitai / Show preview thumbnails) plus
+ * `Show Civitai name` (owner, 2026-08-01: it already lived in the Settings
+ * dialog; this is the same one value, read/written through the same
+ * `SETTING_IDS.SHOW_CIVITAI_NAME`, never a second copy of the state).
  * Every edit applies IMMEDIATELY (§7b: "edits apply immediately, ✕ closes"
  * -- no footer buttons at all, so there is nothing to "confirm").
  */
@@ -873,6 +877,10 @@ function openLoraSettings(node, ctx, anchorEl) {
     refs.hideExtSwitch.classList.toggle(
       "wtn-lora-on",
       !!getSetting(SETTING_IDS.HIDE_FILE_EXTENSION, SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION]),
+    );
+    refs.civitaiNameSwitch.classList.toggle(
+      "wtn-lora-on",
+      !!getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]),
     );
     refs.civitaiSwitch.classList.toggle(
       "wtn-lora-on",
@@ -945,6 +953,18 @@ function openLoraSettings(node, ctx, anchorEl) {
     // here must force every row to repaint, not just update the switch's own
     // visual (mirrors the `civitaiSwitch` handler's identical `syncRows` call,
     // just below).
+    syncRows(node, ctx);
+  });
+  refs.civitaiNameSwitch.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const current = getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
+    setSetting(SETTING_IDS.SHOW_CIVITAI_NAME, !current);
+    refreshFromSettings();
+    // Same gap "Hide file extension" already hit (task brief, 2026-07-31,
+    // part B, fixed in 261ca21): the setting alone doesn't touch any row's
+    // DOM, so this must force an immediate repaint -- `paintRow`
+    // (`lora_render.mjs`) is what actually reads `SHOW_CIVITAI_NAME` (via
+    // `displayRowName`), and `syncRows` is what calls it for every row.
     syncRows(node, ctx);
   });
   refs.civitaiSwitch.addEventListener("click", (e) => {

@@ -390,8 +390,15 @@ const CSS = `
 .wtn-cm-gridwrap { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
 /* The master->detail swap's own host (decision 11) -- takes over the SAME
    flex slot searchbar+gridWrap occupy when a card is clicked; the rail
-   stays untouched (it's body's own sibling, not main's). */
-.wtn-cm-detailhost { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
+   stays untouched (it's body's own sibling, not main's). \`min-height: 0\`
+   (owner, 2026-08-01: "the details panel is not scrollable") -- without it
+   this flex child (of \`.wtn-cm-main\`, itself already \`min-height: 0\`)
+   refuses to shrink below the detail content's own natural height, so
+   \`overflow-y: auto\` here never actually engages and the swap just grows
+   \`main\` past the modal's own bound instead of scrolling in place --
+   civitai_search.mjs's own \`.wtn-cs-body\`/\`.wtn-dv-host\` doc comments name
+   this exact trap. */
+.wtn-cm-detailhost { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px; }
 .wtn-cm-empty { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12.5px; padding: 20px 4px; }
 .wtn-cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
 .wtn-cm-card {
@@ -1198,6 +1205,12 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
         loadDetailData();
       },
       onBack: closeDetail,
+      // Owner, 2026-08-01: "back to results ... top navigation bar ...
+      // fixed position ... also show the download button and the version
+      // selection" -- the MODAL's own fixed one-row bar (`model_detail_view
+      // .mjs`'s own `fixedTopBar` doc comment has the full "why" split from
+      // the picker's unchanged `.wtn-dv-header` shape).
+      fixedTopBar: true,
     });
     detailHost.appendChild(built.el);
   }

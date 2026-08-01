@@ -8,11 +8,25 @@
  *
  * ## Why type-to-confirm, not a yes/no
  *
- * The dialog names the exact FILENAME, its SIZE and its FOLDER, and the
- * Delete button stays disabled until the typed text matches the filename
- * exactly -- that is the whole reason this design was chosen over a plain
- * confirm: a mis-click cannot fire it, and typing the name forces actually
- * reading which file is about to go.
+ * The dialog names the exact FILENAME, its SIZE and its FOLDER -- that part
+ * carries the real weight now (below) -- and the Delete button stays
+ * disabled until the typed text is the word `delete` (case-insensitive,
+ * whitespace-trimmed) -- that is the whole reason this design was chosen
+ * over a plain confirm: a mis-click cannot fire it, and typing something
+ * forces a deliberate second action before the file goes.
+ *
+ * **The confirm word is `delete`, not the filename** (owner, simplifying an
+ * earlier "type the exact filename" design while keeping the mechanic
+ * itself): a long/hard-to-type filename made the safeguard annoying rather
+ * than reassuring, and the actual reviewable information -- which file, how
+ * big, which folder -- was ALREADY carried by the dialog's own name/size/
+ * folder lines above the input, never by the act of retyping the name. That
+ * naming is still the part doing the real work; the typed word is only the
+ * "are you sure, deliberately" gate. `delete` is a fixed English word rather
+ * than a filename, so accepting it case-insensitively (`DELETE`/`Delete`/
+ * `delete` all enable the button) is a deliberate, defensible choice --
+ * accepting a mis-cased FILENAME would not have been, since a real filename's
+ * exact case is part of its identity on most filesystems.
  *
  * ## No network call of its own
  *
@@ -127,10 +141,21 @@ export function injectDeleteConfirmStyles(doc) {
 // Pure helpers -- no DOM, no `doc`/`window` reference anywhere below.
 // ---------------------------------------------------------------------------
 
+// The fixed confirm word (this module's own top doc comment: "simplifying
+// ... while keeping the mechanic itself"). A constant, not a literal
+// sprinkled through this file/its callers, so the label/placeholder below
+// and the check itself can never drift apart.
+export const DELETE_CONFIRM_WORD = "delete";
+
 /** Whether the Delete button should be enabled: the typed text (trimmed --
- * only whitespace is forgiven, everything else must match) equals `filename`
- * EXACTLY. `false` for a garbage/empty `filename` (nothing to confirm
- * against) or a non-string `typedText`. Never throws. */
+ * only whitespace is forgiven -- and lower-cased) equals `DELETE_CONFIRM_WORD`
+ * -- CASE-INSENSITIVE (`DELETE`/`Delete`/`delete` all enable it), unlike the
+ * exact-match-only filename check this replaced -- see this module's own top
+ * doc comment for why that distinction is deliberate. `filename` is no longer
+ * what's being MATCHED against, but it's still required (a garbage/empty one
+ * means there is nothing real to confirm against, so this refuses to enable
+ * regardless of what was typed) -- callers keep passing it unchanged. `false`
+ * for a non-string `typedText`. Never throws. */
 export function deleteConfirmEnabled(typedText, filename) {
   if (typeof filename !== "string" || !filename) {
     return false;
@@ -138,7 +163,7 @@ export function deleteConfirmEnabled(typedText, filename) {
   if (typeof typedText !== "string") {
     return false;
   }
-  return typedText.trim() === filename;
+  return typedText.trim().toLowerCase() === DELETE_CONFIRM_WORD;
 }
 
 /** A human-readable file size (`"12.3 MB"`, `"820 KB"`, `"512 B"`) -- mirrors
@@ -257,13 +282,13 @@ export function openDeleteConfirm({ doc, kind, name, sizeBytes, deleteFn, onDele
   dialog.appendChild(warn);
 
   const label = el(targetDoc, "label", "wtn-dc-label");
-  label.textContent = "Type the filename to confirm:";
+  label.textContent = `Type "${DELETE_CONFIRM_WORD}" to confirm:`;
   dialog.appendChild(label);
 
   const input = el(targetDoc, "input", "wtn-dc-input");
   input.type = "text";
   input.spellcheck = false;
-  input.placeholder = name || "";
+  input.placeholder = DELETE_CONFIRM_WORD;
   input.addEventListener("click", (e) => e.stopPropagation());
   dialog.appendChild(input);
 

@@ -16,6 +16,7 @@ import {
   folderLabelFor,
   removedSummary,
   openDeleteConfirm,
+  DELETE_CONFIRM_WORD,
 } from "./delete_confirm.mjs";
 
 let failures = 0;
@@ -47,16 +48,24 @@ async function asyncTest(name, fn) {
 // deleteConfirmEnabled
 // =========================================================================
 
-test("deleteConfirmEnabled: exact match enables, anything else doesn't", () => {
-  assert.equal(deleteConfirmEnabled("my_lora.safetensors", "my_lora.safetensors"), true);
+test("deleteConfirmEnabled: typing the word 'delete' enables it, typing the filename (or anything else) doesn't", () => {
+  assert.equal(deleteConfirmEnabled("delete", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("my_lora.safetensors", "my_lora.safetensors"), false, "the filename itself is no longer the confirm word -- simplified, owner, 2026-08-01");
   assert.equal(deleteConfirmEnabled("my_lora", "my_lora.safetensors"), false);
-  assert.equal(deleteConfirmEnabled("MY_LORA.safetensors", "my_lora.safetensors"), false, "case-sensitive -- an exact match, not a fuzzy one");
+  assert.equal(deleteConfirmEnabled("delet", "my_lora.safetensors"), false, "a near-miss must not enable it");
   assert.equal(deleteConfirmEnabled("", "my_lora.safetensors"), false);
 });
 
+test("deleteConfirmEnabled: case-insensitive -- 'delete' is a fixed English word, not a filename, so DELETE/Delete/delete all enable it (deliberate; see this module's own top doc comment for why that's NOT the same call as accepting a mis-cased filename)", () => {
+  assert.equal(deleteConfirmEnabled("DELETE", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("Delete", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("DeLeTe", "my_lora.safetensors"), true);
+});
+
 test("deleteConfirmEnabled: only whitespace is forgiven (trimmed), never other differences", () => {
-  assert.equal(deleteConfirmEnabled("  my_lora.safetensors  ", "my_lora.safetensors"), true);
-  assert.equal(deleteConfirmEnabled("my_lora.safetensors ", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("  delete  ", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("delete ", "my_lora.safetensors"), true);
+  assert.equal(deleteConfirmEnabled("delete extra", "my_lora.safetensors"), false, "must go back to disabled once anything else is appended");
 });
 
 test("deleteConfirmEnabled: a garbage/empty filename never enables, regardless of typed text", () => {
@@ -295,7 +304,7 @@ test("openDeleteConfirm: names the file, its size and its folder; the Delete but
   handle.close();
 });
 
-test("openDeleteConfirm: the Delete button stays disabled until the exact filename is typed", () => {
+test("openDeleteConfirm: the Delete button stays disabled until the word 'delete' is typed -- NOT the filename", () => {
   const doc = makeDocStub();
   const handle = openDeleteConfirm({
     doc, kind: "loras", name: "my_lora.safetensors", sizeBytes: 100,
@@ -304,15 +313,19 @@ test("openDeleteConfirm: the Delete button stays disabled until the exact filena
   const input = findAll(handle.scrim, "wtn-dc-input")[0];
   const confirmBtn = findAll(handle.scrim, "wtn-dc-confirm")[0];
 
-  input.value = "my_lora";
+  input.value = "my_lora.safetensors";
+  input.dispatch("input");
+  assert.equal(confirmBtn.disabled, true, "typing the FILENAME must no longer enable the button -- simplified to a fixed word");
+
+  input.value = "delet";
   input.dispatch("input");
   assert.equal(confirmBtn.disabled, true, "a partial match must not enable the button");
 
-  input.value = "my_lora.safetensors";
+  input.value = "delete";
   input.dispatch("input");
-  assert.equal(confirmBtn.disabled, false, "the exact filename must enable the button");
+  assert.equal(confirmBtn.disabled, false, "typing 'delete' must enable the button");
 
-  input.value = "my_lora.safetensors extra";
+  input.value = "delete extra";
   input.dispatch("input");
   assert.equal(confirmBtn.disabled, true, "must go back to disabled once the text no longer matches");
 
@@ -339,7 +352,7 @@ await asyncTest("openDeleteConfirm: a successful delete calls onDeleted with the
   });
   const input = findAll(handle.scrim, "wtn-dc-input")[0];
   const confirmBtn = findAll(handle.scrim, "wtn-dc-confirm")[0];
-  input.value = "gone.safetensors";
+  input.value = "delete";
   input.dispatch("input");
   confirmBtn.dispatch("click", { stopPropagation() {} });
   await settle();
@@ -362,7 +375,7 @@ await asyncTest("openDeleteConfirm: a write_error surfaces readably, stays open,
   });
   const input = findAll(handle.scrim, "wtn-dc-input")[0];
   const confirmBtn = findAll(handle.scrim, "wtn-dc-confirm")[0];
-  input.value = "locked.safetensors";
+  input.value = "delete";
   input.dispatch("input");
   confirmBtn.dispatch("click", { stopPropagation() {} });
   await settle();
@@ -371,7 +384,7 @@ await asyncTest("openDeleteConfirm: a write_error surfaces readably, stays open,
   const errorLine = findAll(handle.scrim, "wtn-dc-error")[0];
   assert.match(errorLine.textContent, /permission denied/);
   assert.notEqual(errorLine.style.display, "none", "the error line must be visible");
-  assert.equal(confirmBtn.disabled, false, "the exact filename is still typed -- the button must re-enable, not stay stuck disabled");
+  assert.equal(confirmBtn.disabled, false, "'delete' is still typed -- the button must re-enable, not stay stuck disabled");
   assert.ok(doc.body.children.includes(handle.scrim), "the dialog must stay open after a failure");
 
   handle.close();

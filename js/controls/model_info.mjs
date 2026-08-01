@@ -32,7 +32,19 @@
  *   (collapsible; rendered only when there's a version note)
  *   (an honest "none"/"not looked up yet" line when NEITHER exists — §7d-i)
  *   ── footer ──
- *   [ Done ]   [ ↻ Civitai ]  (only when civitaiEnabled)
+ *   [ Delete|Download ]   [ Done ]   [ ↻ Civitai ]  (only when civitaiEnabled)
+ *
+ *   The leftmost footer action reflects whether the file is still ON DISK
+ *   (`hasFile(kind, name)`, the SAME missing-file check a LoRA row itself
+ *   uses -- `lora_render.mjs`'s own `missing` -- so this panel never
+ *   disagrees with the row it was opened from): present (or unknown, before
+ *   this session's model list has ever loaded) shows `Delete`, unchanged;
+ *   gone shows `Download` -- opening this model's own Civitai VERSION page
+ *   (`civitaiModelUrl`, the same URL "View on Civitai ↗" above already
+ *   computes) in a new tab, but ONLY when a `civitaiRecord` is actually known
+ *   (this session's cache, or a fresh lookup) -- a missing file with no
+ *   known Civitai record renders NEITHER (owner, "a dead button is worse
+ *   than none"). Never both at once.
  *
  * Three sections, separated by rules (identity / triggers / descriptions) —
  * see the design doc's own reasoning for why that's real structure, not
@@ -106,7 +118,7 @@
  */
 
 import {
-  lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, deleteModel, savePreview,
+  lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, deleteModel, savePreview, hasFile,
 } from "./civitai_api.mjs";
 // "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
 // dialog is shared with `civitai_search.mjs`'s own "installed" card rather
@@ -374,6 +386,19 @@ ${THUMB_SKELETON_CSS}
   background: transparent; color: var(--wtn-bad, ${TOKENS.bad}); border: 1px dashed rgba(248,113,113,.4);
 }
 .wtn-mi-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
+/* The missing-file footer's own action (task: "show download instead of
+   delete") -- an \`<a>\`, not a \`<button>\` (it navigates, it doesn't call
+   back into this panel), so \`text-decoration\`/\`box-sizing\`/centring are
+   spelled out explicitly rather than inherited from a button's own native
+   box model -- matches \`.wtn-mi-delete\`'s box (height/padding/radius)
+   exactly so the swap never shifts the footer's layout, but in the info hue
+   (never the bad/red one -- this is not a destructive action). */
+.wtn-mi-download {
+  flex: none; box-sizing: border-box; height: 30px; padding: 0 12px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--wtn-info, ${TOKENS.info}); border: 1px dashed rgba(125,211,252,.4);
+}
+.wtn-mi-download:hover { border-color: var(--wtn-info, ${TOKENS.info}); }
 `;
 
 export function injectStyles(doc) {
@@ -913,32 +938,15 @@ export function openModelInfo({
 
   // ---- footer ---------------------------------------------------------------
   const footer = el(doc, "div", "wtn-mi-footer");
-  // "Remove an installed model" (docs/TODO.md) -- always offered, regardless
-  // of `civitaiEnabled` (a local disk operation, unrelated to the Civitai
-  // setting). Leftmost so `Done` (flex: 1 1 auto) still fills the row.
-  const deleteBtn = el(doc, "button", "wtn-mi-delete");
-  deleteBtn.type = "button";
-  deleteBtn.textContent = "Delete";
-  deleteBtn.title = "Remove this file from disk.";
-  deleteBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    openDeleteConfirm({
-      doc,
-      kind,
-      name,
-      sizeBytes,
-      deleteFn: deleteModel,
-      onDeleted: (delResult) => {
-        logSummary("LoRA info", `${kind}/${name}: deleted (${removedSummary(delResult.removed)})`);
-        invalidateList(kind);
-        if (typeof onDeleted === "function") {
-          onDeleted(kind, name);
-        }
-        handle.close();
-      },
-    });
-  });
-  footer.appendChild(deleteBtn);
+  // The leftmost footer action -- `renderFooterAction`, below -- is a
+  // DYNAMIC subtree (same "dynamic subtree, static shell" convention as
+  // `chipsHost`/`statusHost`/`descHost` above), not built once here, because
+  // it depends on `civitaiRecord`, which isn't known until a lookup resolves
+  // (well after this static shell is built). Leftmost so `Done` (flex: 1 1
+  // auto) still fills the row, exactly as the single static `Delete` button
+  // it replaces already did.
+  const footerActionHost = el(doc, "div");
+  footer.appendChild(footerActionHost);
   const doneBtn = el(doc, "button", "wtn-mi-done");
   doneBtn.type = "button";
   doneBtn.textContent = "Done";
@@ -1166,7 +1174,80 @@ export function openModelInfo({
     });
   }
 
+  /**
+   * The footer's leftmost action (task: "in case we deleted and opened the
+   * lora info we should show download instead of delete now"). `missing`
+   * mirrors `lora_render.mjs`'s own row-level check byte for byte
+   * (`hasFile(kind, name) === false`) -- the SAME missing-file check the row
+   * itself uses, so this panel can never disagree with the row it was
+   * opened from. `null`/`true` (unknown -- this kind's list hasn't resolved
+   * yet this session -- or genuinely present) both keep the existing
+   * `Delete` behaviour unchanged; only a confirmed `false` swaps it.
+   *
+   * A missing file swaps to `Download`, targeting this model's own Civitai
+   * VERSION page (`civitaiModelUrl` -- the SAME url "View on Civitai ↗"
+   * above already computes from the SAME `civitaiRecord`), but ONLY when
+   * `civitaiEnabled` (every other network affordance in this panel is
+   * already gated on it, `CIVITAI_ENABLED`'s own "hides EVERY network
+   * affordance" contract) AND a record is actually known (this session's
+   * cache, or a real lookup). Neither condition met -> renders NEITHER
+   * action, never a dead button (owner: "a dead button is worse than none").
+   *
+   * A dynamic subtree (`footerActionHost`), not a static shell -- rebuilt
+   * every time `renderIdentity` is (this function is called FIRST thing
+   * inside it, ahead of that function's own early returns, so it never gets
+   * skipped): `civitaiRecord`, the one thing Download depends on, isn't
+   * known until a lookup resolves, well after the footer's static shell is
+   * first built.
+   */
+  function renderFooterAction() {
+    footerActionHost.innerHTML = "";
+    const missing = !!kind && !!name && hasFile(kind, name) === false;
+    if (!missing) {
+      const deleteBtn = el(doc, "button", "wtn-mi-delete");
+      deleteBtn.type = "button";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.title = "Remove this file from disk.";
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openDeleteConfirm({
+          doc,
+          kind,
+          name,
+          sizeBytes,
+          deleteFn: deleteModel,
+          onDeleted: (delResult) => {
+            logSummary("LoRA info", `${kind}/${name}: deleted (${removedSummary(delResult.removed)})`);
+            invalidateList(kind);
+            if (typeof onDeleted === "function") {
+              onDeleted(kind, name);
+            }
+            handle.close();
+          },
+        });
+      });
+      footerActionHost.appendChild(deleteBtn);
+      return;
+    }
+    if (!civitaiEnabled) {
+      return; // no network affordance at all when the setting is off (§7b decision 20) -- same as every other one in this panel
+    }
+    const url = civitaiRecord ? civitaiModelUrl(civitaiRecord.model_id, civitaiRecord.version_id) : null;
+    if (!url) {
+      return; // no known Civitai record to download from -- neither action, never a dead button
+    }
+    const downloadLink = el(doc, "a", "wtn-mi-download");
+    downloadLink.href = url;
+    downloadLink.target = "_blank";
+    downloadLink.rel = "noopener noreferrer";
+    downloadLink.textContent = "Download";
+    downloadLink.title = "This file is gone from disk -- open its Civitai version page to download it again.";
+    downloadLink.addEventListener("click", (e) => e.stopPropagation());
+    footerActionHost.appendChild(downloadLink);
+  }
+
   function renderIdentity() {
+    renderFooterAction();
     renderThumb();
 
     // The header TITLE prefers Civitai's own model name (a real display

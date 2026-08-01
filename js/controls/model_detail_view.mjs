@@ -10,9 +10,12 @@
  * master→detail swap of the results area for the modal (decision 11) — but
  * neither owns a second copy of the actual content: identity, version
  * selector, both descriptions, `View on Civitai ↗`, and the gallery all
- * come from `buildModelDetailView` below, parameterised only by `layout`
+ * come from `buildModelDetailView` below, parameterised by `layout`
  * ("vertical" — one column — vs. "grid" — the modal's multi-column gallery,
- * §"The detail view": "same data, same component, two layouts").
+ * §"The detail view": "same data, same component, two layouts") and, since
+ * 2026-08-01, by `fixedTopBar` too (that parameter's own doc comment has the
+ * full "why" — the picker and the modal turned out to want DIFFERENT pinned-
+ * controls shapes, not just different gallery columns).
  *
  * ## Track-agnostic, joining the existing reuse boundary
  *
@@ -295,7 +298,58 @@ export function createLoadGate(maxConcurrent = 4) {
 // ---------------------------------------------------------------------------
 
 const CSS = `
-.wtn-dv { display: flex; flex-direction: column; gap: 2px; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--wtn-ink, ${TOKENS.ink}); }
+/* Owner-reported bug (2026-08-01): "the details panel is not scrollable
+   (didn't it should show also gallery?)" -- the gallery WAS built, just
+   below the fold: this root used to append every section as a flat, un-
+   scrollable column, so a long MODEL DESCRIPTION pushed the gallery past
+   whatever bounded its mount (the picker's own \`.wtn-cs-panel\` -- 76vh,
+   \`overflow: hidden\` -- or the modal's \`.wtn-cm-detailhost\`), and
+   \`overflow: hidden\` on that ancestor CLIPPED it rather than making it
+   reachable. \`.wtn-dv\` is now itself a flex column that FILLS whatever
+   bounded box its mount gives it (\`flex: 1 1 auto; min-height: 0\` -- the
+   trap this whole fix is about: a flex child's default \`min-height: auto\`
+   refuses to shrink below its content, so without this override an
+   \`overflow-y: auto\` further down the chain never actually engages, no
+   matter how correctly IT is written -- \`civitai_search.mjs\`'s own
+   \`.wtn-cs-body\`/\`.wtn-cs-scroll\` doc comment names the exact same trap),
+   split into TWO children, ONE of which never scrolls and the other of
+   which is the ONLY thing that does -- \`.wtn-dv-body\` (\`flex: 1 1 auto;
+   min-height: 0; overflow-y: auto\`) either way. Which pinned shape it pairs
+   with is \`buildModelDetailView\`'s own \`fixedTopBar\` parameter (that
+   function's own doc comment has the full "why" -- the picker's sibling
+   panel and the modal's master->detail swap turned out to want DIFFERENT
+   pinned sets, not the same one): \`.wtn-dv-header\` (identity, \`View on
+   Civitai ↗\`, the version selector, the download action -- the picker) or
+   \`.wtn-dv-topbar\` (ONLY \`← results\`, the version selector, the download
+   action, on one row -- the modal). When \`.wtn-dv\` is mounted WITHOUT a
+   bounded ancestor (the modal's own \`.wtn-cm-detailhost\` already scrolls
+   the whole thing itself -- see that file's own CSS comment), \`.wtn-dv\`
+   simply sizes to its natural content height as before and \`.wtn-dv-body\`'s
+   own \`flex-grow\`/\`overflow-y\` are inert -- harmless, not a second,
+   competing scrollbar. */
+.wtn-dv { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--wtn-ink, ${TOKENS.ink}); }
+.wtn-dv-header { flex: none; display: flex; flex-direction: column; gap: 2px; }
+/* Owner-reported, then corrected to modal-only (2026-08-01): "back to
+   results should not be in the end of the scroll down... it should be in
+   the top navigation bar, which should be fixed position, which should
+   also show the download button and the version selection" -- the MODAL's
+   own shape only (\`fixedTopBar: true\`; the picker keeps \`.wtn-dv-header\`,
+   above, unchanged -- see \`buildModelDetailView\`'s own doc comment for the
+   full "why one component, two pinned shapes"). One row -- the modal is 90%
+   of the viewport, so unlike a narrow anchored panel these three always
+   fit; no wrapping needed. The version selector (\`.wtn-dv-versionrow\`,
+   reused unchanged from the header shape, just re-scoped below) gets the
+   FLEXIBLE width -- its own labels carry a name AND a size and are the most
+   variable of the three -- while \`← results\`/the download action keep
+   their intrinsic size. */
+.wtn-dv-topbar {
+  flex: none; display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+}
+.wtn-dv-topbar .wtn-dv-versionrow { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+.wtn-dv-topbar .wtn-dv-actionhost { flex: none; margin: 0; }
+.wtn-dv-topbar .wtn-dv-back { flex: none; margin-top: 0; align-self: center; }
+.wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .wtn-dv-head { display: flex; gap: 10px; align-items: flex-start; }
 .wtn-dv-thumb {
   width: 58px; height: 58px; flex: none; border-radius: 7px; overflow: hidden;
@@ -341,11 +395,28 @@ ${THUMB_SKELETON_CSS}
 }
 .wtn-dv-gbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wtn-dv-goverlay {
-  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px;
-  padding: 8px; background: linear-gradient(180deg, transparent 40%, rgba(6,8,11,.92) 100%);
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
   opacity: 0; transition: opacity .12s ease; pointer-events: none;
 }
 .wtn-dv-gimg:hover .wtn-dv-goverlay, .wtn-dv-gimg:focus-within .wtn-dv-goverlay { opacity: 1; pointer-events: auto; }
+/* The DRAWER surface (owner, 2026-08-01: "black background with
+   transparency ... and top border (so we know its a drawer above the
+   image)") -- ONE scrim behind prompt+params+copy together (sized to their
+   OWN content, via \`.wtn-dv-goverlay\`'s \`justify-content: flex-end\` above),
+   not the old gradient sweeping most of the image -- that's what makes it
+   read as a drawer rather than text floating on a fade. Owner suggested
+   alpha .1-.2; a screenshot showed exactly why that fails at those values --
+   pale prompt text over a bright/busy generation image is illegible. .65
+   is what actually reads, a deliberate call over the suggested range --
+   dial back down HERE if that turns out too dark once seen live. \`6,8,11\`
+   is this file's own dark tone (the old gradient's own end colour, above),
+   reused rather than invented; the border colour is this pack's own
+   \`--wtn-line\` (js/shared/theme.css), not invented either. */
+.wtn-dv-gdrawer {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px;
+  background: rgba(6, 8, 11, .65);
+  border-top: 1px solid var(--wtn-line, ${TOKENS.line});
+}
 .wtn-dv-gprompt { font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; }
 .wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-dv-gcopy {
@@ -475,14 +546,19 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
   // reveals on hover with nothing in it.
   if (typeof entry.prompt === "string" && entry.prompt) {
     const overlay = el(doc, "div", "wtn-dv-goverlay");
+    // The drawer (this file's own CSS comment on `.wtn-dv-gdrawer`) -- ONE
+    // scrim behind prompt+params+copy, not each painted on the image
+    // directly, so the three read as a single panel rather than three
+    // separate things floating over it.
+    const drawer = el(doc, "div", "wtn-dv-gdrawer");
     const promptEl = el(doc, "div", "wtn-dv-gprompt");
     promptEl.textContent = entry.prompt; // never innerHTML -- a prompt may contain "<lora:x:0.8>" or raw HTML
-    overlay.appendChild(promptEl);
+    drawer.appendChild(promptEl);
     const paramsLabel = galleryParamsLabel(entry.params);
     if (paramsLabel) {
       const paramsEl = el(doc, "div", "wtn-dv-gparams");
       paramsEl.textContent = paramsLabel;
-      overlay.appendChild(paramsEl);
+      drawer.appendChild(paramsEl);
     }
     const copyBtn = el(doc, "button", "wtn-dv-gcopy");
     copyBtn.type = "button";
@@ -492,7 +568,8 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
       e.stopPropagation();
       onCopyPrompt(entry.prompt);
     });
-    overlay.appendChild(copyBtn);
+    drawer.appendChild(copyBtn);
+    overlay.appendChild(drawer);
     card.appendChild(overlay);
   }
   return card;
@@ -528,6 +605,24 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *   differ -- "returns to the row" vs. "lands in the derived folder").
  * @param {(versionId: number) => void} [opts.onVersionChange]
  * @param {() => void} [opts.onBack] - "← results"/"← back to results".
+ * @param {boolean} [opts.fixedTopBar] - which PINNED shape this mount wants
+ *   (owner, 2026-08-01, corrected to per-mount the same day -- "what i
+ *   mentioned was for the browser modal"): `false` (default, the picker's
+ *   own sibling panel) keeps identity/`View on Civitai ↗`/the version
+ *   selector/the download action together in `.wtn-dv-header`, with `onBack`
+ *   rendered down in the scrolling `.wtn-dv-body` (it just closes this
+ *   panel, not a real "back" step -- not one of the three controls the
+ *   fixed bar is for). `true` (the modal's master→detail swap) instead pins
+ *   ONLY `← results` + the version selector + the download action, together,
+ *   on one row, in `.wtn-dv-topbar` -- the modal's own actual complaint was
+ *   that reaching `← results` meant scrolling past an entire model
+ *   description first; identity/`View on Civitai ↗` move into the
+ *   scrolling body in this shape. An explicit, caller-set parameter rather
+ *   than an inference from `layout` -- the two happen to correlate one-to-
+ *   one today (each mount always passes the same `layout`+`fixedTopBar`
+ *   pair), but they answer different questions (gallery column count vs.
+ *   which controls are pinned) and a THIRD mount is not entitled to assume
+ *   they still agree.
  * @param {(text: string) => (void|Promise<void>)} [opts.onCopyPrompt] -
  *   defaults to `navigator.clipboard.writeText`, injectable for tests.
  * @param {number} [opts.thumbRetryBackoffMs]
@@ -549,6 +644,7 @@ export function buildModelDetailView({
   buildActionEl,
   onVersionChange,
   onBack,
+  fixedTopBar = false,
   onCopyPrompt = defaultCopyToClipboard,
   thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
   galleryConcurrency = 4,
@@ -559,10 +655,44 @@ export function buildModelDetailView({
   const isStale = () => stale;
 
   const root = el(doc, "div", `wtn-dv wtn ${layout === "grid" ? "wtn-dv-grid" : "wtn-dv-vertical"}`);
+  // The pinned/scrolling split (this file's own CSS comment, "Owner-reported
+  // bug (2026-08-01)") -- `topControls` never scrolls; `bodyHost` is the ONE
+  // region that does. Named `bodyHost`, not `body`, because the description
+  // section below already uses `body` for each description's own text
+  // element -- two different things, kept from colliding on one name.
+  // `topControls` carries whichever CSS class matches `fixedTopBar`
+  // (`buildModelDetailView`'s own doc comment on that parameter has the
+  // full "why" for the two shapes) -- everything appended into it below is
+  // otherwise IDENTICAL code for both; only the identity block and the back
+  // affordance change which host they append to.
+  const topControls = el(doc, "div", fixedTopBar ? "wtn-dv-topbar" : "wtn-dv-header");
+  const bodyHost = el(doc, "div", "wtn-dv-body");
+  root.appendChild(topControls);
+  root.appendChild(bodyHost);
+  // Identity (thumbnail/title/creator/badges/stats) and `View on Civitai ↗`
+  // are part of the pinned header shape, but scroll away with everything
+  // else in the topbar shape (only `← results`/version/download are pinned
+  // there) -- `identityHost` is simply whichever of the two that is.
+  const identityHost = fixedTopBar ? bodyHost : topControls;
 
   const safeResult = result && typeof result === "object" ? result : {};
   const view = resolveVersionView(safeResult, versionId);
   const versions = Array.isArray(safeResult.versions) ? safeResult.versions : [];
+
+  // ---- the topbar shape's own "← results", built FIRST so it can be the
+  // FIRST child appended below (task brief's own order: back, version,
+  // download) -- the header shape's back affordance is built later, in its
+  // usual place at the end of the scrolling body, unchanged. ---------------
+  if (fixedTopBar && typeof onBack === "function") {
+    const backBtn = el(doc, "button", "wtn-dv-back");
+    backBtn.type = "button";
+    backBtn.textContent = "← back to results";
+    backBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onBack();
+    });
+    topControls.appendChild(backBtn);
+  }
 
   // ---- identity ----------------------------------------------------------
   const head = el(doc, "div", "wtn-dv-head");
@@ -610,7 +740,7 @@ export function buildModelDetailView({
     identity.appendChild(statsEl);
   }
   head.appendChild(identity);
-  root.appendChild(head);
+  identityHost.appendChild(head);
 
   // ---- View on Civitai ↗ (§7d: links the SELECTED VERSION, never the
   // model's bare landing page) ---------------------------------------------
@@ -621,10 +751,10 @@ export function buildModelDetailView({
     civLink.target = "_blank";
     civLink.rel = "noopener noreferrer";
     civLink.textContent = "View on Civitai ↗";
-    root.appendChild(civLink);
+    identityHost.appendChild(civLink);
   }
 
-  root.appendChild(el(doc, "hr", "wtn-dv-sep"));
+  identityHost.appendChild(el(doc, "hr", "wtn-dv-sep"));
 
   // ---- version selector + primary action ---------------------------------
   const versionRow = el(doc, "div", "wtn-dv-versionrow");
@@ -654,7 +784,7 @@ export function buildModelDetailView({
     }
   });
   versionRow.appendChild(versionSel);
-  root.appendChild(versionRow);
+  topControls.appendChild(versionRow);
 
   const actionHost = el(doc, "div", "wtn-dv-actionhost");
   if (typeof buildActionEl === "function") {
@@ -663,7 +793,7 @@ export function buildModelDetailView({
       actionHost.appendChild(actionEl);
     }
   }
-  root.appendChild(actionHost);
+  topControls.appendChild(actionHost);
 
   // ---- both descriptions, each under its OWN label (§7d-i) ---------------
   const d = detail && typeof detail === "object" ? detail : {};
@@ -676,61 +806,66 @@ export function buildModelDetailView({
   if (descView.model) {
     const heading = el(doc, "div", "wtn-dv-sechead");
     heading.textContent = "Model Description";
-    root.appendChild(heading);
+    bodyHost.appendChild(heading);
     const body = el(doc, "div", "wtn-dv-desc");
     body.textContent = descView.model; // never innerHTML -- already plain text (html_to_text ran server-side)
-    root.appendChild(body);
+    bodyHost.appendChild(body);
   }
   if (descView.version) {
     const heading = el(doc, "div", "wtn-dv-sechead");
     heading.textContent = "Version Description";
-    root.appendChild(heading);
+    bodyHost.appendChild(heading);
     const body = el(doc, "div", "wtn-dv-desc");
     body.textContent = descView.version;
-    root.appendChild(body);
+    bodyHost.appendChild(body);
   }
   if (descView.emptyMessage) {
     const empty = el(doc, "div", "wtn-dv-desc-empty");
     empty.textContent = descView.emptyMessage;
-    root.appendChild(empty);
+    bodyHost.appendChild(empty);
   }
 
-  root.appendChild(el(doc, "hr", "wtn-dv-sep"));
+  bodyHost.appendChild(el(doc, "hr", "wtn-dv-sep"));
 
   // ---- gallery (author's own -- see this file's own top doc comment for
   // why the heading reads GALLERY, not "community images") ----------------
   const galleryHeading = el(doc, "div", "wtn-dv-sechead");
   galleryHeading.textContent = "Gallery";
-  root.appendChild(galleryHeading);
+  bodyHost.appendChild(galleryHeading);
 
   const gallery = Array.isArray(d.gallery) ? d.gallery : [];
   const gState = galleryState(gallery, browsingLevel, view.nsfw_level);
   if (d.status === "loading" && gallery.length === 0) {
     const loadingEl = el(doc, "div", "wtn-dv-gallery-empty");
     loadingEl.textContent = "Loading gallery…";
-    root.appendChild(loadingEl);
+    bodyHost.appendChild(loadingEl);
   } else if (gState === "locked") {
     const lockedEl = el(doc, "div", "wtn-dv-gallery-locked");
     lockedEl.textContent = "Gallery hidden — above your browsing level.";
-    root.appendChild(lockedEl);
+    bodyHost.appendChild(lockedEl);
   } else {
     const visible = visibleGalleryEntries(gallery, browsingLevel);
     if (visible.length === 0) {
       const emptyEl = el(doc, "div", "wtn-dv-gallery-empty");
       emptyEl.textContent = "No gallery images for this version.";
-      root.appendChild(emptyEl);
+      bodyHost.appendChild(emptyEl);
     } else {
       const grid = el(doc, "div", layout === "grid" ? "wtn-dv-gallery-grid" : "wtn-dv-gallery-vertical");
       const gate = createLoadGate(galleryConcurrency);
       for (const entry of visible) {
         grid.appendChild(buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs: thumbRetryBackoffMs, gate }));
       }
-      root.appendChild(grid);
+      bodyHost.appendChild(grid);
     }
   }
 
-  // ---- back affordance ----------------------------------------------------
-  if (typeof onBack === "function") {
+  // ---- back affordance -- HEADER shape only (stays in the SCROLLING body,
+  // never pinned there: the picker's own "back" just closes an already-
+  // sibling panel, not a real navigation step, so it isn't one of the
+  // header shape's pinned controls). The topbar shape built its OWN
+  // `← back to results` FIRST, at the top of this function, as the first
+  // child of `.wtn-dv-topbar` -- see that block's own comment. ------------
+  if (!fixedTopBar && typeof onBack === "function") {
     const backBtn = el(doc, "button", "wtn-dv-back");
     backBtn.type = "button";
     backBtn.textContent = "← back to results";
@@ -738,7 +873,7 @@ export function buildModelDetailView({
       e.stopPropagation();
       onBack();
     });
-    root.appendChild(backBtn);
+    bodyHost.appendChild(backBtn);
   }
 
   return {

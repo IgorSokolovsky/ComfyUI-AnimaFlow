@@ -2301,9 +2301,9 @@ await asyncTest("openModelInfo: the Delete button opens the type-to-confirm dial
     assert.match(findAll(doc.body, "wtn-dc-meta")[0].textContent, /models\/loras\/detail/);
 
     const input = findAll(doc.body, "wtn-dc-input")[0];
-    input.value = name;
+    input.value = "delete";
     input.dispatch("input");
-    assert.equal(confirmBtn.disabled, false, "the exact filename enables it");
+    assert.equal(confirmBtn.disabled, false, "typing the confirm word enables it");
     confirmBtn.click();
     await settle();
 
@@ -2349,7 +2349,7 @@ await asyncTest("openModelInfo: a write_error while deleting surfaces readably i
     findAll(handle.overlay, "wtn-mi-delete")[0].click();
     const input = findAll(doc.body, "wtn-dc-input")[0];
     const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
-    input.value = name;
+    input.value = "delete";
     input.dispatch("input");
     confirmBtn.click();
     await settle();

@@ -28,6 +28,7 @@ import {
   galleryParamsLabel,
   createLoadGate,
   buildModelDetailView,
+  injectStyles,
 } from "./model_detail_view.mjs";
 
 let failures = 0;
@@ -505,6 +506,212 @@ test("buildModelDetailView: the gallery lazy-loads through a REAL concurrency ga
   assert.ok(firstImg, "the first box should already have an <img> attached");
   firstImg.onload();
   assert.equal(withImg().length, 3, "a freed slot must let the next queued image start immediately");
+});
+
+// =========================================================================
+// Owner-reported bug (2026-08-01): "the details panel is not scrollable
+// (didn't it should show also gallery?)" -- the gallery WAS built, just
+// unreachable. There is no real CSS layout engine in a plain-`node` test (no
+// jsdom here), so a bounded scroll box can't be measured directly -- these
+// assert the SHAPE that makes one possible instead: the pinned/scrolling
+// split actually exists in the DOM (not merely in the stylesheet text), AND
+// -- the coordinator's own warning, verbatim -- every ancestor in the chain
+// carries the `min-height: 0` a flex child needs to ever shrink below its
+// content, not just the leaf's `overflow-y: auto` (a test asserting ONLY
+// that property would pass with the bug fully present, since a flex child's
+// default `min-height: auto` silently defeats it further up the chain).
+// =========================================================================
+
+test("buildModelDetailView: identity/civlink/version-selector/download action are pinned in .wtn-dv-header; descriptions/gallery/back are in the scrolling .wtn-dv-body -- not one flat column", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [{ url: "v3.jpg", nsfw_level: 1 }], modelDescription: "Model write-up.", modelDescriptionChecked: true },
+    buildActionEl: (d) => {
+      const b = d.createElement("button");
+      b.className = "wtn-cs-action";
+      return b;
+    },
+    onBack: () => {},
+  });
+  const header = findAll(el, "wtn-dv-header")[0];
+  const body = findAll(el, "wtn-dv-body")[0];
+  assert.ok(header, "a pinned header region must exist");
+  assert.ok(body, "a scrolling body region must exist");
+  // Root's only two children are these two regions, in this order -- header
+  // first (pinned, always visible), body second (the part that scrolls).
+  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-header", "wtn-dv-body"]);
+
+  // The pinned set, verbatim (task brief): identity, View on Civitai, the
+  // version selector, the download action.
+  assert.equal(findAll(header, "wtn-dv-title").length, 1, "identity belongs in the header");
+  assert.equal(findAll(header, "wtn-dv-civlink").length, 1, "View on Civitai belongs in the header");
+  assert.equal(findAll(header, "wtn-dv-version-sel").length, 1, "the version selector belongs in the header");
+  assert.equal(findAll(header, "wtn-cs-action").length, 1, "the download action belongs in the header");
+
+  // Everything that can grow unboundedly (a long description, a big
+  // gallery) belongs in the SCROLLING body, never the pinned header.
+  assert.equal(findAll(body, "wtn-dv-desc").length, 1, "descriptions belong in the scrolling body");
+  assert.equal(findAll(body, "wtn-dv-gimg").length, 1, "the gallery belongs in the scrolling body");
+  assert.equal(findAll(body, "wtn-dv-back").length, 1, "the back affordance belongs in the scrolling body");
+  assert.equal(findAll(header, "wtn-dv-desc").length, 0, "a description must never leak into the pinned header");
+  assert.equal(findAll(header, "wtn-dv-gimg").length, 0, "the gallery must never leak into the pinned header");
+});
+
+test("BUG (owner, 2026-08-01): every ancestor in the scroll chain carries min-height: 0, not just .wtn-dv-body's own overflow-y -- the exact trap that silently defeats it", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  const css = styleEl.textContent;
+
+  // The leaf: bounded AND scrollable. Asserting `overflow-y: auto` ALONE
+  // here is exactly the insufficient test the task brief warns about --
+  // paired with `min-height: 0` and `flex: 1 1 auto` so it actually has a
+  // bounded box to scroll inside of.
+  assert.match(
+    css,
+    /\.wtn-dv-body\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;?/,
+    "the scrolling body must be flex: 1 1 auto + min-height: 0 + overflow-y: auto together",
+  );
+  // The header must never grow/shrink and steal the body's space.
+  assert.match(css, /\.wtn-dv-header\s*\{[^}]*flex:\s*none;?/, "the pinned header must be flex: none");
+  // The root itself -- the ancestor a step above BOTH -- must also carry
+  // min-height: 0, or a bounded mount (the picker's own capped panel) could
+  // never hand a bounded box down to `.wtn-dv-body` in the first place.
+  assert.match(
+    css,
+    /\.wtn-dv\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;?/,
+    "the root itself must also be min-height: 0 so a bounded mount can actually constrain it",
+  );
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01): the gallery's prompt-on-hover overlay should
+// read as a DRAWER sitting over the image (a semi-transparent black scrim +
+// a top border), not text floating on a gradient.
+// =========================================================================
+
+test("owner-reported (2026-08-01): the gallery prompt/params/copy sit inside ONE drawer surface -- a dark, legible scrim with a top border, not the old gradient", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [{ url: "v3.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const drawer = findAll(el, "wtn-dv-gdrawer")[0];
+  assert.ok(drawer, "the prompt/params/copy must be wrapped in a single drawer element");
+  // Everything that used to sit loose in the overlay now lives INSIDE the drawer.
+  assert.equal(findAll(drawer, "wtn-dv-gprompt").length, 1);
+  assert.equal(findAll(drawer, "wtn-dv-gcopy").length, 1);
+
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const drawerRule = css.match(/\.wtn-dv-gdrawer\s*\{([^}]*)\}/)[1];
+  // A legible, near-opaque scrim -- NOT the owner's own suggested .1-.2
+  // (a screenshot showed that range is illegible over a busy image); a black
+  // background whose alpha channel is comfortably above .5.
+  const alphaMatch = drawerRule.match(/rgba\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)/);
+  assert.ok(alphaMatch, "the drawer's background must be a black rgba(...) scrim");
+  assert.ok(Number(alphaMatch[1]) >= 0.5, "the scrim must be well above the owner's own suggested .1-.2 -- that range is illegible over a bright/busy image");
+  // A top border, matching this pack's own line-colour vocabulary
+  // (js/shared/theme.css's --wtn-line), never an invented colour.
+  assert.match(drawerRule, /border-top:\s*1px solid var\(--wtn-line,/, "the drawer edge must use this pack's own --wtn-line token");
+});
+
+test("owner-reported (2026-08-01): an image with no meta still shows no drawer at all -- the fix must not force one onto every image", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [{ url: "a.jpg", nsfw_level: 1 }]; // no `prompt` key
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  assert.equal(findAll(el, "wtn-dv-gdrawer").length, 0, "no prompt means no drawer, exactly like no overlay before this fix");
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01), corrected same day to modal-only: "back to
+// results ... should be in the top navigation bar, which should be fixed
+// position, which should also show the download button and the version
+// selection." `fixedTopBar: true` is the MODAL's own shape -- `← results` +
+// version selector + download, pinned together on one row, everything else
+// (identity, View on Civitai, descriptions, gallery) scrolls beneath. The
+// picker's default (`fixedTopBar` omitted/false) keeps the ORIGINAL header
+// shape, covered by the "identity/civlink/version-selector/download action
+// are pinned in .wtn-dv-header" test above -- unchanged by this.
+// =========================================================================
+
+test("buildModelDetailView: fixedTopBar -- '← results', the version selector and the download action are ALL pinned together in .wtn-dv-topbar, on one row, reachable without scrolling; everything else (identity, View on Civitai, descriptions, gallery) is in the scrolling body", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, fixedTopBar: true,
+    detail: { status: "loaded", gallery: [{ url: "v3.jpg", nsfw_level: 1 }], modelDescription: "Model write-up.", modelDescriptionChecked: true },
+    buildActionEl: (d) => {
+      const b = d.createElement("button");
+      b.className = "wtn-cs-action";
+      return b;
+    },
+    onBack: () => {},
+  });
+  const topbar = findAll(el, "wtn-dv-topbar")[0];
+  const body = findAll(el, "wtn-dv-body")[0];
+  assert.ok(topbar, "a fixed top bar must exist when fixedTopBar is true");
+  assert.ok(body, "a scrolling body region must still exist");
+  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-topbar", "wtn-dv-body"], "the topbar is the FIRST child, pinned above the scrolling body");
+
+  // All three controls, reachable without ever touching the scrolling body.
+  assert.equal(findAll(topbar, "wtn-dv-back").length, 1, "'← results' belongs in the fixed topbar, not the scroll");
+  assert.equal(findAll(topbar, "wtn-dv-version-sel").length, 1, "the version selector belongs in the fixed topbar");
+  assert.equal(findAll(topbar, "wtn-cs-action").length, 1, "the download action belongs in the fixed topbar");
+  // Order, per the task brief: back, then version, then download.
+  const topbarClasses = topbar.children.map((c) => c.className);
+  assert.deepEqual(topbarClasses, ["wtn-dv-back", "wtn-dv-versionrow", "wtn-dv-actionhost"]);
+
+  // Identity/View on Civitai/descriptions/gallery all moved INTO the
+  // scrolling body -- the modal's actual complaint was scrolling past a
+  // whole description just to reach '← results', so none of these three
+  // controls may be duplicated or left behind in the body either.
+  assert.equal(findAll(body, "wtn-dv-title").length, 1, "identity now scrolls, in the topbar shape");
+  assert.equal(findAll(body, "wtn-dv-desc").length, 1, "descriptions scroll, as before");
+  assert.equal(findAll(body, "wtn-dv-gimg").length, 1, "the gallery scrolls, as before");
+  assert.equal(findAll(body, "wtn-dv-back").length, 0, "'← results' must not ALSO appear in the scrolling body");
+  assert.equal(findAll(body, "wtn-dv-version-sel").length, 0, "the version selector must not ALSO appear in the scrolling body");
+  assert.equal(findAll(body, "wtn-cs-action").length, 0, "the download action must not ALSO appear in the scrolling body");
+});
+
+test("buildModelDetailView: fixedTopBar without onBack simply omits '← results' -- never a dead/disabled button", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({ doc, result, versionId: 3, browsingLevel: 1, fixedTopBar: true });
+  assert.equal(findAll(el, "wtn-dv-back").length, 0);
+});
+
+test("BUG (owner, 2026-08-01, modal-only): .wtn-dv-topbar is pinned (flex: none) and its version selector gets the flexible width -- the buttons keep their intrinsic size", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  assert.match(css, /\.wtn-dv-topbar\s*\{[^}]*flex:\s*none;?/, "the fixed bar itself must never grow/shrink");
+  assert.match(
+    css,
+    /\.wtn-dv-topbar \.wtn-dv-versionrow\s*\{[^}]*flex:\s*1 1 auto;?/,
+    "the version selector's own row must be the ONE flexible-width element in the bar",
+  );
+  assert.match(
+    css,
+    /\.wtn-dv-topbar \.wtn-dv-actionhost\s*\{[^}]*flex:\s*none;?/,
+    "the download action must keep its intrinsic size, not stretch",
+  );
+  assert.match(
+    css,
+    /\.wtn-dv-topbar \.wtn-dv-back\s*\{[^}]*flex:\s*none;?/,
+    "'← results' must keep its intrinsic size, not stretch",
+  );
 });
 
 const total = count;

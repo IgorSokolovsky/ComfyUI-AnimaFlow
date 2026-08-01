@@ -216,6 +216,18 @@ const CSS = `
 .wtn-cs-pinned { flex: none; }
 .wtn-cs-scroll { flex: 1 1 auto; min-height: 120px; /* keep in sync with MIN_RESULTS_HEIGHT_PX below */ overflow-y: auto; margin: 0 -2px; padding: 0 2px; }
 
+/* §7c-ii's detail panel (\`openModelDetailPanel\`, below) reuses \`.wtn-cs-panel\`
+   itself (same 76vh-capped, \`overflow: hidden\` box this file's own results
+   panel uses) -- \`.wtn-dv-host\` is the ONE thing that needs its OWN rule:
+   the SAME \`flex: 1 1 auto; min-height: 0\` this file's own \`.wtn-cs-body\`
+   comment already explains, one level up, so \`model_detail_view.mjs\`'s own
+   \`.wtn-dv-body\` (its own internal pinned-header/scrolling-body split) ever
+   receives a genuinely bounded box to scroll inside of, rather than the
+   panel's \`overflow: hidden\` silently CLIPPING whatever grew past 76vh
+   (owner, 2026-08-01: "the details panel is not scrollable... it should
+   show also gallery" -- the gallery was already built, just clipped off). */
+.wtn-dv-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
 /* An explicit \`Search\` button beside the field (§7c-i, "not a debounce") --
    \`.wtn-cs-searchrow\` holds both, so the row grows/shrinks together; the
    field itself keeps its own \`margin-bottom\` moved onto the row. */
@@ -282,10 +294,32 @@ const CSS = `
    list of 12px cards). */
 .wtn-cs-loading-more { padding: 8px 6px; font-size: 10.5px; }
 
+/* Owner-reported (2026-08-01): a card click opens the detail view (§7c-ii),
+   but nothing said so -- it read as static content. \`cursor: pointer\`
+   names the affordance; the hover elevation gives it visible feedback.
+   Every card built by this file IS clickable -- \`openCivitaiSearch\`'s
+   own \`kind\` is a required argument, never \`null\` (unlike the toolbar
+   modal's unscoped search), so there is no "inert card" state here to
+   withhold the pointer from.
+   \`box-shadow\` on hover, not just a border-color change (\`model_picker.mjs\`'s
+   own \`.wtn-mp-row:hover\`, this pack's only other row-hover precedent) --
+   this pack's ONE existing shadow token, \`--wtn-shadow\`, is tuned for a
+   whole FLOATING panel/tooltip (\`0 10px 28px rgba(0,0,0,.55)\`, this file's
+   own \`.wtn-cs-panel\`), disproportionate for a ~52px-tall row in a list --
+   so this is a deliberately smaller, new value, scoped to this one
+   selector rather than a pack-wide token. The version \`<select>\`/Download/
+   Delete controls inside the card already \`stopPropagation\` their own
+   clicks (\`buildCard\`'s own comment, below) and keep their OWN colored
+   borders/backgrounds regardless of hover -- this elevation is on the
+   CARD's own box only, never copied onto them, so hovering the card never
+   reads as "the button is part of the same single target" the way, say, a
+   card-wide background swap under everything would. */
 .wtn-cs-card {
   display: flex; gap: 8px; align-items: center; padding: 6px; border-radius: 7px;
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); background: var(--wtn-surface-2, ${TOKENS.surface2});
+  cursor: pointer; transition: box-shadow .12s ease;
 }
+.wtn-cs-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.4); }
 .wtn-cs-thumb {
   flex: none; width: 40px; height: 40px; border-radius: 5px; overflow: hidden;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
@@ -359,10 +393,31 @@ ${THUMB_SKELETON_CSS}
 .wtn-cs-bar { height: 4px; border-radius: 2px; background: var(--wtn-console, ${TOKENS.console}); overflow: hidden; margin-top: 4px; }
 .wtn-cs-bar i { display: block; height: 100%; background: var(--wtn-accent, ${TOKENS.accent}); }
 
+/* Owner-reported, with a screenshot (2026-08-01): on an installed card, the
+   Delete control read visibly taller/larger than the ✓ installed badge
+   beside it, even though both already share THIS one class. Checked: font-
+   size, padding and border are the exact same declaration for both --
+   \`buildCard\` gives the badge \`<span class="wtn-cs-action wtn-cs-action-
+   installed">\` and Delete \`<button class="wtn-cs-action wtn-cs-action-
+   delete">\`, so nothing here differs between them on paper. The actual
+   culprit is the ELEMENT, not a property: a plain \`<span>\`'s rendered box is
+   exactly padding + line-height + border, but a \`<button>\` also carries the
+   browser's own native form-control chrome (\`appearance: auto\`) -- which
+   does not obey this padding/line-height the way ordinary text does, so the
+   identical CSS produces a taller box on the button. Rather than guess a
+   padding number until the two happen to match, this pins BOTH to the same
+   explicit box: a fixed \`height\`, flex-centred content (so line-height no
+   longer decides the vertical size at all), and \`appearance: none\` to stop
+   the button from adding anything outside that box. \`box-sizing: border-box\`
+   makes \`height\` the FULL box (border included), so the badge (which was
+   already sized by content, never explicitly) and the button now measure
+   identically by construction, not by coincidence. */
 .wtn-cs-action {
-  flex: none; font: 10.5px var(--wtn-font-mono, monospace); padding: 4px 9px; border-radius: 5px; cursor: pointer;
+  flex: none; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  height: 22px; font: 10.5px var(--wtn-font-mono, monospace); padding: 0 9px; border-radius: 5px; cursor: pointer;
   background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent});
   border: 1px solid var(--wtn-accent, ${TOKENS.accent});
+  appearance: none; -webkit-appearance: none; margin: 0;
 }
 .wtn-cs-action:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-cs-action:disabled { opacity: .5; cursor: default; }
@@ -827,6 +882,21 @@ export function downloadTerminalMessage(status, response) {
  * sliver") -- a couple of result cards' worth (`.wtn-cs-card` is ~52px tall
  * incl. gap), never zero. */
 export const MIN_RESULTS_HEIGHT_PX = 120;
+
+/** `openModelDetailPanel`'s own floor, passed to `handle.reposition()` the
+ * same way `openCivitaiSearch` hands it `resultsFloorPx()` (owner,
+ * 2026-08-01: "cap the panel's height"). This panel mounts with `placement:
+ * "right"` -- `overlay.mjs`'s own `reposition()` never applies a height CAP
+ * on that placement (only `"below"` ever does; `"right"` only decides
+ * left/right flip + the final viewport clamp), so this floor does not by
+ * itself bound the panel -- `.wtn-cs-panel`'s own static `max-height: 76vh`
+ * (inherited by this panel too, `openModelDetailPanel`'s own `panel` class
+ * list) already does that job. Still passed on every reposition -- for
+ * parity with `openCivitaiSearch`, and so `lastSizeOpts` is never left
+ * `undefined` on this overlay's own resize-observer re-place (`overlay.mjs`'s
+ * own top doc comment, "A THIRD layer") -- future-proofing against a
+ * `placement` change that WOULD start reading it. */
+export const MIN_DETAIL_HEIGHT_PX = 220;
 
 /** Matches `overlay.mjs`'s own "below" placement gap (`rect.bottom + 6`) --
  * kept in agreement rather than guessing independently. Re-exports
@@ -2172,8 +2242,17 @@ export function openCivitaiSearch({
 // -- this function is purely the MOUNT: the overlay shell, the fetch/
 // re-render loop for the two extra fields a search result doesn't already
 // carry (`civitai_api.mjs`'s `fetchModelDetail`), and this surface's own
-// primary action ("↓ Download & use in this row" -- returns to the row that
-// opened it, §7c, unlike the modal's destination-derived download).
+// primary action -- labelled plain "↓ Download" (owner, 2026-08-01: "not
+// `Download and use in this row`, this is redundant -- only `Download`",
+// matching the result card's own label exactly), but the BEHAVIOUR named by
+// the old, longer label is unchanged: this still downloads AND selects the
+// result into the row that opened it (§7c's own table -- the node-embedded
+// surfaces are pickers, and a picker returns a value to its caller), unlike
+// the modal's destination-derived download, which has no row to select
+// into at all. Keep this comment if the label is ever touched again -- a
+// shorter label reads as "just downloads" unless something says otherwise,
+// and the selection-into-row behaviour is not a feature to rediscover and
+// "restore" by someone who only read the button text.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2216,7 +2295,7 @@ export function openModelDetailPanel({
   injectStyles(doc);
 
   const panel = el(doc, "div", "wtn-cs-panel wtn-dv-panel wtn");
-  const host = el(doc, "div");
+  const host = el(doc, "div", "wtn-dv-host");
   panel.appendChild(host);
 
   // `versionId` may be `undefined` (a card whose own version <select> the
@@ -2286,7 +2365,12 @@ export function openModelDetailPanel({
     const missingFile = !view.file_name || !view.download_url;
     const btn = el(d, "button", "wtn-cs-action");
     btn.type = "button";
-    btn.textContent = "↓ Download & use in this row"; // primary action -- returns to the row that opened it (§7c)
+    // "↓ Download" -- matches the result card's own label (owner, 2026-08-01:
+    // "not `Download and use in this row`, this is redundant -- only
+    // `Download`"). Behaviour UNCHANGED -- see this function's own top doc
+    // comment for why the shorter label still means "downloads and selects
+    // into the row that opened this panel."
+    btn.textContent = "↓ Download";
     if (missingFile) {
       btn.disabled = true;
       btn.title = "No downloadable file for this version.";
@@ -2386,6 +2470,14 @@ export function openModelDetailPanel({
   }, "wtn-dv-overlay wtn");
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
+
+  // Cap the panel's height (owner, 2026-08-01) -- see `MIN_DETAIL_HEIGHT_PX`'s
+  // own doc comment for why this floor doesn't do the actual capping itself
+  // on this panel's `"right"` placement (`.wtn-cs-panel`'s static 76vh does
+  // that); still called, matching `openCivitaiSearch`'s own convention.
+  if (typeof handle.reposition === "function") {
+    handle.reposition({ minHeight: MIN_DETAIL_HEIGHT_PX });
+  }
 
   return handle;
 }

@@ -870,7 +870,7 @@ test("⚙: LoRA memory use segmented buttons set cacheMode and reflect aria-pres
   assert.equal(btns[0].getAttribute("aria-pressed"), "false");
 });
 
-test("⚙: Hide file extension / Civitai / Show preview thumbnails write through Settings -> AnimaFlow (setSetting), NEVER the per-node state blob", () => {
+test("⚙: Hide file extension / Show Civitai name / Civitai / Show preview thumbnails write through Settings -> AnimaFlow (setSetting), NEVER the per-node state blob", () => {
   const node = makeFakeNode(stateJSON([]));
   const doc = makeDocStub();
   const ctx = makeCtx(doc);
@@ -890,14 +890,16 @@ test("⚙: Hide file extension / Civitai / Show preview thumbnails write through
   };
   try {
     fire(node._lrRefs.settingsBtn, "click");
-    // Hide-extension/Civitai/thumbs switches carry no `title` (only the
-    // separate-strengths one does, above) -- there are three of them; grab
-    // all and click each in turn.
+    // Hide-extension/Civitai-name/Civitai/thumbs switches carry no `title`
+    // (only the separate-strengths one does, above) -- there are FOUR of
+    // them now (Show Civitai name joined 2026-08-01, right after Hide file
+    // extension); grab all and click each in turn.
     const settingsSwitches = findAllByClass(doc.body, "wtn-lora-switch").filter((e) => !e.title);
-    assert.equal(settingsSwitches.length, 3, "hide-extension / Civitai / show-thumbnails switches");
+    assert.equal(settingsSwitches.length, 4, "hide-extension / show-Civitai-name / Civitai / show-thumbnails switches");
     settingsSwitches.forEach((sw) => sw._listeners.click.forEach((fn) => fn({ stopPropagation() {} })));
 
     assert.equal(written[SETTING_IDS.HIDE_FILE_EXTENSION], true);
+    assert.equal(written[SETTING_IDS.SHOW_CIVITAI_NAME], true, "Civitai name defaults OFF -- one click turns it on");
     assert.equal(written[SETTING_IDS.CIVITAI_ENABLED], false, "Civitai defaults ON -- one click turns it off");
     assert.equal(written[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS], false, "thumbnails default ON -- one click turns it off");
 
@@ -905,6 +907,7 @@ test("⚙: Hide file extension / Civitai / Show preview thumbnails write through
     // ownership split -- they are user-wide, not per-node).
     const state = ensureState(node, ctx);
     assert.equal("hideFileExtension" in state, false);
+    assert.equal("showCivitaiName" in state, false);
     assert.equal("civitaiEnabled" in state, false);
     assert.equal("showPreviewThumbnails" in state, false);
   } finally {
@@ -930,7 +933,8 @@ test("⚙: toggling Civitai off immediately hides the header's 🔍 (re-runs syn
   try {
     fire(node._lrRefs.settingsBtn, "click");
     const settingsSwitches = findAllByClass(doc.body, "wtn-lora-switch").filter((e) => !e.title);
-    settingsSwitches[1]._listeners.click.forEach((fn) => fn({ stopPropagation() {} })); // Civitai is the 2nd of the three
+    // Order (2026-08-01): hide-extension, show-Civitai-name, Civitai, thumbs -- Civitai is now the 3rd of the four.
+    settingsSwitches[2]._listeners.click.forEach((fn) => fn({ stopPropagation() {} }));
     assert.equal(node._lrRefs.searchBtn.style.display, "none");
   } finally {
     delete globalThis.window;
