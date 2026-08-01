@@ -1434,6 +1434,35 @@ description, and download with progress.
 
 #### The detail view — master→detail swap, with a community gallery (owner, 2026-07-29)
 
+##### BOTH galleries, for different reasons (owner, 2026-08-01) — SPEC, not built
+
+Owner: *"can we add community images to the bottom?"* Yes — and it resolves the tension the measurement
+below exposed, rather than picking a winner.
+
+| section | source | why it earns its place |
+|---|---|---|
+| **top, filmstrip** | the **author's** images (`/api/v1/model-versions/{id}`) | 18/20 carry a **prompt** plus full generation params — the reusable part, and the reason `copy-prompt` is first-class |
+| **bottom, grid** | the **community's** images (`/api/v1/images?modelVersionId=…`) | 0/40 carry a prompt, but they are *"what it looks like in other people's hands"* — genuinely different information from the author's own best shots |
+
+So the original §7c-ii rationale had **two** halves that pull apart, and each half now sits where its data
+actually is. The community grid is honestly decoration-plus-evidence, not a prompt source, and should not
+pretend otherwise: **no copy-prompt affordance on a tile that has nothing to copy.**
+
+Four things to settle:
+
+1. **Lazy-load it.** This is a *second* network call per detail open, and it is below both descriptions —
+   most opens will never scroll that far. Fetch when the section actually comes into view, or behind an
+   explicit action. Paying for it on every open would violate §9's own "never block a run" posture on
+   bandwidth for something usually unseen.
+2. **The browsing level governs it**, like every other image surface. The endpoint returns `nsfwLevel`
+   per image — though **not always**: one probe returned `null` for it. Treat missing as **16**, the same
+   conservative rule `pickThumbCandidates` already applies, and state the hidden count the same way the
+   author strip now does.
+3. **It carries `username` and `stats`** — attribute the image to whoever made it. An uncredited grid of
+   other people's work is the wrong default.
+4. **A failed or empty fetch renders nothing**, silently. The section is additive; it must never turn a
+   working detail view into a broken one.
+
 > ### ⚠️ MEASURED BEFORE BUILDING (2026-08-01): the prompts are NOT on the community images
 >
 > This section's gallery rests on one claim — *"the **prompt** is the part you can actually reuse; that
