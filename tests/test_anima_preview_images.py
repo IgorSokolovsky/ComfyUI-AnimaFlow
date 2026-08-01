@@ -463,6 +463,124 @@ def test_save_now_reads_from_the_output_dir_for_an_already_saved_stage_temp_dir_
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# `save.path` is honoured -- the owner's own reported symptom ("i changed the
+# path but the path i gave doesn't have the image"). This drives `save_now`
+# entirely through its own injected `output_dir_fn`/`write_fn` seams (this
+# module's existing `_save_now_fakes` helper), so no PIL and no live
+# `folder_paths` is needed -- if this passes, the settings ARE honoured
+# correctly at this layer, and a report of the file landing elsewhere points
+# upstream, at what the frontend actually posts as `preview_state`.
+# ---------------------------------------------------------------------------
+
+
+def test_save_now_honours_a_custom_save_path_subfolder():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, calls = _save_now_fakes(tmp_root)
+        output_dir = fakes["output_dir_fn"]()
+        result = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "my_custom_folder", "filename": "%stage%_%seed%"}},
+            seed=7,
+            **fakes,
+        )
+        expected_dir = os.path.join(output_dir, "my_custom_folder")
+        assert result["subfolder"] == "my_custom_folder"
+        assert result["filename"] == "final_7.png"
+        # The write itself landed under the custom subfolder, not the
+        # default "AnimaFlow" one -- `write_fn`'s own recorded call is the
+        # ground truth here, not just the returned dict.
+        assert len(calls["write"]) == 1
+        _source, dest = calls["write"][0]
+        assert dest == os.path.join(expected_dir, "final_7.png")
+        assert os.path.dirname(dest) == expected_dir
+        # The returned `path` -- this task's own "return the location, not
+        # just the name" ask -- is the full absolute path actually written,
+        # matching the injected writer's own destination exactly.
+        assert result["path"] == dest
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def test_save_now_default_save_path_falls_back_to_animaflow_when_absent():
+    tmp_root = tempfile.mkdtemp()
+    try:
+        fakes, calls = _save_now_fakes(tmp_root)
+        output_dir = fakes["output_dir_fn"]()
+        ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "filename": "%stage%_%seed%"}},
+            seed=1,
+            **fakes,
+        )
+        _source, dest = calls["write"][0]
+        assert dest == os.path.join(output_dir, "AnimaFlow", "final_1.png")
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Instrumentation -- `save_now` logs the absolute path via the pack's shared
+# "Console logging" mechanism (`src/console_logging.py`), same setting
+# `pipeline.py`/`preview.py` already use. Drives the level via the
+# `ANIMAFLOW_DEBUG` env var (the documented override, `src/anima/logs.py`'s
+# own docstring) so this test needs no `comfy.settings.json` on disk at all.
+# ---------------------------------------------------------------------------
+
+
+def test_save_now_logs_the_absolute_path_at_summary_and_debug_levels():
+    tmp_root = tempfile.mkdtemp()
+    original_env = dict(os.environ)
+    recorded = []
+
+    class _RecordingLogger:
+        def info(self, message):
+            recorded.append(message)
+
+    original_logger = ph._logger
+    try:
+        ph._logger = _RecordingLogger()
+
+        fakes, _ = _save_now_fakes(tmp_root)
+        output_dir = fakes["output_dir_fn"]()
+        expected_path = os.path.join(output_dir, "my_custom_folder", "final_9.png")
+
+        # "off" (no ANIMAFLOW_DEBUG, no comfy.settings.json reachable) --
+        # genuinely silent.
+        os.environ.pop("ANIMAFLOW_DEBUG", None)
+        ph.save_now(
+            stage_entries={"final": {"filename": "a.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "my_custom_folder", "filename": "%stage%_%seed%"}},
+            seed=9,
+            **fakes,
+        )
+        assert recorded == []
+
+        # "debug" (ANIMAFLOW_DEBUG=1) -- both the summary line (absolute
+        # path, unconditionally) and the extra debug line (resolved output
+        # dir / save.path as received / template / source / final path).
+        os.environ["ANIMAFLOW_DEBUG"] = "1"
+        fakes2, _ = _save_now_fakes(tmp_root)
+        ph.save_now(
+            stage_entries={"final": {"filename": "a.png", "subfolder": "", "type": "temp"}},
+            preview_settings={"save": {"extension": "png", "path": "my_custom_folder", "filename": "%stage%_%seed%"}},
+            seed=9,
+            **fakes2,
+        )
+        assert len(recorded) == 2
+        summary_line, debug_line = recorded
+        assert expected_path in summary_line or os.path.join(fakes2["output_dir_fn"](), "my_custom_folder", "final_9.png") in summary_line
+        assert "my_custom_folder" in debug_line
+        assert "save.path as received" in debug_line
+        assert "%stage%_%seed%" in debug_line
+    finally:
+        ph._logger = original_logger
+        os.environ.clear()
+        os.environ.update(original_env)
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 ALL_TESTS = [
     test_saving_off_yields_a_temp_entry_per_present_stage,
     test_saving_on_every_wired_input_yields_output_entries_no_temp_duplicates,
@@ -480,6 +598,9 @@ ALL_TESTS = [
     test_save_now_raises_a_readable_error_when_nothing_is_available,
     test_save_now_raises_when_the_source_file_is_no_longer_on_disk,
     test_save_now_reads_from_the_output_dir_for_an_already_saved_stage_temp_dir_otherwise,
+    test_save_now_honours_a_custom_save_path_subfolder,
+    test_save_now_default_save_path_falls_back_to_animaflow_when_absent,
+    test_save_now_logs_the_absolute_path_at_summary_and_debug_levels,
 ]
 
 

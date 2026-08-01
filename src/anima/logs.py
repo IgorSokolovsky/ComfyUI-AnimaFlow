@@ -324,6 +324,60 @@ def _format_preview_run_line_impl(
 format_preview_run_line = _safe(_format_preview_run_line_impl)
 
 
+# ---------------------------------------------------------------------------
+# "Save now" (`nodes/anima/_preview_helpers.py`'s `save_now`) -- the on-demand
+# save button's own instrumentation (task brief: an owner report of "I don't
+# see it save to the drive" / "I changed the path but the path I gave doesn't
+# have the image" took three exchanges to even localize, because the only
+# thing the UI ever showed was a bare filename with no location -- see
+# `js/anima/interaction.mjs`'s `Saved ${data.stage} as ${data.filename}`).
+#
+# **Always the ABSOLUTE path**, never a bare filename or a subfolder-relative
+# one (unlike `format_preview_run_line` above, which is fine with a
+# `subfolder/filename` pair since that line is about ROUTING -- saved vs.
+# temp -- not "where on disk exactly"). The whole point of this pair of
+# lines is answering "where did this actually land", so a relative path
+# would just reproduce the ambiguity the task brief describes.
+# ---------------------------------------------------------------------------
+
+
+def _format_save_now_summary_impl(*, stage: str, absolute_path: str) -> str:
+    return f"[AnimaFlow] Anima Preview Save now: stage='{stage}' -> {absolute_path}"
+
+
+format_save_now_summary = _safe(_format_save_now_summary_impl)
+
+
+def _format_save_now_debug_impl(
+    *,
+    output_dir: str,
+    save_path_setting: Any,
+    filename_template: str,
+    source_path: str,
+    absolute_path: str,
+) -> str:
+    # `save_path_setting` is the RAW `save.path` value `save_now` actually
+    # received (before its own `or "AnimaFlow"` fallback is applied) --
+    # reported as-is, including `None`/`""`, so this line can tell "the
+    # frontend never sent a custom path at all" (absent/blank, silently
+    # defaulting to `AnimaFlow`) apart from "a custom path arrived but the
+    # file still isn't where the owner expects" (a non-default value here,
+    # `absolute_path` pointing somewhere the owner didn't anticipate).
+    if isinstance(save_path_setting, str) and save_path_setting:
+        save_path_text = repr(save_path_setting)
+    else:
+        save_path_text = f"{save_path_setting!r} (falls back to default 'AnimaFlow')"
+    return (
+        "[AnimaFlow] Anima Preview Save now detail: output_dir="
+        f"{output_dir!r}, save.path as received={save_path_text}, "
+        f"filename_template={filename_template!r}, source={source_path!r}, "
+        f"final={absolute_path!r}"
+    )
+
+
+format_save_now_debug = _safe(_format_save_now_debug_impl)
+
+
 __all__ = (
     "LOGGER_NAME",
     "CONSOLE_LOGGING_SETTING_ID",
@@ -342,4 +396,6 @@ __all__ = (
     "format_context_supplied_debug",
     "format_stage_sampler_debug",
     "format_preview_run_line",
+    "format_save_now_summary",
+    "format_save_now_debug",
 )

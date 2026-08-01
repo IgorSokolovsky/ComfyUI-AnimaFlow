@@ -77,6 +77,32 @@ def test_garbage_save_which_falls_back_to_shown():
     assert normalized["save"]["which"] == "shown"
 
 
+def test_a_custom_save_path_round_trips_intact():
+    # Regression test for the owner report ("i changed the path but the
+    # path i gave doesn't have the image"): `_deep_merge_defaults` must only
+    # fill in `save.path` when it's ABSENT from the raw blob -- a custom
+    # value the user actually typed must survive `normalize_preview_settings`
+    # byte-for-byte, never quietly replaced by the `"AnimaFlow"` default.
+    raw = json.dumps({"save": {"path": "my_custom_folder"}})
+    normalized = ps.normalize_preview_settings(raw)
+    assert normalized["save"]["path"] == "my_custom_folder"
+
+
+def test_save_path_absent_from_the_raw_blob_defaults_to_animaflow():
+    normalized = ps.normalize_preview_settings(json.dumps({"save": {}}))
+    assert normalized["save"]["path"] == "AnimaFlow"
+
+
+def test_save_path_survives_alongside_other_custom_save_fields():
+    raw = json.dumps({
+        "save": {"path": "shots/2026", "extension": "webp", "filename": "%stage%"},
+    })
+    normalized = ps.normalize_preview_settings(raw)
+    assert normalized["save"]["path"] == "shots/2026"
+    assert normalized["save"]["extension"] == "webp"
+    assert normalized["save"]["filename"] == "%stage%"
+
+
 def test_version_migrates_forward():
     raw = json.dumps({"version": 0})
     normalized = ps.normalize_preview_settings(raw)
@@ -350,6 +376,9 @@ ALL_TESTS = [
     test_an_explicit_saved_false_also_survives,
     test_garbage_compare_slot_falls_back_to_default,
     test_garbage_save_which_falls_back_to_shown,
+    test_a_custom_save_path_round_trips_intact,
+    test_save_path_absent_from_the_raw_blob_defaults_to_animaflow,
+    test_save_path_survives_alongside_other_custom_save_fields,
     test_version_migrates_forward,
     test_hostile_input_never_raises,
     test_stage_and_seed_tokens,

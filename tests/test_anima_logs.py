@@ -365,6 +365,70 @@ def test_preview_run_line_fail_safe_on_garbage():
     assert isinstance(line2, str) and line2
 
 
+# ---------------------------------------------------------------------------
+# format_save_now_summary / format_save_now_debug -- "Save now"'s own
+# instrumentation (task brief: an owner report of "I don't see it save to
+# the drive" / "I changed the path but the path I gave doesn't have the
+# image" took three exchanges to even localize, because the only thing the
+# UI ever showed was a bare filename with no location).
+# ---------------------------------------------------------------------------
+
+
+def test_save_now_summary_names_the_stage_and_the_absolute_path():
+    line = logs_mod.format_save_now_summary(
+        stage="final", absolute_path="/comfyui/output/AnimaFlow/2026-07-29_42_final.png",
+    )
+    assert "[AnimaFlow]" in line
+    assert "final" in line
+    assert "/comfyui/output/AnimaFlow/2026-07-29_42_final.png" in line
+
+
+def test_save_now_summary_fail_safe_on_garbage():
+    line = logs_mod.format_save_now_summary(stage=None, absolute_path=object())
+    assert isinstance(line, str) and line
+
+
+def test_save_now_debug_names_every_field_the_task_brief_asks_for():
+    line = logs_mod.format_save_now_debug(
+        output_dir="/comfyui/output/my_custom_folder",
+        save_path_setting="my_custom_folder",
+        filename_template="%date:yyyy-MM-dd%_%seed%_%stage%",
+        source_path="/comfyui/temp/AnimaPreview_final_temp_abcde_00001_.png",
+        absolute_path="/comfyui/output/my_custom_folder/2026-07-29_42_final.png",
+    )
+    assert "/comfyui/output/my_custom_folder" in line
+    assert "'my_custom_folder'" in line
+    assert "%date:yyyy-MM-dd%_%seed%_%stage%" in line
+    assert "/comfyui/temp/AnimaPreview_final_temp_abcde_00001_.png" in line
+    assert "/comfyui/output/my_custom_folder/2026-07-29_42_final.png" in line
+
+
+def test_save_now_debug_distinguishes_an_absent_save_path_from_a_custom_one():
+    # This is the whole point of the instrumentation: "the settings did not
+    # arrive" (save.path never sent, so it fell back to the default) must
+    # read distinctly from "the settings arrived and the path is elsewhere"
+    # (a real value was received) -- from the log line alone.
+    absent = logs_mod.format_save_now_debug(
+        output_dir="/comfyui/output/AnimaFlow", save_path_setting=None,
+        filename_template="%stage%", source_path="/tmp/a.png", absolute_path="/comfyui/output/AnimaFlow/final.png",
+    )
+    received = logs_mod.format_save_now_debug(
+        output_dir="/comfyui/output/my_folder", save_path_setting="my_folder",
+        filename_template="%stage%", source_path="/tmp/a.png", absolute_path="/comfyui/output/my_folder/final.png",
+    )
+    assert absent != received
+    assert "falls back to default" in absent
+    assert "falls back to default" not in received
+
+
+def test_save_now_debug_fail_safe_on_garbage():
+    line = logs_mod.format_save_now_debug(
+        output_dir=None, save_path_setting=object(), filename_template=123,
+        source_path=None, absolute_path=object(),
+    )
+    assert isinstance(line, str) and line
+
+
 ALL_TESTS = [
     test_debug_enabled_for_common_truthy_spellings,
     test_debug_disabled_for_falsy_or_missing,
@@ -408,6 +472,11 @@ ALL_TESTS = [
     test_preview_run_line_reports_a_stage_present_but_not_written,
     test_preview_run_line_multi_batch_entry_notes_extra_count,
     test_preview_run_line_fail_safe_on_garbage,
+    test_save_now_summary_names_the_stage_and_the_absolute_path,
+    test_save_now_summary_fail_safe_on_garbage,
+    test_save_now_debug_names_every_field_the_task_brief_asks_for,
+    test_save_now_debug_distinguishes_an_absent_save_path_from_a_custom_one,
+    test_save_now_debug_fail_safe_on_garbage,
 ]
 
 

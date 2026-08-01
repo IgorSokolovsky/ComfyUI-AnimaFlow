@@ -28,6 +28,7 @@ name left to be keyed by.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -47,6 +48,8 @@ try:
         split_preview_stages,
     )
     from ...src.anima.history import STORE as _HISTORY_STORE  # type: ignore
+    from ...src.anima import frontend_settings as frontend_settings_mod  # type: ignore
+    from ...src.anima import logs as logs_mod  # type: ignore
 except ImportError:
     # Standalone context (plain-script tests, repo root on `sys.path`).
     from src.anima.preview_settings import (
@@ -61,6 +64,44 @@ except ImportError:
         split_preview_stages,
     )
     from src.anima.history import STORE as _HISTORY_STORE
+    from src.anima import frontend_settings as frontend_settings_mod
+    from src.anima import logs as logs_mod
+
+# Same shared logger name every other Anima call site uses
+# (`pipeline.py`/`nodes/anima/preview.py`'s own `_logger`) -- this is the
+# THIRD module in the track to log through it, not a new one: `save_now`
+# below is the on-demand save path (task brief: an owner report of "I don't
+# see it save to the drive" took three exchanges to even localize, because
+# the only thing that ever surfaced was a bare filename, never a location).
+_logger = logging.getLogger(logs_mod.LOGGER_NAME)
+
+
+def _log_level() -> str:
+    """Same three-level "Console logging" contract every other Anima call
+    site resolves (`pipeline.py`'s own `_log_level`, `nodes/anima/preview.py`'s
+    `_should_log`) -- `ANIMAFLOW_DEBUG` forces `"debug"`; otherwise the
+    Settings-dialog value, defaulting to `logs_mod.DEFAULT_LOG_LEVEL` ("off").
+    Reads `os.environ` fresh each call (cheap -- `frontend_settings.get_setting`
+    is itself mtime-cached), matching the "just ask again" posture that
+    module's own docstring documents.
+    """
+    import os
+
+    setting_value = frontend_settings_mod.get_setting(
+        logs_mod.CONSOLE_LOGGING_SETTING_ID, logs_mod.DEFAULT_LOG_LEVEL,
+    )
+    return logs_mod.effective_log_level(os.environ, setting_value)
+
+
+def _should_log() -> bool:
+    """`False` only when the resolved level is `"off"` -- the guard every
+    `_logger.info(...)` call in this module sits behind."""
+    return _log_level() != "off"
+
+
+def _debug_enabled() -> bool:
+    """Should the finer-grained (debug-only) line also print?"""
+    return _log_level() == "debug"
 
 # `resolve_save_stages`/`resolve_wired_stages`/`resolve_run_stage_labels` are
 # re-exported (unused directly in THIS module -- `build_preview_ui_images`
@@ -713,6 +754,16 @@ def save_now(
     the result is indistinguishable from "this stage had been saved all
     along."
 
+    **The return dict's `path` is the full ABSOLUTE path actually written**
+    (`filename`/`subfolder`/`type` alone only ever let a caller reconstruct
+    a path relative to whatever it assumes the output root is -- exactly the
+    ambiguity behind an owner report of "I don't see it save to the drive"
+    even after being pointed at `output/AnimaFlow/`). `src/anima/api.py`'s
+    `save_now_impl` already forwards this dict verbatim under `{ok: True,
+    **result}`, so the frontend has it available with no route change
+    needed here; consuming it in the UI is another builder's own `js/anima/`
+    work, out of this function's scope.
+
     `output_dir_fn`/`temp_dir_fn`/`exists_fn`/`probe_fn`/`write_fn` are all
     dependency-injected (this module's own "fake the writer, don't perform
     it" test convention, matching `build_preview_ui_images`'s `save_fn`/
@@ -767,8 +818,17 @@ def save_now(
     width, height = probe(source_path)
 
     save_settings = preview_settings.get("save", {}) if isinstance(preview_settings, dict) else {}
+    # Captured BEFORE the `or "AnimaFlow"` fallback below, and kept around
+    # purely for `format_save_now_debug`'s "as received" line -- the owner
+    # report this instrumentation exists for ("I changed the path but the
+    # path I gave doesn't have the image") hinges on telling "the frontend
+    # never sent a custom `save.path` at all" (this is `None`/`""` here)
+    # apart from "a custom path DID arrive but the file still isn't where
+    # expected" (this is that non-default value, and `absolute_path` below
+    # names exactly where it went instead).
+    raw_save_path = save_settings.get("path") if isinstance(save_settings, dict) else None
     extension = str(save_settings.get("extension") or "png").lstrip(".")
-    out_subfolder = str(save_settings.get("path") or "AnimaFlow")
+    out_subfolder = str(raw_save_path or "AnimaFlow")
     template = str(save_settings.get("filename") or "%date:yyyy-MM-dd%_%seed%_%stage%")
 
     output_dir = os.path.join(get_output_dir(), out_subfolder)
@@ -800,4 +860,28 @@ def save_now(
         # `save_now_impl` already catches exactly this class.
         raise SaveNowError(str(exc)) from exc
 
-    return {"filename": out_filename, "subfolder": out_subfolder, "type": "output", "stage": stage}
+    # Instrumentation (task brief -- see this function's own module-level
+    # `_log_level`/`_should_log`/`_debug_enabled` docstrings for the shared
+    # "Console logging" contract every other Anima call site already uses;
+    # this is the SAME setting, not a second flag). `absolute_path` is what
+    # the owner's report was actually missing -- the UI only ever showed a
+    # bare filename (`js/anima/interaction.mjs`'s `Saved ... as
+    # ${data.filename}`), never a location, which is why "I don't see it
+    # save" and "the path I gave doesn't have the image" both took several
+    # exchanges to even localize.
+    absolute_path = os.path.join(output_dir, out_filename)
+    if _should_log():
+        _logger.info(logs_mod.format_save_now_summary(stage=stage, absolute_path=absolute_path))
+    if _debug_enabled():
+        _logger.info(logs_mod.format_save_now_debug(
+            output_dir=output_dir,
+            save_path_setting=raw_save_path,
+            filename_template=template,
+            source_path=source_path,
+            absolute_path=absolute_path,
+        ))
+
+    return {
+        "filename": out_filename, "subfolder": out_subfolder, "type": "output", "stage": stage,
+        "path": absolute_path,
+    }
