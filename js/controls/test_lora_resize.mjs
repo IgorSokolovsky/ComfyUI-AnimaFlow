@@ -984,6 +984,74 @@ test("paintRow: the name label reads the live 'Hide file extension' setting via 
   }
 });
 
+// ---------------------------------------------------------------------------
+// §1a-vii ("show the CIVITAI name instead of the filename -- a setting"):
+// `paintRow`'s name label, gated on SHOW_CIVITAI_NAME, sourced from
+// `civitai_api.mjs`'s own `civitaiNameFor("loras", row.name)`.
+// ---------------------------------------------------------------------------
+
+const _origFetchForCivitaiNameRow = globalThis.fetch;
+await asyncTest(
+  "paintRow: shows the Civitai name only when SHOW_CIVITAI_NAME is on, and always falls back to the filename for a MISSING row regardless of the setting",
+  async () => {
+    const kind = "loras";
+    globalThis.fetch = async () => ({
+      json: async () => ({
+        reason: "ok",
+        models: [{ name: "real_skin-step00000200.safetensors", civitai_name: "Realistic Skin Detail" }],
+      }),
+    });
+    try {
+      invalidateList(kind);
+      // `force: true` -- bypasses BOTH the cache AND the in-flight-promise
+      // dedupe, so this genuinely runs THIS stub's fetch rather than
+      // possibly reusing an unawaited `listModels("loras")` call some
+      // earlier, fetch-oblivious `mountLoraNode` test in this same file left
+      // in flight (`civitai_api.mjs`'s own de-dupe-by-kind rule).
+      await listModels(kind, true);
+
+      // Setting OFF (default) -- the filename, even though a Civitai name
+      // is already known for this exact file.
+      const docOff = makeDocStub();
+      const refsOff = buildRowElement(docOff);
+      paintRow(refsOff, mkStateRow({ name: "real_skin-step00000200.safetensors" }));
+      assert.equal(refsOff.nameLabel.textContent, "real_skin-step00000200.safetensors");
+      assert.equal(refsOff.nameLabel.title, "real_skin-step00000200.safetensors");
+
+      globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+      try {
+        // Setting ON, file PRESENT -- the Civitai name, full name also in
+        // the label's own tooltip (§1a-vii: these run longer than filenames).
+        const docFound = makeDocStub();
+        const refsFound = buildRowElement(docFound);
+        paintRow(refsFound, mkStateRow({ name: "real_skin-step00000200.safetensors" }));
+        assert.equal(refsFound.nameLabel.textContent, "Realistic Skin Detail");
+        assert.equal(refsFound.nameLabel.title, "Realistic Skin Detail");
+        // The button's own tooltip and the missing-file class are both
+        // identity concerns -- unaffected by the display name.
+        assert.equal(refsFound.nameBtn.title, "real_skin-step00000200.safetensors");
+        assert.equal(refsFound.nameBtn.classList.contains("wtn-lora-missing"), false);
+
+        // Setting ON, file MISSING -- the filename, NEVER the (stale, now
+        // meaningless) Civitai name, whatever the setting says (§1a-vii's
+        // own carve-out: the red state's whole point is naming the file
+        // that's actually gone).
+        const docMissing = makeDocStub();
+        const refsMissing = buildRowElement(docMissing);
+        paintRow(refsMissing, mkStateRow({ name: "renamed-or-deleted-with-civitai-name.safetensors" }));
+        assert.equal(refsMissing.nameBtn.classList.contains("wtn-lora-missing"), true);
+        assert.equal(refsMissing.nameLabel.textContent, "renamed-or-deleted-with-civitai-name.safetensors");
+        assert.equal(refsMissing.nameLabel.title, "renamed-or-deleted-with-civitai-name.safetensors");
+      } finally {
+        delete globalThis.window;
+      }
+    } finally {
+      globalThis.fetch = _origFetchForCivitaiNameRow;
+      invalidateList(kind);
+    }
+  },
+);
+
 test("⚙: is keyed PER NODE -- opening a second node's dialog does not just toggle the first one closed", () => {
   const nodeA = makeFakeNode(stateJSON([]));
   const nodeB = makeFakeNode(stateJSON([]));

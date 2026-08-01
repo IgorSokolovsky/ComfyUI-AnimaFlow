@@ -24,14 +24,30 @@ no equivalent split-models-across-drives scenario reported yet).
 Two functions below are near-verbatim ports (MIT, THIRD_PARTY_NOTICES.md;
 each has its own precise citation): `read_safetensors_metadata` and
 `find_preview_path`.
+
+`civitai_name_for` (docs/lora-loader-design.md §1a-vii, "show the CIVITAI
+name instead of the filename") is this module's one genuinely Civitai-aware
+function -- `list_models` calls it per file so the `/list` route can carry a
+display name, sourced from whatever `sidecar.read_sidecar` already reads
+(our own `.civitai.info`, or Civicomfy's `.cminfo.json` translated to the
+same shape -- see that function's own doc comment). This does not violate
+this module's "local file listing" scope: it never makes a network call,
+never imports `civitai_client`, and reads through the exact same pure
+`sidecar`/`civitai_parse` modules `lookup.py` already does for the SAME
+cached-sidecar data -- `src/model_browser/` as a whole is "one source
+(Civitai) inside a model browser" (design doc §0e's decision D), not two
+disjoint packages, so a local listing function reading an already-cached
+sidecar is squarely in scope.
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import struct
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from . import civitai_parse, interop, sidecar
 from .kinds import folder_for_kind
 
 # Real safetensors headers are tens of KB; capped far above that -- the
@@ -188,6 +204,92 @@ def find_preview_path(model_path: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Civitai display name (§1a-vii) -- read from whichever sidecar `sidecar.
+# read_sidecar` already prefers, cached per `(sidecar_path, mtime)` so a
+# large folder doesn't re-read + re-parse every sidecar on every `/list`
+# call. Same `(path, mtime, ...)` cache-key precedent as `api.py`'s `/thumb`
+# downscale cache (that module's own doc comment); bounded the same way.
+# ---------------------------------------------------------------------------
+
+_CIVITAI_NAME_CACHE_MAX_ENTRIES = 512
+_civitai_name_cache: "collections.OrderedDict[Tuple[str, float], Optional[str]]" = collections.OrderedDict()
+
+# A cache MISS (never looked up) must be distinguishable from a cached,
+# genuinely-negative result ("this sidecar has no usable name") -- `None` is
+# the real value for the latter, so a sentinel stands in for "not in the
+# cache at all".
+_UNSET = object()
+
+
+def _civitai_name_cache_get(key: Tuple[str, float]) -> Any:
+    if key in _civitai_name_cache:
+        _civitai_name_cache.move_to_end(key)
+        return _civitai_name_cache[key]
+    return _UNSET
+
+
+def _civitai_name_cache_put(key: Tuple[str, float], value: Optional[str]) -> None:
+    _civitai_name_cache[key] = value
+    _civitai_name_cache.move_to_end(key)
+    while len(_civitai_name_cache) > _CIVITAI_NAME_CACHE_MAX_ENTRIES:
+        _civitai_name_cache.popitem(last=False)
+
+
+def _sidecar_cache_stamp(model_path: str) -> Optional[Tuple[str, float]]:
+    """`(path, mtime)` of whichever sidecar file `sidecar.read_sidecar`
+    would actually read for `model_path` -- our own `.civitai.info` if it
+    exists, else Civicomfy's `.cminfo.json`, else `None` (neither exists, so
+    there is nothing to cache a stamp against and no point calling
+    `read_sidecar` at all -- it would return `None` too). Whichever file
+    changes (a lookup/download rewrite, `save_preview`'s sidecar write, a
+    'Forget cached' delete-then-recreate) changes this stamp, which is what
+    invalidates the cache below with no explicit invalidation call needed.
+    """
+    own_path = sidecar.sidecar_path(model_path)
+    try:
+        return (own_path, os.path.getmtime(own_path))
+    except OSError:
+        pass
+    cminfo = interop.cminfo_path(model_path)
+    try:
+        return (cminfo, os.path.getmtime(cminfo))
+    except OSError:
+        return None
+
+
+def civitai_name_for(model_path: str) -> Optional[str]:
+    """The Civitai display name cached for `model_path` (§1a-vii), or `None`
+    when there is no sidecar at all, or one exists but carries no usable
+    name (`civitai_parse.parse_model_version`'s own `name` key, itself only
+    ever set from a real, non-empty `model.name` in the source response) --
+    "omit rather than invent" (§1a-vi's rule, applied here to a name instead
+    of a category): never a placeholder, never the filename echoed back as
+    if it were a Civitai name.
+
+    Reads through the EXACT same `sidecar.read_sidecar` ->
+    `civitai_parse.parse_model_version` pipeline `lookup.py` already uses
+    for the ⓘ panel's own cached-info display, so a name shown here and one
+    shown there always agree. Cached per `(path, mtime)` (`_sidecar_cache_
+    stamp`, above) -- a model with no sidecar at all costs one `os.path.
+    getmtime`-shaped stat-and-miss per call (no sidecar read attempted), not
+    a cache entry, since there's nothing to invalidate for a file that
+    doesn't exist yet.
+    """
+    stamp = _sidecar_cache_stamp(model_path)
+    if stamp is None:
+        return None
+    cached = _civitai_name_cache_get(stamp)
+    if cached is not _UNSET:
+        return cached
+    raw = sidecar.read_sidecar(model_path)
+    parsed = civitai_parse.parse_model_version(raw) if raw else {}
+    name = parsed.get("name")
+    value = name.strip() if isinstance(name, str) and name.strip() else None
+    _civitai_name_cache_put(stamp, value)
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Path resolution + the traversal guard.
 # ---------------------------------------------------------------------------
 
@@ -288,7 +390,7 @@ def _group_for(relative_name: str) -> str:
 
 def list_models(kind: object) -> List[Dict[str, Any]]:
     """Every file `folder_paths` knows about for `kind`, each described by
-    `{name, size, group, base_model, triggers, has_preview}`:
+    `{name, size, group, base_model, triggers, has_preview, civitai_name?}`:
 
       - `name` includes any subfolder prefix, matching `folder_paths.
         get_filename_list`'s own convention (e.g. `"detail/my_lora.
@@ -299,7 +401,12 @@ def list_models(kind: object) -> List[Dict[str, Any]]:
         metadata -- `""`/`[]` for a non-`.safetensors` file, or one with no
         usable metadata (reading metadata never raises, see
         `read_safetensors_metadata`);
-      - `has_preview` is whether a local preview image sits next to it.
+      - `has_preview` is whether a local preview image sits next to it;
+      - `civitai_name` (§1a-vii) is OMITTED entirely -- never an empty
+        string, never the filename -- unless `civitai_name_for` (above)
+        found a genuinely usable Civitai display name in this file's
+        sidecar. This is DISPLAY data only: `name` above remains the one
+        identity value this route's caller may ever persist or resolve.
 
     Returns `[]` for an unwhitelisted `kind`, or if `folder_paths` itself
     can't enumerate the folder at all (matching the caution at
@@ -339,14 +446,18 @@ def list_models(kind: object) -> List[Dict[str, Any]]:
             size = 0
 
         meta = read_safetensors_metadata(path) if path.lower().endswith(".safetensors") else {}
-        out.append({
+        entry: Dict[str, Any] = {
             "name": name,
             "size": size,
             "group": _group_for(name),
             "base_model": base_model_from_metadata(meta),
             "triggers": trigger_words_from_metadata(meta),
             "has_preview": find_preview_path(path) is not None,
-        })
+        }
+        civitai_name = civitai_name_for(path)
+        if civitai_name:
+            entry["civitai_name"] = civitai_name
+        out.append(entry)
     return out
 
 
@@ -356,6 +467,7 @@ __all__ = (
     "trigger_words_from_metadata",
     "base_model_from_metadata",
     "find_preview_path",
+    "civitai_name_for",
     "resolve_model_path",
     "list_models",
 )

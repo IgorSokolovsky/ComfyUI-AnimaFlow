@@ -506,6 +506,7 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
       customTriggers: [],
       selectedTriggers: ["file-word-a"],
       civitaiEnabled: true,
+      showCivitaiName: true,
       onChange: (sel, custom) => {
         lastSelected = sel;
         lastCustom = custom;
@@ -556,6 +557,79 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
     assert.ok(lastSelected.includes("file-word-a"));
     assert.deepEqual(lastCustom, []);
 
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// §1a-vii ("show the CIVITAI name instead of the filename -- a setting"):
+// `renderIdentity`'s title is now GATED on `showCivitaiName`, not an
+// unconditional preference -- "one setting, one rule" (docs/lora-loader-
+// design.md §1a-vii) means this surface must agree with the picker row and
+// the LoRA row's own name field.
+// ---------------------------------------------------------------------------
+
+await asyncTest("openModelInfo: showCivitaiName defaults to false -- the title stays the prettified filename even once a Civitai name is found", async () => {
+  const kind = "loras";
+  const name = "info-civitai-name-off.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "Realistic Skin Detail", model_id: 1, version_id: 2 },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+      // showCivitaiName omitted -- defaults to false.
+    });
+    await settle();
+    // "View on Civitai" itself is unaffected -- only the TITLE's own
+    // preference is gated.
+    assert.ok(findAll(handle.overlay, "wtn-mi-civlink")[0]);
+    assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "info civitai name off", "a KNOWN Civitai name must NOT override the title while the setting is off");
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: showCivitaiName=true prefers the found Civitai name over the prettified filename", async () => {
+  const kind = "loras";
+  const name = "info-civitai-name-on.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "Realistic Skin Detail", model_id: 1, version_id: 2 },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      civitaiEnabled: true,
+      showCivitaiName: true,
+    });
+    await settle();
+    assert.equal(findAll(handle.overlay, "wtn-mi-title")[0].textContent, "Realistic Skin Detail");
     handle.close();
   } finally {
     globalThis.fetch = _origFetch;
@@ -1276,6 +1350,7 @@ await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE 
       kind,
       name,
       civitaiEnabled: true,
+      showCivitaiName: true,
     });
     await settle();
     assert.equal(fetchCalls, 1, "the first open issues exactly one request");
@@ -1288,6 +1363,7 @@ await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE 
       kind,
       name,
       civitaiEnabled: true,
+      showCivitaiName: true,
     });
     await settle();
     assert.equal(fetchCalls, 1, "the SECOND open of the same (kind, name) must issue NO new request");
@@ -1433,6 +1509,7 @@ await asyncTest("BUG 20: '↻ Civitai' always forces a REAL request (cached_only
       kind,
       name,
       civitaiEnabled: true,
+      showCivitaiName: true,
     });
     await settle();
     assert.equal(bodies.length, 1);
@@ -1455,6 +1532,7 @@ await asyncTest("BUG 20: '↻ Civitai' always forces a REAL request (cached_only
       kind,
       name,
       civitaiEnabled: true,
+      showCivitaiName: true,
     });
     await settle();
     assert.equal(bodies.length, 2, "the later open must reuse the record the forced click just cached -- no third request");
@@ -1557,6 +1635,7 @@ await asyncTest("openModelInfo: civitaiEnabled=false but a sidecar IS cached -- 
       name,
       fileTriggers: [],
       civitaiEnabled: false,
+      showCivitaiName: true,
     });
     await settle();
 
@@ -2460,6 +2539,7 @@ await asyncTest("openModelInfo: a save_preview failure never disturbs the panel 
       anchorEl: doc.createElement("button"),
       kind,
       name,
+      showCivitaiName: true,
     });
     await settle();
     await settle();

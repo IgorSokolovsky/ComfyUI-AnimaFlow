@@ -48,6 +48,22 @@
  * name instead of the filename, behind a setting): that adds a SOURCE here,
  * it does not require a second wrapper.
  *
+ * **§1a-vii landed as exactly that: a second, optional argument
+ * (`civitaiName`), not a second decision point.** `displayRowName(name,
+ * civitaiName)` now ALSO reads `SHOW_CIVITAI_NAME` itself (same "the one
+ * exception" convention as `HIDE_FILE_EXTENSION` above) and prefers a
+ * non-empty `civitaiName` over the file name when that setting is on --
+ * silently, with no marker, falling straight through to the existing
+ * `displayModelName`/`HIDE_FILE_EXTENSION` behaviour otherwise (setting off,
+ * or no `civitaiName` known for this file yet). A caller that has no
+ * Civitai name to offer (a picker-kind row in `render.mjs`, or a KNOWN-
+ * missing LoRA row in `lora_render.mjs`'s `paintRow`) simply omits the
+ * second argument -- `undefined` behaves exactly as it did before this
+ * argument existed. `buildRow`, below, is the picker's own caller: it reads
+ * `model.civitai_name` straight off the already-fetched `/list` entry (see
+ * `src/model_browser/local.py`'s own doc comment for where that field comes
+ * from), no extra fetch needed.
+ *
  * ## Icons are duplicated here, not imported from `lora_render.mjs`
  *
  * `lora_render.mjs` already draws an (unrelated) magnifier glyph for the
@@ -265,23 +281,39 @@ export function displayModelName(name, hideExtension) {
 
 /**
  * The settings-aware seam (task brief, 2026-07-31, part B): `displayModelName`
- * (above), but reading the LIVE "Hide file extension" setting itself rather
- * than taking it as a caller-supplied parameter -- the ONE place every row
+ * (above), but reading the LIVE "Hide file extension" (and, since §1a-vii,
+ * "Show Civitai name instead of filename") settings itself rather than
+ * taking them as caller-supplied parameters -- the ONE place every row
  * label in this pack (the LoRA Loader's own row, `lora_render.mjs`'s
  * `paintRow`; the Control/Loader Panel's picker-kind rows, `js/controls/
- * render.mjs`'s own `paintRow`) paints through at REPAINT time, so a future
- * additional name SOURCE (§1a-vii: the Civitai display name instead of the
- * filename) is one change here, not a change duplicated across two
- * `paintRow`s.
+ * render.mjs`'s own `paintRow`) paints through at REPAINT time.
  *
  * `name` is the identity value (`row.name`, or a picker-kind row's live combo
  * value) -- this function only ever computes what to DISPLAY for it, it never
  * mutates or returns anything a caller should persist. `""`/non-string
  * degrades to `""`, matching `displayModelName`'s own contract; never throws.
+ *
+ * `civitaiName` (§1a-vii, optional) is `name`'s already-known Civitai display
+ * name, if any -- a caller passes whatever it already has (the picker's own
+ * `model.civitai_name`, or `civitai_api.mjs`'s `civitaiNameFor(kind, name)`
+ * for a caller that only has the bare name, like `lora_render.mjs`'s
+ * `paintRow`). Preferred over the file name ONLY when `SHOW_CIVITAI_NAME` is
+ * on AND `civitaiName` is a genuinely non-empty string -- otherwise this
+ * falls straight through to the existing `displayModelName`/
+ * `HIDE_FILE_EXTENSION` behaviour, SILENTLY (no marker distinguishes "no
+ * Civitai name known" from "setting is off"): a mixed folder must not read
+ * as broken (§1a-vii's own "the fallback is silent" rule). A caller that
+ * knows this row must NEVER show anything but its real file name (the
+ * missing-file red state, §1a-ii/§1a-vii) simply omits `civitaiName`
+ * entirely, same as if the setting were off.
  */
-export function displayRowName(name) {
+export function displayRowName(name, civitaiName) {
   if (typeof name !== "string" || !name) {
     return "";
+  }
+  const showCivitaiName = !!getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
+  if (showCivitaiName && typeof civitaiName === "string" && civitaiName.trim()) {
+    return civitaiName.trim();
   }
   const hideExtension = !!getSetting(SETTING_IDS.HIDE_FILE_EXTENSION, SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION]);
   return displayModelName(name, hideExtension);
@@ -411,6 +443,8 @@ function buildThumb(doc, kind, model) {
 function buildRow(doc, kind, model, currentName, hideExtension, showThumbnails, onPick) {
   const row = el(doc, "button", "wtn-mp-row");
   row.type = "button";
+  // ALWAYS the real file name (identity), regardless of what the name field
+  // below ends up displaying -- unaffected by §1a-vii, same as before it.
   row.title = model.name;
   if (model.name === currentName) {
     row.classList.add("wtn-mp-current");
@@ -421,7 +455,21 @@ function buildRow(doc, kind, model, currentName, hideExtension, showThumbnails, 
 
   const main = el(doc, "div", "wtn-mp-main");
   const nameEl = el(doc, "div", "wtn-mp-name");
-  nameEl.textContent = displayModelName(model.name, hideExtension);
+  // `displayRowName` (this module, above) is now the ONE seam for BOTH
+  // settings this field honours -- `hideExtension` (still threaded in as a
+  // parameter for the rest of this function/its caller) is superseded here
+  // by that function's own live `HIDE_FILE_EXTENSION` read, same "one
+  // decision point" rule §1a-vii's own doc comment states; `model.
+  // civitai_name` is the `/list` route's own per-file field (`src/
+  // model_browser/local.py`'s doc comment), read straight off the entry
+  // already fetched for this picker -- no extra request.
+  const shownName = displayRowName(model.name, model.civitai_name);
+  nameEl.textContent = shownName;
+  // The full name actually shown, in case it's a longer Civitai name the
+  // CSS ellipsis-truncates (§1a-vii) -- `row.title` above already covers
+  // "always the real file name," this is the ADDITIONAL "whatever's
+  // actually rendered here, in full" tooltip.
+  nameEl.title = shownName;
   main.appendChild(nameEl);
 
   const meta = el(doc, "div", "wtn-mp-meta");

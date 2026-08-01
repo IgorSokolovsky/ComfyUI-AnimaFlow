@@ -375,6 +375,101 @@ def test_list_models_unwhitelisted_kind_returns_empty_without_folder_paths():
 
 
 # ---------------------------------------------------------------------------
+# civitai_name_for / list_models's `civitai_name` field -- docs/lora-loader-
+# design.md §1a-vii ("show the CIVITAI name instead of the filename").
+# ---------------------------------------------------------------------------
+
+
+def test_civitai_name_for_no_sidecar_at_all_is_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        assert local.civitai_name_for(model_path) is None
+
+
+def test_civitai_name_for_reads_the_name_our_own_sidecar_already_carries():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {
+            "modelId": 1, "id": 2, "baseModel": "Illustrious",
+            "model": {"name": "Realistic Skin Detail", "type": "LORA"},
+        })
+        assert local.civitai_name_for(model_path) == "Realistic Skin Detail"
+
+
+def test_civitai_name_for_sidecar_with_no_usable_name_is_none_never_a_placeholder():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        # A real, cached sidecar that just never carried a model name --
+        # parse_model_version's own "still FOUND" case (§2b).
+        sidecar.write_sidecar(model_path, {"id": 1, "modelId": 2, "baseModel": "SD 1.5"})
+        assert local.civitai_name_for(model_path) is None
+
+
+def test_civitai_name_for_falls_back_to_cminfo_sidecar_when_our_own_is_absent():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        with open(interop.cminfo_path(model_path), "w", encoding="utf-8") as fh:
+            json.dump(_CMINFO_FIXTURE, fh)
+        assert local.civitai_name_for(model_path) == _CMINFO_FIXTURE["ModelName"]
+
+
+def test_civitai_name_for_caches_by_sidecar_mtime_stale_value_survives_a_same_mtime_rewrite():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"model": {"name": "First Name"}})
+        assert local.civitai_name_for(model_path) == "First Name"
+
+        # Rewrite the sidecar's CONTENT but pin its mtime back to what it was
+        # -- the cache must still serve the stale value (this proves the read
+        # is actually cached, not merely correct on every call).
+        stamp = os.path.getmtime(sidecar.sidecar_path(model_path))
+        sidecar.write_sidecar(model_path, {"model": {"name": "Second Name"}})
+        os.utime(sidecar.sidecar_path(model_path), (stamp, stamp))
+        assert local.civitai_name_for(model_path) == "First Name"
+
+
+def test_civitai_name_for_cache_invalidates_when_the_sidecar_mtime_actually_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"model": {"name": "First Name"}})
+        assert local.civitai_name_for(model_path) == "First Name"
+
+        sidecar.write_sidecar(model_path, {"model": {"name": "Second Name"}})
+        os.utime(sidecar.sidecar_path(model_path), (time.time() + 5, time.time() + 5))
+        assert local.civitai_name_for(model_path) == "Second Name"
+
+
+def test_list_models_includes_civitai_name_only_when_a_sidecar_has_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        named_path = os.path.join(loras_root, "named.safetensors")
+        plain_path = os.path.join(loras_root, "plain.safetensors")
+        open(named_path, "wb").close()
+        open(plain_path, "wb").close()
+        sidecar.write_sidecar(named_path, {"model": {"name": "Realistic Skin Detail"}})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["named.safetensors", "plain.safetensors"]},
+        )
+        try:
+            models = local.list_models("loras")
+            by_name = {m["name"]: m for m in models}
+            assert by_name["named.safetensors"]["civitai_name"] == "Realistic Skin Detail"
+            # Omitted entirely, never an empty string, never the filename.
+            assert "civitai_name" not in by_name["plain.safetensors"]
+        finally:
+            restore()
+
+
+# ---------------------------------------------------------------------------
 # sidecar.py -- read / write / delete, against real temp files.
 # ---------------------------------------------------------------------------
 
@@ -1904,6 +1999,26 @@ def test_list_models_impl_valid_kind_delegates_to_local_list_models():
             result = mb_api.list_models_impl({"kind": "loras"})
             assert result["reason"] == "ok"
             assert [m["name"] for m in result["models"]] == ["a.safetensors"]
+        finally:
+            restore()
+
+
+def test_list_models_impl_carries_civitai_name_through_when_a_sidecar_has_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {"model": {"name": "Realistic Skin Detail"}})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            result = mb_api.list_models_impl({"kind": "loras"})
+            assert result["reason"] == "ok"
+            assert result["models"][0]["civitai_name"] == "Realistic Skin Detail"
         finally:
             restore()
 
@@ -5604,6 +5719,13 @@ ALL_TESTS = [
     test_list_models_skips_a_hostile_name_that_escapes_its_root,
     test_list_models_groups_by_subfolder_and_reads_metadata,
     test_list_models_unwhitelisted_kind_returns_empty_without_folder_paths,
+    test_civitai_name_for_no_sidecar_at_all_is_none,
+    test_civitai_name_for_reads_the_name_our_own_sidecar_already_carries,
+    test_civitai_name_for_sidecar_with_no_usable_name_is_none_never_a_placeholder,
+    test_civitai_name_for_falls_back_to_cminfo_sidecar_when_our_own_is_absent,
+    test_civitai_name_for_caches_by_sidecar_mtime_stale_value_survives_a_same_mtime_rewrite,
+    test_civitai_name_for_cache_invalidates_when_the_sidecar_mtime_actually_changes,
+    test_list_models_includes_civitai_name_only_when_a_sidecar_has_one,
     test_sidecar_round_trip_and_forget,
     test_interop_cminfo_path_is_the_verified_civicomfy_suffix,
     test_interop_translate_cminfo_typical_fixture_feeds_parse_model_version,
@@ -5699,6 +5821,7 @@ ALL_TESTS = [
     test_forget_impl_rejects_traversal_kind_without_folder_paths,
     test_list_models_impl_missing_kind_key_is_invalid,
     test_list_models_impl_valid_kind_delegates_to_local_list_models,
+    test_list_models_impl_carries_civitai_name_through_when_a_sidecar_has_one,
     test_forget_impl_valid_kind_returns_ok_with_deleted_flag,
     test_delete_model_refuses_unwhitelisted_kind_without_touching_folder_paths,
     test_delete_model_refuses_a_traversal_name_and_leaves_the_target_untouched,

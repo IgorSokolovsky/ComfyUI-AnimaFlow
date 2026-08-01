@@ -38,21 +38,22 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — EIGHTEEN registered ids (`SETTING_IDS`/`SETTING_
+// Declaration shape — NINETEEN registered ids (`SETTING_IDS`/`SETTING_
 // DEFAULTS`: the original ten, plus M2's five -- docs/lora-loader-design.md
 // §8's `CIVITAI_API_KEY` and §7c-i's four remembered search filters,
 // `CIVITAI_SEARCH_BASE_MODEL`/`_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own
 // browsing-level id (`CIVITAI_BROWSING_LEVEL`, RENAMED 2026-07-31 from
 // `CIVITAI_SEARCH_LEVEL` -- see that id's own comment in `settings.mjs`),
 // plus M2b's own two internal multi-value rail filters, `CIVITAI_MODAL_BASE_
-// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`) -- but only FIFTEEN of them get a
-// dialog ROW in `ANIMAFLOW_SETTINGS`. Three are deliberately excluded (A3/A4,
-// owner screenshots 2026-07-31): `CIVITAI_SEARCH_NSFW` (superseded, its own
-// tooltip admitted it does nothing) and the two `CIVITAI_MODAL_*` ids (the
-// toolbar browser's own internal rail-chip state) -- see `ANIMAFLOW_SETTINGS`'s
-// own top comment in `settings.mjs` for why omitting a dialog row never stops
-// an id from being read/written. Re-count rather than trusting either number
-// — they only ever grow.
+// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`, plus §1a-vii's own `SHOW_CIVITAI_NAME`)
+// -- but only SIXTEEN of them get a dialog ROW in `ANIMAFLOW_SETTINGS`. Three
+// are deliberately excluded (A3/A4, owner screenshots 2026-07-31):
+// `CIVITAI_SEARCH_NSFW` (superseded, its own tooltip admitted it does
+// nothing) and the two `CIVITAI_MODAL_*` ids (the toolbar browser's own
+// internal rail-chip state) -- see `ANIMAFLOW_SETTINGS`'s own top comment in
+// `settings.mjs` for why omitting a dialog row never stops an id from being
+// read/written. Re-count rather than trusting either number — they only ever
+// grow.
 // ---------------------------------------------------------------------------
 
 // The three ids deliberately excluded from the dialog list (A3/A4) -- kept as
@@ -64,13 +65,13 @@ const DIALOG_EXCLUDED_IDS = [
   SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES,
 ];
 
-test("SETTING_IDS/SETTING_DEFAULTS both declare exactly eighteen ids", () => {
-  assert.equal(Object.keys(SETTING_IDS).length, 18);
+test("SETTING_IDS/SETTING_DEFAULTS both declare exactly nineteen ids", () => {
+  assert.equal(Object.keys(SETTING_IDS).length, 19);
   assert.deepEqual(Object.keys(SETTING_DEFAULTS).sort(), Object.values(SETTING_IDS).sort());
 });
 
-test("ANIMAFLOW_SETTINGS declares exactly fifteen dialog rows -- every registered id EXCEPT the three internal/superseded ones", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 15);
+test("ANIMAFLOW_SETTINGS declares exactly sixteen dialog rows -- every registered id EXCEPT the three internal/superseded ones", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 16);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   const expected = Object.values(SETTING_IDS).filter((id) => !DIALOG_EXCLUDED_IDS.includes(id)).sort();
   assert.deepEqual(ids, expected);
@@ -121,6 +122,15 @@ test("the ten documented defaults, by name (regression against the task's own ta
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED], true);
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION], false);
   assert.equal(SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS], true);
+});
+
+test("SHOW_CIVITAI_NAME: a boolean, defaulting OFF (filenames -- today's behaviour), append-only id (docs/lora-loader-design.md §1a-vii)", () => {
+  assert.equal(SETTING_IDS.SHOW_CIVITAI_NAME, "AnimaFlow.Controls.ShowCivitaiName");
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME], false);
+  const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.SHOW_CIVITAI_NAME);
+  assert.equal(setting.type, "boolean");
+  assert.equal(setting.defaultValue, false);
+  assert.ok(setting.tooltip.length > 20);
 });
 
 test("the Civitai setting is a boolean, defaulting ON (must be explicitly turned off to go offline)", () => {

@@ -669,6 +669,7 @@ function prettyTitle(name) {
  * @param {boolean} [opts.civitaiEnabled] - the "Civitai" ⚙/Settings switch's CURRENT value (§7b decision 20).
  * @param {boolean} [opts.showThumbnails] - the "Show preview thumbnails" ⚙/Settings switch's CURRENT value (§7b, Slice 5) -- `false` renders NO thumbnail element at all; defaults to `true`, same convention as `civitaiEnabled`.
  * @param {string} [opts.browsingLevel] - the "Maximum browsing level" ⚙/Settings switch's CURRENT value (§7c-iv, one of `CIVITAI_SEARCH_LEVEL_OPTIONS` -- `"PG".."XXX"`), read by the CALLER the same way `civitaiEnabled`/`showThumbnails` already are -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY the Civitai-sourced fallback thumbnail (below) -- the local on-disk preview (`thumbUrl`) is never level-filtered (§7c-iv: "never what the user already has locally -- a file on disk was an explicit act"). Defaults to `"PG"`, the setting's own default.
+ * @param {boolean} [opts.showCivitaiName] - the "Show Civitai name instead of filename" ⚙/Settings switch's CURRENT value (§1a-vii), read by the CALLER the same way as every other setting above -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY whether `renderIdentity`'s title prefers a known Civitai name over the file-derived `prettyTitle(name)`; defaults to `false` (filenames), matching that setting's own default.
  * @param {number} [opts.thumbRetryBackoffMs] - test-only override for the identity thumb's retry backoff (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real use), matching `civitai_search.mjs`'s own `openCivitaiSearch` convention so a test can drive the retry chain deterministically instead of waiting on a real timer.
  * @param {number} [opts.sizeBytes] - the file's size on disk, for the "Remove an installed model" confirm dialog only.
  * @param {(nextSelected: string[], nextCustom: string[]) => void} [opts.onChange]
@@ -690,6 +691,7 @@ export function openModelInfo({
   civitaiEnabled = true,
   showThumbnails = true,
   browsingLevel = "PG",
+  showCivitaiName = false,
   thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
   sizeBytes,
   onChange,
@@ -1168,12 +1170,17 @@ export function openModelInfo({
     renderThumb();
 
     // The header TITLE prefers Civitai's own model name (a real display
-    // name, e.g. "Skin Detail XL") over the prettified filename the moment
-    // one is known -- a filename transform is a fallback for "we don't know
-    // yet / Civitai is off", not the preferred source. Still textContent
-    // only (`civitaiRecord.name` is Civitai-supplied text) -- see this
-    // file's top doc comment.
-    const civitaiName = civitaiRecord && typeof civitaiRecord.name === "string" ? civitaiRecord.name.trim() : "";
+    // name, e.g. "Skin Detail XL") over the prettified filename -- but ONLY
+    // when `showCivitaiName` (§1a-vii) is on: "one setting, one rule" means
+    // this surface must agree with the picker row and the LoRA row's own
+    // name field, not run its own independent preference. A filename
+    // transform is the fallback for "the setting is off / nothing's known
+    // yet / Civitai is off", never the placeholder. Still textContent only
+    // (`civitaiRecord.name` is Civitai-supplied text) -- see this file's top
+    // doc comment.
+    const civitaiName = showCivitaiName && civitaiRecord && typeof civitaiRecord.name === "string"
+      ? civitaiRecord.name.trim()
+      : "";
     title.textContent = civitaiName || prettyTitle(name);
 
     civLinkRow.innerHTML = "";

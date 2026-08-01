@@ -169,6 +169,13 @@ def list_models_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     unwhitelisted kind (including a traversal attempt like `"../../etc"`)
     never reaches path resolution at all, it's just a dict lookup that
     misses in `folder_for_kind`.
+
+    Each entry may carry a `civitai_name` (docs/lora-loader-design.md
+    §1a-vii) -- see `local.list_models`'s own doc comment for where it comes
+    from (a cached, per-file `.civitai.info`/`.cminfo.json` sidecar read) and
+    why it's omitted rather than blank/invented when no sidecar has a usable
+    name. This is a display-only addition: `name` remains the one value a
+    caller (the picker) may treat as this model's identity.
     """
     payload = payload or {}
     kind = payload.get("kind")

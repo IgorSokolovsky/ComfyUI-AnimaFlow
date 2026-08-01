@@ -133,6 +133,63 @@ test("displayRowName: non-string/empty name is always an empty string, never thr
   assert.equal(displayRowName(""), "");
 });
 
+// -------------------------------------------------------------------------
+// §1a-vii ("show the CIVITAI name instead of the filename -- a setting"):
+// `civitaiName`, the second (optional) argument -- a SOURCE added to the
+// existing seam, not a second decision point.
+// -------------------------------------------------------------------------
+
+test("displayRowName: civitaiName is IGNORED when SHOW_CIVITAI_NAME is off (default) -- falls back to the file name, silently", () => {
+  assert.equal(displayRowName("real_skin-step00000200.safetensors", "Realistic Skin Detail"), "real_skin-step00000200.safetensors");
+});
+
+test("displayRowName: civitaiName is preferred over the file name when SHOW_CIVITAI_NAME is on", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+  try {
+    assert.equal(displayRowName("real_skin-step00000200.safetensors", "Realistic Skin Detail"), "Realistic Skin Detail");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("displayRowName: SHOW_CIVITAI_NAME on but no civitaiName known -- falls back to the file name, silently, no marker", () => {
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+  try {
+    assert.equal(displayRowName("real_skin-step00000200.safetensors"), "real_skin-step00000200.safetensors");
+    assert.equal(displayRowName("real_skin-step00000200.safetensors", ""), "real_skin-step00000200.safetensors");
+    assert.equal(displayRowName("real_skin-step00000200.safetensors", "   "), "real_skin-step00000200.safetensors");
+    assert.equal(displayRowName("real_skin-step00000200.safetensors", null), "real_skin-step00000200.safetensors");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("displayRowName: SHOW_CIVITAI_NAME composes correctly with HIDE_FILE_EXTENSION -- civitaiName wins outright, extension-hiding only applies to the file-name fallback", () => {
+  globalThis.window = {
+    app: {
+      extensionManager: {
+        setting: {
+          get: (id) => {
+            if (id === SETTING_IDS.SHOW_CIVITAI_NAME) return true;
+            if (id === SETTING_IDS.HIDE_FILE_EXTENSION) return true;
+            return undefined;
+          },
+        },
+      },
+    },
+  };
+  try {
+    // A known Civitai name wins over the file name entirely -- extension
+    // hiding is a FILE-name-only concern, it never touches the Civitai name.
+    assert.equal(displayRowName("celica_v2.safetensors", "Realistic Skin Detail"), "Realistic Skin Detail");
+    // No Civitai name known for THIS file -- falls back to the file-name
+    // display, which still honours HIDE_FILE_EXTENSION as before.
+    assert.equal(displayRowName("celica_v2.safetensors"), "celica_v2");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 // =========================================================================
 // filterModelsFlat
 // =========================================================================
@@ -531,6 +588,112 @@ await asyncTest("openModelPicker: typing collapses group headers to a flat, filt
     assert.equal(picked, "detail/eyes.safetensors");
     assert.equal(handle.overlay.parentNode, null, "picking closes the overlay");
   } finally {
+    globalThis.fetch = _origFetchForPicker;
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelPicker: a row with a known civitai_name shows the FILENAME by default (setting off), and the CIVITAI NAME once the setting is on -- but onPick ALWAYS hands back the filename, never the display name", async () => {
+  const kind = "picker-kind-civitai-name";
+  invalidateList(kind);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [
+        { name: "real_skin-step00000200.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false, civitai_name: "Realistic Skin Detail" },
+      ],
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    let picked = null;
+    const handle = openModelPicker({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      onPick: (name) => {
+        picked = name;
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let rows = findAll(handle.overlay, "wtn-mp-row");
+    let nameEl = findAll(rows[0], "wtn-mp-name")[0];
+    assert.equal(nameEl.textContent, "real_skin-step00000200.safetensors", "setting off (default) -- filename, not the Civitai name");
+    // `row.title` (the whole row's own tooltip) stays the real file name
+    // regardless -- unaffected by §1a-vii, same as before it.
+    assert.equal(rows[0].title, "real_skin-step00000200.safetensors");
+
+    rows[0]._listeners.click.forEach((fn) => fn({ stopPropagation() {} }));
+    assert.equal(picked, "real_skin-step00000200.safetensors", "onPick always hands back the FILENAME -- the identity value, never the display name");
+    handle.close();
+
+    globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+    try {
+      picked = null;
+      const doc2 = makeDocStub();
+      const anchor2 = doc2.createElement("button");
+      const handle2 = openModelPicker({
+        ctx: { doc: doc2, getCanvasEl: () => null },
+        anchorEl: anchor2,
+        kind,
+        onPick: (name) => {
+          picked = name;
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      rows = findAll(handle2.overlay, "wtn-mp-row");
+      nameEl = findAll(rows[0], "wtn-mp-name")[0];
+      assert.equal(nameEl.textContent, "Realistic Skin Detail", "setting on -- the Civitai name");
+      // The full name shown, in case CSS ellipsis-truncates a long one.
+      assert.equal(nameEl.title, "Realistic Skin Detail");
+      // Identity is STILL unaffected.
+      assert.equal(rows[0].title, "real_skin-step00000200.safetensors");
+
+      rows[0]._listeners.click.forEach((fn) => fn({ stopPropagation() {} }));
+      assert.equal(picked, "real_skin-step00000200.safetensors", "onPick still hands back the FILENAME even with the setting on");
+      handle2.close();
+    } finally {
+      delete globalThis.window;
+    }
+  } finally {
+    globalThis.fetch = _origFetchForPicker;
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelPicker: no civitai_name known for a file -- the row falls back to the filename silently, even with the setting on", async () => {
+  const kind = "picker-kind-civitai-name-none";
+  invalidateList(kind);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "plain.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelPicker({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: anchor,
+      kind,
+      onPick: () => {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const rows = findAll(handle.overlay, "wtn-mp-row");
+    const nameEl = findAll(rows[0], "wtn-mp-name")[0];
+    assert.equal(nameEl.textContent, "plain.safetensors", "no civitai_name field at all -- silent fallback, no marker");
+    handle.close();
+  } finally {
+    delete globalThis.window;
     globalThis.fetch = _origFetchForPicker;
     invalidateList(kind);
   }

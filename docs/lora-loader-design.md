@@ -10,10 +10,10 @@ force. See §0e for what M1 shipped; the milestone list in §0c is the plan, thi
 | **M2b slice 1** — toolbar button, 90% modal, filter rail, result grid, download | ✅ built, unverified |
 | **M2b slice 2** — the detail **swap** + multi-column community gallery + copy-prompt | ❌ **not built** |
 | **§7c-ii** — the *picker's* vertical info panel (version selector, description, single-column gallery) | ❌ **not built** — the one part of M2 still outstanding |
-| **§1a-vii** — show the Civitai name instead of the filename, behind a setting | ❌ **not built** (spec only) |
-| **ⓘ backfill saves the preview image** (§7c-iv) | ❌ **not built** — until it is, that path re-fetches from Civitai forever |
-| **`notfound`'s search-by-name link** | ❌ still the disabled stub M1 left |
-| **Remove an installed model** (decisions taken 2026-07-30, `docs/TODO.md`) | ❌ **not built** |
+| **§1a-vii** — show the Civitai name instead of the filename, behind a setting | ✅ built, unverified |
+| **ⓘ backfill saves the preview image** (§7c-iv) | ✅ built (`6ce43de` route, wired `99e24c5`) |
+| **`notfound`'s search-by-name link** | ✅ wired `99e24c5` |
+| **Remove an installed model** (decisions taken 2026-07-30, `docs/TODO.md`) | ✅ route `6ce43de`, type-to-confirm UI `99e24c5` |
 | **Installed-by-kind section in the modal** (owner, 2026-07-30) | ❌ **not built** |
 | **M3** — Loader Panel reuse, checkpoints + UNET | ❌ **not built** |
 
@@ -247,7 +247,7 @@ character name is *probably* a character LoRA — and "probably" is the problem.
 than none, because a user filtering by it would silently not see LoRAs that are actually there. **Never
 invent a category; show nothing when we don't know.** (`no preview` sets the same precedent, §1a-v.)
 
-### 1a-vii. Show the CIVITAI name instead of the filename — a setting (owner, 2026-07-31) — SPEC, not built
+### 1a-vii. Show the CIVITAI name instead of the filename — a setting (owner, 2026-07-31) — BUILT 2026-08-01
 
 Owner: *"in the select lora we should show the name in civitai (e.g. the one we downloaded and not the
 filename), this should be configuration that user can change."*

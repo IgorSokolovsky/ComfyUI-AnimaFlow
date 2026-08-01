@@ -538,6 +538,10 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
   const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
   const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
   const browsingLevel = getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]);
+  // §1a-vii ("one setting, one rule"): read HERE, same convention as every
+  // other setting on this call -- `model_info.mjs` never reaches into
+  // `../shared/settings.mjs` itself.
+  const showCivitaiName = getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
   openModelInfo({
     ctx,
     anchorEl: refs.info,
@@ -551,6 +555,7 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
     civitaiEnabled,
     showThumbnails,
     browsingLevel,
+    showCivitaiName,
     // "Remove an installed model" (docs/TODO.md) -- the confirm dialog's own
     // size/folder line reads the already-cached list entry's `size`, same
     // source as `baseModel`/`fileTriggers` above (no extra network call).

@@ -164,6 +164,16 @@ export const SETTING_IDS = {
   // comment for the rule this and `CIVITAI_SEARCH_NSFW` above both share).
   CIVITAI_MODAL_BASE_MODELS: "AnimaFlow.Controls.CivitaiModalBaseModels",
   CIVITAI_MODAL_MODEL_TYPES: "AnimaFlow.Controls.CivitaiModalModelTypes",
+  // docs/lora-loader-design.md §1a-vii ("show the CIVITAI name instead of
+  // the filename -- a setting"): a display-only preference, appended here
+  // (append-only, this module's own top doc comment), composing with
+  // `HIDE_FILE_EXTENSION` above -- both are read through `model_picker.mjs`'s
+  // `displayRowName`, the ONE settings-aware name-display seam every
+  // `paintRow` in the Controls track already calls. Defaults OFF: filenames,
+  // today's behaviour, and what actually matches disk (§1a-vii's own "the
+  // non-negotiable" -- the filename stays the identity regardless of this
+  // setting's value; this governs DISPLAY only).
+  SHOW_CIVITAI_NAME: "AnimaFlow.Controls.ShowCivitaiName",
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +303,8 @@ export const SETTING_DEFAULTS = {
   // spirit, just serialized (this id's own `SETTING_IDS` comment).
   [SETTING_IDS.CIVITAI_MODAL_BASE_MODELS]: "[]",
   [SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES]: "[]",
+  // Off -- filenames, today's behaviour (§1a-vii's own default rule).
+  [SETTING_IDS.SHOW_CIVITAI_NAME]: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -450,6 +462,23 @@ export const ANIMAFLOW_SETTINGS = [
       "Show a LoRA/model's name in the picker without its file extension "
       + "(e.g. \"celica_v2\" instead of \"celica_v2.safetensors\"). Purely "
       + "cosmetic -- the underlying file name used to load it never changes.",
+  },
+  {
+    id: SETTING_IDS.SHOW_CIVITAI_NAME,
+    name: "Show Civitai name instead of filename",
+    category: ["AnimaFlow", "Controls", "Show Civitai name instead of filename"],
+    type: "boolean",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME],
+    tooltip:
+      "Show a LoRA/model's Civitai display name (e.g. \"Realistic Skin "
+      + "Detail\") instead of its file name, in the picker row, the LoRA "
+      + "row's own name field, and the ⓘ info panel's title. Only ever "
+      + "shows a name this pack already knows -- downloaded through this "
+      + "pack's own browser, or looked up once via ⓘ -- and silently falls "
+      + "back to the file name for anything else, so a mixed folder never "
+      + "looks broken. Purely cosmetic: the underlying file used to load "
+      + "the model never changes, and a MISSING file always shows its file "
+      + "name regardless of this setting (docs/lora-loader-design.md §1a-vii).",
   },
   {
     id: SETTING_IDS.SHOW_PREVIEW_THUMBNAILS,

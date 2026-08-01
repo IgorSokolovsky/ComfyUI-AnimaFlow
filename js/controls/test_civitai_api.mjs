@@ -15,6 +15,7 @@ import {
   listModels,
   invalidateList,
   hasFile,
+  civitaiNameFor,
   cachedList,
   isListCached,
   invalidateInfo,
@@ -79,6 +80,48 @@ test("hasFile: null for a missing kind/name argument, never throws", () => {
   assert.equal(hasFile(null, "a.safetensors"), null);
   assert.equal(hasFile("loras", null), null);
   assert.equal(hasFile("", ""), null);
+});
+
+// =========================================================================
+// civitaiNameFor -- §1a-vii ("show the CIVITAI name instead of the
+// filename"), read with no network of its own from the already-fetched list.
+// =========================================================================
+
+test("civitaiNameFor: null for a kind that has never been fetched, or a missing kind/name argument", () => {
+  assert.equal(civitaiNameFor("kind-never-fetched-civitai-name", "a.safetensors"), null);
+  assert.equal(civitaiNameFor(null, "a.safetensors"), null);
+  assert.equal(civitaiNameFor("loras", null), null);
+  assert.equal(civitaiNameFor("", ""), null);
+});
+
+await asyncTest("civitaiNameFor: the entry's civitai_name once the list resolves; null for an entry with none, or a name not in the list", async () => {
+  const kind = "kind-civitai-name-a";
+  stubFetch(async () => jsonResponse({
+    reason: "ok",
+    models: [
+      { name: "named.safetensors", civitai_name: "Realistic Skin Detail" },
+      { name: "plain.safetensors" },
+    ],
+  }));
+  try {
+    await listModels(kind);
+    assert.equal(civitaiNameFor(kind, "named.safetensors"), "Realistic Skin Detail");
+    assert.equal(civitaiNameFor(kind, "plain.safetensors"), null, "no civitai_name field at all -- never a placeholder");
+    assert.equal(civitaiNameFor(kind, "not-in-the-list.safetensors"), null);
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest("civitaiNameFor: a blank/whitespace-only civitai_name is treated as absent, not shown", async () => {
+  const kind = "kind-civitai-name-blank";
+  stubFetch(async () => jsonResponse({ reason: "ok", models: [{ name: "a.safetensors", civitai_name: "   " }] }));
+  try {
+    await listModels(kind);
+    assert.equal(civitaiNameFor(kind, "a.safetensors"), null);
+  } finally {
+    restoreFetch();
+  }
 });
 
 // =========================================================================

@@ -208,6 +208,27 @@ export function hasFile(kind, name) {
   return list.some((m) => m && m.name === name);
 }
 
+/**
+ * The cached Civitai display name for `(kind, name)` (docs/lora-loader-
+ * design.md §1a-vii), read with NO network of its own from `(kind, name)`'s
+ * entry in the last-fetched `/list` response -- `null` for an incomplete
+ * pair, a kind whose list hasn't resolved yet, a name not in it, or a real
+ * entry that simply carries no `civitai_name` at all (the server already
+ * OMITS that field rather than sending a blank one -- `src/model_browser/
+ * local.py`'s own doc comment). Never a placeholder, never the file name
+ * echoed back as if it were a Civitai name -- a caller (`lora_render.mjs`'s
+ * `paintRow`) that gets `null` back falls through to the plain file-name
+ * display, silently, same as a model that was never looked up at all.
+ */
+export function civitaiNameFor(kind, name) {
+  if (!kind || !name) {
+    return null;
+  }
+  const entry = cachedList(kind).find((m) => m && m.name === name);
+  const raw = entry && entry.civitai_name;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
 // ---------------------------------------------------------------------------
 // Per-model info -- keyed `(kind, name)`. `_infoCache` holds the last-known
 // `/wtn/model_browser/lookup` RESPONSE for each pair (the whole `{reason,
