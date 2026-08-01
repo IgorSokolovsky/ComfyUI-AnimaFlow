@@ -33,6 +33,10 @@ function test(name, fn) {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const controlsDir = path.join(here, "..", "controls");
+const animaDir = path.join(here, "..", "anima");
+const autocompleteDir = path.join(here, "..", "autocomplete");
+const ruleBuilderDir = path.join(here, "..", "prompt_rules", "rule_builder");
+const promptRulesNodeDir = path.join(here, "..", "prompt_rules", "node");
 
 // =========================================================================
 // The required ordering itself -- read from the module, not restated.
@@ -102,6 +106,22 @@ const CONSUMERS = [
   { file: path.join(controlsDir, "civitai_modal.mjs"), importName: "Z_MODAL", usage: /z-index:\s*\$\{Z_MODAL\}/ },
   { file: path.join(controlsDir, "render.mjs"), importName: "Z_PANEL", usage: /z-index:\s*\$\{Z_PANEL\}/ },
   { file: path.join(controlsDir, "lora_render.mjs"), importName: "Z_PANEL", usage: /z-index:\s*\$\{Z_PANEL\}/ },
+  // The last four hand-picked literals (task: "retire the last hand-picked
+  // z-index values"). `js/anima/render.mjs`'s `.wtn-an-overlay` was already
+  // dead as written (`overlay.mjs`'s own inline `zIndex` wins), migrating it
+  // just removes the false `10020` it used to claim. `js/autocomplete/
+  // render.mjs`'s popup is a canvas-level anchored popover (never mounts
+  // inside the Rule Builder overlay -- `attachAutocomplete` only ever
+  // attaches over a node's own widget), so `Z_PANEL`, not a fifth tier.
+  // `rule_builder/overlay.mjs` and `prompt_rules/node/picker.mjs` are BOTH
+  // full-bleed scrim modals that can genuinely coexist (see each file's own
+  // matching comment for the reachability trace), so they take different
+  // rungs -- `Z_MODAL` for the Rule Builder, `Z_PANEL` (reused, same
+  // convention `Z_ELEVATED_TOOLTIP` already documents) for the picker.
+  { file: path.join(animaDir, "render.mjs"), importName: "Z_PANEL", usage: /z-index:\s*\$\{Z_PANEL\}/ },
+  { file: path.join(autocompleteDir, "render.mjs"), importName: "Z_PANEL", usage: /z-index:\s*\$\{Z_PANEL\}/ },
+  { file: path.join(ruleBuilderDir, "overlay.mjs"), importName: "Z_MODAL", usage: /z-index:\s*\$\{Z_MODAL\}/ },
+  { file: path.join(promptRulesNodeDir, "picker.mjs"), importName: "Z_PANEL", usage: /z-index:\s*\$\{Z_PANEL\}/ },
 ];
 
 for (const { file, importName, usage } of CONSUMERS) {
@@ -113,7 +133,7 @@ for (const { file, importName, usage } of CONSUMERS) {
   });
 }
 
-test("regression guard: none of the six consumers above declares a raw (>= 900) z-index literal anywhere in its own source -- every one must route through the shared scale", () => {
+test("regression guard: none of the ten consumers above declares a raw (>= 900) z-index literal anywhere in its own source -- every one must route through the shared scale", () => {
   const RAW_ZINDEX_RE = /z-index:\s*(\d+)/g;
   const offenders = [];
   for (const { file } of CONSUMERS) {

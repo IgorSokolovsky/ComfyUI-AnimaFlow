@@ -199,6 +199,7 @@ import { applyNodeChrome, CHROME_BODY, CHROME_TITLE } from "../shared/node_chrom
 // own top doc comment for the full story.
 import { isSizeLike } from "../shared/size.mjs";
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
+import { Z_PANEL } from "../shared/z_layers.mjs";
 
 const STYLE_ID = "wtn-anima-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -691,8 +692,15 @@ function buildCss() {
    sets \`position: fixed\`/\`z-index\` inline (its own doc comment), so this
    rule is redundant in practice, but keeping it means a late/failed
    stylesheet injection still can't hide a menu (\`comfyui-node-renders-but-
-   dead\` skill's root cause A). ── */
-.wtn-an-overlay { position: fixed; z-index: 10020; }
+   dead\` skill's root cause A). \`Z_PANEL\` (\`js/shared/z_layers.mjs\`), not
+   the \`10020\` this used to say: \`overlay.mjs:267\` already sets
+   \`overlay.style.zIndex = String(Z_PANEL)\` INLINE, and inline beats a
+   stylesheet rule, so this file's own \`10020\` was already dead as written
+   (every anchored overlay this pack opens through \`openOverlay\` -- the ⓘ
+   panel, the search panel, option lists, ⚙ popovers, row context menus --
+   is \`Z_PANEL\`, never a full modal). Migrating removes a false statement,
+   not a behaviour. ── */
+.wtn-an-overlay { position: fixed; z-index: ${Z_PANEL}; }
 
 /* ── ⚙ menu content -- the long tail behind a section's own gear (task
    item 3) or the Preview's Save row (task item 2). Mirrors \`js/controls/

@@ -20,6 +20,7 @@
  */
 import { injectTheme } from "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 import * as api from "/extensions/ComfyUI-AnimaFlow/shared/api.mjs";
+import { Z_MODAL } from "../../shared/z_layers.mjs";
 import {
   mkRule,
   seedRuleset,
@@ -54,8 +55,37 @@ function injectOverlayCss() {
   const style = document.createElement("style");
   style.id = CSS_ID;
   style.textContent = `
+/* \`Z_MODAL\` (\`js/shared/z_layers.mjs\`), not the bare \`10000\` this used to
+   say -- a full-bleed scrim modal, the same tier \`civitai_modal.mjs\` uses.
+
+   Why NOT tied to \`js/prompt_rules/node/picker.mjs\`'s own scrim (was
+   \`10001\`, deliberately one above this file's old \`10000\`): that pairing
+   assumed the two could never actually coexist, but they can. Both this
+   overlay and the picker are reachable INDEPENDENTLY of each other --
+   ./index.js registers "AnimaFlow: Rule Builder" as a global \`commands\`
+   entry AND mounts a ComfyUI toolbar button (neither gated on any specific
+   node), while the picker only opens from a "Pick…" button embedded in one
+   encode node's own widget UI -- and NEITHER singleton closes the other
+   (\`openRuleBuilder\`'s \`activeOverlay.close()\` only ever closes a previous
+   RULE BUILDER instance; \`picker.mjs\`'s own \`activePicker.close()\` is the
+   same, self-only). The picker's own \`document.addEventListener("keydown",
+   onKeydown)\` only acts on \`Escape\` -- it never calls \`stopPropagation\` --
+   so a global keybinding (or the command palette, Settings → Keybindings)
+   bound to this overlay's command still fires and opens THIS overlay while
+   the picker is already open, with nothing in either file to prevent it.
+   That is genuinely reachable, unlike the reverse (this overlay's own
+   full-bleed scrim already covers -- and physically blocks clicks on -- the
+   very node whose "Pick…" button would be needed to open the picker while
+   THIS overlay is open first).
+
+   So they need to sit at DIFFERENT rungs, and this overlay -- the heavier,
+   globally-reachable editing surface -- must win: \`Z_MODAL\` here,
+   \`Z_PANEL\` on the picker (see that file's own matching comment). Neither
+   \`Z_TOOLTIP\` nor \`Z_CONFIRM\` fits either surface (not a hover hint, not a
+   destructive confirm), so this is the smallest arrangement available from
+   the EXISTING four rungs -- no fifth constant invented. */
 .wtn-rb-scrim {
-  position: fixed; inset: 0; z-index: 10000;
+  position: fixed; inset: 0; z-index: ${Z_MODAL};
   background: rgba(6, 8, 11, 0.72);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 26px 16px; overflow-y: auto;

@@ -21,6 +21,7 @@
  */
 import { injectTheme } from "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 import { getCharacters } from "/extensions/ComfyUI-AnimaFlow/shared/api.mjs";
+import { Z_PANEL } from "../../shared/z_layers.mjs";
 
 // `docs/nodes-and-api.md` §2's `/wtn/rules/characters` kind vocabulary, in
 // display order. An entry with any other/missing `kind` still renders --
@@ -44,8 +45,25 @@ function injectPickerCss() {
   const style = document.createElement("style");
   style.id = CSS_ID;
   style.textContent = `
+/* \`Z_PANEL\` (\`js/shared/z_layers.mjs\`), not the bare \`10001\` this used to
+   say -- deliberately reusing the "anchored overlay/popover" tier's number
+   for a full-bleed scrim, the same kind of reuse \`Z_ELEVATED_TOOLTIP\`
+   already documents for a different exception (its own doc comment covers
+   the convention: borrow an existing rung rather than invent a fifth).
+
+   Why not \`Z_MODAL\` (this popover's own natural "full modal" tier, same
+   visual treatment as \`../rule_builder/overlay.mjs\`'s scrim): this picker
+   and the Rule Builder overlay CAN be open at the same time (see that
+   file's own matching comment for the full trace -- neither singleton
+   closes the other, and the Rule Builder is reachable via a global
+   command/keybinding that this picker's own \`keydown\` handler never
+   blocks), and when they are, the Rule Builder -- the heavier, globally-
+   reachable surface -- must win. \`Z_PANEL\` keeps this picker one rung
+   BELOW \`Z_MODAL\` so that ordering holds; \`Z_TOOLTIP\` doesn't fit (this
+   is a real modal, not a hover hint) and \`Z_CONFIRM\` is reserved for a
+   destructive-action confirm, not this. */
 .wtn-pk-scrim {
-  position: fixed; inset: 0; z-index: 10001;
+  position: fixed; inset: 0; z-index: ${Z_PANEL};
   background: rgba(6, 8, 11, 0.66);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 14vh 16px 16px; overflow-y: auto;

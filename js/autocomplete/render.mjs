@@ -7,12 +7,22 @@
  */
 
 import { injectTheme, TOKENS } from "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
+import { Z_PANEL } from "../shared/z_layers.mjs";
 
 const STYLE_ID = "wtn-autocomplete-style";
 
+// `Z_PANEL` (`js/shared/z_layers.mjs`), not the bare `10000` this used to
+// say: this popup is anchored over a node's own widget (`attachAutocomplete`
+// is only ever called from `./index.js`'s `maybeAttachWidget`/`scanNode`,
+// i.e. over a node's textarea/text widget -- it never attaches inside the
+// Rule Builder overlay, which isn't a node widget), so it's a canvas-level
+// anchored popover, the SAME tier every other popover/menu this pack opens
+// through `openOverlay`/`openOverlayWithZoom` already uses -- never the
+// tooltip tier (it's a real interactive list, not a hover hint) and never a
+// full modal (it never covers the whole viewport).
 const CSS = `
 .wtn-ac-popup {
-  position: fixed; z-index: 10000; display: none;
+  position: fixed; z-index: ${Z_PANEL}; display: none;
   min-width: 220px; max-width: 380px; max-height: 260px; overflow-y: auto;
   background: var(--wtn-surface, ${TOKENS.surface});
   border: 1px solid var(--wtn-line, ${TOKENS.line});
