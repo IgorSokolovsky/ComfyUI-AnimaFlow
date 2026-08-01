@@ -667,6 +667,82 @@ def parse_author_gallery(images_raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def is_version_gated(v: Any) -> bool:
+    """A raw Civitai model-version object's own gate status -- `earlyAccessEndsAt`
+    non-null means the version is still gated behind early access (non-null
+    while the gate is up; the overwhelming common case, a fully public
+    version, simply has no such key at all). Moved here (2026-08-01, the
+    detail view's own `files` field) from `civitai_search.py`'s inline
+    `bool(v.get("earlyAccessEndsAt"))` in `_parse_version`, so `model_detail.
+    fetch_model_detail` computes the SAME gate status the search path does
+    from the same raw shape, rather than a second copy of this one-line
+    rule drifting from it. `False` for non-dict input.
+
+    This is a documented HEURISTIC, not a guarantee: the definitive answer is
+    always the download attempt itself, which is why `download.py`'s
+    `stream_download` ALSO maps a live 401/403 to its own `"key_required"`
+    reason regardless of what this flag said in advance (defense in depth,
+    never trusting a client-editable-in-transit response alone for a
+    security-relevant decision) -- see `civitai_search.py`'s own
+    `_parse_version` for that same caveat, stated once and shared here.
+    """
+    if not isinstance(v, dict):
+        return False
+    return bool(v.get("earlyAccessEndsAt"))
+
+
+def parse_files(files_raw: Any, *, gated: bool) -> List[Dict[str, Any]]:
+    """A raw Civitai version's `files` array -> `[{name, download_url,
+    size_kb, primary, sha256, gated}, ...]` -- the wire shape both the search
+    path's per-version `files` key and the model/version DETAIL view's own
+    `files` key (`model_detail.fetch_model_detail`, added 2026-08-01 to
+    unblock the ⓘ panel's deleted-model Download button, which needs a real
+    file list rather than a bare Civitai link) share verbatim.
+
+    Moved here from `civitai_search.py`'s own (private) `_parse_files`
+    2026-08-01, the same way `_parse_images` became `parse_gallery_images`
+    above -- so a second, independent copy of this parse never has the
+    chance to drift from this one; `civitai_search.py` keeps a plain alias
+    to this function under its old name for every existing call site.
+
+    `gated` is the CALLER's job to compute (`is_version_gated` above, from
+    the SAME raw version object this `files` array came from) and is copied
+    onto every file in the list -- a file is exactly as gated as the version
+    it belongs to, and a caller should never have to cross-reference the
+    parent version to know that.
+
+    Only entries with a usable (non-blank string) `name` AND `downloadUrl`
+    are kept -- "omit rather than invent" (docs/lora-loader-design.md
+    §1a-vi): a caller renders no download option for a file it couldn't
+    resolve a URL for, never a dead link. Non-list input -> `[]`. Never
+    raises.
+    """
+    if not isinstance(files_raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for f in files_raw:
+        if not isinstance(f, dict):
+            continue
+        name = f.get("name")
+        download_url = f.get("downloadUrl")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(download_url, str) or not download_url:
+            continue
+        hashes = f.get("hashes") if isinstance(f.get("hashes"), dict) else {}
+        size_kb = f.get("sizeKB")
+        sha256 = hashes.get("SHA256")
+        out.append({
+            "name": name,
+            "size_kb": size_kb if isinstance(size_kb, (int, float)) and not isinstance(size_kb, bool) else None,
+            "download_url": download_url,
+            "primary": bool(f.get("primary")),
+            "sha256": str(sha256) if isinstance(sha256, str) and sha256 else None,
+            "gated": gated,
+        })
+    return out
+
+
 def parse_model_description(obj: Any) -> Optional[str]:
     """A Civitai `GET /api/v1/models/{id}` response -> its own top-level
     `description`, converted to plain text (BUG 11a's `html_to_text`) --
@@ -762,6 +838,7 @@ __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
     "pick_gallery_image_url", "pick_thumbnail_url", "parse_gallery_images",
     "parse_author_gallery",
+    "is_version_gated", "parse_files",
     "civitai_shape_from_search_meta",
     "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_VIDEO_TRANSFORM", "SOURCE_TRANSFORM",
     "saved_preview_url",

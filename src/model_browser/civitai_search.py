@@ -494,34 +494,14 @@ def _clean_int(value: Any) -> Optional[int]:
     return None
 
 
-def _parse_files(files_raw: Any, *, gated: bool) -> List[Dict[str, Any]]:
-    if not isinstance(files_raw, list):
-        return []
-    out: List[Dict[str, Any]] = []
-    for f in files_raw:
-        if not isinstance(f, dict):
-            continue
-        name = f.get("name")
-        download_url = f.get("downloadUrl")
-        if not isinstance(name, str) or not name:
-            continue
-        if not isinstance(download_url, str) or not download_url:
-            continue
-        hashes = f.get("hashes") if isinstance(f.get("hashes"), dict) else {}
-        size_kb = f.get("sizeKB")
-        sha256 = hashes.get("SHA256")
-        out.append({
-            "name": name,
-            "size_kb": size_kb if isinstance(size_kb, (int, float)) and not isinstance(size_kb, bool) else None,
-            "download_url": download_url,
-            "primary": bool(f.get("primary")),
-            "sha256": str(sha256) if isinstance(sha256, str) and sha256 else None,
-            # The version's gate status, copied onto every one of its files
-            # so a caller never has to cross-reference the parent version --
-            # a file is exactly as gated as the version it belongs to.
-            "gated": gated,
-        })
-    return out
+# docs/lora-loader-design.md, "The detail view" (2026-08-01): this file-list
+# parse moved to `civitai_parse.parse_files` so `model_detail.
+# fetch_model_detail`'s own new `files` key (the ⓘ panel's Download button)
+# shares the EXACT same wire-shape rule rather than a second copy of this
+# loop -- kept under this module's original private name (a plain alias, not
+# a copy, same convention as `_parse_images` below) so every existing call
+# site referencing `_parse_files` still resolves.
+_parse_files = civitai_parse.parse_files
 
 
 # docs/lora-loader-design.md §7c-iv (2026-07-31, "the ⓘ panel's candidates
@@ -563,8 +543,11 @@ def _parse_version(v: Any) -> Optional[Dict[str, Any]]:
     # `stream_download` ALSO maps a live 401/403 to its own `"key_required"`
     # reason regardless of what this flag said in advance (defense in depth,
     # never trusting a client-editable-in-transit search result alone for a
-    # security-relevant decision).
-    gated = bool(v.get("earlyAccessEndsAt"))
+    # security-relevant decision). Shared with `model_detail.
+    # fetch_model_detail` via `civitai_parse.is_version_gated` (2026-08-01) so
+    # both paths compute the same gate status from the same raw shape rather
+    # than two copies of this one-line rule.
+    gated = civitai_parse.is_version_gated(v)
 
     return {
         "version_id": version_id,

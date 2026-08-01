@@ -5736,6 +5736,129 @@ def test_fetch_model_detail_no_model_id_at_all_skips_the_fallback_and_is_checked
 
 
 # ---------------------------------------------------------------------------
+# fetch_model_detail's own `files` key (2026-08-01) -- the ⓘ panel's
+# deleted-model Download button needs a real file list, not a bare Civitai
+# link; this is the one field that unblocks it. See `civitai_parse.
+# parse_files`/`is_version_gated`, reused verbatim from `civitai_search.py`'s
+# own search path so the two never drift.
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_model_detail_returns_files_in_the_documented_shape():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {
+            "id": 5, "modelId": 2,
+            "files": [
+                {"name": "model.safetensors", "downloadUrl": "https://civitai.com/api/download/models/5",
+                 "sizeKB": 144000.0, "primary": True, "hashes": {"SHA256": "deadbeef"}},
+            ],
+        }}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["reason"] == "found"
+        assert len(result["files"]) == 1
+        f = result["files"][0]
+        assert f["name"] == "model.safetensors"
+        assert f["download_url"] == "https://civitai.com/api/download/models/5"
+        assert f["size_kb"] == 144000.0
+        assert f["primary"] is True
+        assert f["sha256"] == "deadbeef"
+        assert f["gated"] is False
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_empty_or_absent_files_never_fabricates_an_entry():
+    def fake_version_by_id_no_key(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5, "modelId": 2}}
+
+    def fake_version_by_id_empty_list(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {"id": 5, "modelId": 2, "files": []}}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id_no_key, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["files"] == []
+    finally:
+        restore()
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id_empty_list, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["files"] == []
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_offline_and_notfound_also_carry_an_empty_files_list():
+    def fake_offline(version_id, **kw):
+        return {"reason": "offline", "offline_reason": "timeout", "message": "Civitai timed out.", "data": None}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_offline, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert result["files"] == []
+    finally:
+        restore()
+
+    for bad in (None, "not-a-number", -1):
+        result = model_detail.fetch_model_detail(2, bad)
+        assert result["files"] == []
+
+
+def test_fetch_model_detail_gated_version_carries_the_flag_through_every_file():
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": {
+            "id": 5, "modelId": 2, "earlyAccessEndsAt": "2099-01-01T00:00:00Z",
+            "files": [
+                {"name": "a.safetensors", "downloadUrl": "https://civitai.com/a"},
+                {"name": "b.safetensors", "downloadUrl": "https://civitai.com/b", "primary": True},
+            ],
+        }}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        result = model_detail.fetch_model_detail(2, 5)
+        assert len(result["files"]) == 2
+        assert all(f["gated"] is True for f in result["files"])
+    finally:
+        restore()
+
+
+def test_fetch_model_detail_files_shape_matches_civitai_search_for_the_same_raw_input():
+    # The guard against the two paths drifting: feed the SAME raw version
+    # dict through both `model_detail.fetch_model_detail` (via a faked
+    # `lookup_model_version_by_id`) and `civitai_search.parse_search_response`
+    # (as one item's embedded `modelVersions[0]`), and assert the resulting
+    # `files` lists are identical.
+    raw_version = {
+        "id": 5, "modelId": 2, "baseModel": "SDXL", "earlyAccessEndsAt": "2099-01-01T00:00:00Z",
+        "files": [
+            {"name": "model.safetensors", "downloadUrl": "https://civitai.com/api/download/models/5",
+             "sizeKB": 144000.0, "primary": True, "hashes": {"SHA256": "deadbeef"}},
+            {"name": "extra.bin", "downloadUrl": "https://civitai.com/api/download/models/5?type=extra",
+             "sizeKB": 512.0, "primary": False},
+        ],
+    }
+
+    def fake_version_by_id(version_id, **kw):
+        return {"reason": "found", "offline_reason": None, "message": "", "data": raw_version}
+
+    restore = _swap_civitai_client_fns(lookup_model_version_by_id=fake_version_by_id, lookup_model_by_id=lambda *a, **kw: {"reason": "offline"})
+    try:
+        detail_files = model_detail.fetch_model_detail(2, 5)["files"]
+    finally:
+        restore()
+
+    search_raw = {"items": [{"id": 2, "modelVersions": [raw_version]}]}
+    search_files = civitai_search.parse_search_response(search_raw)["results"][0]["versions"][0]["files"]
+
+    assert detail_files == search_files
+
+
+# ---------------------------------------------------------------------------
 # api.model_detail_impl -- the aiohttp-facing wrapper (rate limiting only;
 # the actual fetch is `model_detail.fetch_model_detail`, tested above).
 # ---------------------------------------------------------------------------
@@ -6386,6 +6509,11 @@ ALL_TESTS = [
     test_fetch_model_detail_garbage_version_id_is_notfound_with_no_network_call,
     test_fetch_model_detail_model_description_fetch_offline_degrades_but_still_found,
     test_fetch_model_detail_no_model_id_at_all_skips_the_fallback_and_is_checked,
+    test_fetch_model_detail_returns_files_in_the_documented_shape,
+    test_fetch_model_detail_empty_or_absent_files_never_fabricates_an_entry,
+    test_fetch_model_detail_offline_and_notfound_also_carry_an_empty_files_list,
+    test_fetch_model_detail_gated_version_carries_the_flag_through_every_file,
+    test_fetch_model_detail_files_shape_matches_civitai_search_for_the_same_raw_input,
     test_model_detail_impl_happy_path_delegates_to_fetch_model_detail,
     test_model_detail_impl_rate_limited_never_reaches_fetch_model_detail,
     test_download_start_impl_rejects_unwhitelisted_kind_without_touching_the_manager,

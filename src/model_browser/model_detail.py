@@ -25,8 +25,22 @@ same transport `lookup_by_hash`/`search_models` already use.
 Always returns `{"reason": "found"|"notfound"|"offline", "message": str,
 "offline_reason": str|None, "model_description": str|None,
 "model_description_checked": bool, "version_description": str|None,
-"gallery": [...]}` -- the same "reason" vocabulary every other Civitai route
-in this package commits to (`api.py`'s own top doc comment), never raises.
+"gallery": [...], "files": [...]}` -- the same "reason" vocabulary every
+other Civitai route in this package commits to (`api.py`'s own top doc
+comment), never raises.
+
+`files` (added 2026-08-01, to unblock the ⓘ panel's deleted-model Download
+button -- `fa27ca1`'s frontend rewire to a real server-side download job
+had nothing to render a button FROM, since this route never sent a file
+list at all) is the SELECTED version's own `files` array, in the wire shape
+`civitai_search.py`'s own search path already emits for the very same
+field -- `[{name, download_url, size_kb, primary, sha256, gated}, ...]` --
+via `civitai_parse.parse_files` (moved there from that module's private
+`_parse_files` specifically so this route reuses it rather than forking a
+second parser for the same shape). A version with no files (or none that
+parsed) yields `[]`, never a fabricated entry ("omit rather than invent",
+§1a-vi) -- the frontend's own `pickPrimaryDownloadFile` already renders no
+button in that case.
 """
 from __future__ import annotations
 
@@ -64,17 +78,19 @@ def _empty_result(
         "model_description_checked": model_description_checked,
         "version_description": None,
         "gallery": [],
+        "files": [],
     }
 
 
 def fetch_model_detail(model_id: Any, version_id: Any) -> Dict[str, Any]:
-    """Fetches the two things a caller's own search result doesn't already
-    carry for the SELECTED version: `version_description` + the author's
-    prompt-carrying `gallery` (both from `civitai_client.
-    lookup_model_version_by_id(version_id)`), and `model_description` (from a
-    fallback `civitai_client.lookup_model_by_id(model_id)` call, exactly
-    `lookup.py`'s `_augment_with_model_description` -- no sidecar caching
-    here, since there may be no local file at all yet to cache alongside).
+    """Fetches the things a caller's own search result doesn't already carry
+    for the SELECTED version: `version_description` + the author's prompt-
+    carrying `gallery` + the version's own `files` list (all three from
+    `civitai_client.lookup_model_version_by_id(version_id)`), and
+    `model_description` (from a fallback `civitai_client.
+    lookup_model_by_id(model_id)` call, exactly `lookup.py`'s
+    `_augment_with_model_description` -- no sidecar caching here, since there
+    may be no local file at all yet to cache alongside).
 
     `version_id` is the one thing this call genuinely can't proceed without
     (§2b: "the by-hash lookup is per version" -- extended here to "the
@@ -120,6 +136,13 @@ def fetch_model_detail(model_id: Any, version_id: Any) -> Dict[str, Any]:
     raw_version = version_result["data"] if isinstance(version_result.get("data"), dict) else {}
     parsed = civitai_parse.parse_model_version(raw_version)
     gallery = civitai_parse.parse_author_gallery(raw_version.get("images"))
+    # Same wire shape `civitai_search.py`'s own search path emits for this
+    # field, via the SAME shared parser (`civitai_parse.parse_files`) and the
+    # SAME gate-status rule (`civitai_parse.is_version_gated`) -- see this
+    # function's own docstring for why this route needed it at all.
+    files = civitai_parse.parse_files(
+        raw_version.get("files"), gated=civitai_parse.is_version_gated(raw_version),
+    )
 
     model_description = parsed.get("model_description")
     model_id_clean = _clean_positive_int(model_id)
@@ -153,6 +176,7 @@ def fetch_model_detail(model_id: Any, version_id: Any) -> Dict[str, Any]:
         "model_description_checked": model_description_checked,
         "version_description": parsed.get("version_description"),
         "gallery": gallery,
+        "files": files,
     }
 
 
