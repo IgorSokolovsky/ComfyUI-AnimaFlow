@@ -1148,45 +1148,51 @@ Once a model has been opened once, every later render hits the local file and Ci
 for that image again — which is the whole point of the request, and also makes the ⓘ panel work offline
 for anything previously viewed.
 
-##### Save the WHOLE gallery locally, and filter it by level (owner, 2026-08-01) — SPEC, not built
+##### Record the SAVED PREVIEW's own level — the local file is the only unfiltered hole (owner, 2026-08-01)
 
-Owner, after seeing an over-level image at PG in the ⓘ panel: *"yes you are probably right i think its the
-local one, because i downloaded this lora before… i think i did say in somepoint we should save all images
-of the lora (not preview the URL's), then we show by nsfwLevel or the lock one."*
+Owner, after seeing an over-level image at PG in the ⓘ panel: *"i think its the local one, because i
+downloaded this lora before"* — then, clarifying the fix: *"the save the urls of lora and not preview, we
+still save 1 preview and all other URL's (in our json data file)."*
 
-**The diagnosis is right, and the current behaviour is working exactly as specified** — which is the
-problem. The ⓘ panel's thumbnail is the **local** `.preview.<ext>` file, and the four-source table above
-deliberately exempts local files from the browsing level, on the grounds that a file on disk was an
-explicit act. But a preview *we* wrote during a download is **not** the user's act, it is **our cache**,
-and it carries no record of what level it was. So it shows at PG forever.
+**Not bulk-downloading a gallery.** One preview file on disk, as today; every other image kept as a **URL**
+in the sidecar. An earlier draft of this section read the request as "save all the images" and specced a
+hash-keyed image cache with a manifest and a count cap — ~40 MB per LoRA at the measured 4.19 MB apiece.
+That was over-engineered against a misreading, and is replaced by what follows.
+
+**Most of this already exists.** `parse_gallery_images` already stores, per version in
+`<base>.civitai.info`, exactly the shape the owner is describing:
+
+```
+images: [ {url, nsfw_level, type}, ... ]
+```
+
+So "all other URLs in our json data file", with their levels, is **done**.
+
+**The actual gap is one field.** The diagnosis holds and the current behaviour is working exactly as
+specified, which is the problem: the ⓘ panel's thumbnail is the local `.preview.<ext>`, the four-source
+table exempts local files from the browsing level on the grounds that a file on disk was an explicit act
+— and **a preview we wrote during a download is not the user's act, it is our cache, and it records
+nothing about what level it was.** So it shows at PG forever.
 
 That gives the table the rule it was missing:
 
-> **A user's own file is never filtered. Our cache always is.** `<base>.preview.<ext>` stays the former —
-> it is the file other tools read, and what `local.find_preview_path` already looks for. A saved gallery
-> is the latter.
+> **A user's own file is never filtered. Our cache always is.** `<base>.preview.<ext>` is written by *us*,
+> so it is the latter — but it can only be filtered if we know its level.
 
-Saving the images **with their levels recorded** is better than either exempting them or re-fetching: the
-level then works offline, the detail-view gallery works offline, and the one place the level silently
-does not apply disappears.
+**The change:** when a preview is saved, record the `nsfw_level` of the candidate it came from, in the
+sidecar beside everything else. The ⓘ panel then applies the level to the local preview exactly as it
+already does to the Civitai candidates, and falls through to `locked` (🙈 — owner-confirmed: *"i like the
+monkey"*) when it is over-level.
 
-Five things to settle **before** building:
+Three details:
 
-1. **Where.** A folder per model inside `models/loras/` litters the user's model directory. A pack-owned
-   cache keyed by the file's hash stays clean and is trivially purgeable, but is not portable if the model
-   moves — and portability is already covered by `<base>.preview.<ext>`. Recommend the pack-owned cache,
-   since this is explicitly *our* cache.
-2. **A manifest is mandatory.** Each stored image needs its `nsfw_level` recorded beside it, or we cannot
-   filter offline and have gained nothing. That is the entire point of the change.
-3. **Size:** `anim=false,width=450`, not `original=true`. At a measured 4.19 MB per image, ten images is
-   ~40 MB per LoRA.
-4. **Cap the count** at ten to twenty, not "all" — a gallery can be long.
-5. **When.** Fetching twenty images unprompted on a passive ⓘ open is precisely the bulk background
-   traffic §9 exists to prevent. Tie it to the **download** — where the user has already chosen to pull
-   this model — or to an explicit action.
-
-Confirmed in passing: the owner likes 🙈 for `locked` (*"i like the monkey that was set as lock
-placeholder"*), so it stays, distinct from `gated`'s 🔒.
+- **A preview with no recorded level is legacy** — written before this, or by another tool. Show it. We
+  genuinely do not know, and blanking previews a user already has would be the destructive reading of a
+  rule meant to protect them.
+- **A file the user placed themselves stays exempt.** The distinction is *who wrote it*, not *where it
+  sits*, so the recorded level is what marks a file as ours — its absence means hands off.
+- The **detail-view gallery already works from these stored URLs**; it fetches the images from Civitai's
+  CDN at display time and filters them by their stored `nsfw_level`. Nothing further is needed there.
 
 ##### SUPERSEDED (owner, 2026-07-31, later the same day): the saved preview is `anim=false,width=450`
 
