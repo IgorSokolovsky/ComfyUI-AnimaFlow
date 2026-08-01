@@ -663,13 +663,13 @@ test("buildModelDetailView: GALLERY/VERSION DESCRIPTION/MODEL DESCRIPTION all sh
 // select's own dropdown arrow sits flush against its right border.
 // =========================================================================
 
-test("BUG (owner, 2026-08-01): the topbar's three controls (back / version select / action host's child) share ONE explicit height", () => {
+test("BUG (owner, 2026-08-01): the topbar's back button and the SHARED version select share one explicit height", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   const backRule = css.match(/\.wtn-dv-topbar \.wtn-dv-back\s*\{([^}]*)\}/)[1];
-  const selRule = css.match(/\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  const selRule = css.match(/\.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
   const backHeight = backRule.match(/height:\s*(\d+)px/)[1];
   const selHeight = selRule.match(/height:\s*(\d+)px/)[1];
   assert.equal(backHeight, selHeight, "the back button and the version select must share one explicit height");
@@ -677,14 +677,48 @@ test("BUG (owner, 2026-08-01): the topbar's three controls (back / version selec
   assert.match(selRule, /box-sizing:\s*border-box/);
 });
 
-test("BUG (owner, 2026-08-01): the topbar's version select has right padding so its dropdown arrow clears the border, not flush against it", () => {
+// =========================================================================
+// Owner-reported, THIRD time this exact fix has half-landed (2026-08-01):
+// "the select's arrow is still touching the right border ... put the arrow
+// clearance on the select itself, not a mount-scoped descendant selector, so
+// both shapes inherit it and it cannot diverge again." A prior pass fixed
+// only `.wtn-dv-topbar .wtn-dv-version-sel` (the modal), so the picker's own
+// `.wtn-dv-header` mount never got it -- these tests pin the fix on the
+// SHARED, unscoped selector so a later mount-scoped override can never
+// silently reintroduce the divergence.
+// =========================================================================
+
+test("BUG (owner, 2026-08-01), regression pin: the version select's own right-padding arrow clearance lives on the SHARED, UNSCOPED .wtn-dv-version-sel rule, never on a .wtn-dv-topbar/.wtn-dv-header-scoped descendant selector", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
-  const rule = styleEl.textContent.match(/\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  const css = styleEl.textContent;
+
+  const rule = css.match(/\.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
   const paddingMatch = rule.match(/padding:\s*0\s+(\d+)px\s+0\s+(\d+)px/);
-  assert.ok(paddingMatch, "the topbar version select must declare explicit top/right/bottom/left padding");
+  assert.ok(paddingMatch, "the shared .wtn-dv-version-sel rule must declare explicit top/right/bottom/left padding");
   assert.ok(Number(paddingMatch[1]) >= 16, "the right padding must clear a native <select>'s own dropdown arrow, not sit flush against the border");
+  assert.match(rule, /height:\s*26px/, "the shared height fix must live here too, not only on the modal's own back button");
+  assert.match(rule, /box-sizing:\s*border-box/);
+
+  // The regression itself: a mount-scoped copy of this rule must not exist
+  // AT ALL -- if it does, it's exactly the "half-landed" bug reintroduced.
+  assert.doesNotMatch(css, /\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{/, "must not be re-scoped to the modal's topbar");
+  assert.doesNotMatch(css, /\.wtn-dv-header \.wtn-dv-version-sel\s*\{/, "must not be re-scoped to the picker's header either");
+});
+
+test("regression pin: both mounts' version <select> resolve to the SAME arrow-clearance/height rule -- a picker-only select and a modal-only select both carry .wtn-dv-version-sel with nothing overriding it per-mount", () => {
+  const result = { model_id: 1, name: "X", versions: [{ version_id: 1, name: "v1" }, { version_id: 2, name: "v2" }] };
+  const picker = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fixedTopBar: false });
+  const modal = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fixedTopBar: true });
+  const pickerSel = findAllByTag(picker.el, "select").find((s) => s.classList.contains("wtn-dv-version-sel"));
+  const modalSel = findAllByTag(modal.el, "select").find((s) => s.classList.contains("wtn-dv-version-sel"));
+  assert.ok(pickerSel, "the picker's own select must carry .wtn-dv-version-sel");
+  assert.ok(modalSel, "the modal's own select must carry .wtn-dv-version-sel");
+  // Neither carries any OTHER, mount-specific sizing class that could host a
+  // diverging override.
+  assert.equal(pickerSel.className, "wtn-select wtn-dv-version-sel");
+  assert.equal(modalSel.className, "wtn-select wtn-dv-version-sel");
 });
 
 test("buildModelDetailView: the gallery is level-filtered, and shows 'locked' where appropriate", () => {
@@ -795,7 +829,7 @@ test("buildModelDetailView: identity/civlink/version-selector/download action ar
   assert.ok(body, "a scrolling body region must exist");
   // Root's only two children are these two regions, in this order -- header
   // first (pinned, always visible), body second (the part that scrolls).
-  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-header", "wtn-dv-body"]);
+  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-header", "wtn-dv-body wtn-flex-bound"]);
 
   // The pinned set, verbatim (task brief): identity, View on Civitai, the
   // version selector, the download action.
@@ -810,6 +844,128 @@ test("buildModelDetailView: identity/civlink/version-selector/download action ar
   assert.equal(findAll(body, "wtn-dv-gimg").length, 1, "the gallery belongs in the scrolling body");
   assert.equal(findAll(header, "wtn-dv-desc").length, 0, "a description must never leak into the pinned header");
   assert.equal(findAll(header, "wtn-dv-gimg").length, 0, "the gallery must never leak into the pinned header");
+});
+
+// =========================================================================
+// Owner, 2026-08-01: "version select and download on one row ... select
+// flexible, button intrinsic, same as the modal's topbar already does" --
+// the PICKER's own shape (the modal's own ask changed to a stack instead,
+// covered by the fixedTopBar tests above; the picker keeps this one row).
+// =========================================================================
+
+test("buildModelDetailView: the picker's version select and download action are SIBLINGS in ONE row (.wtn-dv-vdrow), select flexible / button intrinsic", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    buildActionEl: (d) => {
+      const b = d.createElement("button");
+      b.className = "wtn-cs-action";
+      return b;
+    },
+  });
+  const row = findAll(el, "wtn-dv-vdrow")[0];
+  assert.ok(row, "the picker must wrap the version select and the download action in one shared row");
+  const rowChildClasses = row.children.map((c) => c.className.split(" ").pop());
+  assert.deepEqual(rowChildClasses, ["wtn-dv-version-sel", "wtn-dv-actionhost"], "select first, then the action host, as direct siblings of one row");
+  // No .wtn-dv-versionrow/<label> pair anywhere -- fully retired, not just unused.
+  assert.equal(findAll(el, "wtn-dv-versionrow").length, 0);
+  assert.equal(findAllByTag(el, "label").length, 0, "no 'Version' label anywhere in the picker shape either");
+
+  const doc2 = makeDocStub();
+  injectStyles(doc2);
+  const css = doc2.head.children.find((c) => c.tagName === "style").textContent;
+  const rowRule = css.match(/\.wtn-dv-vdrow\s*\{([^}]*)\}/)[1];
+  assert.match(rowRule, /display:\s*flex;?/);
+  assert.match(rowRule, /align-items:\s*center;?/);
+});
+
+// =========================================================================
+// Owner, 2026-08-01: "LORA / ZImageBase currently sit on their own line
+// below 'by EauDeNoire' ... put them on the same row ... byline
+// left-aligned, chips right-aligned, space between."
+// =========================================================================
+
+test("buildModelDetailView: byline and chips share ONE row, byline left / chips right, in both mounts", () => {
+  const result = {
+    model_id: 1, name: "Hands ZIB", creator: "EauDeNoire", type: "LORA",
+    versions: [{ version_id: 1, name: "v1.0", base_model: "ZImageBase" }],
+  };
+  for (const fixedTopBar of [false, true]) {
+    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fixedTopBar });
+    const row = findAll(el, "wtn-dv-bylinerow")[0];
+    assert.ok(row, `fixedTopBar=${fixedTopBar}: byline and chips must share one row`);
+    const creator = findAll(row, "wtn-dv-creator")[0];
+    const badges = findAll(row, "wtn-dv-badges")[0];
+    assert.ok(creator, "the byline must be inside the shared row");
+    assert.ok(badges, "the chips must be inside the shared row");
+    assert.equal(creator.textContent, "by EauDeNoire");
+    assert.ok(row.children.indexOf(creator) < row.children.indexOf(badges), "byline must come before (left of) the chips in DOM order");
+  }
+});
+
+test("buildModelDetailView: chips render right-aligned via margin-left: auto on .wtn-dv-badges (never justify-content on the row, which would misalign a LONE child)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const rowRule = css.match(/\.wtn-dv-bylinerow\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(rowRule, /justify-content/, "must not rely on justify-content -- a lone child (no creator, or no chips) would misalign to the left under space-between");
+  const badgesRule = css.match(/\.wtn-dv-badges\s*\{([^}]*)\}/)[1];
+  assert.match(badgesRule, /margin-left:\s*auto;?/, "the chips push themselves flush right regardless of whether a byline is present");
+});
+
+test("buildModelDetailView: a result with chips but NO creator still renders the row (chips alone, pushed right by their own margin-left: auto)", () => {
+  const result = {
+    model_id: 1, name: "No Creator", type: "LORA",
+    versions: [{ version_id: 1, name: "v1.0", base_model: "SDXL" }],
+  };
+  const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1 });
+  const row = findAll(el, "wtn-dv-bylinerow")[0];
+  assert.ok(row, "chips alone must still render the shared row");
+  assert.equal(findAll(row, "wtn-dv-creator").length, 0);
+  assert.equal(findAll(row, "wtn-dv-badges").length, 1);
+});
+
+test("buildModelDetailView: a result with NEITHER a creator NOR any chips renders no byline row at all", () => {
+  const result = { model_id: 1, name: "Bare Result", versions: [{ version_id: 1, name: "v1.0" }] };
+  const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1 });
+  assert.equal(findAll(el, "wtn-dv-bylinerow").length, 0);
+});
+
+// =========================================================================
+// Owner, 2026-08-01: "remove the version label, the field is sufficient" --
+// the select's own options are self-evidently a version.
+// =========================================================================
+
+test("buildModelDetailView: no 'Version' label renders anywhere, in either mount", () => {
+  const result = makeTwoVersionResult();
+  for (const fixedTopBar of [false, true]) {
+    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 3, fixedTopBar });
+    const labels = findAllByTag(el, "label");
+    assert.equal(labels.length, 0, `fixedTopBar=${fixedTopBar}: no <label> element must render at all`);
+  }
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01): "i think we have horizontal issue in the
+// model detail page, see its cut" -- the shared wtn-flex-bound class and
+// the description's own overflow-wrap.
+// =========================================================================
+
+test("buildModelDetailView: the root and the scrolling body both carry the shared wtn-flex-bound class (js/shared/theme.css), not a hand-written min-width copy", () => {
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 3 });
+  assert.ok(el.classList.contains("wtn-flex-bound"), "the root must carry wtn-flex-bound");
+  const body = findAll(el, "wtn-dv-body")[0];
+  assert.ok(body.classList.contains("wtn-flex-bound"), "the scrolling body must carry wtn-flex-bound");
+});
+
+test("buildModelDetailView: .wtn-dv-desc wraps a long unbreakable token instead of pushing its box wider (overflow-wrap: anywhere)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const descRule = css.match(/\.wtn-dv-desc\s*\{([^}]*)\}/)[1];
+  assert.match(descRule, /overflow-wrap:\s*anywhere;?/);
 });
 
 // =========================================================================
@@ -902,7 +1058,7 @@ test("BUG (owner, 2026-08-01): the scrolling body carries its OWN padding (on th
   const css = styleEl.textContent;
   assert.match(
     css,
-    /\.wtn-dv-body\s*\{[^}]*overflow-y:\s*auto;[^}]*padding:\s*9px 10px 10px;?/,
+    /\.wtn-dv-body\s*\{[^}]*overflow-y:\s*auto;[^}]*padding:\s*0 16px 16px 16px;?/,
     "the scrolling body itself must carry the padding, alongside its own overflow-y: auto",
   );
 });
@@ -913,9 +1069,50 @@ test("BUG (owner, 2026-08-01): both pinned regions (the picker's .wtn-dv-header 
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   const headerRule = css.match(/\.wtn-dv-header\s*\{([^}]*)\}/)[1];
-  assert.match(headerRule, /padding:\s*9px 28px 0 10px;?/, "the picker's pinned header must have padding");
+  assert.match(headerRule, /padding:\s*16px 34px 16px 16px;?/, "the picker's pinned header must have padding");
   const topbarRule = css.match(/\.wtn-dv-topbar\s*\{([^}]*)\}/)[1];
-  assert.match(topbarRule, /padding:\s*8px 10px 8px;?/, "the modal's pinned topbar must have padding");
+  assert.match(topbarRule, /padding:\s*16px;?/, "the modal's pinned topbar must have padding");
+});
+
+// =========================================================================
+// Owner, SECOND pass (2026-08-01): "the panel's padding is too tight ...
+// raise it to 16px" -- then, in the SAME message: "the content card which
+// scrolls, top padding should be 0 so it will not have too much space
+// between the version and download button." With 16px all round on BOTH the
+// pinned header/topbar and the scrolling body, that seam would double; the
+// body keeps 0 on top specifically, relying on the pinned region's own
+// (now non-zero) bottom padding for the separation instead.
+// =========================================================================
+
+test("BUG (owner, second pass, 2026-08-01): the scrolling body's TOP padding is 0 -- the other three sides are 16px, matching the pinned regions", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const bodyRule = styleEl.textContent.match(/\.wtn-dv-body\s*\{([^}]*)\}/)[1];
+  const paddingMatch = bodyRule.match(/padding:\s*(\S+)\s+(\S+)\s+(\S+)\s+([^\s;]+)/);
+  assert.ok(paddingMatch, ".wtn-dv-body must declare explicit 4-value padding");
+  const [, top, right, bottom, left] = paddingMatch;
+  assert.equal(top, "0", "the scrolling body's TOP padding must be 0 -- the pinned region's own bottom padding already supplies the gap");
+  assert.equal(right, "16px");
+  assert.equal(bottom, "16px");
+  assert.equal(left, "16px");
+});
+
+test("BUG (owner, second pass, 2026-08-01): the picker's pinned header now has a REAL (non-zero) bottom padding -- previously 0, relying entirely on .wtn-dv-actionhost's own margin for the gap the body's top-0 fix now depends on", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const headerRule = styleEl.textContent.match(/\.wtn-dv-header\s*\{([^}]*)\}/)[1];
+  const paddingMatch = headerRule.match(/padding:\s*(\S+)\s+(\S+)\s+(\S+)\s+([^\s;]+)/);
+  assert.ok(paddingMatch);
+  const [, top, right, bottom, left] = paddingMatch;
+  assert.equal(top, "16px");
+  assert.equal(bottom, "16px", "the header's bottom padding must be non-zero -- it is what keeps the version/download row from touching the scrolling body's first line of content");
+  assert.equal(left, "16px");
+  // The right edge alone keeps the close-button clearance ON TOP of the
+  // uniform 16px (16 + 18 = 34), never a bare 16px that would let a long
+  // title run under the ✕.
+  assert.equal(right, "34px");
 });
 
 // =========================================================================
@@ -1022,7 +1219,7 @@ test("owner-reported (2026-08-01): an image with no meta still shows no drawer a
 // are pinned in .wtn-dv-header" test above -- unchanged by this.
 // =========================================================================
 
-test("buildModelDetailView: fixedTopBar -- '← results', the version selector and the download action are ALL pinned together in .wtn-dv-topbar, on one row, reachable without scrolling; everything else (identity, View on Civitai, descriptions, gallery) is in the scrolling body", () => {
+test("buildModelDetailView: fixedTopBar -- '← results' on the LEFT, and a right-aligned STACK (version select above the download action) as the ONE other child, reachable without scrolling; everything else (identity, View on Civitai, descriptions, gallery) is in the scrolling body", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const { el } = buildModelDetailView({
@@ -1039,15 +1236,30 @@ test("buildModelDetailView: fixedTopBar -- '← results', the version selector a
   const body = findAll(el, "wtn-dv-body")[0];
   assert.ok(topbar, "a fixed top bar must exist when fixedTopBar is true");
   assert.ok(body, "a scrolling body region must still exist");
-  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-topbar", "wtn-dv-body"], "the topbar is the FIRST child, pinned above the scrolling body");
+  assert.deepEqual(el.children.map((c) => c.className), ["wtn-dv-topbar", "wtn-dv-body wtn-flex-bound"], "the topbar is the FIRST child, pinned above the scrolling body");
 
   // All three controls, reachable without ever touching the scrolling body.
   assert.equal(findAll(topbar, "wtn-dv-back").length, 1, "'← results' belongs in the fixed topbar, not the scroll");
   assert.equal(findAll(topbar, "wtn-dv-version-sel").length, 1, "the version selector belongs in the fixed topbar");
   assert.equal(findAll(topbar, "wtn-cs-action").length, 1, "the download action belongs in the fixed topbar");
-  // Order, per the task brief: back, then version, then download.
+
+  // Owner, SECOND correction, same day: "remove the version label, the
+  // field is sufficient, and make it above the download button on the
+  // right side of the screen" -- the topbar's direct children are now
+  // '← results' (left) and ONE stack (right), not three loose siblings on
+  // one row.
   const topbarClasses = topbar.children.map((c) => c.className);
-  assert.deepEqual(topbarClasses, ["wtn-dv-back", "wtn-dv-versionrow", "wtn-dv-actionhost"]);
+  assert.deepEqual(topbarClasses, ["wtn-dv-back", "wtn-dv-vdstack"]);
+
+  // Inside the stack: version select ABOVE the download action, in THAT
+  // order (task brief, verbatim: "version select on top, Download beneath
+  // it").
+  const stack = findAll(topbar, "wtn-dv-vdstack")[0];
+  const stackClasses = stack.children.map((c) => c.className.split(" ").pop());
+  assert.deepEqual(stackClasses, ["wtn-dv-version-sel", "wtn-dv-actionhost"]);
+
+  // No "Version" label anywhere in this shape either.
+  assert.equal(findAllByTag(topbar, "label").length, 0, "the modal's topbar must never render a 'Version' label -- the select's own options are self-evidently a version");
 
   // Identity/View on Civitai/descriptions/gallery all moved INTO the
   // scrolling body -- the modal's actual complaint was scrolling past a
@@ -1068,22 +1280,15 @@ test("buildModelDetailView: fixedTopBar without onBack simply omits '← results
   assert.equal(findAll(el, "wtn-dv-back").length, 0);
 });
 
-test("BUG (owner, 2026-08-01, modal-only): .wtn-dv-topbar is pinned (flex: none) and its version selector gets the flexible width -- the buttons keep their intrinsic size", () => {
+test("BUG (owner, 2026-08-01, modal-only): .wtn-dv-topbar is pinned (flex: none), and .wtn-dv-vdstack (version above download) is the ONE other child, pushed flush right", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   assert.match(css, /\.wtn-dv-topbar\s*\{[^}]*flex:\s*none;?/, "the fixed bar itself must never grow/shrink");
-  assert.match(
-    css,
-    /\.wtn-dv-topbar \.wtn-dv-versionrow\s*\{[^}]*flex:\s*1 1 auto;?/,
-    "the version selector's own row must be the ONE flexible-width element in the bar",
-  );
-  assert.match(
-    css,
-    /\.wtn-dv-topbar \.wtn-dv-actionhost\s*\{[^}]*flex:\s*none;?/,
-    "the download action must keep its intrinsic size, not stretch",
-  );
+  const stackRule = css.match(/\.wtn-dv-vdstack\s*\{([^}]*)\}/)[1];
+  assert.match(stackRule, /flex-direction:\s*column;?/, "version-above-download is a COLUMN, not the picker's row");
+  assert.match(stackRule, /margin-left:\s*auto;?/, "pushed flush right -- the ONLY child that moves, never justify-content on the whole topbar (which would also recentre '← results')");
   assert.match(
     css,
     /\.wtn-dv-topbar \.wtn-dv-back\s*\{[^}]*flex:\s*none;?/,

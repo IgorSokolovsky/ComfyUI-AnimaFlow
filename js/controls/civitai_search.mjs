@@ -385,9 +385,24 @@ ${THUMB_SKELETON_CSS}
    \`.wtn-cs-actioncol-row\` rather than appended as two loose siblings.
    \`flex: none\` + a \`max-width\` (this card's meta column, not the action
    column, is what should absorb any extra width) so neither a long model
-   name nor a long version name ever widens the card -- \`align-items:
-   flex-end\` is what right-aligns every child regardless of its own width. */
-.wtn-cs-actioncol { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 100px; }
+   name nor a long version name ever widens the card.
+   Owner-reported, with a screenshot (2026-08-01), TWICE now -- "delete still
+   not same width and height as installed chip": height already matched
+   (both share \`.wtn-cs-action\`'s own \`height: 22px; box-sizing: border-box\`
+   -- see that rule's own doc comment), so the previous pass's height fix
+   genuinely landed; the mismatch reported here is WIDTH, and it's
+   structural, not a styling miss -- \`align-items: flex-end\` (the previous
+   value) shrinks every child to its OWN content width, so "✓ installed"
+   (longer text) and "Delete" (shorter) end at the same right edge with
+   DIFFERENT left edges, reading as unequal boxes even though neither one's
+   own CSS changed. \`align-items: stretch\` makes every child (the version
+   select, the installed badge, the Delete button, the Download button, the
+   downloading state's own \`.wtn-cs-actioncol-row\`) exactly as wide as this
+   column itself -- which stays capped at the SAME pre-existing 100px
+   \`max-width\` below, so this never balloons into an absurd column at the
+   meta column's expense; it only ever equalizes widths within whatever cap
+   already existed. */
+.wtn-cs-actioncol { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 4px; max-width: 100px; }
 /* The %/Cancel pair (downloading state) reads as one row stacked under the
    version select, not two independently-wrapping siblings. */
 .wtn-cs-actioncol-row { display: flex; align-items: center; gap: 4px; }

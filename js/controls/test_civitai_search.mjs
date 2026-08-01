@@ -497,6 +497,32 @@ test("owner-reported, with a screenshot (2026-08-01): the Delete control and the
   }
 });
 
+test("owner-reported, with a screenshot (2026-08-01), TWICE now -- 'delete still not same width and height as installed chip': height already matched (previous pass), so this pins WIDTH -- .wtn-cs-actioncol stretches every child to one shared width instead of each shrinking to its own content", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+
+  const actioncolRule = css.match(/\.wtn-cs-actioncol\s*\{([^}]*)\}/)[1];
+  assert.match(actioncolRule, /align-items:\s*stretch;?/, "must stretch children to one shared width -- flex-end let each child shrink to its own content, which is the reported bug");
+  assert.doesNotMatch(actioncolRule, /align-items:\s*flex-end/, "the old flex-end value must be fully replaced, not merely joined by a later override");
+  // The cap this pass must NOT balloon past -- stretching must stay bounded
+  // by the SAME pre-existing max-width, never widen at the meta column's
+  // expense (task brief: "do not force a width so wide that the longest
+  // label sets an absurd column").
+  assert.match(actioncolRule, /max-width:\s*100px;?/, "the pre-existing 100px cap must be unchanged");
+
+  // None of the children this column stretches may declare their OWN
+  // explicit `width`, which would silently defeat `align-items: stretch`
+  // for that one element and reintroduce the exact mismatch being fixed.
+  const actionRule = css.match(/\.wtn-cs-action\s*\{([^}]*)\}/)[1];
+  const versionSelRule = css.match(/\.wtn-cs-version-sel\s*\{([^}]*)\}/)[1];
+  const actioncolRowRule = css.match(/\.wtn-cs-actioncol-row\s*\{([^}]*)\}/)[1];
+  for (const [name, rule] of [["wtn-cs-action", actionRule], ["wtn-cs-version-sel", versionSelRule], ["wtn-cs-actioncol-row", actioncolRowRule]]) {
+    assert.doesNotMatch(rule, /(?<!max-)width:/, `.${name} must not declare its own explicit width -- that would defeat align-items: stretch for that one child`);
+  }
+});
+
 test("owner-reported (2026-08-01): a result card signals it opens the detail view -- cursor: pointer, plus a hover elevation", () => {
   const doc = makeDocStub();
   injectStyles(doc);

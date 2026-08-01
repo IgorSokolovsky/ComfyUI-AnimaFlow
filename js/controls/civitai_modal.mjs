@@ -368,6 +368,23 @@ const CSS = `
 .wtn-cm-chip-x { cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-weight: 700; }
 .wtn-cm-chip-x:hover { color: var(--wtn-bad, ${TOKENS.bad}); }
 
+/* Owner-reported (2026-08-01): "i think we have horizontal issue in the
+   model detail page, see its cut" -- also why the Download button read as
+   MISSING in that screenshot: it was clipped off the right edge, not
+   absent. Root cause: this element is a flex ROW item of \`.wtn-cm-body\`
+   (that rule's own \`display: flex\` has no \`flex-direction\`, so it defaults
+   to \`row\`), and a flex item's \`min-width\` defaults to \`auto\` -- refuses
+   to shrink below its own content's natural width -- so one long unbroken
+   line deep inside (a model description) could push THIS element, and
+   everything to its right, wider than the modal. \`min-height: 0\` (already
+   present) guards the OTHER axis (\`.wtn-cm-main\` is itself
+   \`flex-direction: column\`, so ITS children's min-HEIGHT is the trap one
+   level down); \`wtn-flex-bound\` (this element's own class list, set where
+   it's built -- \`js/shared/theme.css\` has that class's own doc comment) is
+   the shared fix for both, applied here alongside \`.wtn-cm-detailhost\`
+   (below) and \`model_detail_view.mjs\`'s own \`.wtn-dv\`/\`.wtn-dv-body\` --
+   the SAME trap's third and fourth occurrence, which is why it's a shared
+   class now rather than a fourth hand-written \`min-width: 0\`. */
 .wtn-cm-main { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .wtn-cm-searchbar { padding: 10px 16px; flex: none; border-bottom: 1px solid var(--wtn-line, ${TOKENS.line}); display: flex; flex-direction: column; gap: 6px; }
 /* An explicit \`Search\` button beside the field (§7c-i, "not a debounce") --
@@ -397,7 +414,10 @@ const CSS = `
    \`overflow-y: auto\` here never actually engages and the swap just grows
    \`main\` past the modal's own bound instead of scrolling in place --
    civitai_search.mjs's own \`.wtn-cs-body\`/\`.wtn-dv-host\` doc comments name
-   this exact trap. */
+   this exact trap. \`wtn-flex-bound\` (this element's own class list, set
+   where it's built) additionally covers this element's \`min-width\`, for
+   the SAME reason \`.wtn-cm-main\`'s own doc comment (above) gives -- the
+   detail view mounted inside this host can be just as wide as it is tall. */
 .wtn-cm-detailhost { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px; }
 .wtn-cm-empty { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12.5px; padding: 20px 4px; }
 .wtn-cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
@@ -451,6 +471,14 @@ ${THUMB_SKELETON_CSS}
 .wtn-cm-sub { font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-cm-cardmsg { font-size: 11px; color: var(--wtn-bad, ${TOKENS.bad}); }
 .wtn-cm-actioncol { display: flex; flex-direction: column; gap: 4px; margin-top: auto; }
+/* The per-card version select (owner, 2026-08-01: "add a version select
+   above the download button") -- \`.wtn-cm-actioncol\`'s default
+   \`align-items: stretch\` already gives every child (this select, the
+   action button below it) the SAME full column width, so no extra
+   alignment rule is needed here; \`width: 100%\`/\`box-sizing: border-box\`
+   just make that explicit for a \`<select>\` rather than relying on stretch
+   alone. */
+.wtn-cm-version-sel { width: 100%; box-sizing: border-box; }
 .wtn-cm-dest { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
 .wtn-cm-nokind { font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 .wtn-cm-action { font: 12px var(--wtn-font-ui, inherit); font-weight: 600; padding: 5px 10px; border-radius: 7px;
@@ -815,7 +843,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   rail.appendChild(buildRailSection(targetDoc, "Filter by Model Type", modelTypeSection.el));
 
   // ---- main column: search bar + grid ----------------------------------
-  const main = el(targetDoc, "div", "wtn-cm-main");
+  const main = el(targetDoc, "div", "wtn-cm-main wtn-flex-bound");
   body.appendChild(main);
 
   const searchbar = el(targetDoc, "div", "wtn-cm-searchbar");
@@ -860,7 +888,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   // `main`'s children outright so `searchbar`'s own state (the query text,
   // the filter selects) survives a round trip through the detail view with
   // no re-render of its own.
-  const detailHost = el(targetDoc, "div", "wtn-cm-detailhost");
+  const detailHost = el(targetDoc, "div", "wtn-cm-detailhost wtn-flex-bound");
   detailHost.style.display = "none";
   main.appendChild(detailHost);
 
@@ -880,6 +908,13 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   let detailData = { status: "loading", gallery: [] };
   let detailActionMessage = null;
   const cardMessages = new Map();
+  // Per-card version choice (owner, 2026-08-01: "add a version select above
+  // the download button, the same per-card picker the anchored search panel
+  // already has") -- the SAME `model_id -> chosen version id` map shape as
+  // `civitai_search.mjs`'s own `selectedVersions` (that file's `buildCard`),
+  // reused rather than re-derived: `resolveVersionView(result, selectedId)`
+  // is the identical shared helper, imported already (above).
+  const selectedVersions = new Map();
   // §7c-i's own "Search button" state -- see civitai_search.mjs's
   // `lastSearchedQuery` doc comment; `null` until the trailing
   // `runSearch({resetCursor:true})` call (below) runs for the first time.
@@ -916,11 +951,16 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   }
 
   function buildCard(result) {
-    // No per-card version selector this pass -- version choice belongs to
-    // the detail view (design doc "The detail view"), which is explicitly
-    // out of scope here (this file's own top doc comment). Always the
-    // primary version.
-    const view = resolveVersionView(result);
+    // Per-card version selector (owner, 2026-08-01, reversing the earlier
+    // "no per-card version selector this pass" -- the SAME per-card picker
+    // `civitai_search.mjs`'s own `buildCard` already has, reused rather than
+    // re-derived): `selectedVersions` is this mount's own copy of that exact
+    // `model_id -> chosen version id` map, and `resolveVersionView` is the
+    // SAME shared helper. Every render decision below reads ONLY this flat
+    // `view`, never `result` directly, so a version switch is a single
+    // uniform re-render.
+    const selectedVersionId = selectedVersions.get(result.model_id);
+    const view = resolveVersionView(result, selectedVersionId);
     const kind = resultKind(result);
 
     const card = el(targetDoc, "div", "wtn-cm-card");
@@ -992,6 +1032,38 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
 
     const actionCol = el(targetDoc, "div", "wtn-cm-actioncol");
 
+    // The per-card version picker, above the download button (owner,
+    // 2026-08-01) -- ONLY for a multi-version result, same guard
+    // `civitai_search.mjs`'s own `buildCard` uses. Mirrors that file's
+    // implementation exactly (options, selection, stopPropagation on both
+    // `click`/`change`, re-render on switch) rather than a second, divergent
+    // per-card version picker.
+    const versions = Array.isArray(result.versions) ? result.versions : null;
+    if (versions && versions.length > 1) {
+      const versionSel = el(targetDoc, "select", "wtn-select wtn-cm-version-sel");
+      versionSel.title = "Choose which version to download.";
+      for (const v of versions) {
+        const opt = el(targetDoc, "option");
+        opt.value = String(v.version_id);
+        opt.textContent = v.name || `#${v.version_id}`;
+        if (v.version_id === view.primary_version_id) {
+          opt.selected = true;
+        }
+        versionSel.appendChild(opt);
+      }
+      versionSel.value = String(view.primary_version_id);
+      versionSel.addEventListener("click", (e) => e.stopPropagation());
+      versionSel.addEventListener("change", (e) => {
+        e.stopPropagation();
+        const chosenId = Number(versionSel.value);
+        // Switching versions never disturbs a DIFFERENT card's in-flight
+        // download -- only this one model's own entry in the selection map.
+        selectedVersions.set(result.model_id, chosenId);
+        renderGrid();
+      });
+      actionCol.appendChild(versionSel);
+    }
+
     if (!kind) {
       // §"kind: null" -- the safety net, kept minimal (owner direction,
       // 2026-07-31): one quiet line, no download button, nothing else.
@@ -1025,9 +1097,13 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       btn.title = "Add a Civitai API key in Settings → AnimaFlow → Controls to download this file.";
       actionCol.appendChild(btn);
     } else {
-      const dest = el(targetDoc, "div", "wtn-cm-dest");
-      dest.textContent = destinationLabelForKind(kind);
-      actionCol.appendChild(dest);
+      // Owner-reported (2026-08-01): "remove the -> models/checkpoints/
+      // caption" -- repeated on every card it was noise, and the destination
+      // is already stated by the "Save to:" field elsewhere.
+      // `destinationLabelForKind(kind)` (the caption's own text) is simply
+      // never called here any more; `kind` itself still drives which folder
+      // `startDownloadJob`, below, actually writes into -- only the VISIBLE
+      // caption is gone, not the destination logic.
       const btn = el(targetDoc, "button", "wtn-cm-action");
       btn.type = "button";
       btn.textContent = "↓ Download"; // ↓ Download

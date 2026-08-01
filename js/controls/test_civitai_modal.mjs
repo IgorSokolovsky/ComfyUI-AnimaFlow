@@ -230,6 +230,36 @@ test("D4: the '.wtn-cm-badge' CSS rule itself is gone (not merely the element)",
   assert.doesNotMatch(src, /\.wtn-cm-badge/);
 });
 
+test("owner-reported (2026-08-01): 'i think we have horizontal issue in the model detail page, see its cut' -- .wtn-cm-main and .wtn-cm-detailhost both carry the shared wtn-flex-bound min-width fix (also why the Download button read as missing: it was clipped off the right edge, not absent)", () => {
+  const doc = makeDocStub();
+  injectModalStyles(doc);
+  const modalCss = doc.head.children.find((c) => c.tagName === "style").textContent;
+  // min-height: 0 already existed on both -- pinned here too so a later
+  // edit can't quietly drop it while "fixing" the width half.
+  assert.match(modalCss, /\.wtn-cm-main\s*\{[^}]*min-height:\s*0;?/);
+  assert.match(modalCss, /\.wtn-cm-detailhost\s*\{[^}]*min-height:\s*0;?/);
+});
+
+await asyncTest("owner-reported (2026-08-01): .wtn-cm-main and .wtn-cm-detailhost both carry the wtn-flex-bound CLASS (js/shared/theme.css's shared min-width/min-height: 0 fix), not a hand-written min-width copy in this file", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    const main = findAll(handle.scrim, "wtn-cm-main")[0];
+    const detailHost = findAll(handle.scrim, "wtn-cm-detailhost")[0];
+    assert.ok(main.classList.contains("wtn-flex-bound"), ".wtn-cm-main must carry wtn-flex-bound");
+    assert.ok(detailHost.classList.contains("wtn-flex-bound"), ".wtn-cm-detailhost must carry wtn-flex-bound");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
 test("BUG (owner, 2026-08-01): in the detail view's fixed top bar, this action's own height matches the OTHER two controls (model_detail_view.mjs's own .wtn-dv-back/.wtn-dv-version-sel, 26px) -- one shared number across two files' CSS", () => {
   const doc = makeDocStub();
   injectModalStyles(doc);
@@ -650,7 +680,7 @@ await asyncTest("openCivitaiModal: a kind: null result shows NO download button,
   }
 });
 
-await asyncTest("openCivitaiModal: a downloadable result shows where it will land", async () => {
+await asyncTest("owner-reported (2026-08-01): 'remove the -> models/checkpoints/ caption' -- a downloadable grid card renders NO destination line at all (repeated on every card it was noise; the destination is already stated by the 'Save to:' field elsewhere)", async () => {
   _resetDownloadStateForTests();
   _resetModalForTests();
   const results = [makeResult({ modelId: 1, versionId: 1, name: "Lands Somewhere", kind: "checkpoints" })];
@@ -659,9 +689,87 @@ await asyncTest("openCivitaiModal: a downloadable result shows where it will lan
     const doc = makeDocStub();
     const handle = openCivitaiModal({ doc });
     await settle();
-    const destLines = findAll(handle.scrim, "wtn-cm-dest");
-    assert.equal(destLines.length, 1);
-    assert.equal(destLines[0].textContent, "→ models/checkpoints/");
+    assert.equal(findAll(handle.scrim, "wtn-cm-dest").length, 0, "the grid card must never render a destination caption");
+    // The download button itself is unaffected -- only the caption is gone.
+    const downloadBtn = findAll(handle.scrim, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(downloadBtn, "the Download button must still render");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+function makeMultiVersionResult({ modelId, name, kind = "loras" } = {}) {
+  const result = makeResult({ modelId, versionId: 10, name, kind });
+  result.versions = [
+    {
+      version_id: 10, name: "v2.0", base_model: "SDXL", published_at: "2026-07-01T00:00:00.000Z",
+      gated: false, file_name: "v2.safetensors", download_url: "https://civitai.com/dl/v2", size_kb: 500 * 1024,
+      triggers: [], preview_url: null, images: [],
+    },
+    {
+      version_id: 9, name: "v1.0", base_model: "SD1.5", published_at: "2026-01-01T00:00:00.000Z",
+      gated: false, file_name: "v1.safetensors", download_url: "https://civitai.com/dl/v1", size_kb: 400 * 1024,
+      triggers: [], preview_url: null, images: [],
+    },
+  ];
+  return result;
+}
+
+await asyncTest("owner-reported (2026-08-01): a grid card with more than one version renders a version <select> above the Download button, reusing resolveVersionView -- switching it changes the download target", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeMultiVersionResult({ modelId: 5, name: "Multi Version" })];
+  let downloadBody = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/download/start")) {
+      downloadBody = JSON.parse(opts.body);
+      return jsonResponse({ reason: "started", message: "", job_id: "job-5" });
+    }
+    if (u.includes("/download/progress")) {
+      return jsonResponse({ reason: "ok", status: "downloading", bytes: 0, total: null, message: "" });
+    }
+    return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const sel = findAll(handle.scrim, "wtn-cm-version-sel")[0];
+    assert.ok(sel, "a multi-version card must render a version <select>");
+    assert.equal(sel.children.length, 2);
+
+    sel.value = "9";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    const downloadBtn = findAll(handle.scrim, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(downloadBody.filename, "v1.safetensors", "switching the card's own version select must change which version Download actually fetches");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("a single-version card never renders a version select at all", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 1, versionId: 1, name: "Only One Version" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    assert.equal(findAll(handle.scrim, "wtn-cm-version-sel").length, 0);
     handle.close();
   } finally {
     restoreFetch();

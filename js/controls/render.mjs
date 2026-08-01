@@ -368,6 +368,20 @@ const CSS = `
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 6px; padding: 5px 7px;
 }
 .wtn-ctl-field input:focus, .wtn-ctl-field select:focus { outline: none; border-color: var(--wtn-accent, ${TOKENS.accent}); }
+/* Owner-reported (2026-08-01): "on the select field we need to show cursor
+   pointer on hover and border teal color (not shiny)" -- \`--wtn-accent-deep\`
+   (muted teal), never \`--wtn-accent\`/\`--wtn-accent-strong\` (both brighter --
+   "not shiny" is the point). \`select\` only, not \`input\` -- declared on
+   this shared descendant selector (every ⚙ popover's own \`<select>\` --
+   \`afterSel\`/\`sel\`/\`typeSel\`/\`devSel\` in interaction.mjs, all built inside
+   a \`.wtn-ctl-field\` -- inherits it by construction), the same "one rule,
+   not per-surface" fix \`js/shared/theme.css\`'s own \`.wtn-select:not(:disabled):hover\`
+   doc comment names for the other tracks' selects. Only the border changes
+   -- no glow, no box-shadow, no background shift. No \`:not(:disabled)\`
+   guard here -- unlike \`model_detail_view.mjs\`'s own version select, none
+   of this popover's four selects (\`afterSel\`/\`sel\`/\`typeSel\`/\`devSel\`) is
+   ever disabled. */
+.wtn-ctl-field select:hover { cursor: pointer; border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 
 .wtn-ctl-seg { display: flex; gap: 3px; padding: 3px; margin-bottom: 11px;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px; }

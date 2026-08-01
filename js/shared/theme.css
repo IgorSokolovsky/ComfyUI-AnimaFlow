@@ -62,6 +62,19 @@
 }
 .wtn *, .wtn *::before, .wtn *::after { box-sizing: border-box; }
 
+/* A scroll/flex region that actually bounds its own content (2026-08-01) --
+   this pack's fourth occurrence of the same trap: a flex item's default
+   `min-width`/`min-height: auto` refuses to shrink below its content,
+   silently defeating whatever `overflow-x`/`overflow-y` rule sits on it,
+   anywhere up or down the chain (civitai_search.mjs's own `.wtn-cs-body`/
+   `.wtn-dv-host`, civitai_modal.mjs's `.wtn-cm-detailhost`, and now
+   `.wtn-cm-main` and model_detail_view.mjs's own `.wtn-dv`/`.wtn-dv-body`
+   all needed it independently). Add THIS class to any bounded flex/scroll
+   region's own class list instead of hand-writing a fifth `min-width: 0;
+   min-height: 0;` pair -- one shared rule every mount actually uses, not
+   several independently hand-tuned copies quietly drifting apart. */
+.wtn-flex-bound { min-width: 0; min-height: 0; }
+
 /* buttons */
 .wtn-btn { font-family: var(--wtn-font-ui); font-size: 13px; font-weight: 600; cursor: pointer;
   border-radius: 9px; padding: 9px 15px; border: 1px solid var(--wtn-line);
@@ -85,6 +98,25 @@
   background: var(--wtn-console); border: 1px solid var(--wtn-line); border-radius: var(--wtn-radius-sm);
   padding: 8px 10px; }
 .wtn-select { font-family: var(--wtn-font-ui); }
+/* Owner-reported (2026-08-01): "on the select field we need to show cursor
+   pointer on hover and border teal color (not shiny)" -- `--wtn-accent-deep`
+   (the muted teal), never `--wtn-accent`/`--wtn-accent-strong` (both
+   noticeably brighter -- "not shiny" is the operative word here). Declared
+   on the shared `.wtn-select` base -- every mount's `<select>` that already
+   carries this class inherits it by construction, the same "one rule, not
+   per-surface" fix this pass's arrow-clearance bug already needed
+   (model_detail_view.mjs's own `.wtn-dv-version-sel` doc comment has that
+   history). Selects that use a DIFFERENT local vocabulary instead of this
+   class (civitai_search.mjs's own `.wtn-cs-sel`, render.mjs's own
+   `.wtn-ctl-field select`) get the identical rule declared on THEIR shared
+   base, not copied here, for the same reason. Only the border changes -- no
+   glow, no box-shadow, no background shift.
+   `:not(:disabled)` is a deliberate exception, not a quiet special case: a
+   disabled `<select>` (model_detail_view.mjs's own single-version case,
+   `versionSel.disabled = usableVersions.length <= 1`) must never invite a
+   click it can't act on -- `cursor: pointer` plus a colour change on hover
+   would read as clickable when it isn't. */
+.wtn-select:not(:disabled):hover { cursor: pointer; border-color: var(--wtn-accent-deep); }
 .wtn-input:focus, .wtn-select:focus, .wtn-textarea:focus { outline: none; border-color: var(--wtn-accent); }
 .wtn-textarea { width: 100%; resize: vertical; line-height: 1.5; }
 

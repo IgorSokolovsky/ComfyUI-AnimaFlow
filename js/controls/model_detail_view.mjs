@@ -358,18 +358,22 @@ const CSS = `
    see how the content is tight to the border of the panel" -- neither pinned
    region (this rule, \`.wtn-dv-topbar\` below) nor the scrolling body
    (\`.wtn-dv-body\` below) had ANY padding, so identity/descriptions/gallery
-   all butted straight against the panel edge. Matches this pack's own
-   existing panel rhythm rather than inventing a new spacing scale --
-   \`civitai_search.mjs\`'s own \`.wtn-cs-body\` is \`padding: 9px 10px 10px\`;
-   this header shares that same top/side value, minus the bottom third
-   (its last child, \`.wtn-dv-actionhost\`, already carries its own \`margin:
-   6px 0 8px\`, so a padding-bottom here would just double that gap against
-   \`.wtn-dv-body\`'s own top padding immediately below it). \`position:
-   relative\` is only so \`.wtn-dv-close\` (below) can anchor to THIS box's own
-   corner, not the whole \`.wtn-dv\` root. The reserved 18px on the right
-   (28px vs. the 10px every other edge gets) is that same close button's own
-   clearance -- so a long, wrapped title's first line never runs under it. */
-.wtn-dv-header { flex: none; display: flex; flex-direction: column; gap: 2px; position: relative; padding: 9px 28px 0 10px; }
+   all butted straight against the panel edge. \`position: relative\` is only
+   so \`.wtn-dv-close\` (below) can anchor to THIS box's own corner, not the
+   whole \`.wtn-dv\` root. The reserved 18px on the right (34px vs. the 16px
+   every other edge gets) is that same close button's own clearance -- so a
+   long, wrapped title's first line never runs under it.
+   Owner-reported, second pass (2026-08-01): "the panel's padding is too
+   tight ... raise it to 16px" -- raised from the original 9/10px above to a
+   uniform 16px on every edge (right stays 16px plus the 18px close-button
+   clearance = 34px). This gives the header a real, non-zero padding-bottom
+   for the first time (it used to rely entirely on \`.wtn-dv-actionhost\`'s
+   own \`margin: 6px 0 8px\` for that gap, which is why the bottom used to be
+   0) -- see \`.wtn-dv-body\`'s own comment, below, for why the body's OWN top
+   padding has to become 0 in exchange: with 16px on both sides of that
+   seam, the gap between the version/download row and the first line of
+   scrolling content would otherwise double. */
+.wtn-dv-header { flex: none; display: flex; flex-direction: column; gap: 2px; position: relative; padding: 16px 34px 16px 16px; }
 /* The picker's own close affordance (owner, 2026-08-01, replacing the
    removed "← back to results" -- see \`onClose\`'s own doc comment on
    \`buildModelDetailView\` for the full "why") -- same ✕ glyph, same
@@ -385,57 +389,72 @@ const CSS = `
    also show the download button and the version selection" -- the MODAL's
    own shape only (\`fixedTopBar: true\`; the picker keeps \`.wtn-dv-header\`,
    above, unchanged -- see \`buildModelDetailView\`'s own doc comment for the
-   full "why one component, two pinned shapes"). One row -- the modal is 90%
-   of the viewport, so unlike a narrow anchored panel these three always
-   fit; no wrapping needed. The version selector (\`.wtn-dv-versionrow\`,
-   reused unchanged from the header shape, just re-scoped below) gets the
-   FLEXIBLE width -- its own labels carry a name AND a size and are the most
-   variable of the three -- while \`← results\`/the download action keep
-   their intrinsic size. */
+   full "why one component, two pinned shapes"). \`← results\` sits on the
+   left, intrinsic size; \`.wtn-dv-vdstack\` (below) is the ONE other child,
+   pushed flush right.
+   Owner, SECOND correction, same day: "remove the version label, the field
+   is sufficient, and make it above the download button on the right side of
+   the screen" -- supersedes an earlier one-row arrangement for THIS shape
+   specifically (the picker's own \`.wtn-dv-vdrow\`, below, is unaffected --
+   it still shares one row; only the modal asked to stack instead). */
 .wtn-dv-topbar {
-  flex: none; display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-  /* Same padding fix as \`.wtn-dv-header\` above, this shape's own pinned
-     region -- top/sides match this pack's own panel rhythm
-     (\`civitai_search.mjs\`'s \`.wtn-cs-head\`, \`padding: 8px 10px\`); bottom
-     stays the pre-existing 8px (the separator's own clearance, unchanged). */
-  padding: 8px 10px 8px; border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  flex: none; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0;
+  /* Owner-reported (2026-08-01): "the panel's padding is too tight ... raise
+     it to 16px" -- same uniform 16px as \`.wtn-dv-header\` above, so the two
+     pinned shapes stay coherent with each other; bottom stays the
+     pre-existing separator clearance, just raised from 8px to 16px along
+     with the rest rather than left as a mismatched leftover value. */
+  padding: 16px; border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
 }
-.wtn-dv-topbar .wtn-dv-versionrow { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
-.wtn-dv-topbar .wtn-dv-actionhost { flex: none; margin: 0; }
 /* Owner-reported, with a screenshot (2026-08-01): "← back to results" reads
    shorter than the version <select> beside it in this row -- the SAME class
    of bug \`.wtn-cs-action\`'s own doc comment already names for the Delete-vs-
    ✓-installed mismatch (a plain element's box is padding+line-height+border,
    but a native form control ALSO carries the browser's own chrome, which
-   doesn't obey that padding/line-height the same way) -- not a padding
-   difference to eyeball, a THIRD different element (a dashed \`<button>\`, a
-   native \`<select>\`, and whatever \`buildActionEl\` returns) each sized by its
-   own chrome. Fixed the same way: pin all three to one explicit height +
-   box-sizing: border-box, so line-height/native chrome no longer decides
-   it. Height picked to comfortably fit the SELECT (the tallest of the
-   three unstyled) rather than the button's smaller natural size. */
+   doesn't obey that padding/line-height the same way). Genuinely scoped to
+   \`.wtn-dv-topbar\` -- \`.wtn-dv-back\` only ever renders in THIS shape (the
+   picker's header uses \`onClose\`'s ✕ instead, never a back button), unlike
+   the select's own height/arrow-clearance fix, which used to be scoped the
+   same way and had to stop being (see \`.wtn-dv-version-sel\`, below, for
+   that fix and the full "why"). */
 .wtn-dv-topbar .wtn-dv-back {
   flex: none; margin-top: 0; align-self: center; height: 26px; box-sizing: border-box;
   display: inline-flex; align-items: center; justify-content: center; padding: 0 9px;
   appearance: none; -webkit-appearance: none;
 }
-/* Owner-reported, same screenshot: the select's own dropdown arrow sits
-   flush against its right border -- needs its own padding-right to clear
-   it, same family of native-\`<select>\` problem \`.wtn-cs-version-sel\`
-   (civitai_search.mjs) already solved for ITS own narrow, ellipsised shape;
-   this one doesn't need the ellipsis treatment (this row's version select
-   is the flexible-width element, never clipped), just the right-hand
-   clearance and the same fixed-height/border-box treatment as the other
-   two controls in this row. */
-.wtn-dv-topbar .wtn-dv-version-sel { height: 26px; box-sizing: border-box; padding: 0 22px 0 8px; }
+/* The version-select-plus-download STACK (owner, second correction,
+   2026-08-01: "make it above the download button on the right side of the
+   screen") -- version select on top, the download action beneath it, both
+   right-aligned as ONE block via \`margin-left: auto\` (never
+   \`justify-content\` on \`.wtn-dv-topbar\` itself, which would just recentre
+   \`← results\` instead of moving only the intended child). \`min-width: 0\`
+   is this element's own link in the SAME overflow chain
+   \`civitai_modal.mjs\`'s own \`.wtn-cm-main\`/\`.wtn-cm-detailhost\` and
+   \`.wtn-dv\`/\`.wtn-dv-body\` (below) all needed (owner: "i think we have
+   horizontal issue in the model detail page, see its cut" -- also why the
+   Download button read as missing: it was clipped off the right edge, not
+   absent). */
+.wtn-dv-vdstack { display: flex; flex-direction: column; gap: 4px; margin-left: auto; min-width: 0; }
 /* The scrolling body's own padding lives HERE, on the element that actually
    carries \`overflow-y: auto\` -- never on an ancestor. Padding on a scroll
    container's PARENT instead would leave its scrollbar inset from the panel
    edge and clip content oddly at the scroll boundary; this is why it isn't
    hoisted onto \`.wtn-dv\` (the ancestor both pinned shapes and this body
-   share). Value matches \`civitai_search.mjs\`'s own \`.wtn-cs-body\` exactly
-   (\`padding: 9px 10px 10px\`) -- same family of panel, same rhythm. */
-.wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 9px 10px 10px; }
+   share). Owner, second pass (2026-08-01): "the content card which scrolls,
+   top padding should be 0 so it will not have too much space between the
+   version and download button" -- raising every edge to a uniform 16px
+   (matching \`.wtn-dv-header\`/\`.wtn-dv-topbar\` above) would otherwise DOUBLE
+   the gap at this exact seam, since the pinned region right above now also
+   carries a real 16px bottom padding for the first time. TOP stays 0 for
+   that reason -- the pinned region's own padding-bottom already supplies
+   the separation -- while the other three edges get the same 16px as
+   everything else. \`wtn-flex-bound\` (this element's own class list, set by
+   \`buildModelDetailView\` -- \`js/shared/theme.css\` has that class's own
+   doc comment) is the shared \`min-width: 0; min-height: 0;\` fix for the
+   SAME horizontal-overflow chain \`.wtn-dv-vdstack\` above and \`.wtn-dv\`
+   below are also part of, rather than a fourth hand-written copy of the
+   same two properties. */
+.wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 0 16px 16px 16px; }
 .wtn-dv-head { display: flex; gap: 10px; align-items: flex-start; }
 .wtn-dv-thumb {
   width: 58px; height: 58px; flex: none; border-radius: 7px; overflow: hidden;
@@ -449,8 +468,17 @@ ${THUMB_SKELETON_CSS}
 }
 .wtn-dv-identity { flex: 1 1 auto; min-width: 0; }
 .wtn-dv-title { font-size: 14px; font-weight: 600; line-height: 1.25; }
-.wtn-dv-creator { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); margin-top: 2px; }
-.wtn-dv-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+/* Owner-reported (2026-08-01): "LORA / ZImageBase currently sit on their
+   own line below 'by EauDeNoire' ... put them on the same row ... that
+   reclaims a line in a panel where vertical space is the scarce resource"
+   -- \`.wtn-dv-bylinerow\` is the shared row; the byline sits in normal flow
+   (left), the chips get \`margin-left: auto\` on \`.wtn-dv-badges\` itself
+   (below) rather than \`justify-content: space-between\` on THIS rule, which
+   would misalign a LONE child (no creator, or no chips at all) to the left
+   instead of leaving it exactly where it already belongs. */
+.wtn-dv-bylinerow { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.wtn-dv-creator { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-dv-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-left: auto; }
 .wtn-dv-badge {
   font-size: 10px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   color: var(--wtn-ink-dim, ${TOKENS.inkDim});
@@ -462,11 +490,23 @@ ${THUMB_SKELETON_CSS}
 
 .wtn-dv-sep { border: 0; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); margin: 10px 0; }
 
-.wtn-dv-versionrow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.wtn-dv-versionrow label { color: var(--wtn-ink-dim, ${TOKENS.inkDim}); font-size: 11px; flex: none; }
-.wtn-dv-version-sel { flex: 1 1 auto; min-width: 0; }
-
-.wtn-dv-actionhost { margin: 6px 0 8px; }
+/* Owner-reported (2026-08-01), third time this exact fix has half-landed:
+   "the select's arrow is still touching the right border ... put the arrow
+   clearance on the select itself, not a mount-scoped descendant selector,
+   so both shapes inherit it and it cannot diverge again." Previously this
+   height/arrow-clearance pair lived ONLY on \`.wtn-dv-topbar .wtn-dv-version-
+   sel\` (the modal's shape) -- so the picker's own \`.wtn-dv-header\` mount
+   never got it, which is exactly the bug being fixed here. Declared on
+   \`.wtn-dv-version-sel\` itself, unscoped, so it's inherited by BOTH mounts
+   by construction rather than by two separately-tuned copies agreeing.
+   \`.wtn-dv-vdrow\` (the picker's one-row layout) and \`.wtn-dv-vdstack\`
+   (the modal's stacked layout, above) each wrap this SAME select -- there is
+   no longer a \`.wtn-dv-versionrow\`/\`<label>\` pair at all; the "Version"
+   label itself was dropped the same pass (owner: "redundant -- the select's
+   own options read 'Hands zib v1.0 — 162 MB', self-evidently a version"). */
+.wtn-dv-vdrow { display: flex; align-items: center; gap: 8px; }
+.wtn-dv-version-sel { flex: 1 1 auto; min-width: 0; height: 26px; box-sizing: border-box; padding: 0 22px 0 8px; }
+.wtn-dv-actionhost { flex: none; margin: 0; }
 
 /* Owner-reported (2026-08-01): "GALLERY"/"VERSION DESCRIPTION"/"MODEL
    DESCRIPTION" read too small to work as section separators in a panel this
@@ -477,7 +517,15 @@ ${THUMB_SKELETON_CSS}
    identical to each other by construction, not by three separate values
    happening to agree. */
 .wtn-dv-sechead { font-family: var(--wtn-font-mono, monospace); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); margin: 8px 0 4px; }
-.wtn-dv-desc { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: pre-wrap; line-height: 1.4; }
+/* \`overflow-wrap: anywhere\` (owner: "i think we have horizontal issue in
+   the model detail page, see its cut") -- \`min-width: 0\` up the whole flex
+   chain (\`.wtn-flex-bound\`, this element's own root/body ancestors, and
+   \`civitai_modal.mjs\`'s own \`.wtn-cm-main\`/\`.wtn-cm-detailhost\`) stops a
+   BOX from refusing to shrink, but a single UNBREAKABLE token inside it (a
+   long URL with no spaces, in a pasted model description) still can't wrap
+   at ordinary \`white-space: pre-wrap\` word boundaries -- this is what lets
+   the text itself break instead of pushing its box wider. */
+.wtn-dv-desc { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: pre-wrap; line-height: 1.4; overflow-wrap: anywhere; }
 .wtn-dv-desc-empty { font-size: 11.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 .wtn-dv-gallery-hidden { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 6px; }
 
@@ -797,7 +845,13 @@ export function buildModelDetailView({
   let stale = false;
   const isStale = () => stale;
 
-  const root = el(doc, "div", `wtn-dv wtn ${layout === "filmstrip" ? "wtn-dv-filmstrip" : "wtn-dv-twocol"}`);
+  // `wtn-flex-bound` (js/shared/theme.css) -- the shared `min-width: 0;
+  // min-height: 0;` fix for a bounded flex/scroll region, applied to both
+  // this root AND `bodyHost` below: this component's own third occurrence
+  // of the trap (`.wtn-cm-main`/`.wtn-cm-detailhost`, civitai_modal.mjs, are
+  // the other two) is exactly why it's a shared class now, not a fourth
+  // hand-written copy of the same two properties.
+  const root = el(doc, "div", `wtn-dv wtn wtn-flex-bound ${layout === "filmstrip" ? "wtn-dv-filmstrip" : "wtn-dv-twocol"}`);
   // The pinned/scrolling split (this file's own CSS comment, "Owner-reported
   // bug (2026-08-01)") -- `topControls` never scrolls; `bodyHost` is the ONE
   // region that does. Named `bodyHost`, not `body`, because the description
@@ -809,7 +863,7 @@ export function buildModelDetailView({
   // otherwise IDENTICAL code for both; only the identity block and the back
   // affordance change which host they append to.
   const topControls = el(doc, "div", fixedTopBar ? "wtn-dv-topbar" : "wtn-dv-header");
-  const bodyHost = el(doc, "div", "wtn-dv-body");
+  const bodyHost = el(doc, "div", "wtn-dv-body wtn-flex-bound");
   root.appendChild(topControls);
   root.appendChild(bodyHost);
   // Identity (thumbnail/title/creator/badges/stats) and `View on Civitai ↗`
@@ -863,10 +917,18 @@ export function buildModelDetailView({
   title.textContent = view.name || "(untitled)";
   title.title = view.name || "";
   identity.appendChild(title);
+  // Byline + chips share ONE row (owner, 2026-08-01: "LORA / ZImageBase
+  // currently sit on their own line below 'by EauDeNoire' ... put them on
+  // the same row ... that reclaims a line in a panel where vertical space
+  // is the scarce resource") -- byline left-aligned (normal flow), chips
+  // pushed flush right via `.wtn-dv-badges`'s own `margin-left: auto`
+  // rather than `justify-content: space-between` on the row, which would
+  // misalign a LONE child (no creator, or no chips at all) to the left.
+  const bylineRow = el(doc, "div", "wtn-dv-bylinerow");
   if (safeResult.creator) {
     const creator = el(doc, "div", "wtn-dv-creator");
     creator.textContent = `by ${safeResult.creator}`;
-    identity.appendChild(creator);
+    bylineRow.appendChild(creator);
   }
   const badges = el(doc, "div", "wtn-dv-badges");
   if (safeResult.type) {
@@ -881,7 +943,10 @@ export function buildModelDetailView({
     badges.appendChild(baseBadge);
   }
   if (badges.children.length) {
-    identity.appendChild(badges);
+    bylineRow.appendChild(badges);
+  }
+  if (bylineRow.children.length) {
+    identity.appendChild(bylineRow);
   }
   const stats = safeResult.stats && typeof safeResult.stats === "object" ? safeResult.stats : null;
   const updated = formatDateLabel(view.published_at);
@@ -917,11 +982,10 @@ export function buildModelDetailView({
 
   identityHost.appendChild(el(doc, "hr", "wtn-dv-sep"));
 
-  // ---- version selector + primary action ---------------------------------
-  const versionRow = el(doc, "div", "wtn-dv-versionrow");
-  const versionLabel = el(doc, "label");
-  versionLabel.textContent = "Version";
-  versionRow.appendChild(versionLabel);
+  // ---- version selector + primary action -- NO "Version" label (owner,
+  // 2026-08-01: "redundant -- the select's own options read 'Hands zib
+  // v1.0 — 162 MB', self-evidently a version"); the select just takes the
+  // row/stack's full flexible width in its place. --------------------------
   const versionSel = el(doc, "select", "wtn-select wtn-dv-version-sel");
   const usableVersions = versions.length ? versions : [{ version_id: view.primary_version_id, name: view.name, size_kb: view.size_kb }];
   for (const v of usableVersions) {
@@ -944,8 +1008,6 @@ export function buildModelDetailView({
       onVersionChange(chosenId);
     }
   });
-  versionRow.appendChild(versionSel);
-  topControls.appendChild(versionRow);
 
   const actionHost = el(doc, "div", "wtn-dv-actionhost");
   if (typeof buildActionEl === "function") {
@@ -954,7 +1016,26 @@ export function buildModelDetailView({
       actionHost.appendChild(actionEl);
     }
   }
-  topControls.appendChild(actionHost);
+
+  if (fixedTopBar) {
+    // The modal's own shape (owner, second correction, 2026-08-01: "make it
+    // above the download button on the right side of the screen") -- a
+    // right-aligned STACK, version on top, download beneath -- see
+    // `.wtn-dv-vdstack`'s own CSS comment for the full "why".
+    const vdStack = el(doc, "div", "wtn-dv-vdstack");
+    vdStack.appendChild(versionSel);
+    vdStack.appendChild(actionHost);
+    topControls.appendChild(vdStack);
+  } else {
+    // The picker's own shape (owner: "version select and download on one
+    // row ... select flexible, button intrinsic, same as the modal's
+    // topbar already does" -- before the modal's OWN ask changed to a
+    // stack, above; the picker keeps the one-row layout it was given).
+    const vdRow = el(doc, "div", "wtn-dv-vdrow");
+    vdRow.appendChild(versionSel);
+    vdRow.appendChild(actionHost);
+    topControls.appendChild(vdRow);
+  }
 
   const d = detail && typeof detail === "object" ? detail : {};
 
