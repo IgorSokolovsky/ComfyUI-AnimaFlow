@@ -665,6 +665,14 @@ const CSS = `
 /* ⓘ -- opens the info panel (Slice 4, model_info.mjs). Reuses the same
    slot .wtn-ctl-gear already defines. */
 .wtn-ctl-gear.wtn-lora-icon-info { font-style: italic; font-weight: 700; }
+/* Owner report (2026-08-01): an empty row ("(pick a LoRA)") must not show
+   ⓘ or open the info panel. visibility: hidden (not display: none) so the
+   column it occupies (INFO_W) stays reserved -- an empty row and a picked
+   one must stay column-aligned with each other -- and pointer-events: none
+   so lora_interaction.mjs's existing click binding on this same element is
+   simply inert; no second "is a LoRA picked" check needed there. paintRow
+   toggles this class. */
+.wtn-lora-icon-info.wtn-lora-icon-hidden { visibility: hidden; pointer-events: none; }
 
 /* ── row context menu (design doc §1a-iii, decision 23: "More info ·
    Duplicate · Disable/Enable · Remove") -- DUPLICATES js/controls/
@@ -947,7 +955,7 @@ export function buildRowElement(doc) {
 
   const info = el(doc, "span", "wtn-ctl-gear wtn-lora-icon-info");
   info.textContent = "ⓘ"; // ⓘ -- not an emoji, a plain circled-letter glyph
-  info.title = "LoRA info (coming soon)";
+  info.title = "LoRA info";
   body.appendChild(info);
 
   const sw = el(doc, "div", "wtn-lora-switch");
@@ -1039,6 +1047,16 @@ export function paintRow(refs, row, sepStrengths) {
   }
   refs.root.classList.toggle("wtn-lora-off", !row.on);
   refs.sw.classList.toggle("wtn-lora-on", !!row.on);
+  // Owner report (2026-08-01): an empty row ("(pick a LoRA)") still showed
+  // the ⓘ and opened an info panel for nothing. Hide it -- but reserve its
+  // column width (`INFO_W`, this file's own MIN_W/MIN_W_SEP derivation) so
+  // an empty row and a filled one stay column-aligned; `visibility: hidden`
+  // (CSS, below) does that, `display: none` would reflow the row instead.
+  // `pointer-events: none` (same rule) is what makes `wireRow`'s click
+  // binding inert -- one mechanism, not two, so `wireRow` itself is untouched.
+  if (refs.info && refs.info.classList) {
+    refs.info.classList.toggle("wtn-lora-icon-hidden", !row.name);
+  }
 }
 
 /** Repaint the header from the current state's rows -- master switch on/off

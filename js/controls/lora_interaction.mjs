@@ -626,14 +626,22 @@ function openRowMenuFor(node, ctx, rowId, refs) {
   head.textContent = row.name || "(no LoRA picked)";
   menu.appendChild(head);
 
-  const info = el(doc, "div", "wtn-ctl-opt");
-  info.textContent = "More info";
-  info.addEventListener("click", (e) => {
-    e.stopPropagation();
-    closeActiveOverlay();
-    openInfoPanelFor(node, ctx, rowId, refs);
-  });
-  menu.appendChild(info);
+  // Owner report (2026-08-01): an empty row ("(pick a LoRA)") has no info
+  // to show -- there's nothing to look up. `More info` is dropped entirely
+  // for that row rather than shown disabled, matching the row's own ⓘ
+  // (hidden, not just inert -- `paintRow`/CSS above). Duplicate/Disable-
+  // Enable/Remove stay unconditional -- an empty row is still worth
+  // duplicating or removing.
+  if (row.name) {
+    const info = el(doc, "div", "wtn-ctl-opt");
+    info.textContent = "More info";
+    info.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeActiveOverlay();
+      openInfoPanelFor(node, ctx, rowId, refs);
+    });
+    menu.appendChild(info);
+  }
 
   const dup = el(doc, "div", "wtn-ctl-opt");
   dup.textContent = "Duplicate";

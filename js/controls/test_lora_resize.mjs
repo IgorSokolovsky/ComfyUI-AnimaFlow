@@ -523,6 +523,25 @@ test("paintRow: name falls back to a placeholder when empty; strength formatted 
   assert.equal(refs.sw.classList.contains("wtn-lora-on"), false);
 });
 
+test("paintRow: the ⓘ icon is hidden (not removed) on an unpicked row, and reappears the instant a LoRA is picked -- repaint-driven, no rebuild (owner report 2026-08-01)", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc);
+
+  paintRow(refs, mkStateRow({ name: "" }));
+  assert.equal(refs.info.classList.contains("wtn-lora-icon-hidden"), true, "no LoRA picked -- ⓘ must be hidden");
+  assert.ok(refs.body.children.includes(refs.info), "hidden, not removed -- must stay the 4th child so column alignment holds");
+
+  // Repaint the SAME refs (no rebuild) once a LoRA is picked -- this is the
+  // exact regression shape the "Hide file extension" bug had before: a
+  // fix that only worked on a fresh build, not on a live repaint.
+  paintRow(refs, mkStateRow({ name: "a.safetensors" }));
+  assert.equal(refs.info.classList.contains("wtn-lora-icon-hidden"), false, "a LoRA is now picked -- ⓘ must reappear");
+
+  // And back to empty (e.g. Remove-then-re-add) re-hides it.
+  paintRow(refs, mkStateRow({ name: "" }));
+  assert.equal(refs.info.classList.contains("wtn-lora-icon-hidden"), true);
+});
+
 test("paintRow: an UNPICKED row (empty name) is never marked missing, even once a list has resolved", () => {
   const doc = makeDocStub();
   const refs = buildRowElement(doc);
@@ -1438,6 +1457,23 @@ test("row context menu: 'More info' · 'Duplicate' · 'Disable/Enable' (current-
   assert.match(opts[1].textContent, /Duplicate/);
   assert.match(opts[2].textContent, /Disable/, "the row is ON, so the menu offers 'Disable', never an action already true");
   assert.match(opts[3].textContent, /Remove/);
+});
+
+test("row context menu: an UNPICKED row (empty name) drops 'More info' entirely -- only Duplicate/Disable-Enable/Remove remain (owner report 2026-08-01)", () => {
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "", on: true })]));
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountLoraNode(node, ctx);
+  const entry = node._lrRows[0];
+
+  fire(entry.refs.root, "contextmenu");
+  const opts = findAllByClass(doc.body, "wtn-ctl-opt");
+  assert.equal(opts.length, 3, "no LoRA picked -- 'More info' must not appear, leaving Duplicate/Disable/Remove");
+  assert.equal(opts.some((o) => /More info/.test(o.textContent)), false);
+  assert.match(opts[0].textContent, /Duplicate/);
+  assert.match(opts[1].textContent, /Disable/);
+  assert.match(opts[2].textContent, /Remove/);
 });
 
 await asyncTest("row context menu: 'More info' opens the ⓘ info panel (Slice 4) and closes the row menu itself", async () => {
