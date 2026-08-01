@@ -28,20 +28,25 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 🔌 `fetch_model_detail` must return `files` — the deleted-model Download has no target (2026-08-01)
+### 🐛 The Preview node's `Save now` does not write a file (owner, 2026-08-01) — BLOCKED on a live log
 
-`fa27ca1` rewired the ⓘ panel's deleted-model `Download` from "open a Civitai link" (my spec error — the
-panel already has `View on Civitai ↗`, so a second link labelled Download taught users our labels lie)
-to a **real server-side download job**. The frontend half is done and tested.
+*"i don't [see] it save to the drive (i saved twice and don't see it)"*, and after changing the path,
+*"the path i gave doesn't have the image"*. `e23e31d` instrumented `save_now` — and **disproved** the
+first hypothesis while doing it: `normalize_preview_settings` round-trips `save.path` correctly and
+`save_now` honours it, proven against the real injected `write_fn`, not a stub.
 
-**It cannot run yet:** `src/model_browser/model_detail.py`'s `fetch_model_detail` does not return a
-`files` list at all. Only `civitai_search.py`'s own path produces that shape (`_parse_files` /
-`pick_primary_file`). The frontend reads it defensively and renders **no button** — the specified
-behaviour for "no resolvable download URL" — so nothing is broken, it is just absent.
+Two causes remain and the debug log now separates them, which is why this is blocked rather than
+guessed at:
+- **`save.path as received=None`** ⇒ the frontend never sent it. A frontend bug.
+- **a real path but an unexpected `output_dir`** ⇒ `folder_paths.get_output_directory()` resolves
+  somewhere other than where the owner is looking. An environment/Colab-mount question.
 
-The fix is one field: add `files` to `fetch_model_detail`'s return, parsed the same way the search path
-already does, wire shape `[{name, download_url, size_kb, primary, gated, sha256}]`. **No frontend change
-needed once it lands** — `pickPrimaryDownloadFile` already expects exactly that.
+They want opposite fixes. **Needed:** restart ComfyUI (`R` reloads JS but never re-imports Python, so
+the instrumentation is not live until a restart), set Console logging to `debug`, click **Save now**,
+and read the two lines.
+
+Follow-up already unblocked whichever way it goes: `save_now` returns an absolute `"path"` and the
+status line still shows only the filename — it should say **where**.
 
 ### 🧹 Retire the last hand-picked z-index values (2026-08-01)
 
@@ -54,31 +59,24 @@ The scale covers `js/controls/` and `js/shared/`. Still hand-picking their own: 
 but that is exactly what was true of the confirm dialog until it wasn't.
 
 
-### 📦 The queued Civitai work — the FRONTEND pass is what's left (owner, 2026-07-31)
+### 📦 The queued Civitai work — one item of the frontend pass is left (2026-08-01)
 
-The backend pass **landed in `6ce43de`**: `remove.py`'s `delete_model` and `lookup.save_preview`, both
-behind the same resolve-then-verify-containment guard, verified adversarially against a *naive*
-`get_full_path` (traversal, absolute path, a symlink escaping the models root, a Windows-separator name,
-a directory, and a traversal spelled as the **kind**) — all refused, target untouched, control case still
-deleting correctly. **Both routes exist and neither is reachable from the UI**, which is what the
-remaining pass changes.
+**The whole frontend pass shipped and the owner confirmed it** — the delete affordance and its
+type-to-confirm (`6ce43de` route + `99e24c5` UI + `9139d7b`), the explicit `Search` button (`99e24c5`),
+`Search Civitai by name →` wired to the `notfound` state (`model_info.mjs:725` → `civitai_search.mjs:802`),
+and §1a-vii's Civitai-name display (`a5f32b4` + `9139d7b`). All in *Done* below.
 
-**Frontend pass — three changes to the same search surfaces.**
+**What is genuinely left of the detail view: the COMMUNITY gallery.** `f40c981` built the detail view
+with the **author's** gallery only; the owner then asked for community images at the bottom
+(*"btw can we add community images to the bottom?"*), it was specced in `2a33db5`, and it was never
+built. The three constraints from that spec still hold: the **browsing level governs it** (community
+images are the most likely adult surface in the feature), **prompts are untrusted text** rendered with
+`textContent` — a real prompt contains `<lora:name:0.8>` which must not become markup — and
+**thumbnails lazy-load with a concurrency cap**, since this is the one surface here that can pull real
+bandwidth.
 
-3. **The `Search` button** (§7c-i). Explicit action, Enter equivalent, disabled while the query is
-   unchanged, filters still immediate, pagination untouched, debounce removed rather than left dangling.
-4. **Wire `Search Civitai by name →`** (§7e's `notfound` action). M1 shipped it disabled because search
-   did not exist; it does now. By-hash failing is the *common* case — re-saving, merging or quantising a
-   LoRA changes its hash — so this turns the most frequent dead end into the feature already built.
-5. **The delete affordance** for item 1, with its type-to-confirm.
-
-> **2 and 4 compound, which is why they are queued together.** Once opening ⓘ saves a local preview, and
-> `notfound` hands the user into search-by-name, a LoRA that arrived from nowhere becomes fully identified
-> in two clicks and then renders offline from its own disk forever after.
-
-Still further out, in the order they are worth doing: **§1a-vii** (show the Civitai name), **§7c-ii** (the
-picker's info panel — the last outstanding piece of M2), **M2b slice 2** (detail swap + community gallery
-+ copy-prompt), **installed-by-kind in the modal**, and **M3** (Loader Panel reuse).
+Then, in the order they are worth doing: **installed-by-kind in the modal**, and **M3** (Loader Panel
+reuse for checkpoints + UNET).
 
 ### 🧹 Collapse `model_info.mjs`'s local `repositionAfterChange` into the shared observer (unblocked 2026-07-31)
 
@@ -215,38 +213,19 @@ memories worth loading first: Anima's structured prompt format is **labelled PRO
 JSON** (JSON tested worse), and every composing node must stay **prompt-format-agnostic** — booru tags
 *and* natural-language prose, configurable separator, no comma-splitting assumptions.
 
-### 🎨 LoRA loader / Civitai browser — the five remaining items, in order (owner queued 2026-07-31)
+### 🎨 LoRA loader / Civitai browser — two of the five remain (owner queued 2026-07-31, updated 2026-08-01)
 
-Owner asked for all five queued, on top of the frontend pass already in *Now* (delete UI, `Search`
-button, `Search Civitai by name →`). Sequenced by dependency, not by size.
+Owner asked for five, sequenced by dependency. **Three are done and confirmed** — §1a-vii's Civitai-name
+display (`a5f32b4` + `9139d7b`), the detail view as ONE component with two mounts (`f40c981`, owner:
+*"so far perfect"*), and the delete affordance underneath both. The **community gallery** half of item 2
+was specced and not built; it is tracked in *Now* with the rest of the Civitai frontend work rather than
+here, so it doesn't sit in two places.
 
-**1. §1a-vii — show the Civitai name instead of the filename.** The display seam already exists
-(`displayRowName`, shipped in `261ca21`), so this adds a *source* to it rather than touching `paintRow`
-again. Needs the **list route to carry the name**, read from each model's sidecar — a client-cache-only
-version would leave most rows on filenames and read as broken. Population is already solved at both ends:
-`civitai_shape_from_search_meta` maps a search result's name at download time, and a lookup writes the
-sidecar for anything else. The missing piece is `invalidateList(kind)` after a lookup, or a freshly-known
-name sits on disk unused. **⚠️ Display only — `row.name` is identity** and must never change, or a saved
-workflow stops resolving on every machine including its own.
-
-**2. §7c-ii + M2b slice 2 — ONE component, two mounts.** These look like two items and are not: §7d's own
-table says *"the modal's detail view (**which is also the picker's, §7c-ii**)"*. Build the detail view
-once — version selector, creator/badges/stats, both labelled descriptions (§7d-i), the community gallery
-with prompt-on-hover and copy-prompt, and `View on Civitai ↗` — and mount it **single-column vertically**
-in the picker and as a **master→detail swap keeping the rail** in the modal. Building them separately
-would produce two galleries to keep in sync, which is exactly the duplication *Shells and Core Mechanics*
-is about.
-> Three constraints the spec already fixes: the **browsing level governs the gallery** (community images
-> are the most likely adult surface in the whole feature); **prompts are untrusted text** rendered with
-> `textContent`, and a prompt legitimately contains `<lora:name:0.8>` which must not become markup; and
-> **thumbnails lazy-load with a cap on concurrency** — a gallery is the one place here that can pull real
-> bandwidth.
-
-**3. Installed-by-kind in the browser** (owner, 2026-07-30). Group what is already on disk, by kind, in
+**1. Installed-by-kind in the browser** (owner, 2026-07-30). Group what is already on disk, by kind, in
 the modal. `list_models` already answers per kind and all three kinds are active as of `a6bc45b`; this is
-presentation plus the delete affordance the frontend pass is adding.
+presentation plus the delete affordance that has now shipped.
 
-**4. M3 — Loader Panel reuse, checkpoints + UNET.** Deliberately last: it should be an **import, not an
+**2. M3 — Loader Panel reuse, checkpoints + UNET.** Deliberately last: it should be an **import, not an
 extraction**. The layering guard (`test_model_picker.mjs`'s `GUARDED_FILES`) already fails the suite if a
 shared module imports anything `lora_*`, which is what keeps this a wiring job. If M3 turns out to need
 real extraction, that is a signal the guard was not doing its job.
@@ -437,6 +416,7 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit |
 |---|---|
+| **`fetch_model_detail` returns `files`** — the deleted-model `Download` had no target and rendered no button. `_parse_files` moved to `civitai_parse.parse_files` with a drift-guard test asserting both call paths produce byte-identical output for the same raw input | `7169733` |
 | **The model/version detail view** — one component, two mounts (picker panel + modal master→detail swap): version selector, badges, both labelled descriptions, `View on Civitai ↗` to the *selected version*, and the author's gallery with prompt-on-hover and copy-prompt | `f40c981` — owner: **"so far perfect"** (2026-08-01, after a long iteration on its layout) |
 | **Delete an installed model** — type-to-confirm on the word `delete`, naming the file, size and folder; sidecar and preview go with it; the row falls into the existing red missing-file state | `6ce43de` route + `99e24c5` UI + `9139d7b` — owner confirmed the flow, then the UX refinements |
 | **An explicit `Search` button** replacing the debounce — Enter-equivalent, disabled while the query is unchanged, filters still immediate, pagination independent | `99e24c5` |
@@ -512,6 +492,7 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
+| **An empty LoRA row no longer shows the ⓘ.** Not a wrong condition — `paintRow` repaints the name, strengths, off-state and switch but never touched the icon, so no code path could ever have hidden it. `visibility: hidden` rather than `display: none`, because `INFO_W` is a reserved column and dropping it out of flow would widen an empty row's name field out of alignment with the rows around it; `pointer-events: none` on the same rule is what makes the existing click binding inert, so there is no second "is a LoRA picked" guard that could drift out of step. The row menu's `More info` follows the same rule | `24fa594` — owner: **"hide icon confirm fixed"** |
 | **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (that one was `b92eff0`, below) |
 | **The ⓘ info panel grew after opening and overflowed** — the only popover placed against a near-empty box and then populated asynchronously from the Civitai lookup. Re-measures and re-places when the content lands | `b92eff0` — owner: **"lora info expand overflow fixed"**. Turned out to be *one instance* of the systemic gap below |
 | **Every async-populated popover overflowed** — three panels, one cause: `reposition()` is called once at open, while the content is still a short "Loading…" placeholder, and the height cap (the thing that makes the inner `overflow-y: auto` engage) only applies when the content doesn't fit *at that moment*. `openOverlay` now watches `contentEl` with a `ResizeObserver` and re-places on a real height change — **no panel needed a single line**, and every future one inherits it. Converging is the actual work: the comparison height is the one `reposition()` last *placed at*, recorded after its own cap | `0a53398` — owner: **"overflow fixed"** |
