@@ -1148,6 +1148,46 @@ Once a model has been opened once, every later render hits the local file and Ci
 for that image again — which is the whole point of the request, and also makes the ⓘ panel work offline
 for anything previously viewed.
 
+##### Save the WHOLE gallery locally, and filter it by level (owner, 2026-08-01) — SPEC, not built
+
+Owner, after seeing an over-level image at PG in the ⓘ panel: *"yes you are probably right i think its the
+local one, because i downloaded this lora before… i think i did say in somepoint we should save all images
+of the lora (not preview the URL's), then we show by nsfwLevel or the lock one."*
+
+**The diagnosis is right, and the current behaviour is working exactly as specified** — which is the
+problem. The ⓘ panel's thumbnail is the **local** `.preview.<ext>` file, and the four-source table above
+deliberately exempts local files from the browsing level, on the grounds that a file on disk was an
+explicit act. But a preview *we* wrote during a download is **not** the user's act, it is **our cache**,
+and it carries no record of what level it was. So it shows at PG forever.
+
+That gives the table the rule it was missing:
+
+> **A user's own file is never filtered. Our cache always is.** `<base>.preview.<ext>` stays the former —
+> it is the file other tools read, and what `local.find_preview_path` already looks for. A saved gallery
+> is the latter.
+
+Saving the images **with their levels recorded** is better than either exempting them or re-fetching: the
+level then works offline, the detail-view gallery works offline, and the one place the level silently
+does not apply disappears.
+
+Five things to settle **before** building:
+
+1. **Where.** A folder per model inside `models/loras/` litters the user's model directory. A pack-owned
+   cache keyed by the file's hash stays clean and is trivially purgeable, but is not portable if the model
+   moves — and portability is already covered by `<base>.preview.<ext>`. Recommend the pack-owned cache,
+   since this is explicitly *our* cache.
+2. **A manifest is mandatory.** Each stored image needs its `nsfw_level` recorded beside it, or we cannot
+   filter offline and have gained nothing. That is the entire point of the change.
+3. **Size:** `anim=false,width=450`, not `original=true`. At a measured 4.19 MB per image, ten images is
+   ~40 MB per LoRA.
+4. **Cap the count** at ten to twenty, not "all" — a gallery can be long.
+5. **When.** Fetching twenty images unprompted on a passive ⓘ open is precisely the bulk background
+   traffic §9 exists to prevent. Tie it to the **download** — where the user has already chosen to pull
+   this model — or to an explicit action.
+
+Confirmed in passing: the owner likes 🙈 for `locked` (*"i like the monkey that was set as lock
+placeholder"*), so it stays, distinct from `gated`'s 🔒.
+
 ##### SUPERSEDED (owner, 2026-07-31, later the same day): the saved preview is `anim=false,width=450`
 
 > ### ⚠️ SUPERSEDED (owner, 2026-07-31) — "save the ORIGINAL image on disk, downscale when SERVING it"
