@@ -2926,6 +2926,55 @@ function buildSaveRow(doc, node, ctx, state) {
 }
 
 /**
+ * shortenSavedPath(path, filename) -- pure, exported, tested in
+ * `test_resize.mjs` (this module has no `test_interaction.mjs` of its own;
+ * every pure `interaction.mjs` function is tested there already).
+ *
+ * Owner report, 2026-08-01: clicked "Save now" twice and could not find the
+ * file, then changed the save path and still could not find it -- the ONE
+ * fact they needed (WHERE it saved) was already in the server's response
+ * (`_preview_helpers.save_now`'s `"path"` field, `e23e31d`) and thrown away
+ * by the client, which only ever read `data.filename`. This derives a SHORT
+ * "containing folder + filename" label from that absolute path (e.g.
+ * `/content/ComfyUI/output/AnimaFlow/anima_00007.png` ->
+ * `AnimaFlow/anima_00007.png`) -- enough to disambiguate without eating the
+ * whole status line (the full path still goes in the status element's
+ * `title`, set by `buildSaveNowRow` below, so it's there on hover).
+ *
+ * Always joined with a forward slash on OUTPUT regardless of the input
+ * separator -- this runs against a Colab backend from a local browser, so
+ * `path` can be POSIX (the Colab side) or Windows (a future local backend);
+ * splitting on `/[\\/]+/` treats a run of either/both as one boundary.
+ *
+ * Falls back to the bare `filename` whenever `path` is not a usable
+ * absolute file path: not a string, empty, ending in a separator (no
+ * filename component of its OWN to anchor on -- `rawParts`'s trailing `""`
+ * check, before the empty segments get filtered out), or a single segment
+ * (no directory part at all). An older backend (pre-`e23e31d`) or the field
+ * simply missing from a response must never render `"undefined/..."` in the
+ * UI -- this is the one guard that keeps that true.
+ */
+export function shortenSavedPath(path, filename) {
+  const bare = typeof filename === "string" ? filename : "";
+  if (typeof path !== "string" || path.length === 0) {
+    return bare;
+  }
+  const rawParts = path.split(/[\\/]+/);
+  if (rawParts[rawParts.length - 1] === "") {
+    // Trailing separator (or an all-separator string): `path` names a
+    // DIRECTORY, not a file -- it has no filename component of its own to
+    // trust, so lean entirely on the caller's separately-known `filename`.
+    return bare;
+  }
+  const parts = rawParts.filter((s) => s.length > 0);
+  if (parts.length < 2) {
+    return bare; // no directory part at all
+  }
+  const folder = parts[parts.length - 2];
+  return `${folder}/${bare || parts[parts.length - 1]}`;
+}
+
+/**
  * "Save now" (task item 6) -- an on-demand save for exactly the moment
  * `preview.save.enabled` is off (its new default): the user still wants to
  * keep THIS result without turning saving on permanently. Posts
@@ -2990,8 +3039,14 @@ function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
   const status = el(doc, "div", "wtn-an-savenow-status");
   status.style.display = "none"; // empty at build time -- no reserved line (this function's own doc comment)
 
-  const setStatus = (text, isError) => {
+  const setStatus = (text, isError, title) => {
     status.textContent = text || "";
+    // `title` (the full absolute `data.path`, when the response carried one)
+    // -- ALWAYS reset, even on a call that doesn't pass one, so a later
+    // "Saving…"/error message never keeps stale hover text from a previous
+    // success (this function's own doc comment on `buildSaveNowRow`'s click
+    // handler covers where `title` comes from).
+    status.title = title || "";
     status.style.display = text ? "" : "none";
     if (status.classList && typeof status.classList.toggle === "function") {
       status.classList.toggle("wtn-an-savenow-err", !!isError);
@@ -3037,7 +3092,14 @@ function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
       .then(({ data }) => {
         btn.disabled = false;
         if (data && data.ok) {
-          setStatus(`Saved ${data.stage} as ${data.filename}`, false);
+          // `shortenSavedPath` (above) derives "containing folder/filename"
+          // for the visible line; the RAW `data.path` (verbatim, whatever
+          // its shape) goes in `title` regardless of whether the short form
+          // above fell back to the bare filename -- the owner asked for the
+          // whole thing to be there on hover, not just whatever this label
+          // above could parse out of it.
+          const rawPath = typeof data.path === "string" ? data.path : "";
+          setStatus(`Saved ${data.stage} as ${shortenSavedPath(data.path, data.filename)}`, false, rawPath);
         } else {
           setStatus((data && data.error) || "Save failed.", true);
         }

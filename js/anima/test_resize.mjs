@@ -232,6 +232,7 @@ import {
   computeNodeDefinition,
   healNodeSockets,
   describeStateInputConnectionAttempt,
+  shortenSavedPath,
 } from "./interaction.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -4238,6 +4239,107 @@ test("\"Save now\" with no fetch available (ctx.fetchImpl unset and no global fe
       globalThis.fetch = savedGlobalFetch;
     }
   }
+});
+
+// ===========================================================================
+// G2b. shortenSavedPath -- pure function, owner report 2026-08-01 ("clicked
+//      Save now twice and could not find the file"): the status line must
+//      show WHERE it saved (folder + filename), never just the filename.
+// ===========================================================================
+
+test("shortenSavedPath: a real POSIX path returns the last directory segment + filename", () => {
+  assert.equal(
+    shortenSavedPath("/content/ComfyUI/output/AnimaFlow/anima_00007.png", "anima_00007.png"),
+    "AnimaFlow/anima_00007.png",
+  );
+});
+
+test("shortenSavedPath: a Windows path (backslashes) returns the same short form, always forward-slash-joined on output", () => {
+  assert.equal(
+    shortenSavedPath("C:\\Users\\igor\\output\\AnimaFlow\\anima_00007.png", "anima_00007.png"),
+    "AnimaFlow/anima_00007.png",
+  );
+});
+
+test("shortenSavedPath: a path with only one segment (no directory part at all) falls back to the bare filename", () => {
+  assert.equal(shortenSavedPath("anima_00007.png", "anima_00007.png"), "anima_00007.png");
+});
+
+test("shortenSavedPath: a path with no separator of either kind falls back to the bare filename (same case as single-segment)", () => {
+  assert.equal(shortenSavedPath("justafilename", "anima_00007.png"), "anima_00007.png");
+});
+
+test("shortenSavedPath: a trailing separator (path names a directory, not a file) falls back to the bare filename", () => {
+  assert.equal(shortenSavedPath("/content/output/AnimaFlow/", "anima_00007.png"), "anima_00007.png");
+  assert.equal(shortenSavedPath("C:\\Users\\igor\\output\\AnimaFlow\\", "anima_00007.png"), "anima_00007.png");
+});
+
+test("shortenSavedPath: an empty string path falls back to the bare filename", () => {
+  assert.equal(shortenSavedPath("", "anima_00007.png"), "anima_00007.png");
+});
+
+test("shortenSavedPath: null/undefined path falls back to the bare filename -- an older backend (pre-e23e31d) or a missing field must never render \"undefined/...\"", () => {
+  assert.equal(shortenSavedPath(null, "anima_00007.png"), "anima_00007.png");
+  assert.equal(shortenSavedPath(undefined, "anima_00007.png"), "anima_00007.png");
+  assert.doesNotMatch(shortenSavedPath(undefined, "anima_00007.png"), /undefined/);
+});
+
+test("shortenSavedPath: a minimal two-segment path (folder + filename, nothing deeper) still resolves correctly", () => {
+  assert.equal(shortenSavedPath("AnimaFlow/anima_00007.png", "anima_00007.png"), "AnimaFlow/anima_00007.png");
+});
+
+test("shortenSavedPath: no filename given falls back to the path's own last segment instead of an empty string", () => {
+  assert.equal(shortenSavedPath("/content/output/AnimaFlow/anima_00007.png", undefined), "AnimaFlow/anima_00007.png");
+});
+
+test("\"Save now\": a successful response WITH a path shows the folder+filename in the status text and the full raw path in the status element's title (owner report: the one fact they needed was being thrown away)", () => {
+  const node = makePreviewNode();
+  node._anPreviewImages = { final: { filename: "final_temp.png", subfolder: "", type: "temp" } };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        ok: true,
+        stage: "final",
+        filename: "anima_00007.png",
+        subfolder: "AnimaFlow",
+        type: "output",
+        path: "/content/ComfyUI/output/AnimaFlow/anima_00007.png",
+      }),
+    }),
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const btn = findSaveNowButton(refs.body);
+  fire(btn, "click");
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    const status = findSaveNowStatus(refs.body);
+    assert.ok(status.textContent.includes("AnimaFlow/anima_00007.png"), `expected the folder+filename short form, got: ${status.textContent}`);
+    assert.equal(status.title, "/content/ComfyUI/output/AnimaFlow/anima_00007.png", "the full absolute path must be on the title, verbatim");
+  });
+});
+
+test("\"Save now\": a successful response WITHOUT a path (older backend, pre-e23e31d) still shows just the filename, and never puts \"undefined\" in the title", () => {
+  const node = makePreviewNode();
+  node._anPreviewImages = { final: { filename: "final_temp.png", subfolder: "", type: "temp" } };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ ok: true, stage: "final", filename: "final_1.png", subfolder: "AnimaFlow", type: "output" }),
+    }),
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const btn = findSaveNowButton(refs.body);
+  fire(btn, "click");
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    const status = findSaveNowStatus(refs.body);
+    assert.ok(status.textContent.includes("final_1.png"));
+    assert.doesNotMatch(status.textContent, /undefined/);
+    assert.equal(status.title, "", "no path in the response -- title must be empty, not \"undefined\"");
+  });
 });
 
 // ===========================================================================
