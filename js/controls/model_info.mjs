@@ -930,7 +930,7 @@ export function openModelInfo({
         return; // superseded by a later record, or the panel closed while this was in flight
       }
       downloadTarget = pickPrimaryDownloadFile(detail && detail.files);
-      repositionAfterChange(() => renderFooterAction());
+      renderFooterAction();
     });
     return null; // not resolved yet this render -- footer renders no button until the fetch above lands
   }
@@ -1120,74 +1120,17 @@ export function openModelInfo({
   // built once.
   // ---------------------------------------------------------------------
 
-  /**
-   * Re-places/re-clamps the panel after its OWN content changes post-open --
-   * the owner-reported bug (2026-07-30): "fixed on all except lora info as
-   * its shown correctly but after info loaded it expand and then
-   * overflows". Every OTHER popover in this pack builds its content
-   * synchronously before `openOverlay`'s own initial `reposition()` call
-   * ever runs, so that first placement already sees the final size. This
-   * panel is the one exception (`runLookup`'s own doc comment, above): the
-   * Civitai lookup resolves asynchronously, well after the panel is already
-   * open and placed against a near-empty box, and nothing ever told the
-   * overlay to look again once the real content landed.
-   *
-   * `mutate` performs whichever render call(s) actually change the
-   * content -- every call site that can add/remove a whole SECTION (the
-   * status box, the two description sections) after open routes through
-   * this, not just the Civitai lookup itself: a state transition between
-   * the four lookup states (`onStatusAction("cancel")`, the `searching`
-   * phase), a `"↻ Civitai"` re-fetch, `runForget`'s "Clear cache", and the
-   * author's-notes collapsible expanding/collapsing all go through it too.
-   * (Chip/pill/add-word changes do NOT -- `.wtn-mi-chips`/`.wtn-mi-notes`
-   * both scroll internally at a fixed max-height, so those never grow the
-   * PANEL's own outer box; only whole sections appearing/disappearing do.)
-   *
-   * Steps: (1) measure the panel's height BEFORE the mutation, (2) run the
-   * mutation, (3) re-measure ONE ANIMATION FRAME later -- measuring
-   * synchronously, right after the mutation, would read the pre-paint box
-   * (`.claude/skills/comfyui-litegraph-node-sizing`'s own lesson: a
-   * same-tick measurement is stale), (4) call `handle.reposition()` -- but
-   * ONLY if the height actually changed (never a spurious re-place for a
-   * same-size re-render) AND ONLY if the panel is still open
-   * (`handle.overlay.parentNode` -- `null` once `close()`'s own
-   * `removeChild` has run, the same attached-check `close()` itself uses).
-   * A detached/closed panel is a silent no-op here, never a throw -- the
-   * lookup this exists for is asynchronous, so it can resolve well after
-   * the user already dismissed the popover.
-   *
-   * `"right"` placement (the only one this panel ever opens with) needs no
-   * extra treatment beyond re-running the EXISTING `reposition()`: unlike
-   * `"below"`, `"right"` has no side-flip/height-cap decision of its own to
-   * redo for a purely vertical content change -- it only recomputes the
-   * horizontal flip (unaffected here) and then re-runs
-   * `clampOverlayToViewport`, which already measures the CURRENT (grown)
-   * box on every call. Re-running that same clamp against the real, grown
-   * box is the whole fix; there is nothing for `overlay.mjs` itself to
-   * learn or change.
-   */
-  function repositionAfterChange(mutate) {
-    const beforeBox = typeof panel.getBoundingClientRect === "function" ? panel.getBoundingClientRect() : null;
-    const beforeH = beforeBox ? beforeBox.height : null;
-    mutate();
-    const win = (doc && doc.defaultView) || (typeof window !== "undefined" ? window : null);
-    const run = () => {
-      if (!handle.overlay || !handle.overlay.parentNode) {
-        return; // closed/detached while this was pending -- silent no-op, never a throw
-      }
-      const afterBox = typeof panel.getBoundingClientRect === "function" ? panel.getBoundingClientRect() : null;
-      const afterH = afterBox ? afterBox.height : null;
-      if (beforeH != null && afterH != null && Math.abs(afterH - beforeH) < 0.5) {
-        return; // unchanged size -- don't fight the user with a spurious re-place
-      }
-      handle.reposition();
-    };
-    if (win && typeof win.requestAnimationFrame === "function") {
-      win.requestAnimationFrame(run);
-    } else {
-      run();
-    }
-  }
+  // Re-placing the overlay after this panel's own content changes post-open
+  // (the async Civitai lookup replacing a near-empty box, a collapsible
+  // description toggling, ...) used to be this file's OWN job
+  // (`repositionAfterChange`, since deleted) -- `../shared/overlay.mjs`'s
+  // `openOverlay` now does this for every caller via a `ResizeObserver` on
+  // `contentEl` (this panel's own `panel` element, this file's top doc
+  // comment / that module's "A THIRD layer, 2026-07-31"), so every mutation
+  // below that used to be wrapped just runs directly -- the shared mechanism
+  // re-places on its own the moment `panel`'s observed height actually
+  // changes, with the same "no spurious re-place for an unchanged size"
+  // guard `repositionAfterChange` used to provide locally.
 
   function buildPlaceholderGlyph() {
     return el(doc, "span", "wtn-mi-thumb-ph");
@@ -1460,7 +1403,7 @@ export function openModelInfo({
         // that notification at all, so re-render here too, unconditionally,
         // rather than leave a `disabled` button stuck if nothing else ever
         // repaints it.
-        repositionAfterChange(() => renderFooterAction());
+        renderFooterAction();
       });
     });
     footerActionHost.appendChild(downloadBtn);
@@ -1587,7 +1530,7 @@ export function openModelInfo({
       status = civitaiRecord
         ? { phase: "result", response: { reason: "found", data: civitaiRecord } }
         : { phase: "idle" };
-      repositionAfterChange(() => renderStatus());
+      renderStatus();
       return;
     }
     if (id === "refetch" || id === "retry" || id === "check") {
@@ -1715,7 +1658,7 @@ export function openModelInfo({
         bodyClass: "wtn-mi-desc-model-body",
         toggle: () => {
           modelNotesOpen = !modelNotesOpen;
-          repositionAfterChange(() => renderDescriptions());
+          renderDescriptions();
         },
       });
       descHost.appendChild(head);
@@ -1730,7 +1673,7 @@ export function openModelInfo({
         bodyClass: "wtn-mi-desc-version-body",
         toggle: () => {
           versionNotesOpen = !versionNotesOpen;
-          repositionAfterChange(() => renderDescriptions());
+          renderDescriptions();
         },
       });
       descHost.appendChild(head);
@@ -1848,12 +1791,10 @@ export function openModelInfo({
       if (cached) {
         logDebug("LoRA info", `${kind}/${name}: cache hit (${cached.reason})`);
         applyLookupResponse(cached);
-        repositionAfterChange(() => {
-          renderStatus();
-          renderIdentity();
-          renderTriggers();
-          renderDescriptions();
-        });
+        renderStatus();
+        renderIdentity();
+        renderTriggers();
+        renderDescriptions();
         return;
       }
     } else {
@@ -1864,7 +1805,7 @@ export function openModelInfo({
       // cache on its own via `lookupInfo`).
       invalidateInfo(kind, name);
       status = { phase: "searching" };
-      repositionAfterChange(() => renderStatus());
+      renderStatus();
     }
     logDebug("LoRA info", `${kind}/${name}: ${force ? "forced re-fetch" : "fetching (cache miss)"}`);
     const response = await lookupInfo(kind, name, { force: !!force, cachedOnly: !force });
@@ -1902,12 +1843,10 @@ export function openModelInfo({
           .catch(() => {}); // must never disturb the panel
       }
     }
-    repositionAfterChange(() => {
-      renderStatus();
-      renderIdentity();
-      renderTriggers();
-      renderDescriptions();
-    });
+    renderStatus();
+    renderIdentity();
+    renderTriggers();
+    renderDescriptions();
   }
 
   async function runForget() {
@@ -1919,12 +1858,10 @@ export function openModelInfo({
     civitaiRecord = null;
     civitaiTriggers = [];
     status = { phase: "idle" };
-    repositionAfterChange(() => {
-      renderStatus();
-      renderIdentity();
-      renderTriggers();
-      renderDescriptions();
-    });
+    renderStatus();
+    renderIdentity();
+    renderTriggers();
+    renderDescriptions();
   }
 
   // Initial paint.
@@ -1960,7 +1897,7 @@ export function openModelInfo({
   // button back once a `busy`/failure response is known (this file's own
   // `renderFooterAction` doc comment).
   unsubscribeDownload = subscribeDownloadState(() => {
-    repositionAfterChange(() => renderFooterAction());
+    renderFooterAction();
   });
 
   // BUG 13: this is a CACHE-ONLY read (`force` unset -> `cachedOnly: true`

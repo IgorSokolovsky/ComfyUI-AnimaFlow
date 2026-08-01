@@ -1962,8 +1962,14 @@ await asyncTest("openModelInfo: a second call with the SAME ownerKey toggles the
 // shown correctly but after info loaded it expand and then overflows" -- the
 // ⓘ panel is the one popover whose content changes ASYNCHRONOUSLY, well
 // after `openOverlay`'s own initial placement already ran against a
-// near-empty box, and nothing used to tell the overlay to look again once
-// the real (taller) content landed.
+// near-empty box. This file USED to fix that itself, locally
+// (`repositionAfterChange`, wrapping every render call that could grow a
+// whole section) -- superseded and deleted once `../shared/overlay.mjs`
+// grew the SAME re-place-on-content-resize mechanism generically for every
+// caller (`openOverlay`'s own `ResizeObserver` on `contentEl`, that module's
+// "A THIRD layer, 2026-07-31"). The behaviour this section's own test below
+// guards -- the panel stays inside the viewport once the async content
+// lands -- is unchanged; only WHAT makes it true changed.
 //
 // `makeGrowableDocStub`/`makeGrowableElement`, below, are a SEPARATE stub
 // family from `makeDocStub` above -- same "each track/test keeps its own
@@ -1984,11 +1990,45 @@ await asyncTest("openModelInfo: a second call with the SAME ownerKey toggles the
 // the real `parentNode` chain (mirrors `makeLayoutElement` in
 // `test_overlay.mjs`), so the PANEL's own rect reflects wherever
 // `reposition()` most recently placed the OVERLAY that wraps it.
+//
+// `GrowableResizeObserver`, below, is this file's own copy of
+// `js/shared/test_overlay.mjs`'s `TestResizeObserver` (same "each test file
+// keeps its own minimal stub" convention -- that class isn't exported, and
+// this file is out of scope to change `test_overlay.mjs` to export it): a
+// manually-fired stand-in for the real browser API `openOverlay` looks up
+// via `doc.defaultView.ResizeObserver`. Under plain `node` there is no real
+// layout pass to deliver a notification on its own, so the test below fires
+// it explicitly right after the async content has actually grown the DOM --
+// exactly mirroring what a live browser's own ResizeObserver would deliver
+// at that point, not a shortcut around it.
 // ---------------------------------------------------------------------------
 
 const GROWABLE_BASE_HEIGHT = 40;
 const GROWABLE_PER_NODE_HEIGHT = 6;
 const GROWABLE_PANEL_WIDTH = 336;
+
+/** This file's own copy of `test_overlay.mjs`'s `TestResizeObserver` -- see
+ * this section's own top doc comment for why it's duplicated rather than
+ * imported. `.fire()` invokes the stored callback directly, no
+ * scheduling/batching modeled, exactly like the original. */
+class GrowableResizeObserver {
+  static instances = [];
+  constructor(cb) {
+    this.cb = cb;
+    this.disconnected = false;
+    this.observed = [];
+    GrowableResizeObserver.instances.push(this);
+  }
+  observe(elm) {
+    this.observed.push(elm);
+  }
+  disconnect() {
+    this.disconnected = true;
+  }
+  fire() {
+    this.cb([], this);
+  }
+}
 
 function countDescendants(e) {
   let n = 0;
@@ -2132,12 +2172,16 @@ function makeGrowableDocStub() {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     // Synchronous, like every other stub timer in this pack's tests (e.g.
     // `test_overlay.mjs`'s own `setTimeout: (fn) => fn()`) -- there's no real
-    // paint to wait for under `node`, so `repositionAfterChange`'s own
-    // "one frame later" re-measure happens on the very next microtask/tick
-    // instead, which is enough to prove the SEQUENCING (measure -> mutate ->
-    // re-measure -> reposition) without a real render loop.
+    // paint to wait for under `node`.
     requestAnimationFrame: (cb) => cb(),
+    // The shared re-place-on-content-resize mechanism (`../shared/
+    // overlay.mjs`'s own `ResizeObserver` on `contentEl`) is what this
+    // section's own test now exercises -- see this section's top doc
+    // comment for why `GrowableResizeObserver` is a manually-fired stand-in
+    // rather than a real one.
+    ResizeObserver: GrowableResizeObserver,
   };
+  GrowableResizeObserver.instances.length = 0;
   doc = {
     createElement: makeElement,
     getElementById() {
@@ -2202,8 +2246,22 @@ await asyncTest("THE reported bug: async Civitai content landing after open grow
     });
     await settle(5);
 
+    const grownRect = panel.getBoundingClientRect();
+    assert.ok(grownRect.height > beforeRect.height, "sanity: the panel's own content genuinely grew");
+
+    // The panel's own DOM has grown, but nothing has told the overlay to
+    // look again yet -- exactly the owner-reported bug on its own, if
+    // nothing ever fires. In a live browser this happens on its own, the
+    // moment layout notices `contentEl`'s new height; under `node` there's
+    // no real layout pass to deliver that, so fire the shared observer
+    // explicitly here (see this section's own top doc comment) -- this is
+    // what actually re-places the panel now, `repositionAfterChange` having
+    // been deleted as redundant with it.
+    const ro = GrowableResizeObserver.instances[0];
+    assert.ok(ro, "sanity: openOverlay must install the shared ResizeObserver when the doc provides one");
+    ro.fire();
+
     const afterRect = panel.getBoundingClientRect();
-    assert.ok(afterRect.height > beforeRect.height, "sanity: the panel's own content genuinely grew");
     assert.ok(
       afterRect.bottom <= viewportBottomLimit,
       `the panel's visible bottom edge (${afterRect.bottom}) must stay inside the viewport (<= ${viewportBottomLimit}) after growing`,
@@ -2216,7 +2274,20 @@ await asyncTest("THE reported bug: async Civitai content landing after open grow
   }
 });
 
-await asyncTest("the async lookup resolving AFTER the panel was closed does not throw and never repositions a detached panel", async () => {
+await asyncTest("the async lookup resolving AFTER the panel was closed does not throw and leaves it detached", async () => {
+  // This USED to also spy on `handle.reposition` and assert it was never
+  // called -- that was a `repositionAfterChange`-INTERNALS assertion (it
+  // read `handle.reposition` fresh, the exact property that helper alone
+  // ever called directly), not a behaviour one: `handle.reposition` isn't
+  // called by this file's own code at all any more, by anything, so the
+  // count would now be trivially 0 regardless of whether "never reposition
+  // a detached panel" actually holds. That real guarantee is the shared
+  // `ResizeObserver`'s own teardown now (`close()` disconnects it -- see
+  // `js/shared/test_overlay.mjs`'s own "close() disconnects the resize
+  // observer" test, generic for every caller of `openOverlay`, this one
+  // included) -- not this file's job to re-prove. What IS still this file's
+  // own behaviour to guard: an async response landing well after `close()`
+  // must not throw, and must not somehow re-attach the panel.
   const kind = "loras";
   const name = "info-growth-closed.safetensors";
   invalidateInfo(kind, name);
@@ -2242,16 +2313,6 @@ await asyncTest("the async lookup resolving AFTER the panel was closed does not 
     });
     await settle();
 
-    // Spy on `reposition` -- `repositionAfterChange` reads `handle.
-    // reposition` fresh at call time, so replacing it here intercepts every
-    // future call the same way a real caller's own instrumentation would.
-    let repositionCalls = 0;
-    const origReposition = handle.reposition;
-    handle.reposition = (...args) => {
-      repositionCalls += 1;
-      return origReposition(...args);
-    };
-
     // "Clear cache" starts a forget request that won't resolve until this
     // test says so -- long enough to close the panel while it's in flight.
     const forgetBtn = findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
@@ -2262,12 +2323,10 @@ await asyncTest("the async lookup resolving AFTER the panel was closed does not 
     assert.equal(handle.overlay.parentNode, null, "sanity: close() really did detach the overlay");
 
     // NOW the async forget resolves, well after the user already dismissed
-    // the popover -- this must not throw, and must not reposition a panel
-    // that's no longer attached to anything.
+    // the popover -- this must not throw, and must not somehow re-attach it.
     assert.doesNotThrow(() => resolveForget({ json: async () => ({ reason: "ok", deleted: true }) }));
     await settle();
 
-    assert.equal(repositionCalls, 0, "a closed/detached panel must never be repositioned");
     assert.equal(handle.overlay.parentNode, null, "still detached -- nothing re-attached it");
   } finally {
     globalThis.fetch = _origFetch;
@@ -2275,55 +2334,19 @@ await asyncTest("the async lookup resolving AFTER the panel was closed does not 
   }
 });
 
-await asyncTest("content that does NOT change size does not cause a spurious re-place", async () => {
-  const kind = "loras";
-  const name = "info-growth-nochange.safetensors";
-  invalidateInfo(kind, name);
-  globalThis.fetch = async (url) => {
-    if (String(url).includes("/forget")) {
-      return { json: async () => ({ reason: "ok", deleted: true }) };
-    }
-    return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { model_id: 1, version_id: 2 } }) };
-  };
-  try {
-    // The plain, fixed-rect `makeDocStub` -- every element (including the
-    // panel) reports the SAME height regardless of content, so this is
-    // "content that does not change size" by construction: any wrapped
-    // call site that fires here has nothing to react to.
-    const doc = makeDocStub();
-    const anchor = doc.createElement("button");
-    const handle = openModelInfo({
-      ctx: { doc, getCanvasEl: () => null },
-      anchorEl: anchor,
-      kind,
-      name,
-      civitaiEnabled: true,
-    });
-    await settle();
-
-    let repositionCalls = 0;
-    const origReposition = handle.reposition;
-    handle.reposition = (...args) => {
-      repositionCalls += 1;
-      return origReposition(...args);
-    };
-
-    // "Clear cache" -> runForget() -> renderStatus/renderIdentity/
-    // renderTriggers/renderDescriptions all re-run, but the (fixed-rect)
-    // panel measures identically before and after.
-    const forgetBtn = findAll(handle.overlay, "wtn-mi-status-compact-btn").find((b) => b.textContent === "Clear cache");
-    assert.ok(forgetBtn);
-    forgetBtn.click();
-    await settle();
-
-    assert.equal(repositionCalls, 0, "same-size content must never trigger a spurious reposition() call");
-
-    handle.close();
-  } finally {
-    globalThis.fetch = _origFetch;
-    invalidateInfo(kind, name);
-  }
-});
+// The old "content that does NOT change size does not cause a spurious
+// re-place" test lived here -- it wrapped `makeDocStub`'s fixed-rect stub
+// (every element measures identically regardless of content) specifically
+// to exercise `repositionAfterChange`'s own before/after diff guard, via the
+// same `handle.reposition` spy this section's doc comment above explains is
+// now vacuous. Deleted, not kept-but-adjusted: the actual guarantee (an
+// unchanged height never triggers a spurious re-place) is the SHARED
+// mechanism's own job now, and is already proven generically, for every
+// `openOverlay` caller, by `js/shared/test_overlay.mjs`'s own "a resize
+// observation with unchanged height triggers no automatic re-place" test --
+// re-testing the identical guard here via a stub built to have no
+// ResizeObserver at all (so nothing could fire a re-place either way) would
+// have covered nothing this file doesn't already get for free.
 
 // =========================================================================
 // "Remove an installed model" -- the ⓘ panel's own delete affordance
