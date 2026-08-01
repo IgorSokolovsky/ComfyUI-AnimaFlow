@@ -547,22 +547,31 @@ function buildCss() {
    pointer cursor now, not "is this a menu row"). ── */
 
 /* ── the Preview's Save ROW WRAPPER (2026-07-29, Save-now-beside-the-card
-   dispatch) -- ONE flex row: \`buildSaveNowRow\`'s button+status on the
-   LEFT, the Save card (the \`.wtn-an-shead.wtn-an-menurow\` above) taking
-   the REMAINING width on the right. Replaces the old stacked layout (Save
-   card as its own full-width body child, "Save now" as a second, separate
+   dispatch) -- ONE flex row: \`buildSaveNowRow\`'s button on the LEFT, the
+   Save card (the \`.wtn-an-shead.wtn-an-menurow\` above) taking the
+   REMAINING width on the right. Replaces the old stacked layout (Save card
+   as its own full-width body child, "Save now" as a second, separate
    full-width row below it). \`.wtn-an-savenow\` keeps its own flex:none/
    min-width:0 so its "Save now" button's own intrinsic (non-shrinking)
-   width is the one thing this row can't compress past, and its status text
-   still ellipsizes into whatever's left of ITS OWN share before the card
-   even has to give up space. The Save card gets \`flex: 1 1 auto\` so it
-   fills 100% of the row on its own whenever the button is ABSENT
-   (\`save.enabled: true\` -- interaction.mjs's own conditional) -- a single
-   flex child with flex-grow already claims the whole row, no separate
-   "full width when alone" rule needed. \`margin-bottom: 0\` on the nested
-   card overrides \`.wtn-an-shead\`'s own default (this file's CSS above) --
-   the WRAPPER carries that spacing instead (\`margin-bottom: SHEAD_GAP\`
-   below), so nesting the card doesn't double it up inside the row. ── */
+   width is the one thing this row can't compress past. The Save card gets
+   \`flex: 1 1 auto\` so it fills 100% of the row on its own whenever the
+   button is ABSENT (\`save.enabled: true\` -- interaction.mjs's own
+   conditional) -- a single flex child with flex-grow already claims the
+   whole row, no separate "full width when alone" rule needed.
+   \`margin-bottom: 0\` on the nested card overrides \`.wtn-an-shead\`'s own
+   default (this file's CSS above) -- the WRAPPER carries that spacing
+   instead (\`margin-bottom: SHEAD_GAP\` below), so nesting the card doesn't
+   double it up inside the row.
+
+   **2026-08-01 (status-own-line dispatch): the Save-now STATUS text no
+   longer lives in this row at all.** It used to sit inside \`.wtn-an-savenow\`
+   beside the button, squeezed between the button's own intrinsic width and
+   this card's \`flex: 1 1 auto\` neighbor with nowhere left to grow --
+   permanently truncated (owner report, with screenshot: "Saved base a…").
+   \`.wtn-an-savenow-status\` (below) is now a SIBLING of this whole row --
+   \`interaction.mjs\`'s \`buildPreviewBody\` appends it straight to
+   \`.wtn-an-body\`, right after this wrapper -- so it gets the full panel
+   width to read on instead of a shrinking sliver. ── */
 .wtn-an-saverow { display: flex; align-items: center; gap: 8px; margin-bottom: ${SHEAD_GAP}px; }
 .wtn-an-saverow > .wtn-an-shead { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
 
@@ -570,18 +579,18 @@ function buildCss() {
    (interaction.mjs's buildSaveNowRow); \`.wtn-btn\`/\`.wtn-btn--primary\` are
    the house button classes theme.css already defines (js/shared/theme.mjs's
    own \`injectTheme\`), so this row needs no LAYOUT-independent button
-   styling of its own beyond the height override just below -- just layout +
-   the status readout beside it. \`.wtn-an-savenow-err\` swaps the
-   status text to the theme's bad/error token for a readable failure instead
-   of a silently-blank one. Sits INSIDE \`.wtn-an-saverow\` now (beside the
-   Save card, not below it) -- \`flex: 0 1 auto\`/\`min-width: 0\` let it
-   shrink (the status text ellipsizes first, this rule's own overflow rule
-   below) rather than force the card out of the row entirely; the button's
-   own text never wraps/shrinks (a native \`<button>\`'s own intrinsic
-   content width), so that's the real floor this row can't compress past.
-   \`margin\` dropped its old \`2px 0 10px\` (that was this row's OWN vertical
-   spacing back when it was a standalone body child below the Save card) --
-   the wrapper above now owns that spacing for the row as a whole. ── */
+   styling of its own beyond the height override just below -- just layout.
+   Sits INSIDE \`.wtn-an-saverow\` (beside the Save card, not below it) --
+   \`flex: 0 1 auto\`/\`min-width: 0\` let the wrapper shrink toward the
+   button's own intrinsic content width rather than force the card out of
+   the row entirely; the button's own text never wraps/shrinks (a native
+   \`<button>\`'s own intrinsic content width), so that's the real floor this
+   row can't compress past. \`margin\` dropped its old \`2px 0 10px\` (that
+   was this row's OWN vertical spacing back when it was a standalone body
+   child below the Save card) -- the wrapper above now owns that spacing for
+   the row as a whole. As of the status-own-line dispatch (this rule's own
+   doc comment just above) this wrapper holds ONLY the button -- \`gap\` is
+   inert with one child but stays harmless if a second ever returns. ── */
 .wtn-an-savenow { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; min-width: 0; }
 
 /* ── the "Save now" BUTTON's own height, pinned to \`SAVE_NOW_BTN_H\` (===
@@ -603,8 +612,31 @@ function buildCss() {
 .wtn-an-savenow-btn.wtn-btn { height: ${SAVE_NOW_BTN_H}px; padding-top: 0; padding-bottom: 0;
   display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
 
-.wtn-an-savenow-status { font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* ── the Save-now STATUS line (2026-08-01, status-own-line dispatch) -- now
+   a direct \`.wtn-an-body\` child in its own right, a SIBLING of
+   \`.wtn-an-saverow\`, not nested inside it (this file's own
+   \`.wtn-an-saverow\` doc comment above has the "why": squeezed to
+   illegibility between two neighbors when it lived there). Built (never
+   appended) by \`interaction.mjs\`'s \`buildSaveNowRow\`, which starts it at
+   \`display: none\` -- an unclicked "Save now" reads as truly EMPTY, not a
+   blank reserved line, and \`.wtn-an-panel-pv > .wtn-an-body > *\`'s shared
+   \`flex: none\` (this file's "Preview node: hover wipe" section) means a
+   \`display: none\` row also drops out of that flex column's own \`gap\`
+   entirely -- no phantom spacing either side of it while it's hidden.
+   \`PREVIEW_PANEL_MIN_H\`'s own doc comment covers why the node's height
+   FLOOR still has to assume this line is showing (the worst case) even
+   though the common case is hidden -- a floor is a minimum, so the extra
+   headroom the empty case doesn't need simply flows into the wipe's own
+   flex-fill instead of ever look like a gap. \`line-height\` is explicit
+   (rather than inherited from \`.wtn-an-root\`'s own font shorthand) so this
+   rule's own single-line height is a fixed, documented number the
+   \`PREVIEW_PANEL_MIN_H\` arithmetic can cite directly, not something that
+   would silently drift if that shorthand's ratio ever changed. \`overflow\`/
+   \`text-overflow\`/\`white-space\` stay as a safety net for a genuinely long
+   message, not a load-bearing squeeze -- full body width is normally room
+   enough that this never actually engages (unlike its old cramped home). ── */
+.wtn-an-savenow-status { display: block; font-size: 12px; line-height: 1.4; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  margin-bottom: ${SHEAD_GAP}px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wtn-an-savenow-status.wtn-an-savenow-err { color: var(--wtn-bad, ${TOKENS.bad}); }
 
 /* ── the "History" button (owner-requested generation-history feature) --
@@ -699,9 +731,11 @@ function buildCss() {
    cancels the \`aspect-ratio: 1/1\` above (\`aspect-ratio: auto\`) and
    flex-fills (\`flex: 1 1 auto\`, floored at \`PREVIEW_IMG_MIN_H\`) whatever
    height \`.wtn-an-panel-pv > .wtn-an-body\` has left once the Save row
-   (2026-07-29: \`.wtn-an-saverow\`, the button + Save card) and the Compare
-   card below it take their own natural height (\`flex: none\`, the rule
-   after this one). A non-square wipe does NOT distort either image --
+   (2026-07-29: \`.wtn-an-saverow\`, the button + Save card), the Save-now
+   status line below it (2026-08-01, present only while non-empty -- that
+   rule's own doc comment), and the Compare card take their own natural
+   height (\`flex: none\`, the rule after this one). A non-square wipe does
+   NOT distort either image --
    \`.wtn-an-layer img\`'s \`object-fit: contain\` (below, unchanged) already
    letterboxes each layer to whatever box it's given, square or not -- so
    this costs nothing visually, only gains the image actually using the
@@ -744,9 +778,10 @@ function buildCss() {
    after it (same specificity, later in the sheet -- the tie-break) is what
    lets the wipe alone override that back to flex-fill. \`min-height\`/
    \`PREVIEW_IMG_MIN_H\` below and \`PREVIEW_PANEL_MIN_H\` above are recomputed
-   for this dispatch's new three-child shape (saverow / comparecard / wipe)
-   -- see \`PREVIEW_PANEL_MIN_H\`'s own arithmetic comment in this file's
-   "Resize" section for the exact sum. ── */
+   for this shape (saverow / save-now-status (2026-08-01, conditional -- see
+   \`.wtn-an-savenow-status\`'s own doc comment) / comparecard / wipe) -- see
+   \`PREVIEW_PANEL_MIN_H\`'s own arithmetic comment in this file's "Resize"
+   section for the exact sum. ── */
 .wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: ${PREVIEW_PANEL_MIN_H}px; }
 .wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-height: 0; }
 .wtn-an-panel-pv > .wtn-an-body > * { flex: none; }
@@ -1147,30 +1182,46 @@ export let SAVE_NOW_BTN_H = SHEAD_H;
 // `min-height`, mirrored here exactly like `PANEL_MIN_H` mirrors the base
 // `.wtn-an-panel` rule).
 //
-// **Recomputed again (2026-07-29, Save-now-height fix)** -- 292 -> 288, now
-// that "Save now" no longer has its own taller intrinsic height (previous
-// dispatch's `Math.max(SHEAD_H, SAVE_NOW_BTN_H)` collapses to plain
-// `SHEAD_H`, since `SAVE_NOW_BTN_H` IS `SHEAD_H` now -- see that constant's
-// own doc comment above for the bug this fixes). The Compare-card dispatch
-// immediately before this one (284 -> 292) is otherwise unchanged: still a
-// real THIRD card (`.wtn-an-comparecard`) below a Save ROW that carries its
-// own sibling ("Save now", beside the Save card, not below it). Arithmetic,
-// read off the CSS above and `js/shared/fields.mjs`'s own field heights
-// (`SHEAD_H`/`FLD_ROW_H` etc, this file's/that file's own exported
-// constants):
+// **Recomputed again (2026-08-01, status-own-line dispatch)** -- 288 -> 316,
+// now that the Save-now STATUS line (`.wtn-an-savenow-status`) is its own
+// full-width row, a SIBLING of `.wtn-an-saverow` rather than squeezed inside
+// it (`.wtn-an-saverow`'s own doc comment above has the "why": owner report,
+// with screenshot, that the status read as permanently truncated). This
+// floor has to assume that row is SHOWING -- the worst case across all four
+// states this can be in (`save.enabled` on/off crossed with the status
+// empty/populated) -- even though the common case is empty and the row
+// itself is `display: none` then (`.wtn-an-savenow-status`'s own doc
+// comment, above): a floor is a MINIMUM, so overshooting it in the empty
+// case just means the wipe's own flex-fill (`.wtn-an-panel-pv .wtn-an-wipe`,
+// below) claims a few extra pixels it didn't strictly need -- it does NOT
+// leave a visible gap, because there is no reserved box for an absent row to
+// leave a gap around. Getting this floor too SMALL is the real risk: with
+// `.wtn-an-panel-pv` locked to `overflow: hidden` and the wipe already at
+// its own floor (`PREVIEW_IMG_MIN_H`) whenever the node sits at ITS floor,
+// there is zero slack for a populated status line to grow into without
+// clipping something. Arithmetic, read off the CSS above and
+// `js/shared/fields.mjs`'s own field heights (`SHEAD_H`/`FLD_ROW_H` etc,
+// this file's/that file's own exported constants):
 //   Save ROW (.wtn-an-saverow: max(SHEAD_H 32, SAVE_NOW_BTN_H 32) = 32,
 //     + the wrapper's own margin-bottom SHEAD_GAP 5)                      =  37
+//   Save-now STATUS line (.wtn-an-savenow-status: one line at its own
+//     explicit 12px/1.4 line-height = 16.8, rounded up to 17,
+//     + its own margin-bottom SHEAD_GAP 5) -- WORST CASE, assumed always
+//     showing even though the common case is `display: none` (see this
+//     constant's own doc comment above)                                  =  22
 //   Compare CARD (.wtn-an-shead height SHEAD_H 32 + margin-bottom
 //     SHEAD_GAP 5, same shape as the Save card)                          =  37
 //   PREVIEW_IMG_MIN_H (the wipe's own floor, above)                      = 188
-//   .wtn-an-body's own gap (5px x 2 gaps between its 3 children -- the
-//     Save row, the Compare card, and the wipe)                         =  10
+//   .wtn-an-body's own gap (5px x 3 gaps between its 4 children in the
+//     worst case -- the Save row, the status line, the Compare card, and
+//     the wipe; only 2 gaps -- 10 -- whenever the status line is absent,
+//     but this floor always assumes the taller case)                     =  15
 //   .wtn-an-panel's padding (7 top + 7 bottom)                          =  14
 //   .wtn-an-panel's border (1 top + 1 bottom)                          =   2
-//                                                               total   = 288
-// Already a multiple of 4 -- no further rounding needed (matches
-// measureMinHeight's own round-to-4px convention below).
-export let PREVIEW_PANEL_MIN_H = 288; // was 292
+//                                                               total   = 315
+// Rounded up to 316 -- the nearest 4px grid above the 315 estimate (matches
+// measureMinHeight's own round-to-4px convention below), 1px of headroom.
+export let PREVIEW_PANEL_MIN_H = 316; // was 288
 
 // The Preview NODE-height floor -- `PREVIEW_PANEL_MIN_H` plus the chrome
 // the DOM widget itself doesn't cover: the title bar (LiteGraph's default
@@ -1187,7 +1238,7 @@ export let PREVIEW_PANEL_MIN_H = 288; // was 292
 // VERIFY-IN-COMFYUI: no live litegraph process in this dev environment to
 // read NODE_TITLE_HEIGHT/slot spacing off of -- if the real numbers differ,
 // widen this constant rather than `PREVIEW_PANEL_MIN_H` itself.
-export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(292) + 80 = 372
+export let PREVIEW_MIN_H = PREVIEW_PANEL_MIN_H + 80; // was PREVIEW_PANEL_MIN_H(288) + 80 = 368, now 316 + 80 = 396
 
 // The litegraph-native chrome addend just above (80) -- frozen, NEVER
 // scaled by `applyPanelFontScale` (this constant's own doc comment).
@@ -1207,7 +1258,7 @@ const _GENERATOR_CHROME_ADDEND = 100;
 // (idempotent, never compounding).
 const _PANEL_BASE_PX = 14;
 const _PANEL_DEFAULTS = {
-  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 288,
+  BASE_FONT: 14, SHEAD_H: 32, PANEL_MIN_H: 256, PREVIEW_IMG_MIN_H: 188, PREVIEW_PANEL_MIN_H: 316,
 };
 
 /** Round `x` to the nearest 4px -- matches `measureMinHeight`'s own

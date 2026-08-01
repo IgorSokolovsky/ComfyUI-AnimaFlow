@@ -2668,7 +2668,26 @@ export function buildPreviewBody(doc, node, ctx) {
   // (`.wtn-an-saverow > .wtn-an-shead`'s own `flex: 1 1 auto`, render.mjs's
   // CSS comment) -- including the WHOLE row, with no leftover gap, whenever
   // the button is absent (a single flex-grow child already claims 100%).
+  //
+  // **2026-08-01 (status-own-line dispatch)** -- the Save-now STATUS text
+  // ("Saved base as …") no longer lives inside `.wtn-an-savenow` beside the
+  // button: squeezed between the button's own intrinsic width and the Save
+  // card's `flex: 1 1 auto` neighbor, it had nowhere to grow and read as
+  // permanently truncated (owner report, with screenshot). `buildSaveNowRow`
+  // now returns `{ root, statusEl }` -- `root` holds ONLY the button
+  // (unchanged position: still `saveRow`'s first child), `statusEl` is
+  // appended as `body`'s OWN next child, right after `saveRow`, so it gets
+  // the full panel width to read on. It is never appended at all once
+  // `save.enabled` is true (matching "Save now" itself: an enabled run
+  // already saves on its own, so there is no click that could ever populate
+  // it) -- `render.mjs`'s `PREVIEW_PANEL_MIN_H` doc comment covers the
+  // height arithmetic for this new, conditional row. `statusEl` starts
+  // `display: none` (`buildSaveNowRow`'s own doc comment) so an unclicked
+  // "Save now" never reserves a blank line -- it is switched on in place,
+  // by the SAME element reference, the moment a click resolves; nothing
+  // here ever re-appends or removes it once painted.
   const saveRow = el(doc, "div", "wtn-an-saverow");
+  let saveNowStatus = null;
   if (!state.save.enabled) {
     // `node._anSeed` (fixes `%seed%` always resolving to 0 -- `docs/TODO.md`'s
     // last Now item) -- the real seed `handleExecuted` stashed from the last
@@ -2676,7 +2695,9 @@ export function buildPreviewBody(doc, node, ctx) {
     // if no run has reported one yet (see `handleExecuted`'s own doc
     // comment for exactly when that is). Threaded through so the click
     // handler can echo it back verbatim -- never read/derived here.
-    saveRow.appendChild(buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed));
+    const saveNow = buildSaveNowRow(doc, ctx, state, previewImages, node._anSeed);
+    saveRow.appendChild(saveNow.root);
+    saveNowStatus = saveNow.statusEl;
   }
   saveRow.appendChild(buildSaveRow(doc, node, ctx, state));
   // The "History" button (owner-requested generation-history feature) --
@@ -2689,6 +2710,9 @@ export function buildPreviewBody(doc, node, ctx) {
   // or not, so there is no state in which hiding it would be correct.
   saveRow.appendChild(buildHistoryButton(doc, node, ctx));
   body.appendChild(saveRow);
+  if (saveNowStatus) {
+    body.appendChild(saveNowStatus);
+  }
 
   body.appendChild(buildCompareCard(doc, node, ctx, state));
 
@@ -2938,6 +2962,22 @@ function buildSaveRow(doc, node, ctx, state) {
  * back to the real global `fetch` when absent (every live page has one);
  * `null` (no override, no global) renders the button but fails loudly and
  * readably on click rather than throwing.
+ *
+ * **Returns `{ root, statusEl }`, not a bare element (2026-08-01,
+ * status-own-line dispatch).** `root` (`.wtn-an-savenow`) holds ONLY the
+ * button now -- the status text used to live inside it too, squeezed to
+ * illegibility between the button's own intrinsic width and the Save card's
+ * `flex: 1 1 auto` neighbor (owner report, with screenshot). `statusEl` is
+ * handed back separately so `buildPreviewBody` can append it as its OWN
+ * full-width line below `.wtn-an-saverow` instead -- see that function's own
+ * doc comment. `statusEl` starts `display: none`: an unclicked "Save now"
+ * must never reserve a blank line (`render.mjs`'s `PREVIEW_PANEL_MIN_H` doc
+ * comment covers why the height floor still has to assume the WORST case --
+ * populated -- even though the common case is empty). `setStatus` below
+ * flips `display` back on the instant there is real text to show, and back
+ * off if it is ever cleared to `""` again -- the same element reference
+ * throughout, never rebuilt, so a click's async `.then()` chain can keep
+ * updating it in place.
  */
 function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
   const row = el(doc, "div", "wtn-an-savenow");
@@ -2945,12 +2985,14 @@ function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
   btn.type = "button";
   btn.className = "wtn-btn wtn-btn--primary wtn-an-savenow-btn";
   btn.textContent = "Save now";
-  const status = el(doc, "span", "wtn-an-savenow-status");
   row.appendChild(btn);
-  row.appendChild(status);
+
+  const status = el(doc, "div", "wtn-an-savenow-status");
+  status.style.display = "none"; // empty at build time -- no reserved line (this function's own doc comment)
 
   const setStatus = (text, isError) => {
     status.textContent = text || "";
+    status.style.display = text ? "" : "none";
     if (status.classList && typeof status.classList.toggle === "function") {
       status.classList.toggle("wtn-an-savenow-err", !!isError);
     }
@@ -3006,7 +3048,7 @@ function buildSaveNowRow(doc, ctx, state, previewImages, seed) {
       });
   });
 
-  return row;
+  return { root: row, statusEl: status };
 }
 
 /**

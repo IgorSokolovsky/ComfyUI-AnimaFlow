@@ -4290,6 +4290,136 @@ test("Preview: once save.enabled is true, \"Save now\" disappears -- the Save ca
   assert.match(rule, /flex:\s*1 1 auto/, "the nested Save card must flex-grow to fill the row's free space");
 });
 
+// ===========================================================================
+// G4. Save-now status ON ITS OWN LINE (2026-08-01 dispatch) -- owner report,
+//     with screenshot: "Saved base a…" read as permanently truncated,
+//     squeezed inside `.wtn-an-savenow` between the button's own intrinsic
+//     width and the Save card's `flex: 1 1 auto` neighbor. It now renders as
+//     `body`'s own next child, right after `.wtn-an-saverow`, full panel
+//     width -- present only while `save.enabled` is off (same conditional as
+//     "Save now" itself), and `display: none` until there is real text to
+//     show, so an unclicked node never carries a permanent blank strip.
+// ===========================================================================
+
+test("Preview: the \"Save now\" wrapper holds ONLY the button now -- the status text moved OUT to its own line, not just visually restyled in place", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const wrapper = findSaveRowWrapper(refs.body);
+  const saveNowWrapper = wrapper.children[0];
+  assert.ok(hasClass(saveNowWrapper, "wtn-an-savenow"));
+  assert.equal(saveNowWrapper.children.length, 1, "the \"Save now\" wrapper must hold only the button, no nested status span/div any more");
+  assert.ok(hasClass(saveNowWrapper.children[0], "wtn-an-savenow-btn"));
+  assert.ok(!queryAll(saveNowWrapper, (n) => hasClass(n, "wtn-an-savenow-status")).length, "the status element must not be nested anywhere inside the \"Save now\" wrapper");
+});
+
+test("Preview: the Save-now status line is body's OWN next child, a SIBLING of .wtn-an-saverow (not nested inside it), immediately after the row -- so it gets the full panel width to read on", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const wrapper = findSaveRowWrapper(refs.body);
+  const rowIndex = refs.body.children.indexOf(wrapper);
+  assert.ok(rowIndex >= 0, "expected .wtn-an-saverow to be a direct child of the body");
+  const statusLine = refs.body.children[rowIndex + 1];
+  assert.ok(hasClass(statusLine, "wtn-an-savenow-status"), "the very next body child after the Save row must be the status line");
+  assert.equal(statusLine.parentNode, refs.body, "the status line's parent must be the BODY, not the .wtn-an-saverow wrapper");
+});
+
+test("Preview: the Save-now status line starts display:none (no text yet) -- an unclicked \"Save now\" must never reserve a blank line", () => {
+  const node = makePreviewNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  const status = findSaveNowStatus(refs.body);
+  assert.ok(status, "expected a status element even before any click");
+  assert.equal(status.textContent, "", "no text yet");
+  assert.equal(status.style.display, "none", "an empty status line must be display:none, not merely empty text in a visible box");
+});
+
+test("Preview: clicking \"Save now\" reveals the (now full-width, sibling) status line by flipping display back on, in place -- same element reference throughout", () => {
+  const node = makePreviewNode();
+  node._anPreviewImages = { base: { filename: "base_temp.png", subfolder: "", type: "temp" } };
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, {
+    fetchImpl: () => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ ok: true, stage: "base", filename: "base_1.png", subfolder: "AnimaFlow", type: "output" }),
+    }),
+  });
+  const refs = mountPreviewUI(node, ctx);
+  const status = findSaveNowStatus(refs.body);
+  assert.equal(status.style.display, "none");
+
+  const btn = findSaveNowButton(refs.body);
+  fire(btn, "click");
+  // "Saving…" is set synchronously, before the fetch's own microtasks run.
+  assert.equal(status.style.display, "", "the SAME element must already be visible once there is text to show ('Saving…')");
+  assert.equal(status.textContent, "Saving…");
+
+  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => {
+    // Still the identical node -- no rebuild -- now carrying the resolved text.
+    assert.equal(findSaveNowStatus(refs.body), status, "the status line must never be replaced, only mutated in place");
+    assert.equal(status.style.display, "", "still visible with the resolved text");
+    assert.ok(status.textContent.includes("base_1.png"));
+  });
+});
+
+test("Preview: once save.enabled is true, there is no Save-now status line anywhere in the body at all -- not hidden, ABSENT (an enabled run never has a \"Save now\" click to report on)", () => {
+  const node = makePreviewNode({ preview_state: JSON.stringify({ save: { enabled: true } }) });
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  const refs = mountPreviewUI(node, ctx);
+
+  assert.ok(!findSaveNowStatus(refs.body), "expected no .wtn-an-savenow-status element at all once save.enabled is true");
+});
+
+test("injected CSS: .wtn-an-savenow-status no longer carries the old cramped-row squeeze rules (min-width: 0 tied to a shrinking flex sibling) -- it is a full-width block row now", () => {
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+  mountPreviewUI(makePreviewNode(), ctx);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const rule = cssRuleBody(cssText, ".wtn-an-savenow-status");
+  assert.ok(rule, "expected a .wtn-an-savenow-status rule");
+  assert.match(rule, /display:\s*block/, "must be a block-level row of its own, not an inline flex-shrink participant");
+  assert.ok(!/min-width:\s*0/.test(rule), "the old min-width:0 shrink-to-nothing escape hatch must be gone -- there is no neighbor squeezing it any more");
+});
+
+test("PREVIEW_PANEL_MIN_H's floor covers every save.enabled x status-populated combination -- none of the four ever needs more room than the floor provides, so the wipe never drops below its own PREVIEW_IMG_MIN_H floor regardless of which state the node is caught in", () => {
+  const panelChrome = 7 * 2 + 1 * 2;
+  const compareCardH = SHEAD_H + SHEAD_GAP;
+  const saveRowH = Math.max(SHEAD_H, SAVE_NOW_BTN_H) + SHEAD_GAP; // identical whether "Save now" is present or not: SAVE_NOW_BTN_H === SHEAD_H always
+  const statusRowH = Math.round(12 * 1.4) + SHEAD_GAP;
+
+  // Two distinct real sums, not four -- "save.enabled off + status EMPTY"
+  // and "save.enabled on" are height-IDENTICAL: `.wtn-an-savenow-status`'s
+  // own `display: none` (this dispatch's own doc comment) drops it from the
+  // flex column's layout and its `gap` entirely, exactly like it being
+  // absent from the DOM outright would, and the Save row's own height
+  // never depends on whether the button is present (`saveRowH` above is a
+  // `Math.max`, not a sum). Only "status POPULATED" (necessarily
+  // `save.enabled` off, the only state that can ever populate it) adds a
+  // real 4th row.
+  const withoutStatusLine = saveRowH + compareCardH + panelChrome + 5 * 2; // 3 children -> 2 gaps
+  const withStatusLine = saveRowH + statusRowH + compareCardH + panelChrome + 5 * 3; // 4 children -> 3 gaps
+
+  const roomLeftWithout = PREVIEW_PANEL_MIN_H - withoutStatusLine;
+  const roomLeftWith = PREVIEW_PANEL_MIN_H - withStatusLine;
+  assert.ok(roomLeftWithout >= PREVIEW_IMG_MIN_H, "save.enabled ON, and save.enabled OFF with an empty status line, must both leave the wipe at least its own floor");
+  assert.ok(roomLeftWith >= PREVIEW_IMG_MIN_H, "save.enabled OFF with a POPULATED status line -- the worst case -- must still leave the wipe at least its own floor");
+  assert.ok(roomLeftWithout > roomLeftWith, "the populated case must leave strictly less slack than the empty one -- the new row is really costing something, not a no-op");
+});
+
 test("Preview: the \"History\" button opens history.mjs's panel, lazily, and toggles closed on a second click (import mocked)", () => {
   const node = makePreviewNode();
   const doc = makeDocStub();
@@ -5444,17 +5574,23 @@ test("font/height constants (task item 4) are internally consistent: every row/h
   // one arithmetic self-check never silently drifts back to a bare literal.
   assert.equal(SAVE_NOW_BTN_H, SHEAD_H, "the Save-now button's height must be driven by SHEAD_H, not an independent constant");
 
-  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (2026-07-29, Save-now-
-  // height fix: a real third card replaces the old bottom pvbar row, "Save
-  // now" sits beside the Save card, and the Save row's own height is now
-  // SHEAD_H -- SAVE_NOW_BTN_H no longer contributes anything ABOVE it) sums
-  // to within rounding of the exported constant.
+  // PREVIEW_PANEL_MIN_H's own recomputed arithmetic (2026-08-01,
+  // status-own-line dispatch: the Save-now status text moved OUT of
+  // `.wtn-an-saverow` onto its own full-width line below it -- render.mjs's
+  // own `PREVIEW_PANEL_MIN_H` doc comment has the "why"). This floor has to
+  // assume the WORST CASE across all four states the row can be in
+  // (`save.enabled` on/off crossed with the status empty/populated) even
+  // though the common case is empty and the line is `display: none` then --
+  // a floor is a minimum, so the empty case simply gets a little more room
+  // than it strictly needs (it flows into the wipe's own flex-fill, never a
+  // visible gap) while the populated case never clips.
   const saveRowH = Math.max(SHEAD_H, SAVE_NOW_BTN_H) + SHEAD_GAP; // .wtn-an-saverow: max(card, "Save now" button) + its own margin-bottom
+  const statusRowH = Math.round(12 * 1.4) + SHEAD_GAP; // .wtn-an-savenow-status: one line at its own explicit 12px/1.4 line-height, + its own margin-bottom -- WORST CASE, assumed always showing
   const compareCardH = SHEAD_H + SHEAD_GAP; // .wtn-an-comparecard is a plain .wtn-an-shead, same shape as the Save card
-  const bodyGaps = 5 * 2; // 3 children (save row / compare card / wipe) -> 2 gaps
+  const bodyGaps = 5 * 3; // WORST CASE 4 children (save row / status line / compare card / wipe) -> 3 gaps
   const panelChrome = 7 * 2 + 1 * 2; // padding top+bottom, border top+bottom
-  const sum = saveRowH + compareCardH + PREVIEW_IMG_MIN_H + bodyGaps + panelChrome;
-  assert.ok(sum <= PREVIEW_PANEL_MIN_H, "PREVIEW_PANEL_MIN_H must cover the documented arithmetic");
+  const sum = saveRowH + statusRowH + compareCardH + PREVIEW_IMG_MIN_H + bodyGaps + panelChrome;
+  assert.ok(sum <= PREVIEW_PANEL_MIN_H, "PREVIEW_PANEL_MIN_H must cover the documented worst-case arithmetic");
   assert.ok(PREVIEW_PANEL_MIN_H - sum < 4, "rounded up to the nearest 4px grid only, not padded further");
 
   // The node-chrome constant (title bar + socket rows) is litegraph's OWN
@@ -5617,8 +5753,8 @@ test("applyPanelFontScale(14) (the default/baseline) reproduces every original l
     assert.equal(render.SHEAD_GLYPH_SIZE, 17);
     assert.equal(render.PANEL_MIN_H, 256);
     assert.equal(render.PREVIEW_IMG_MIN_H, 188);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 288, "was 292 before the Save-now-height fix collapsed max(SHEAD_H, SAVE_NOW_BTN_H) to plain SHEAD_H");
-    assert.equal(render.PREVIEW_MIN_H, 368, "was 372 before the Save-now-height fix");
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 316, "was 288 before the status-own-line dispatch gave the Save-now status text its own full-width row (render.mjs's own PREVIEW_PANEL_MIN_H doc comment has the arithmetic)");
+    assert.equal(render.PREVIEW_MIN_H, 396, "was 368 before the status-own-line dispatch");
     assert.equal(render.GENERATOR_MIN_H, 356, "PANEL_MIN_H(256) + the Generator's own chrome addend(100)");
   } finally {
     render.applyPanelFontScale(14);
@@ -5634,11 +5770,11 @@ test("applyPanelFontScale scales BASE_FONT/SHEAD_H/SAVE_NOW_BTN_H/the *_MIN_H fl
     assert.equal(render.SAVE_NOW_BTN_H, 64);
     assert.equal(render.PANEL_MIN_H, 512);
     assert.equal(render.PREVIEW_IMG_MIN_H, 376);
-    assert.equal(render.PREVIEW_PANEL_MIN_H, 576, "was 584 before the Save-now-height fix");
+    assert.equal(render.PREVIEW_PANEL_MIN_H, 632, "was 576 before the status-own-line dispatch (316 baseline * 2, already on the 4px grid)");
     // The +80/+100 chrome addends must NOT double along with everything
     // else -- this file's own PREVIEW_MIN_H/GENERATOR_MIN_H doc comments
     // ("litegraph's OWN native pixel geometry... deliberately NOT scaled").
-    assert.equal(render.PREVIEW_MIN_H, 576 + 80);
+    assert.equal(render.PREVIEW_MIN_H, 632 + 80);
     assert.equal(render.PREVIEW_MIN_H - render.PREVIEW_PANEL_MIN_H, 80);
     assert.equal(render.GENERATOR_MIN_H, 512 + 100);
     assert.equal(render.GENERATOR_MIN_H - render.PANEL_MIN_H, 100, "the Generator's own chrome addend must stay 100 regardless of the type-scale pass");
