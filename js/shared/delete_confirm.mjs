@@ -45,6 +45,8 @@
  * this pack (`model_info.mjs`'s own top doc comment).
  */
 
+import { Z_CONFIRM } from "./z_layers.mjs";
+
 const STYLE_ID = "wtn-dc-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 
@@ -68,7 +70,7 @@ const TOKENS = {
 
 const CSS = `
 .wtn-dc-scrim {
-  position: fixed; inset: 0; z-index: 10001;
+  position: fixed; inset: 0; z-index: ${Z_CONFIRM};
   background: rgba(6, 8, 11, 0.72);
   display: flex; align-items: center; justify-content: center;
 }

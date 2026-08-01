@@ -48,9 +48,11 @@
  *
  * The master→detail swap (decision 11) now lands too: a result card click
  * OUTSIDE its own download action replaces the RESULTS AREA (search bar +
- * grid) with `model_detail_view.mjs`'s `buildModelDetailView` (`layout:
- * "grid"`), while the filter rail stays put -- "your filters are the
- * context you came from" -- with a `← results` affordance to swap back. See
+ * grid) with `model_detail_view.mjs`'s `buildModelDetailView` (its own
+ * single-row, horizontally-scrolling gallery filmstrip -- see that
+ * function's own `galleryTileWidth` doc comment), while the filter rail
+ * stays put -- "your filters are the context you came from" -- with a
+ * `← results` affordance to swap back. See
  * `openDetail`/`closeDetail`/`renderSwap`, below.
  *
  * ## The `kind: null` state is a SAFETY NET, kept deliberately minimal
@@ -112,6 +114,7 @@ import {
   searchButtonEnabled,
 } from "./civitai_search.mjs";
 import { searchUnscoped, fetchModelDetail } from "./civitai_api.mjs";
+import { Z_MODAL } from "../shared/z_layers.mjs";
 // "The detail view" -- one component, mounted twice (this modal's own
 // master→detail swap, decision 11, and the picker's vertical sibling panel,
 // `civitai_search.mjs`'s `openModelDetailPanel`). See that file's own top
@@ -303,7 +306,7 @@ export function serializeList(list) {
 
 const CSS = `
 .wtn-cm-scrim {
-  position: fixed; inset: 0; z-index: 10000;
+  position: fixed; inset: 0; z-index: ${Z_MODAL};
   background: rgba(6, 8, 11, 0.72);
   display: flex; align-items: center; justify-content: center;
 }
@@ -1217,8 +1220,10 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
 
   // -------------------------------------------------------------------------
   // The master→detail swap (decision 11) -- `model_detail_view.mjs` supplies
-  // the actual content (`buildModelDetailView`, `layout: "filmstrip"`); everything
-  // here is this MOUNT's own wiring: which half of `main` is visible, the
+  // the actual content (`buildModelDetailView`, its own default 200px gallery
+  // tile -- this mount never overrides `galleryTileWidth`, unlike the
+  // picker's narrower panel); everything here is this MOUNT's own wiring:
+  // which half of `main` is visible, the
   // fetch/re-render loop for the two extra fields a search result doesn't
   // already carry (`civitai_api.mjs`'s `fetchModelDetail`), and this
   // surface's own primary action -- download to the DERIVED destination
@@ -1347,7 +1352,10 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       return;
     }
     const built = buildModelDetailView({
-      doc: targetDoc, layout: "filmstrip", result: detailResult, versionId: detailVersionId,
+      // `galleryTileWidth` omitted -- this mount wants the function's own
+      // 200px default (this file's own comment above, "The master→detail
+      // swap"), unlike the picker's narrower panel.
+      doc: targetDoc, result: detailResult, versionId: detailVersionId,
       browsingLevel: levelLabelToInt(currentFilters.level), detail: detailData,
       buildActionEl: buildDetailAction,
       onVersionChange: (id) => {

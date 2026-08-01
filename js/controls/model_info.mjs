@@ -119,12 +119,31 @@
 
 import {
   lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, deleteModel, savePreview, hasFile,
+  fetchModelDetail, cachedModelDetail,
 } from "./civitai_api.mjs";
 // "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
 // dialog is shared with `civitai_search.mjs`'s own "installed" card rather
 // than grown twice; see that module's own top doc comment for the full
 // contract.
 import { openDeleteConfirm, removedSummary } from "../shared/delete_confirm.mjs";
+// The DOWNLOAD JOB itself (task: "the Download button should actually
+// download, not just link to Civitai") -- reused, not reimplemented: this
+// module-level singleton (`civitai_search.mjs`'s own top doc comment, "The
+// download job is a MODULE-LEVEL singleton") already serialises every
+// download in this pack to one-at-a-time, server-side, polled, never
+// blocking a run (§9) -- the exact contract this button must also honour.
+// Importing FROM `civitai_search.mjs` here is the allowed direction (this
+// file's own top doc comment on why it stays track-agnostic is about
+// `lora_*` imports specifically; `civitai_search.mjs` is itself one of the
+// SAME reuse-boundary files this file already belongs to, and
+// `civitai_modal.mjs` already imports this exact set from it -- see that
+// file's own top doc comment). `resultKey` is reused so a download started
+// from THIS panel and one started from the search card for the SAME
+// (model_id, version_id) are recognised as the SAME job everywhere, not two
+// independently-tracked ones.
+import {
+  startDownloadJob, subscribeDownloadState, getActiveDownloadState, cancelActiveDownloadJob, downloadPercent, resultKey,
+} from "./civitai_search.mjs";
 import {
   openOverlayWithZoom,
   closeOverlayIfOwnedBy,
@@ -395,18 +414,35 @@ ${THUMB_SKELETON_CSS}
 }
 .wtn-mi-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
 /* The missing-file footer's own action (task: "show download instead of
-   delete") -- an \`<a>\`, not a \`<button>\` (it navigates, it doesn't call
-   back into this panel), so \`text-decoration\`/\`box-sizing\`/centring are
-   spelled out explicitly rather than inherited from a button's own native
-   box model -- matches \`.wtn-mi-delete\`'s box (height/padding/radius)
-   exactly so the swap never shifts the footer's layout, but in the info hue
-   (never the bad/red one -- this is not a destructive action). */
+   delete"). 2026-08-01: a \`<button>\`, no longer an \`<a>\` -- it now starts
+   a real server-side download job (this file's own \`renderFooterAction\`
+   doc comment) rather than navigating to Civitai, so it needs a click
+   handler, not an \`href\`. \`font-family: inherit\` is the one thing a
+   \`<button>\` needs that an \`<a>\` never did (browsers don't inherit font
+   onto native form controls by default) -- everything else matches
+   \`.wtn-mi-delete\`'s box (height/padding/radius) exactly so the swap never
+   shifts the footer's layout, but in the info hue (never the bad/red one --
+   this is not a destructive action). */
 .wtn-mi-download {
   flex: none; box-sizing: border-box; height: 30px; padding: 0 12px; border-radius: 6px; cursor: pointer;
-  font-size: 12px; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-family: inherit; display: inline-flex; align-items: center; justify-content: center;
   background: transparent; color: var(--wtn-info, ${TOKENS.info}); border: 1px dashed rgba(125,211,252,.4);
 }
 .wtn-mi-download:hover { border-color: var(--wtn-info, ${TOKENS.info}); }
+.wtn-mi-download:disabled { opacity: .6; cursor: default; }
+/* The in-progress state of that SAME download (task: "the same download job
+   the search cards use ... progress reported") -- a compact readout, not
+   the search card's own full progress bar, since this footer is a single
+   30px-tall row shared with Done/↻ Civitai, not a whole card. */
+.wtn-mi-dl-progress {
+  flex: none; display: flex; align-items: center; gap: 8px; height: 30px;
+  font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+}
+.wtn-mi-dl-cancel {
+  flex: none; height: 24px; padding: 0 10px; border-radius: 6px; cursor: pointer; font-size: 11.5px; font-family: inherit;
+  background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); border: 1px dashed var(--wtn-line, ${TOKENS.line});
+}
+.wtn-mi-dl-cancel:hover { color: var(--wtn-ink, ${TOKENS.ink}); border-color: var(--wtn-accent-deep, ${TOKENS.accentDeep}); }
 `;
 
 export function injectStyles(doc) {
@@ -465,6 +501,53 @@ function _cleanId(value) {
     return Number(value);
   }
   return null;
+}
+
+/**
+ * The single BEST file to actually download for a deleted model's own
+ * re-download (task: "the Download button should actually download"), from
+ * a `fetchModelDetail`/`GET /wtn/model_browser/model_detail` response's own
+ * `files` list -- `[{name, download_url, size_kb, primary, gated, sha256}]`,
+ * the SAME per-file shape `src/model_browser/civitai_search.py`'s own
+ * `_parse_files` already produces for a search result's own versions. Mirrors
+ * that module's own `pick_primary_file` byte for byte (a file flagged
+ * `primary: true`, else the first file in the list), so a deleted model's
+ * own re-download picks the exact same file the ORIGINAL install would have.
+ *
+ * `null` for a garbage/empty `files` list, or when the chosen entry carries
+ * no usable `name`/`download_url` -- never throws. The caller renders NO
+ * Download button at all in that case (owner: "a dead button is worse than
+ * none"), matching every other missing-record fallback in this panel.
+ */
+export function pickPrimaryDownloadFile(files) {
+  const usable = Array.isArray(files) ? files.filter((f) => f && typeof f === "object") : [];
+  if (!usable.length) {
+    return null;
+  }
+  const primary = usable.find((f) => f.primary === true) || usable[0];
+  const filename = typeof primary.name === "string" && primary.name ? primary.name : null;
+  const downloadUrl = typeof primary.download_url === "string" && primary.download_url ? primary.download_url : null;
+  if (!filename || !downloadUrl) {
+    return null;
+  }
+  const sizeKb = Number.isFinite(primary.size_kb) ? primary.size_kb : null;
+  return { filename, downloadUrl, sizeKb };
+}
+
+/** The folder a re-download should land in -- everything before the last
+ * `/` in `name` (the on-disk name this model USED to have, sidecar/list-
+ * derived), or `""` for a rootless/garbage name -- so a re-download after
+ * delete lands back in the same subfolder it came from rather than the
+ * kind's bare root. Mirrors `delete_confirm.mjs`'s own `folderLabelFor`
+ * path-splitting (a duplicated copy, per this pack's "every module keeps
+ * its own" convention). Never throws. */
+export function subfolderFromName(name) {
+  if (typeof name !== "string" || !name) {
+    return "";
+  }
+  const clean = name.replace(/\\/g, "/");
+  const idx = clean.lastIndexOf("/");
+  return idx > 0 ? clean.slice(0, idx) : "";
 }
 
 /** The chips to render for the CURRENTLY active `source` ("file" |
@@ -704,6 +787,7 @@ function prettyTitle(name) {
  * @param {string} [opts.browsingLevel] - the "Maximum browsing level" ⚙/Settings switch's CURRENT value (§7c-iv, one of `CIVITAI_SEARCH_LEVEL_OPTIONS` -- `"PG".."XXX"`), read by the CALLER the same way `civitaiEnabled`/`showThumbnails` already are -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY the Civitai-sourced fallback thumbnail (below) -- the local on-disk preview (`thumbUrl`) is never level-filtered (§7c-iv: "never what the user already has locally -- a file on disk was an explicit act"). Defaults to `"PG"`, the setting's own default.
  * @param {boolean} [opts.showCivitaiName] - the "Show Civitai name instead of filename" ⚙/Settings switch's CURRENT value (§1a-vii), read by the CALLER the same way as every other setting above -- this file never reaches into `../shared/settings.mjs` itself. Governs ONLY whether `renderIdentity`'s title prefers a known Civitai name over the file-derived `prettyTitle(name)`; defaults to `false` (filenames), matching that setting's own default.
  * @param {number} [opts.thumbRetryBackoffMs] - test-only override for the identity thumb's retry backoff (default `THUMB_RETRY_BACKOFF_MS`, ~400ms in real use), matching `civitai_search.mjs`'s own `openCivitaiSearch` convention so a test can drive the retry chain deterministically instead of waiting on a real timer.
+ * @param {number} [opts.downloadPollIntervalMs] - test-only override for the missing-file "↓ Download" button's own job-progress poll interval (default 800ms in real use, `civitai_search.mjs`'s own `startDownloadJob` default) -- same test-only-override convention as `thumbRetryBackoffMs`, forwarded to `startDownloadJob` unchanged.
  * @param {number} [opts.sizeBytes] - the file's size on disk, for the "Remove an installed model" confirm dialog only.
  * @param {(nextSelected: string[], nextCustom: string[]) => void} [opts.onChange]
  * @param {() => void} [opts.onClose]
@@ -726,6 +810,7 @@ export function openModelInfo({
   browsingLevel = "PG",
   showCivitaiName = false,
   thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
+  downloadPollIntervalMs,
   sizeBytes,
   onChange,
   onClose,
@@ -795,6 +880,60 @@ export function openModelInfo({
   // paired with "the box is currently showing a REAL `<img>`, not mid-retry
   // or a terminal glyph." `null` until the first real render.
   let lastThumbSignature = null;
+  // The resolved download target for a MISSING file's own "↓ Download"
+  // (task: "the Download button should actually download"). Keyed by
+  // `"<model_id>:<version_id>"` so a later real lookup that changes
+  // `civitaiRecord` (e.g. `unchecked` -> `found` while this panel is
+  // already open) is recognised as a NEW target to resolve, not the stale
+  // one. `undefined` = never resolved for the CURRENT key yet (still
+  // fetching, or nothing to resolve from); `null` = resolved, but no usable
+  // file (`pickPrimaryDownloadFile` came back empty) -- render no button
+  // either way, same "no dead button" rule as everywhere else in this file.
+  let downloadTarget;
+  let downloadTargetKey = null;
+  // Unsubscribes this panel from the shared download-job singleton
+  // (`civitai_search.mjs`) -- set once, right after `handle` exists, and
+  // called from `handle`'s own `onClose` below so a closed panel never
+  // leaves a dangling listener on a job it can no longer render progress
+  // for (the exact leak `overlay.mjs`'s own resize-observer teardown
+  // guards against, same principle, different mechanism).
+  let unsubscribeDownload = null;
+
+  /**
+   * Resolves (and caches, per the `(model_id, version_id)` key above) the
+   * ONE file a missing model's own "↓ Download" would fetch -- a synchronous
+   * `cachedModelDetail` hit if this session already asked Civitai's detail
+   * route for this exact version (no network), else kicks off `fetchModelDetail`
+   * (already de-duped/cached client-side, `civitai_api.mjs`'s own doc
+   * comment) and re-renders the footer once it resolves. Returns the
+   * CURRENTLY known answer immediately (`undefined` while a fetch is still
+   * in flight) rather than a Promise -- `renderFooterAction` is synchronous,
+   * matching every other dynamic subtree in this file.
+   */
+  function ensureDownloadTarget() {
+    if (!civitaiRecord) {
+      return null;
+    }
+    const recordKey = `${civitaiRecord.model_id}:${civitaiRecord.version_id}`;
+    if (recordKey === downloadTargetKey) {
+      return downloadTarget === undefined ? null : downloadTarget;
+    }
+    downloadTargetKey = recordKey;
+    downloadTarget = undefined;
+    const cached = cachedModelDetail(civitaiRecord.model_id, civitaiRecord.version_id);
+    if (cached) {
+      downloadTarget = pickPrimaryDownloadFile(cached.files);
+      return downloadTarget;
+    }
+    fetchModelDetail(civitaiRecord.model_id, civitaiRecord.version_id).then((detail) => {
+      if (recordKey !== downloadTargetKey || !handle.overlay || !handle.overlay.parentNode) {
+        return; // superseded by a later record, or the panel closed while this was in flight
+      }
+      downloadTarget = pickPrimaryDownloadFile(detail && detail.files);
+      repositionAfterChange(() => renderFooterAction());
+    });
+    return null; // not resolved yet this render -- footer renders no button until the fetch above lands
+  }
 
   function notify() {
     if (typeof onChange === "function") {
@@ -1192,21 +1331,50 @@ export function openModelInfo({
    * yet this session -- or genuinely present) both keep the existing
    * `Delete` behaviour unchanged; only a confirmed `false` swaps it.
    *
-   * A missing file swaps to `Download`, targeting this model's own Civitai
-   * VERSION page (`civitaiModelUrl` -- the SAME url "View on Civitai ↗"
-   * above already computes from the SAME `civitaiRecord`), but ONLY when
-   * `civitaiEnabled` (every other network affordance in this panel is
-   * already gated on it, `CIVITAI_ENABLED`'s own "hides EVERY network
-   * affordance" contract) AND a record is actually known (this session's
-   * cache, or a real lookup). Neither condition met -> renders NEITHER
-   * action, never a dead button (owner: "a dead button is worse than none").
+   * ## Download ACTUALLY downloads now (2026-08-01 spec correction)
+   *
+   * A missing file used to swap to a `Download` that just opened this
+   * model's own Civitai VERSION page in a new tab -- a second control doing
+   * exactly what the ⓘ panel's own `View on Civitai ↗` already does, a few
+   * rows above, labelled differently. That was a spec error (the brief
+   * said "link to it"), not a build error: this button now goes through the
+   * SAME server-side download job every other surface in this pack uses
+   * (`civitai_search.mjs`'s module-level singleton, `startDownloadJob`/
+   * `subscribeDownloadState`/`getActiveDownloadState`/
+   * `cancelActiveDownloadJob` -- imported, never reimplemented, this file's
+   * own top doc comment) -- one at a time, server-side, progress reported,
+   * never blocking a run (§9).
+   *
+   * The identifiers are already in hand -- `civitaiRecord.model_id`/
+   * `version_id`, the SAME fields "View on Civitai ↗" already builds its own
+   * URL from -- and `fetchModelDetail`/`cachedModelDetail` (this file's own
+   * top import comment) resolve the version's actual downloadable FILE from
+   * them; `pickPrimaryDownloadFile` (above) is the pure pick. No second
+   * lookup: `ensureDownloadTarget` reuses the SAME cached/in-flight
+   * `fetchModelDetail` call this pack already makes for the model/version
+   * detail view, never issuing its own.
+   *
+   * Three states, once `missing && civitaiEnabled`:
+   *
+   *   1. A download for THIS exact (model_id, version_id) is already
+   *      running (`getActiveDownloadState()`, keyed via the SAME `resultKey`
+   *      the search card uses) -- a compact progress readout + Cancel,
+   *      subscribed via `subscribeDownloadState` so it updates live without
+   *      this panel polling anything itself.
+   *   2. A real download target has resolved (`ensureDownloadTarget()`) --
+   *      a `↓ Download` BUTTON (never an `<a>` -- it starts a job, it
+   *      doesn't navigate) that calls `startDownloadJob`.
+   *   3. Neither -- renders NO button at all, same "a dead button is worse
+   *      than none" rule this panel already follows for the no-record case
+   *      (`View on Civitai ↗`, a few rows above, is still there regardless).
    *
    * A dynamic subtree (`footerActionHost`), not a static shell -- rebuilt
    * every time `renderIdentity` is (this function is called FIRST thing
    * inside it, ahead of that function's own early returns, so it never gets
-   * skipped): `civitaiRecord`, the one thing Download depends on, isn't
-   * known until a lookup resolves, well after the footer's static shell is
-   * first built.
+   * skipped) AND every time the shared download job changes state (this
+   * file's own `subscribeDownloadState` wiring, near `handle`'s own
+   * creation): `civitaiRecord`/the download target/the job's own progress
+   * all resolve well after the footer's static shell is first built.
    */
   function renderFooterAction() {
     footerActionHost.innerHTML = "";
@@ -1240,18 +1408,62 @@ export function openModelInfo({
     if (!civitaiEnabled) {
       return; // no network affordance at all when the setting is off (§7b decision 20) -- same as every other one in this panel
     }
-    const url = civitaiRecord ? civitaiModelUrl(civitaiRecord.model_id, civitaiRecord.version_id) : null;
-    if (!url) {
-      return; // no known Civitai record to download from -- neither action, never a dead button
+    const rowKey = civitaiRecord ? resultKey({ model_id: civitaiRecord.model_id, primary_version_id: civitaiRecord.version_id }) : "";
+    const job = getActiveDownloadState();
+    if (job && rowKey && job.key === rowKey) {
+      // Case 1 -- a job for THIS exact version is already running (started
+      // from here, or from any OTHER surface in this pack -- `resultKey`
+      // recognises the same one everywhere).
+      const row = el(doc, "div", "wtn-mi-dl-progress");
+      const pct = downloadPercent(job.bytes, job.total);
+      const label = el(doc, "span");
+      label.textContent = pct == null ? "Downloading…" : `Downloading… ${pct}%`;
+      row.appendChild(label);
+      const cancelBtn = el(doc, "button", "wtn-mi-dl-cancel");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cancelActiveDownloadJob();
+      });
+      row.appendChild(cancelBtn);
+      footerActionHost.appendChild(row);
+      return;
     }
-    const downloadLink = el(doc, "a", "wtn-mi-download");
-    downloadLink.href = url;
-    downloadLink.target = "_blank";
-    downloadLink.rel = "noopener noreferrer";
-    downloadLink.textContent = "Download";
-    downloadLink.title = "This file is gone from disk -- open its Civitai version page to download it again.";
-    downloadLink.addEventListener("click", (e) => e.stopPropagation());
-    footerActionHost.appendChild(downloadLink);
+    const target = ensureDownloadTarget();
+    if (!target) {
+      return; // no known download target yet (or ever) -- neither action, never a dead button
+    }
+    const downloadBtn = el(doc, "button", "wtn-mi-download");
+    downloadBtn.type = "button";
+    downloadBtn.textContent = "Download";
+    downloadBtn.title = "This file is gone from disk -- download it again from Civitai.";
+    downloadBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      downloadBtn.disabled = true;
+      startDownloadJob({
+        kind,
+        subfolder: subfolderFromName(name),
+        filename: target.filename,
+        downloadUrl: target.downloadUrl,
+        sizeKb: target.sizeKb,
+        key: rowKey,
+      }, downloadPollIntervalMs).then((resp) => {
+        if (resp.reason !== "started") {
+          logSummary("LoRA info", `${kind}/${name}: download NOT started (${resp.reason})`);
+        } else {
+          logSummary("LoRA info", `${kind}/${name}: download started (${target.filename})`);
+        }
+        // `subscribeDownloadState` (below) already re-renders this footer
+        // on every state change, including this very "started" transition
+        // -- but a `resp.reason !== "started"` (e.g. `busy`) never fires
+        // that notification at all, so re-render here too, unconditionally,
+        // rather than leave a `disabled` button stuck if nothing else ever
+        // repaints it.
+        repositionAfterChange(() => renderFooterAction());
+      });
+    });
+    footerActionHost.appendChild(downloadBtn);
   }
 
   function renderIdentity() {
@@ -1723,6 +1935,14 @@ export function openModelInfo({
 
   const handle = openOverlayWithZoom(ctx.getCanvasEl, doc, anchorEl, panel, "right", () => {
     cancelled = true;
+    if (unsubscribeDownload) {
+      // Never leave this panel's listener on the shared download-job
+      // singleton after it's gone -- the job itself keeps running/polling
+      // regardless (civitai_search.mjs's own top doc comment), this just
+      // stops a CLOSED panel from being notified about it.
+      unsubscribeDownload();
+      unsubscribeDownload = null;
+    }
     if (activeOverlayRef.current === handle) {
       activeOverlayRef.current = null;
     }
@@ -1732,6 +1952,16 @@ export function openModelInfo({
   }, "wtn-mi-overlay wtn");
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
+
+  // Re-renders the footer the moment the shared download job's own state
+  // changes (started elsewhere, progress, finished/cancelled/failed) --
+  // this is what keeps a "↓ Download" click's own progress live without
+  // this panel polling anything itself, and what flips a stuck `disabled`
+  // button back once a `busy`/failure response is known (this file's own
+  // `renderFooterAction` doc comment).
+  unsubscribeDownload = subscribeDownloadState(() => {
+    repositionAfterChange(() => renderFooterAction());
+  });
 
   // BUG 13: this is a CACHE-ONLY read (`force` unset -> `cachedOnly: true`
   // inside `runLookup`), never a real Civitai lookup -- opening the panel is

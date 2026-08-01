@@ -57,6 +57,20 @@
   --wtn-panel-width-boost: 50px;
   --wtn-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --wtn-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Z-INDEX SCALE (2026-08-01, owner-reported: the delete confirmation
+     dialog rendered BEHIND the ⓘ panel that opened it) -- mirrored, BY HAND,
+     in js/shared/z_layers.mjs's plain integer exports (every real caller
+     sets z-index from a JS string, not a CSS var -- that module's own top
+     doc comment has the full "why", and why this is a SCALE, not a bump).
+     Required ordering: tooltip < anchored overlay/panel < full modal <
+     confirmation dialog -- a confirmation must outrank everything it can be
+     launched from. This file only ever needs the tooltip rung itself
+     (`.wtn-tip`, below); every other rung is consumed as a plain number from
+     z_layers.mjs. */
+  --wtn-z-tooltip: 10000;
+  --wtn-z-panel: 10010;
+  --wtn-z-modal: 10020;
+  --wtn-z-confirm: 10030;
 
   color: var(--wtn-ink); font-family: var(--wtn-font-ui);
 }
@@ -221,7 +235,7 @@
 .wtn-log .is-info { color: var(--wtn-info); } .wtn-log .is-tmp { color: var(--wtn-tmp); }
 
 /* tooltip */
-.wtn-tip { position: fixed; z-index: 999; max-width: 250px; pointer-events: none;
+.wtn-tip { position: fixed; z-index: var(--wtn-z-tooltip); max-width: 250px; pointer-events: none;
   background: var(--wtn-console); color: var(--wtn-ink); border: 1px solid var(--wtn-line);
   border-radius: 8px; padding: 8px 10px; font-family: var(--wtn-font-ui); font-size: 12px; line-height: 1.45;
   box-shadow: var(--wtn-shadow); opacity: 0; transition: opacity .12s; }

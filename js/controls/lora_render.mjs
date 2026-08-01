@@ -165,6 +165,7 @@
  */
 
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
+import { Z_PANEL } from "../shared/z_layers.mjs";
 // `hasFile` is the "unknown, not missing, before first load" cache read
 // (`civitai_api.mjs`'s own top doc comment) -- track-agnostic, so importing
 // it here does NOT violate the model_picker/civitai_api/model_info layering
@@ -673,7 +674,7 @@ const CSS = `
    rather than importing a sibling's). .wtn-ctl-opt-disabled is new here --
    render.mjs has no "inert menu entry" concept, since none of its own rows
    have one; this node's "More info" (Slice 4) needs it. ── */
-.wtn-ctl-overlay { position: fixed; z-index: 10020; }
+.wtn-ctl-overlay { position: fixed; z-index: ${Z_PANEL}; }
 .wtn-ctl-menu {
   max-height: 264px; overflow-y: auto; padding: 4px; border-radius: 8px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-surface2, ${TOKENS.surface2});

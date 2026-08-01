@@ -2265,12 +2265,23 @@ export function openCivitaiSearch({
   return handle;
 }
 
+// The picker's own gallery tile width (owner, 2026-08-01: "let's lower the
+// images again, maybe so 3 images per row and horizontal scroll") -- this
+// panel is `.wtn-cs-panel`'s own 346px base plus `--wtn-panel-width-boost`
+// (js/shared/theme.css, currently 50px) = 396px; minus `.wtn-dv-body`'s own
+// 16px+16px padding = 364px of gallery width; minus two 10px gaps between
+// three tiles = 344px; /3 ≈ 115px. Named here, not inlined into the call
+// site below, so the one place that did this arithmetic is the one place a
+// future width change touches.
+const DETAIL_PANEL_GALLERY_TILE_PX = 115;
+
 // ---------------------------------------------------------------------------
 // §7c-ii -- the picker's own VERTICAL detail panel (decision 21): a SIBLING
 // overlay of the ⓘ panel, anchored to the CARD that was clicked, never the
 // modal and never an in-panel swap of the results list. `model_detail_view.mjs`
-// supplies the actual content (`buildModelDetailView`, `layout: "twoCol"`)
-// -- this function is purely the MOUNT: the overlay shell, the fetch/
+// supplies the actual content (`buildModelDetailView`, a single
+// horizontally-scrolling filmstrip gallery at `DETAIL_PANEL_GALLERY_TILE_PX`
+// tiles, above) -- this function is purely the MOUNT: the overlay shell, the fetch/
 // re-render loop for the two extra fields a search result doesn't already
 // carry (`civitai_api.mjs`'s `fetchModelDetail`), and this surface's own
 // primary action -- labelled plain "↓ Download" (owner, 2026-08-01: "not
@@ -2445,7 +2456,7 @@ export function openModelDetailPanel({
   function render() {
     host.innerHTML = "";
     const built = buildModelDetailView({
-      doc, layout: "twoCol", result, versionId: currentVersionId, browsingLevel: currentLevel(),
+      doc, galleryTileWidth: DETAIL_PANEL_GALLERY_TILE_PX, result, versionId: currentVersionId, browsingLevel: currentLevel(),
       detail: detailState, buildActionEl: buildAction,
       onVersionChange: (id) => {
         currentVersionId = id;

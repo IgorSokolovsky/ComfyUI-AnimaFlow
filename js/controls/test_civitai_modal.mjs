@@ -385,11 +385,19 @@ test("owner-reported (2026-08-01): the modal grid card and the search panel card
 function makeDocStub() {
   let doc;
   function makeElement(tag) {
+    // `style.setProperty` -- real DOM elements have it; a plain `{}` doesn't.
+    // Needed now that `model_detail_view.mjs`'s `buildModelDetailView` (this
+    // file's own detail-view mount) sets the gallery's own tile width as a
+    // CSS custom property rather than a per-call inline class.
+    const style = {};
+    style.setProperty = function setProperty(name, val) {
+      style[name] = val;
+    };
     const e = {
       tagName: tag,
       _listeners: {},
       children: [],
-      style: {},
+      style,
       value: "",
       textContent: "",
       title: "",
@@ -1404,7 +1412,8 @@ await asyncTest("openCivitaiModal: a card click swaps the results area for the d
     assert.equal(title.textContent, "Swap Test");
 
     const stripImg = findAll(handle.panel, "wtn-dv-gallery-filmstrip")[0];
-    assert.ok(stripImg, "the modal's own mount uses the FILMSTRIP layout (renamed 2026-08-01 from 'grid'), not the picker's twoCol one");
+    assert.ok(stripImg, "the modal's own mount renders the (now single-shape) gallery filmstrip");
+    assert.equal(stripImg.style["--wtn-dv-gallery-tile"], "200px", "the modal's own default tile width, wider than the picker's ~115px");
 
     // Owner, 2026-08-01: the gallery moved above the descriptions -- real
     // integration proof on the MODAL's own mount, not just the shared

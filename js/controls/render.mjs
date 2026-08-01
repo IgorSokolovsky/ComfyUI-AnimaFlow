@@ -57,6 +57,7 @@
 import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
 import { openOverlay as sharedOpenOverlay } from "../shared/overlay.mjs";
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
+import { Z_PANEL } from "../shared/z_layers.mjs";
 // `displayRowName` is the settings-aware "Hide file extension" display seam
 // (task brief, 2026-07-31, part B: "check the Loader/Control Panel row
 // labels for the same gap"). A picker-kind row's own combo VALUE
@@ -334,7 +335,7 @@ const CSS = `
 /* ── overlays: option list / ⚙ popover / right-click menu -- all appended
    to document.body, positioned from the anchor row's own bounding rect
    (see this module's top doc comment for why). ── */
-.wtn-ctl-overlay { position: fixed; z-index: 10020; }
+.wtn-ctl-overlay { position: fixed; z-index: ${Z_PANEL}; }
 .wtn-ctl-menu {
   max-height: 264px; overflow-y: auto; padding: 4px; border-radius: 8px;
   border: 1px solid var(--wtn-line, ${TOKENS.line}); background: var(--wtn-surface-2, ${TOKENS.surface2});

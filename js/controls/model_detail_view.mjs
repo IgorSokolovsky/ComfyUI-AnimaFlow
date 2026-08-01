@@ -10,16 +10,17 @@
  * master→detail swap of the results area for the modal (decision 11) — but
  * neither owns a second copy of the actual content: identity, version
  * selector, both descriptions, `View on Civitai ↗`, and the gallery all
- * come from `buildModelDetailView` below, parameterised by `layout`
- * (renamed 2026-08-01 -- see that parameter's own doc comment for the full
- * "why": `"twoCol"`, the picker's small two-across grid, vs. `"filmstrip"`,
- * the modal's single horizontally-scrolling row — the OLD names,
- * `"vertical"`/`"grid"`, described the gallery's shape backwards once the
- * picker's own gallery became a two-column GRID and the modal's became a
- * single-row FILMSTRIP) and, since 2026-08-01, by `fixedTopBar` too (that
- * parameter's own doc comment has the full "why" — the picker and the modal
- * turned out to want DIFFERENT pinned-controls shapes, not just different
- * gallery layouts).
+ * come from `buildModelDetailView` below, parameterised by `galleryTileWidth`
+ * (2026-08-01: both mounts' gallery is now the SAME single horizontally-
+ * scrolling filmstrip row, differing only in tile size — see that
+ * parameter's own doc comment for the full "why" and its own naming
+ * history: it was `layout`, a two-valued `"twoCol"|"filmstrip"` gallery
+ * SHAPE switch, before the picker's own gallery became a filmstrip too and
+ * left nothing for a "shape" to name — and, before THAT, `"vertical"`/
+ * `"grid"`, which had drifted to describe the shape backwards) and, since
+ * 2026-08-01, by `fixedTopBar` too (that parameter's own doc comment has the
+ * full "why" — the picker and the modal turned out to want DIFFERENT
+ * pinned-controls shapes, not just different gallery layouts).
  *
  * ## Track-agnostic, joining the existing reuse boundary
  *
@@ -541,33 +542,52 @@ ${THUMB_SKELETON_CSS}
 .wtn-dv-desc-empty { font-size: 11.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 .wtn-dv-gallery-hidden { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 6px; }
 
-/* Owner, 2026-08-01: two mounts, two DIFFERENT gallery shapes (renamed the
-   same day from the old "vertical"/"grid" \`layout\` values, which had come
-   to describe the gallery's shape BACKWARDS -- see \`buildModelDetailView\`'s
-   own \`layout\` doc comment for the full "why" and the rename itself).
-   \`"twoCol"\` (the picker, owner: "the author images gallery ... image
-   sizes should be small so 2 images fit in 1 row ... no horizontal scroll,
-   only vertical") is a plain 2-column grid that wraps downward with the
-   rest of the scrolling body -- no \`overflow\` of its own at all, so there
-   is nothing here that COULD scroll sideways. \`"filmstrip"\` (the modal,
-   owner: "it should be in 1 line with horizontal scroll") is a single ROW
-   that scrolls horizontally, contained to itself -- \`min-width: 0\` is the
-   exact horizontal mirror of \`.wtn-dv-body\`'s own \`min-height: 0\` fix
-   above (this file's own CSS comment on that rule has the full trap): a
-   flex item's default \`min-width: auto\` refuses to shrink below its
-   content's width, which would silently defeat \`overflow-x: auto\` here the
-   same way an unshrinkable height defeated \`overflow-y: auto\` there. Tiles
-   get \`flex: none\` (never shrinking to fit, which is what actually forces
-   the overflow rather than everyone cramming into the available width) and
-   an explicit width, since \`.wtn-dv-gbox\`'s own \`width: 100%\` needs a
-   definite box to be 100% OF. */
-.wtn-dv-gallery-twocol { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+/* Owner, 2026-08-01: BOTH mounts are a single horizontally-scrolling
+   FILMSTRIP row now ("in the detail panel ... the gallery, let's lower the
+   images again, maybe so 3 images per row and horizontal scroll") --
+   collapsing the earlier two-shape split (a plain 2-column grid for the
+   picker vs. this single scrolling row for the modal, itself a same-day
+   rename from "vertical"/"grid", which had come to describe the shape
+   BACKWARDS). The two mounts now differ ONLY in TILE SIZE, never in shape
+   -- see \`buildModelDetailView\`'s own \`galleryTileWidth\` doc comment (the
+   parameter the old two-valued \`layout\` collapsed into) for the full
+   "why" and that rename itself. \`min-width: 0\` is the exact horizontal
+   mirror of \`.wtn-dv-body\`'s own \`min-height: 0\` fix above (this file's
+   own CSS comment on that rule has the full trap): a flex item's default
+   \`min-width: auto\` refuses to shrink below its content's width, which
+   would silently defeat \`overflow-x: auto\` here the same way an
+   unshrinkable height defeated \`overflow-y: auto\` there. Tiles get
+   \`flex: none\` (never shrinking to fit, which is what actually forces the
+   overflow rather than everyone cramming into the available width) and an
+   explicit width -- \`var(--wtn-dv-gallery-tile)\`, set inline by
+   \`buildModelDetailView\` on THIS grid element from its own
+   \`galleryTileWidth\` parameter, not a bare number, so the one call site
+   that knows "how wide" is the only place that number lives -- since
+   \`.wtn-dv-gbox\`'s own \`width: 100%\` needs a definite box to be 100% OF. */
 .wtn-dv-gallery-filmstrip { display: flex; flex-direction: row; gap: 10px; overflow-x: auto; overflow-y: hidden; min-width: 0; padding-bottom: 4px; }
-.wtn-dv-gallery-filmstrip .wtn-dv-gimg { flex: none; width: 200px; }
+.wtn-dv-gallery-filmstrip .wtn-dv-gimg { flex: none; width: var(--wtn-dv-gallery-tile, 200px); }
 .wtn-dv-gimg { position: relative; border-radius: 7px; overflow: hidden; }
+/* Owner, 2026-08-01 ("3 images per row"): the picker's own tiles shrank to
+   ~115px to fit three across its ~396px panel -- narrow enough that the
+   prompt drawer (below) is not readable if confined to the tile's own
+   width, and legible prompts are the entire reason the AUTHOR gallery was
+   chosen over the community one (this file's own top doc comment). Fix:
+   the drawer escapes past its own tile's edge on hover/focus, wide enough
+   to stay readable regardless of how narrow the tile itself gets ("the
+   drawer breaks out of the tile on hover" -- the option taken of the three
+   raised for this change; see the build report for the other two and why
+   this one won). \`overflow: visible\` applies ONLY while hovered/focused --
+   a resting gallery still reads as a clean grid of tiles with nothing
+   overhanging. */
+.wtn-dv-gimg:hover, .wtn-dv-gimg:focus-within { overflow: visible; }
 .wtn-dv-gbox {
   position: relative; width: 100%; aspect-ratio: 1 / 1; background: var(--wtn-console, ${TOKENS.console});
   display: flex; align-items: center; justify-content: center;
+  /* Clips (and rounds) the IMAGE itself independently of \`.wtn-dv-gimg\`'s
+     own overflow, which toggles to \`visible\` on hover (above) so the
+     prompt drawer can escape past the tile edge -- without this, the image
+     would visibly square off at its corners for as long as it's hovered. */
+  overflow: hidden; border-radius: 7px;
 }
 .wtn-dv-gbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wtn-dv-goverlay {
@@ -587,11 +607,32 @@ ${THUMB_SKELETON_CSS}
    dial back down HERE if that turns out too dark once seen live. \`6,8,11\`
    is this file's own dark tone (the old gradient's own end colour, above),
    reused rather than invented; the border colour is this pack's own
-   \`--wtn-line\` (js/shared/theme.css), not invented either. */
+   \`--wtn-line\` (js/shared/theme.css), not invented either.
+
+   2026-08-01, second pass ("3 images per row"): WIDER than its own tile,
+   never narrower -- \`max(170px, var(--wtn-dv-gallery-tile))\`, the same
+   custom property \`.wtn-dv-gallery-filmstrip .wtn-dv-gimg\` (above) sizes
+   the tile itself from. At the modal's own 200px tile this is a no-op
+   (200 > 170 -- pixel-identical to before this change); only a tile
+   narrower than 170px (the picker's ~115px) actually widens it, which is
+   the entire point -- a prompt confined to a 115px box is not readable.
+   Centred on the tile (\`left: 50%; transform: translateX(-50%)\`) and
+   taken OUT of \`.wtn-dv-goverlay\`'s own flex flow (\`position: absolute\`)
+   so its width is independent of the flex column that used to just push it
+   to the bottom -- \`bottom: 0\` reproduces that same bottom anchoring
+   explicitly. Positions against \`.wtn-dv-goverlay\` (the nearest positioned
+   ancestor, itself sized to exactly match the tile via \`inset: 0\`), so
+   "50%" here IS "50% of the tile", not some other box. \`max-width\` keeps a
+   very wide gallery view from stretching this absurdly, and the rounded
+   bottom corners replace the square ones a mid-tile absolute box would
+   otherwise show against the tile's own rounded image beneath it. */
 .wtn-dv-gdrawer {
+  position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+  width: max(170px, var(--wtn-dv-gallery-tile, 200px)); max-width: 260px;
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
   background: rgba(6, 8, 11, .65);
   border-top: 1px solid var(--wtn-line, ${TOKENS.line});
+  border-radius: 0 0 7px 7px;
 }
 .wtn-dv-gprompt { font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; }
 .wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
@@ -760,17 +801,22 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *
  * @param {object} opts
  * @param {Document} opts.doc
- * @param {"twoCol"|"filmstrip"} [opts.layout] - which GALLERY shape this
- *   mount wants (renamed 2026-08-01 from `"vertical"`/`"grid"`, which had
- *   drifted to describe the shape backwards -- the picker's own gallery is
- *   now the one that's a GRID, and the modal's is now a single scrolling
- *   ROW): `"twoCol"` (default, the picker, §7c-ii) is a plain 2-column grid,
- *   small tiles, wrapping downward with the rest of the scrolling body --
- *   NO horizontal scroll of its own (owner, 2026-08-01: "no horizontal
- *   scroll, only vertical"). `"filmstrip"` (the modal, decision 11) is a
- *   SINGLE row that scrolls sideways, contained to itself (owner: "it
- *   should be in 1 line with horizontal scroll") -- this is the ONLY thing
- *   that differs between the two mounts' gallery.
+ * @param {number} [opts.galleryTileWidth] - the gallery's own tile width, in
+ *   px (default 200, the modal's pre-existing size). Replaces the old
+ *   two-valued `layout: "twoCol"|"filmstrip"` gallery SHAPE switch
+ *   (2026-08-01, owner: "let's lower the images again, maybe so 3 images
+ *   per row and horizontal scroll" -- the picker's own gallery, previously a
+ *   plain 2-column grid with no horizontal scroll, became a filmstrip too,
+ *   at a smaller tile size, to fit three across its own ~396px panel). Both
+ *   mounts are now the SAME single horizontally-scrolling filmstrip row
+ *   (`.wtn-dv-gallery-filmstrip`) -- tile WIDTH is the only thing that ever
+ *   differed between them, so `layout` naming a "shape" stopped being true
+ *   the moment a second shape stopped existing; this parameter names what
+ *   it actually controls instead. The picker passes `115` (three tiles fit
+ *   its own panel width); the modal keeps this default of `200` unchanged.
+ *   The prompt drawer (below) reads this SAME value to decide how far past
+ *   a narrow tile it needs to widen itself to stay readable -- see
+ *   `.wtn-dv-gdrawer`'s own CSS comment.
  * @param {object} opts.result - the raw search-result object (has `versions[]`,
  *   `model_id`, `name`, `creator`, `type`, `tags`, `stats`, `nsfw_level`).
  * @param {number} [opts.versionId] - the currently-selected version id;
@@ -838,7 +884,7 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  */
 export function buildModelDetailView({
   doc,
-  layout = "twoCol",
+  galleryTileWidth = 200,
   result,
   versionId,
   browsingLevel = 1,
@@ -857,13 +903,18 @@ export function buildModelDetailView({
   let stale = false;
   const isStale = () => stale;
 
+  // A garbage/non-finite/non-positive `galleryTileWidth` degrades to the
+  // same 200px default rather than producing an invalid `width: NaNpx` --
+  // mirrors this file's own "never throw on a bad caller value" convention.
+  const tileWidthPx = Number.isFinite(galleryTileWidth) && galleryTileWidth > 0 ? galleryTileWidth : 200;
+
   // `wtn-flex-bound` (js/shared/theme.css) -- the shared `min-width: 0;
   // min-height: 0;` fix for a bounded flex/scroll region, applied to both
   // this root AND `bodyHost` below: this component's own third occurrence
   // of the trap (`.wtn-cm-main`/`.wtn-cm-detailhost`, civitai_modal.mjs, are
   // the other two) is exactly why it's a shared class now, not a fourth
   // hand-written copy of the same two properties.
-  const root = el(doc, "div", `wtn-dv wtn wtn-flex-bound ${layout === "filmstrip" ? "wtn-dv-filmstrip" : "wtn-dv-twocol"}`);
+  const root = el(doc, "div", "wtn-dv wtn wtn-flex-bound");
   // The pinned/scrolling split (this file's own CSS comment, "Owner-reported
   // bug (2026-08-01)") -- `topControls` never scrolls; `bodyHost` is the ONE
   // region that does. Named `bodyHost`, not `body`, because the description
@@ -1079,7 +1130,13 @@ export function buildModelDetailView({
       emptyEl.textContent = "No gallery images for this version.";
       bodyHost.appendChild(emptyEl);
     } else {
-      const grid = el(doc, "div", layout === "filmstrip" ? "wtn-dv-gallery-filmstrip" : "wtn-dv-gallery-twocol");
+      const grid = el(doc, "div", "wtn-dv-gallery-filmstrip");
+      // The one call site that knows "how wide" -- `--wtn-dv-gallery-tile`
+      // (read by `.wtn-dv-gallery-filmstrip .wtn-dv-gimg`'s own `width` AND
+      // `.wtn-dv-gdrawer`'s own widen-past-the-tile `width`, both above,
+      // both by inheritance from THIS element) is set here, once, rather
+      // than duplicated as a bare number on either downstream rule.
+      grid.style.setProperty("--wtn-dv-gallery-tile", `${tileWidthPx}px`);
       const gate = createLoadGate(galleryConcurrency);
       for (const entry of visible) {
         grid.appendChild(buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs: thumbRetryBackoffMs, gate }));

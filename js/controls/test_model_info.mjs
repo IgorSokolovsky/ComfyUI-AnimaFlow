@@ -17,12 +17,20 @@ import {
   emptyStateMessage,
   lookupStateView,
   descriptionsView,
+  pickPrimaryDownloadFile,
+  subfolderFromName,
   openModelInfo,
   injectStyles,
 } from "./model_info.mjs";
-import { invalidateInfo, invalidateList, hasFile, listModels, thumbUrl } from "./civitai_api.mjs";
+import { invalidateInfo, invalidateList, hasFile, listModels, thumbUrl, invalidateModelDetail, lookupInfo } from "./civitai_api.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
+// The shared download-job singleton this panel's own Download button now
+// goes through (task: "the Download button should actually download") --
+// `_resetDownloadStateForTests` is this module's own escape hatch for
+// starting each test from a clean slate (`civitai_search.mjs`'s own doc
+// comment on it), never called by real code.
+import { _resetDownloadStateForTests } from "./civitai_search.mjs";
 
 let failures = 0;
 let count = 0;
@@ -285,6 +293,70 @@ test("lookupStateView: missing_file -- a distinct, honest 'nothing to hash' mess
   const view = lookupStateView({ phase: "result", response: { reason: "offline", offline_reason: "missing_file" } });
   assert.equal(view.headline, "Can't check Civitai");
   assert.deepEqual(view.actions, []);
+});
+
+// =========================================================================
+// pickPrimaryDownloadFile -- the pure pick behind the Download button's own
+// "actually download" fix (task: it used to just link to Civitai). Mirrors
+// src/model_browser/civitai_search.py's own pick_primary_file.
+// =========================================================================
+
+test("pickPrimaryDownloadFile: a file flagged primary:true wins over list order", () => {
+  const files = [
+    { name: "a.safetensors", download_url: "https://x/a", size_kb: 100 },
+    { name: "b.safetensors", download_url: "https://x/b", size_kb: 200, primary: true },
+  ];
+  assert.deepEqual(pickPrimaryDownloadFile(files), { filename: "b.safetensors", downloadUrl: "https://x/b", sizeKb: 200 });
+});
+
+test("pickPrimaryDownloadFile: no file is flagged primary -- falls back to the FIRST one in the list", () => {
+  const files = [
+    { name: "a.safetensors", download_url: "https://x/a", size_kb: 100 },
+    { name: "b.safetensors", download_url: "https://x/b", size_kb: 200 },
+  ];
+  assert.deepEqual(pickPrimaryDownloadFile(files), { filename: "a.safetensors", downloadUrl: "https://x/a", sizeKb: 100 });
+});
+
+test("pickPrimaryDownloadFile: null for a garbage/empty/non-array files list -- never throws", () => {
+  assert.equal(pickPrimaryDownloadFile(null), null);
+  assert.equal(pickPrimaryDownloadFile(undefined), null);
+  assert.equal(pickPrimaryDownloadFile([]), null);
+  assert.equal(pickPrimaryDownloadFile("not-a-list"), null);
+  assert.equal(pickPrimaryDownloadFile([null, "garbage", 42]), null);
+});
+
+test("pickPrimaryDownloadFile: null when the chosen entry has no usable name or download_url -- never a button with nothing to click through to", () => {
+  assert.equal(pickPrimaryDownloadFile([{ download_url: "https://x/a" }]), null, "no name");
+  assert.equal(pickPrimaryDownloadFile([{ name: "a.safetensors" }]), null, "no download_url");
+  assert.equal(pickPrimaryDownloadFile([{ name: "", download_url: "" }]), null, "blank strings");
+});
+
+test("pickPrimaryDownloadFile: a missing/non-finite size_kb degrades to null, not NaN", () => {
+  assert.deepEqual(
+    pickPrimaryDownloadFile([{ name: "a.safetensors", download_url: "https://x/a" }]),
+    { filename: "a.safetensors", downloadUrl: "https://x/a", sizeKb: null },
+  );
+});
+
+// =========================================================================
+// subfolderFromName -- a re-download after delete lands back in the SAME
+// subfolder, not the kind's bare root.
+// =========================================================================
+
+test("subfolderFromName: everything before the last '/' in a subfoldered name", () => {
+  assert.equal(subfolderFromName("detail/my_lora.safetensors"), "detail");
+  assert.equal(subfolderFromName("a/b/c/my_lora.safetensors"), "a/b/c");
+});
+
+test("subfolderFromName: a rootless name (or garbage input) is the empty string, never throws", () => {
+  assert.equal(subfolderFromName("my_lora.safetensors"), "");
+  assert.equal(subfolderFromName(""), "");
+  assert.equal(subfolderFromName(null), "");
+  assert.equal(subfolderFromName(undefined), "");
+});
+
+test("subfolderFromName: backslashes are normalised to forward slashes first", () => {
+  assert.equal(subfolderFromName("detail\\my_lora.safetensors"), "detail");
 });
 
 // =========================================================================
@@ -2565,6 +2637,249 @@ await asyncTest("openModelInfo: a save_preview failure never disturbs the panel 
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);
+  }
+});
+
+// =========================================================================
+// The missing-file footer's "Download" -- 2026-08-01 spec correction: it
+// used to just open Civitai's own version page in a new tab (redundant with
+// "View on Civitai ↗", a few rows above); it now goes through the SAME
+// server-side download job every other surface uses, resolving the file
+// via `fetchModelDetail`/`pickPrimaryDownloadFile` -- no second lookup.
+// =========================================================================
+
+await asyncTest("openModelInfo: a missing file with NO known Civitai record renders neither Delete nor Download -- never a dead button", async () => {
+  const kind = "loras";
+  const name = "gone-no-record.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name: "some-other-file.safetensors", size: 1000 }] }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    await listModels(kind); // seed the list cache so hasFile resolves to a confirmed `false`
+    assert.equal(hasFile(kind, name), false, "sanity: this file must resolve as confirmed missing");
+
+    const doc = makeDocStub();
+    const handle = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name });
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-mi-delete").length, 0, "a missing file must never offer Delete");
+    assert.equal(findAll(handle.overlay, "wtn-mi-download").length, 0, "no known Civitai record -- no dead Download button either");
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+  }
+});
+
+await asyncTest("openModelInfo: a missing file WITH a known Civitai record resolves a real download target and renders a clickable Download BUTTON (never an <a>, never a dead one)", async () => {
+  _resetDownloadStateForTests();
+  const kind = "loras";
+  const name = "gone-with-record.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  invalidateModelDetail(77, 88);
+  let modelDetailCalls = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "Restorable LoRA", model_id: 77, version_id: 88 } }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name: "some-other-file.safetensors", size: 1000 }] }) };
+    }
+    if (u.includes("/model_detail")) {
+      modelDetailCalls += 1;
+      return {
+        json: async () => ({
+          reason: "found", message: "", offline_reason: null,
+          model_description: null, model_description_checked: true, version_description: null, gallery: [],
+          files: [{ name: "restored.safetensors", download_url: "https://civitai.com/api/download/models/88", size_kb: 204800, primary: true }],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    // Prime the CLIENT-SIDE info cache directly (a real lookup from BEFORE
+    // the file was deleted, in this same session -- BUG 20's own "remembered
+    // hit" mechanism) rather than through `openModelInfo` itself: a lookup
+    // that runs INSIDE the panel's own `runLookup` also calls
+    // `invalidateList(kind)` on a genuine "found" (correct -- a real, new
+    // Civitai match can affect the list), which would immediately erase the
+    // very "confirmed missing" state this test seeds below. A session-cache
+    // HIT (this priming call) takes `runLookup`'s early-return branch
+    // instead, which never touches the list cache -- the realistic order of
+    // events (look the LoRA up, THEN delete the file, THEN reopen ⓘ).
+    await lookupInfo(kind, name, { force: false, cachedOnly: false });
+
+    await listModels(kind);
+    assert.equal(hasFile(kind, name), false, "sanity: confirmed missing");
+
+    const doc = makeDocStub();
+    const handle = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name });
+    await settle();
+    await settle(); // one extra tick for fetchModelDetail's own promise to resolve and re-render the footer
+
+    assert.equal(findAll(handle.overlay, "wtn-mi-delete").length, 0);
+    const downloadBtn = findAll(handle.overlay, "wtn-mi-download")[0];
+    assert.ok(downloadBtn, "a resolved download target must render a Download button");
+    assert.equal(downloadBtn.tagName, "button", "must be a real <button>, never an <a> that just navigates");
+    assert.equal(downloadBtn.href, "", "must never carry an href -- it starts a job, it doesn't link anywhere");
+    assert.equal(modelDetailCalls, 1);
+
+    // "View on Civitai ↗" must STILL be there, unaffected -- Download no
+    // longer duplicates it, but nothing removed it either.
+    assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 1);
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+    invalidateModelDetail(77, 88);
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelInfo: a resolved Civitai record with NO downloadable file (files: []) renders no Download button -- 'a dead button is worse than none'", async () => {
+  _resetDownloadStateForTests();
+  const kind = "loras";
+  const name = "gone-no-file.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  invalidateModelDetail(5, 6);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "No File LoRA", model_id: 5, version_id: 6 } }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [] }) };
+    }
+    if (u.includes("/model_detail")) {
+      return {
+        json: async () => ({
+          reason: "found", message: "", offline_reason: null,
+          model_description: null, model_description_checked: true, version_description: null, gallery: [], files: [],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    await listModels(kind);
+    const doc = makeDocStub();
+    const handle = openModelInfo({ ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name });
+    await settle();
+    await settle();
+
+    assert.equal(findAll(handle.overlay, "wtn-mi-download").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-mi-civlink").length, 1, "View on Civitai ↗ is still there even with no downloadable file");
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+    invalidateModelDetail(5, 6);
+    _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelInfo: clicking Download starts the SHARED download job with the resolved file (kind/subfolder/filename/downloadUrl/sizeKb), shows live progress, and Cancel posts to /download/cancel", async () => {
+  _resetDownloadStateForTests();
+  const kind = "loras";
+  const name = "detail/gone-clickable.safetensors"; // subfoldered -- the re-download must land in the SAME subfolder
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  invalidateModelDetail(12, 34);
+  let startBody = null;
+  let cancelCalls = 0;
+  let progressCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "found", offline_reason: null, message: "", data: { name: "Clickable LoRA", model_id: 12, version_id: 34 } }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [] }) };
+    }
+    if (u.includes("/model_detail")) {
+      return {
+        json: async () => ({
+          reason: "found", message: "", offline_reason: null,
+          model_description: null, model_description_checked: true, version_description: null, gallery: [],
+          files: [{ name: "gone-clickable.safetensors", download_url: "https://civitai.com/api/download/models/34", size_kb: 51200, primary: true }],
+        }),
+      };
+    }
+    if (u.includes("/download/start")) {
+      startBody = JSON.parse(opts.body);
+      return { json: async () => ({ reason: "started", message: "", job_id: "job-mi-1" }) };
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      return { json: async () => ({ reason: "ok", status: "downloading", bytes: 25, total: 100, message: "" }) };
+    }
+    if (u.includes("/download/cancel")) {
+      cancelCalls += 1;
+      return { json: async () => ({ reason: "cancelling", message: "" }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    // Prime the client-side info cache first -- see the previous test's own
+    // comment for why: a lookup that runs INSIDE the panel invalidates the
+    // list cache on a genuine "found", which would erase the "confirmed
+    // missing" state seeded below before the panel ever renders.
+    await lookupInfo(kind, name, { force: false, cachedOnly: false });
+
+    await listModels(kind);
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null }, anchorEl: doc.createElement("button"), kind, name,
+      downloadPollIntervalMs: 20_000, // long enough that this test's own `settle()` calls never trigger a second poll tick
+    });
+    await settle();
+    await settle();
+
+    const downloadBtn = findAll(handle.overlay, "wtn-mi-download")[0];
+    assert.ok(downloadBtn, "a Download button must be present before clicking");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.deepEqual(startBody, {
+      kind, subfolder: "detail", filename: "gone-clickable.safetensors",
+      download_url: "https://civitai.com/api/download/models/34", size_kb: 51200,
+    });
+    assert.equal(findAll(handle.overlay, "wtn-mi-download").length, 0, "the plain Download button must be replaced by the progress readout while running");
+    const progressRow = findAll(handle.overlay, "wtn-mi-dl-progress")[0];
+    assert.ok(progressRow, "a progress readout must render while the job runs");
+    assert.match(progressRow.children[0].textContent, /25%/);
+    assert.ok(progressCalls >= 1, "the shared job must actually be polling progress");
+
+    const cancelBtn = findAll(handle.overlay, "wtn-mi-dl-cancel")[0];
+    assert.ok(cancelBtn, "a Cancel action must be offered while the job runs");
+    cancelBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(cancelCalls, 1, "Cancel must post to the shared job's own /download/cancel route");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
+    invalidateModelDetail(12, 34);
+    _resetDownloadStateForTests();
   }
 });
 

@@ -180,6 +180,7 @@
 
 import { rangeOf, clampNumeric, decimalsOf, numericPercent, formatNumericValue } from "./field_logic.mjs";
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "./settings.mjs";
+import { Z_ELEVATED_TOOLTIP } from "./z_layers.mjs";
 
 const STYLE_ID = "wtn-fields-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -381,16 +382,19 @@ function buildCss() {
    \`.wtn-tip\` rule has no hardcoded fallbacks and is injected via a LATER
    async \`import()\` (this file's own \`injectFieldStyles\`, below, runs its
    own CSS synchronously first), so at EQUAL specificity theme.css's rule
-   wins by injection order and this module's fallbacks/10030 z-index never
+   wins by injection order and this module's fallbacks/elevated z-index never
    apply. The selector below is deliberately the TWO-CLASS compound
    \`.wtn-tip.wtn-fld-tip\` (specificity 0-2-0) rather than \`.wtn-fld-tip\`
    alone (0-1-0) -- that beats theme.css's single-class \`.wtn-tip\` (0-1-0)
-   regardless of injection order, so the fallback hex values and the 10030
-   z-index (js/controls/'s own overlays sit at 10020 -- a tooltip must sit
-   above that) hold whether or not theme.css ever lands. Do NOT relax this
-   back to \`.wtn-fld-tip\` alone -- that's exactly the invisible-until-live
-   regression this comment exists to prevent. ── */
-.wtn-tip.wtn-fld-tip { position: fixed; z-index: 10030; max-width: 260px; pointer-events: none;
+   regardless of injection order, so the fallback hex values and the elevated
+   z-index (\`Z_ELEVATED_TOOLTIP\`, \`../shared/z_layers.mjs\` -- this field
+   tooltip renders INSIDE an already-open anchored panel, \`Z_PANEL\` on the
+   SAME shared scale, so it must outrank that panel's own layer or it would
+   be clipped underneath its own container) hold whether or not theme.css
+   ever lands. Do NOT relax this back to \`.wtn-fld-tip\` alone -- that's
+   exactly the invisible-until-live regression this comment exists to
+   prevent. ── */
+.wtn-tip.wtn-fld-tip { position: fixed; z-index: ${Z_ELEVATED_TOOLTIP}; max-width: 260px; pointer-events: none;
   background: var(--wtn-console, ${TOKENS.console}); color: var(--wtn-ink, ${TOKENS.ink});
   border: 1px solid var(--wtn-line, ${TOKENS.line}); border-radius: 8px; padding: 9px 11px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

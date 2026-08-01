@@ -67,11 +67,20 @@ function test(name, fn) {
 function makeDocStub() {
   let doc;
   function makeElement(tag) {
+    // `style.setProperty` -- real DOM elements have it; a plain `{}` doesn't.
+    // Needed now that `buildModelDetailView` sets the gallery's own tile
+    // width as a CSS custom property (`--wtn-dv-gallery-tile`) rather than a
+    // per-call inline class. Mirrors `js/anima/test_resize.mjs`'s own
+    // identical shim.
+    const style = {};
+    style.setProperty = function setProperty(name, val) {
+      style[name] = val;
+    };
     const e = {
       tagName: String(tag).toLowerCase(),
       _listeners: {},
       children: [],
-      style: {},
+      style,
       value: "",
       textContent: "",
       title: "",
@@ -374,27 +383,45 @@ function makeTwoVersionResult() {
   };
 }
 
-test("buildModelDetailView: the SAME component renders in BOTH layouts (one component, mounted twice) -- 'twoCol' (the picker) vs 'filmstrip' (the modal), renamed 2026-08-01 from 'vertical'/'grid'", () => {
+test("buildModelDetailView: the SAME component renders in BOTH mounts (one component, mounted twice) -- they now differ ONLY in gallery TILE WIDTH, never in shape (2026-08-01: the old two-valued 'twoCol'/'filmstrip' layout switch collapsed once the picker's own gallery became a filmstrip too)", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const detail = { status: "loaded", gallery: [{ url: "a.jpg", nsfw_level: 1 }], modelDescriptionChecked: true };
-  const twoCol = buildModelDetailView({ doc, layout: "twoCol", result, versionId: 3, browsingLevel: 1, detail });
-  const filmstrip = buildModelDetailView({ doc, layout: "filmstrip", result, versionId: 3, browsingLevel: 1, detail });
-  assert.equal(findAll(twoCol.el, "wtn-dv-title").length, 1);
-  assert.equal(findAll(filmstrip.el, "wtn-dv-title").length, 1);
-  assert.equal(textOf(findAll(twoCol.el, "wtn-dv-title")[0]), textOf(findAll(filmstrip.el, "wtn-dv-title")[0]));
-  // The only real difference is the gallery container's own layout class.
-  assert.equal(findAll(twoCol.el, "wtn-dv-gallery-twocol").length, 1);
-  assert.equal(findAll(filmstrip.el, "wtn-dv-gallery-filmstrip").length, 1);
+  const picker = buildModelDetailView({ doc, galleryTileWidth: 115, result, versionId: 3, browsingLevel: 1, detail });
+  const modal = buildModelDetailView({ doc, galleryTileWidth: 200, result, versionId: 3, browsingLevel: 1, detail });
+  assert.equal(findAll(picker.el, "wtn-dv-title").length, 1);
+  assert.equal(findAll(modal.el, "wtn-dv-title").length, 1);
+  assert.equal(textOf(findAll(picker.el, "wtn-dv-title")[0]), textOf(findAll(modal.el, "wtn-dv-title")[0]));
+  // Both mounts get the SAME single gallery shape now -- no more a second,
+  // "twoCol" class ever renders.
+  assert.equal(findAll(picker.el, "wtn-dv-gallery-filmstrip").length, 1);
+  assert.equal(findAll(modal.el, "wtn-dv-gallery-filmstrip").length, 1);
+  assert.equal(findAll(picker.el, "wtn-dv-gallery-twocol").length, 0, "the two-column shape must be gone entirely, not merely unused");
+  // The only real difference is the tile width each mount asked for.
+  const pickerGrid = findAll(picker.el, "wtn-dv-gallery-filmstrip")[0];
+  const modalGrid = findAll(modal.el, "wtn-dv-gallery-filmstrip")[0];
+  assert.equal(pickerGrid.style["--wtn-dv-gallery-tile"], "115px");
+  assert.equal(modalGrid.style["--wtn-dv-gallery-tile"], "200px");
 });
 
-test("buildModelDetailView: layout defaults to 'twoCol' when omitted (the picker's own default)", () => {
+test("buildModelDetailView: galleryTileWidth defaults to 200 when omitted (the modal's own pre-existing size, unchanged by this collapse)", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const detail = { status: "loaded", gallery: [{ url: "a.jpg", nsfw_level: 1 }], modelDescriptionChecked: true };
   const { el } = buildModelDetailView({ doc, result, versionId: 3, browsingLevel: 1, detail });
-  assert.equal(findAll(el, "wtn-dv-gallery-twocol").length, 1);
-  assert.equal(findAll(el, "wtn-dv-gallery-filmstrip").length, 0);
+  const grid = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+  assert.ok(grid, "the filmstrip must render");
+  assert.equal(grid.style["--wtn-dv-gallery-tile"], "200px");
+});
+
+test("buildModelDetailView: a garbage/non-finite/non-positive galleryTileWidth degrades to 200, never NaN or a negative width", () => {
+  const result = makeTwoVersionResult();
+  const detail = { status: "loaded", gallery: [{ url: "a.jpg", nsfw_level: 1 }], modelDescriptionChecked: true };
+  for (const bad of [0, -50, NaN, undefined, null, "115"]) {
+    const { el } = buildModelDetailView({ doc: makeDocStub(), galleryTileWidth: bad, result, versionId: 3, browsingLevel: 1, detail });
+    const grid = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+    assert.equal(grid.style["--wtn-dv-gallery-tile"], "200px", `galleryTileWidth=${bad} must degrade to the 200px default`);
+  }
 });
 
 test("buildModelDetailView: version selector lists every version and switching calls onVersionChange", () => {
@@ -471,10 +498,10 @@ test("buildModelDetailView: the gallery renders BEFORE both descriptions in DOM 
     modelDescriptionChecked: true,
     gallery: [{ url: "a.jpg", nsfw_level: 1 }],
   };
-  for (const layout of ["twoCol", "filmstrip"]) {
-    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 3, browsingLevel: 1, detail, layout });
+  for (const galleryTileWidth of [115, 200]) {
+    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 3, browsingLevel: 1, detail, galleryTileWidth });
     const headings = findAll(el, "wtn-dv-sechead").map(textOf);
-    assert.deepEqual(headings, ["Gallery", "Version Description", "Model Description"], `layout=${layout}`);
+    assert.deepEqual(headings, ["Gallery", "Version Description", "Model Description"], `galleryTileWidth=${galleryTileWidth}`);
   }
 });
 
@@ -568,69 +595,106 @@ test("buildModelDetailView: NO hidden-count line in the 'locked' state (a distin
 });
 
 // =========================================================================
-// Owner, 2026-08-01: two mounts, two gallery SHAPES -- "twoCol" (the
-// picker, a small 2-column grid, vertical scroll only) vs "filmstrip" (the
-// modal, a single horizontally-scrolling row).
+// Owner, 2026-08-01: BOTH mounts are now a single horizontally-scrolling
+// filmstrip row (collapsed from the earlier two-SHAPE split -- "twoCol"
+// the picker's small 2-column grid vs "filmstrip" the modal's single
+// scrolling row); they differ only in TILE WIDTH now.
 // =========================================================================
 
-test("buildModelDetailView: 'twoCol' is a plain 2-column grid with NO horizontal scroll of its own", () => {
+test("buildModelDetailView: the gallery is a single horizontally-scrolling row, contained to itself (min-width: 0, the exact mirror of .wtn-dv-body's own min-height: 0 fix) -- regardless of galleryTileWidth", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const gallery = Array.from({ length: 4 }, (_, i) => ({ url: `img${i}.jpg`, nsfw_level: 1 }));
   const { el } = buildModelDetailView({
-    doc, result, versionId: 3, browsingLevel: 1, layout: "twoCol",
-    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
-  });
-  const grid = findAll(el, "wtn-dv-gallery-twocol")[0];
-  assert.ok(grid, "the twoCol grid container must render");
-  assert.equal(findAll(grid, "wtn-dv-gimg").length, 4);
-
-  injectStyles(doc);
-  const styleEl = doc.head.children.find((c) => c.tagName === "style");
-  const rule = styleEl.textContent.match(/\.wtn-dv-gallery-twocol\s*\{([^}]*)\}/)[1];
-  assert.match(rule, /grid-template-columns:\s*repeat\(2,\s*1fr\)/, "exactly two columns");
-  assert.doesNotMatch(rule, /overflow-x/, "the twoCol shape must never set its own horizontal scroll");
-});
-
-test("buildModelDetailView: 'filmstrip' is a single horizontally-scrolling row, contained to itself (min-width: 0, the exact mirror of .wtn-dv-body's own min-height: 0 fix)", () => {
-  const doc = makeDocStub();
-  const result = makeTwoVersionResult();
-  const gallery = Array.from({ length: 4 }, (_, i) => ({ url: `img${i}.jpg`, nsfw_level: 1 }));
-  const { el } = buildModelDetailView({
-    doc, result, versionId: 3, browsingLevel: 1, layout: "filmstrip",
+    doc, result, versionId: 3, browsingLevel: 1, galleryTileWidth: 115,
     detail: { status: "loaded", gallery, modelDescriptionChecked: true },
   });
   const strip = findAll(el, "wtn-dv-gallery-filmstrip")[0];
   assert.ok(strip, "the filmstrip container must render");
   assert.equal(findAll(strip, "wtn-dv-gimg").length, 4);
+  assert.equal(findAll(el, "wtn-dv-gallery-twocol").length, 0, "no second shape exists any more");
 
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
+  assert.doesNotMatch(css, /\.wtn-dv-gallery-twocol\s*\{/, "the two-column grid rule itself must be gone, not merely unused");
   const stripRule = css.match(/\.wtn-dv-gallery-filmstrip\s*\{([^}]*)\}/)[1];
   assert.match(stripRule, /flex-direction:\s*row/, "a single row");
   assert.match(stripRule, /overflow-x:\s*auto/, "scrolls horizontally");
   assert.match(stripRule, /min-width:\s*0/, "must not refuse to shrink below its tiles' total width -- the exact mirror of the vertical min-height: 0 trap");
-  // Tiles never shrink to fit (flex: none) -- that's what actually forces
-  // the overflow rather than everyone cramming into the available width.
-  assert.match(css, /\.wtn-dv-gallery-filmstrip \.wtn-dv-gimg\s*\{[^}]*flex:\s*none;?/);
+  // Tiles never shrink to fit (flex: none), and take their width from the
+  // shared CSS custom property this component sets inline, not a bare number.
+  const tileRule = css.match(/\.wtn-dv-gallery-filmstrip \.wtn-dv-gimg\s*\{([^}]*)\}/)[1];
+  assert.match(tileRule, /flex:\s*none;?/);
+  assert.match(tileRule, /width:\s*var\(--wtn-dv-gallery-tile/, "must read the shared tile-width custom property, not a hardcoded px value");
 
   // The body itself must NEVER scroll horizontally -- only the strip does.
   const bodyRule = css.match(/\.wtn-dv-body\s*\{([^}]*)\}/)[1];
   assert.doesNotMatch(bodyRule, /overflow-x/, "the scrolling body must not gain its own horizontal scrollbar");
 });
 
-test("buildModelDetailView: the prompt drawer still renders over a filmstrip tile", () => {
+test("buildModelDetailView: the prompt drawer still renders over a filmstrip tile, at any tile width", () => {
+  for (const galleryTileWidth of [200, 115]) {
+    const doc = makeDocStub();
+    const result = makeTwoVersionResult();
+    const gallery = [{ url: "a.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
+    const { el } = buildModelDetailView({
+      doc, result, versionId: 3, browsingLevel: 1, galleryTileWidth,
+      detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+    });
+    const strip = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+    assert.equal(findAll(strip, "wtn-dv-gdrawer").length, 1, `galleryTileWidth=${galleryTileWidth}`);
+    assert.equal(findAll(strip, "wtn-dv-gprompt")[0].textContent, "1girl, forest");
+  }
+});
+
+// =========================================================================
+// Owner, 2026-08-01, item 3's own "consequence to decide": a prompt drawer
+// confined to a ~115px tile is not readable -- the drawer BREAKS OUT of its
+// own tile on hover/focus, wide enough to stay legible regardless of how
+// narrow the tile gets (the option taken of the three raised; see the build
+// report for why).
+// =========================================================================
+
+test("buildModelDetailView: the tile clips its own drawer at rest, but allows it to escape on hover/focus (breaks out of the tile)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const restRule = css.match(/(?:^|\n)\.wtn-dv-gimg\s*\{([^}]*)\}/)[1];
+  assert.match(restRule, /overflow:\s*hidden/, "at rest, the tile still clips (a resting gallery reads as a clean grid, nothing overhanging)");
+  const hoverRule = css.match(/\.wtn-dv-gimg:hover,\s*\.wtn-dv-gimg:focus-within\s*\{([^}]*)\}/);
+  assert.ok(hoverRule, "a hover/focus-within escape rule must exist on .wtn-dv-gimg");
+  assert.match(hoverRule[1], /overflow:\s*visible/, "hovering/focusing the tile must let its drawer escape past the tile edge");
+  // The image's OWN rounding must not depend on that overflow toggle -- it
+  // would otherwise visibly square off while hovered.
+  const gboxRule = css.match(/\.wtn-dv-gbox\s*\{([^}]*)\}/)[1];
+  assert.match(gboxRule, /overflow:\s*hidden/);
+  assert.match(gboxRule, /border-radius:\s*7px/);
+});
+
+test("buildModelDetailView: the drawer widens past a narrow tile, but is a no-op at the modal's own 200px tile (max(170px, tile-width))", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const drawerRule = css.match(/\.wtn-dv-gdrawer\s*\{([^}]*)\}/)[1];
+  assert.match(drawerRule, /width:\s*max\(170px,\s*var\(--wtn-dv-gallery-tile/, "must widen relative to the SAME shared tile-width property, never a bare number");
+  assert.match(drawerRule, /position:\s*absolute/, "must be taken out of flow to size independently of the tile's own box");
+  assert.match(drawerRule, /left:\s*50%/);
+  assert.match(drawerRule, /transform:\s*translateX\(-50%\)/, "centred on the tile it belongs to");
+});
+
+test("buildModelDetailView: the gallery grid sets --wtn-dv-gallery-tile inline, which BOTH the tile width and the drawer's widen rule read -- one number, not two", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const gallery = [{ url: "a.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
   const { el } = buildModelDetailView({
-    doc, result, versionId: 3, browsingLevel: 1, layout: "filmstrip",
+    doc, result, versionId: 3, browsingLevel: 1, galleryTileWidth: 115,
     detail: { status: "loaded", gallery, modelDescriptionChecked: true },
   });
-  const strip = findAll(el, "wtn-dv-gallery-filmstrip")[0];
-  assert.equal(findAll(strip, "wtn-dv-gdrawer").length, 1);
-  assert.equal(findAll(strip, "wtn-dv-gprompt")[0].textContent, "1girl, forest");
+  const grid = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+  assert.equal(grid.style["--wtn-dv-gallery-tile"], "115px");
 });
 
 // =========================================================================

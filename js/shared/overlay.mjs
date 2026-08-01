@@ -93,6 +93,7 @@
  */
 
 import { installCanvasZoomPassthrough } from "./canvas_zoom.mjs";
+import { Z_PANEL } from "./z_layers.mjs";
 
 function el(doc, tag, className) {
   const e = doc.createElement(tag);
@@ -258,7 +259,12 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
   overlay.style.position = "fixed";
   overlay.style.left = "0px";
   overlay.style.top = "0px";
-  overlay.style.zIndex = "10020";
+  // The anchored overlay/panel rung of the shared z-index scale
+  // (`../shared/z_layers.mjs` -- read that module's own top doc comment
+  // before ever hand-picking a number here again: this used to be a bare
+  // `"10020"`, and a DIFFERENT bare number in `delete_confirm.mjs` is the
+  // owner-reported bug this scale exists to fix).
+  overlay.style.zIndex = String(Z_PANEL);
   overlay.appendChild(contentEl);
   const body = doc.body || doc;
   body.appendChild(overlay);

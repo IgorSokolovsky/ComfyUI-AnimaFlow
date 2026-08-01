@@ -812,11 +812,19 @@ await asyncTest("cancelActiveDownloadJob: posts /download/cancel for the active 
 function makeDocStub() {
   let doc;
   function makeElement(tag) {
+    // `style.setProperty` -- real DOM elements have it; a plain `{}` doesn't.
+    // Needed now that `model_detail_view.mjs`'s `buildModelDetailView` (this
+    // file's own `openModelDetailPanel` mount) sets the gallery's own tile
+    // width as a CSS custom property rather than a per-call inline class.
+    const style = {};
+    style.setProperty = function setProperty(name, val) {
+      style[name] = val;
+    };
     const e = {
       tagName: tag,
       _listeners: {},
       children: [],
-      style: {},
+      style,
       value: "",
       textContent: "",
       title: "",
@@ -3242,7 +3250,7 @@ await asyncTest("openModelDetailPanel: the primary action reads plain '↓ Downl
   }
 });
 
-await asyncTest("openModelDetailPanel: the gallery renders BEFORE both descriptions, as a small TWO-COLUMN grid (owner, 2026-08-01) -- no horizontal scroll", async () => {
+await asyncTest("openModelDetailPanel: the gallery renders BEFORE both descriptions, as a horizontally-scrolling filmstrip at the picker's own ~115px tile width (owner, 2026-08-01: 'lower the images again ... 3 per row and horizontal scroll')", async () => {
   _resetDownloadStateForTests();
   const result = makeMultiVersionSearchResult({ modelId: 55, name: "Gallery Order Test" });
   invalidateModelDetail(55, 1);
@@ -3266,10 +3274,11 @@ await asyncTest("openModelDetailPanel: the gallery renders BEFORE both descripti
     const headings = findAll(handle.overlay, "wtn-dv-sechead").map((h) => h.textContent);
     assert.deepEqual(headings, ["Gallery", "Version Description", "Model Description"], "the picker's own mount must render gallery, then version desc, then model desc");
 
-    const grid = findAll(handle.overlay, "wtn-dv-gallery-twocol")[0];
-    assert.ok(grid, "the picker's own mount must use the twoCol gallery shape, not the modal's filmstrip");
+    const grid = findAll(handle.overlay, "wtn-dv-gallery-filmstrip")[0];
+    assert.ok(grid, "the picker's own mount must render the (now single-shape) gallery filmstrip");
     assert.equal(findAll(grid, "wtn-dv-gimg").length, 2);
-    assert.equal(findAll(handle.overlay, "wtn-dv-gallery-filmstrip").length, 0);
+    assert.equal(findAll(handle.overlay, "wtn-dv-gallery-twocol").length, 0, "the old two-column shape must be gone entirely");
+    assert.equal(grid.style["--wtn-dv-gallery-tile"], "115px", "the picker's own narrower tile width, distinct from the modal's 200px default");
 
     handle.close();
   } finally {
