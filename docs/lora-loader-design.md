@@ -1388,6 +1388,32 @@ description, and download with progress.
 
 #### The detail view — master→detail swap, with a community gallery (owner, 2026-07-29)
 
+> ### ⚠️ MEASURED BEFORE BUILDING (2026-08-01): the prompts are NOT on the community images
+>
+> This section's gallery rests on one claim — *"the **prompt** is the part you can actually reuse; that
+> is the real reason someone browses Civitai instead of a filename list. Copy-prompt is therefore a
+> first-class action, not a nicety."* Measured against the live API, that claim holds, but **not for the
+> source this section names**:
+>
+> | source | sampled | carrying a prompt |
+> |---|---|---|
+> | `/api/v1/images?modelVersionId=…` — the **community** images | 40 | **0** (`meta` is `{}` on every one) |
+> | `/api/v1/model-versions/{id}` — the **author's** gallery | 20 | **18**, with full generation params (`seed`, `steps`, `sampler`, `Size`, `Model`) |
+>
+> So the two halves of the rationale point in opposite directions. *"What it looks like in other people's
+> hands"* is available **without** prompts; *"the prompt you can actually reuse"* is available **only** on
+> the author's own images. By this section's own test — a gallery without reusable prompts is decoration —
+> **the gallery should be built from the author's images**, and `copy-prompt` stays first-class because
+> that source actually has something to copy.
+>
+> Unverified possibility, deliberately not designed around: an API key may unlock `meta` on the community
+> endpoint (Civitai gates generation data in places). All probing here was unauthenticated. If a keyed
+> request turns out to populate it, revisit — but **design for what is measurable**, not for a maybe.
+>
+> Everything else in this section stands: the version selector, the descriptions, `View on Civitai ↗`, the
+> three constraints below, and the master→detail swap.
+
+
 **Clicking a result card opens its detail**, and it does so by **swapping the results area** while the
 filter rail **stays put**. Not a nested modal, and not a hidden rail: your filters are the context you
 came from, and keeping them visible is what makes `← results` read as a step back rather than a new
