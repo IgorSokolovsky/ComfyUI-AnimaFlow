@@ -24,6 +24,7 @@ import {
   formatDateLabel,
   detailDescriptionsView,
   visibleGalleryEntries,
+  hiddenGalleryCount,
   galleryState,
   galleryParamsLabel,
   createLoadGate,
@@ -361,18 +362,27 @@ function makeTwoVersionResult() {
   };
 }
 
-test("buildModelDetailView: the SAME component renders in BOTH layouts (one component, mounted twice)", () => {
+test("buildModelDetailView: the SAME component renders in BOTH layouts (one component, mounted twice) -- 'twoCol' (the picker) vs 'filmstrip' (the modal), renamed 2026-08-01 from 'vertical'/'grid'", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const detail = { status: "loaded", gallery: [{ url: "a.jpg", nsfw_level: 1 }], modelDescriptionChecked: true };
-  const vertical = buildModelDetailView({ doc, layout: "vertical", result, versionId: 3, browsingLevel: 1, detail });
-  const grid = buildModelDetailView({ doc, layout: "grid", result, versionId: 3, browsingLevel: 1, detail });
-  assert.equal(findAll(vertical.el, "wtn-dv-title").length, 1);
-  assert.equal(findAll(grid.el, "wtn-dv-title").length, 1);
-  assert.equal(textOf(findAll(vertical.el, "wtn-dv-title")[0]), textOf(findAll(grid.el, "wtn-dv-title")[0]));
+  const twoCol = buildModelDetailView({ doc, layout: "twoCol", result, versionId: 3, browsingLevel: 1, detail });
+  const filmstrip = buildModelDetailView({ doc, layout: "filmstrip", result, versionId: 3, browsingLevel: 1, detail });
+  assert.equal(findAll(twoCol.el, "wtn-dv-title").length, 1);
+  assert.equal(findAll(filmstrip.el, "wtn-dv-title").length, 1);
+  assert.equal(textOf(findAll(twoCol.el, "wtn-dv-title")[0]), textOf(findAll(filmstrip.el, "wtn-dv-title")[0]));
   // The only real difference is the gallery container's own layout class.
-  assert.equal(findAll(vertical.el, "wtn-dv-gallery-vertical").length, 1);
-  assert.equal(findAll(grid.el, "wtn-dv-gallery-grid").length, 1);
+  assert.equal(findAll(twoCol.el, "wtn-dv-gallery-twocol").length, 1);
+  assert.equal(findAll(filmstrip.el, "wtn-dv-gallery-filmstrip").length, 1);
+});
+
+test("buildModelDetailView: layout defaults to 'twoCol' when omitted (the picker's own default)", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const detail = { status: "loaded", gallery: [{ url: "a.jpg", nsfw_level: 1 }], modelDescriptionChecked: true };
+  const { el } = buildModelDetailView({ doc, result, versionId: 3, browsingLevel: 1, detail });
+  assert.equal(findAll(el, "wtn-dv-gallery-twocol").length, 1);
+  assert.equal(findAll(el, "wtn-dv-gallery-filmstrip").length, 0);
 });
 
 test("buildModelDetailView: version selector lists every version and switching calls onVersionChange", () => {
@@ -431,6 +441,250 @@ test("buildModelDetailView: both descriptions render under their OWN label; only
   assert.ok(!headings.includes("Version Description"));
   const bodies = findAll(el, "wtn-dv-desc").map(textOf);
   assert.deepEqual(bodies, ["The author's write-up."]);
+});
+
+// =========================================================================
+// Owner, 2026-08-01 ("if its the author gallery it should be at the top,
+// before the model description ... fastest answer to what does this LoRA
+// actually do"): the gallery moved above BOTH descriptions, and the
+// description order itself flipped (version before model).
+// =========================================================================
+
+test("buildModelDetailView: the gallery renders BEFORE both descriptions in DOM order, in both mounts", () => {
+  const result = makeTwoVersionResult();
+  const detail = {
+    status: "loaded",
+    modelDescription: "Model write-up.",
+    versionDescription: "Version write-up.",
+    modelDescriptionChecked: true,
+    gallery: [{ url: "a.jpg", nsfw_level: 1 }],
+  };
+  for (const layout of ["twoCol", "filmstrip"]) {
+    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 3, browsingLevel: 1, detail, layout });
+    const headings = findAll(el, "wtn-dv-sechead").map(textOf);
+    assert.deepEqual(headings, ["Gallery", "Version Description", "Model Description"], `layout=${layout}`);
+  }
+});
+
+test("buildModelDetailView: descriptions render VERSION before MODEL when both are present", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: {
+      status: "loaded", modelDescription: "Model write-up.", versionDescription: "Version write-up.",
+      modelDescriptionChecked: true, gallery: [],
+    },
+  });
+  const bodies = findAll(el, "wtn-dv-desc").map(textOf);
+  assert.deepEqual(bodies, ["Version write-up.", "Model write-up."]);
+});
+
+// =========================================================================
+// Owner, 2026-08-01: "why does the gallery show only 6 images" --
+// `visibleGalleryEntries` silently drops over-level entries; state the
+// omission instead.
+// =========================================================================
+
+test("hiddenGalleryCount: counts entries the level filter is dropping, never negative", () => {
+  const gallery = [
+    { url: "a.jpg", nsfw_level: 1 },
+    { url: "b.jpg", nsfw_level: 8 },
+    { url: "c.jpg", nsfw_level: 16 },
+    { url: "d.jpg", nsfw_level: 16 },
+  ];
+  assert.equal(hiddenGalleryCount(gallery, 1), 3);
+  assert.equal(hiddenGalleryCount(gallery, 8), 2);
+  assert.equal(hiddenGalleryCount(gallery, 16), 0);
+});
+
+test("hiddenGalleryCount: garbage input degrades to 0, never throws", () => {
+  assert.equal(hiddenGalleryCount(null, 1), 0);
+  assert.equal(hiddenGalleryCount("not-a-list", 1), 0);
+});
+
+test("buildModelDetailView: the hidden-count line appears, with the REAL count, when the level filter drops some (but not all) images", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [
+    { url: "a.jpg", nsfw_level: 1 },
+    { url: "b.jpg", nsfw_level: 16 },
+    { url: "c.jpg", nsfw_level: 16 },
+  ];
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const hidden = findAll(el, "wtn-dv-gallery-hidden")[0];
+  assert.ok(hidden, "a hidden-count line must render when some images are filtered out");
+  assert.equal(hidden.textContent, "2 images hidden by your browsing level.");
+});
+
+test("buildModelDetailView: NO hidden-count line when nothing is hidden (all visible, or the level is already at its maximum)", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [{ url: "a.jpg", nsfw_level: 1 }, { url: "b.jpg", nsfw_level: 1 }];
+  const allVisible = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  assert.equal(findAll(allVisible.el, "wtn-dv-gallery-hidden").length, 0, "nothing is hidden -- no line");
+
+  const highLevelGallery = [{ url: "a.jpg", nsfw_level: 16 }, { url: "b.jpg", nsfw_level: 1 }];
+  const atMaxLevel = buildModelDetailView({
+    doc: makeDocStub(), result, versionId: 3, browsingLevel: 16, // the maximum -- nothing can be ABOVE it
+    detail: { status: "loaded", gallery: highLevelGallery, modelDescriptionChecked: true },
+  });
+  assert.equal(findAll(atMaxLevel.el, "wtn-dv-gallery-hidden").length, 0, "at the maximum level, nothing is filtered -- the line must never falsely appear");
+});
+
+test("buildModelDetailView: NO hidden-count line in the 'locked' state (a distinct message already covers it) or when the gallery is genuinely empty", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const lockedGallery = [{ url: "a.jpg", nsfw_level: 16 }];
+  const locked = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: lockedGallery, modelDescriptionChecked: true },
+  });
+  assert.equal(findAll(locked.el, "wtn-dv-gallery-hidden").length, 0);
+
+  const empty = buildModelDetailView({
+    doc: makeDocStub(), result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+  });
+  assert.equal(findAll(empty.el, "wtn-dv-gallery-hidden").length, 0);
+});
+
+// =========================================================================
+// Owner, 2026-08-01: two mounts, two gallery SHAPES -- "twoCol" (the
+// picker, a small 2-column grid, vertical scroll only) vs "filmstrip" (the
+// modal, a single horizontally-scrolling row).
+// =========================================================================
+
+test("buildModelDetailView: 'twoCol' is a plain 2-column grid with NO horizontal scroll of its own", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = Array.from({ length: 4 }, (_, i) => ({ url: `img${i}.jpg`, nsfw_level: 1 }));
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, layout: "twoCol",
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const grid = findAll(el, "wtn-dv-gallery-twocol")[0];
+  assert.ok(grid, "the twoCol grid container must render");
+  assert.equal(findAll(grid, "wtn-dv-gimg").length, 4);
+
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const rule = styleEl.textContent.match(/\.wtn-dv-gallery-twocol\s*\{([^}]*)\}/)[1];
+  assert.match(rule, /grid-template-columns:\s*repeat\(2,\s*1fr\)/, "exactly two columns");
+  assert.doesNotMatch(rule, /overflow-x/, "the twoCol shape must never set its own horizontal scroll");
+});
+
+test("buildModelDetailView: 'filmstrip' is a single horizontally-scrolling row, contained to itself (min-width: 0, the exact mirror of .wtn-dv-body's own min-height: 0 fix)", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = Array.from({ length: 4 }, (_, i) => ({ url: `img${i}.jpg`, nsfw_level: 1 }));
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, layout: "filmstrip",
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const strip = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+  assert.ok(strip, "the filmstrip container must render");
+  assert.equal(findAll(strip, "wtn-dv-gimg").length, 4);
+
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const stripRule = css.match(/\.wtn-dv-gallery-filmstrip\s*\{([^}]*)\}/)[1];
+  assert.match(stripRule, /flex-direction:\s*row/, "a single row");
+  assert.match(stripRule, /overflow-x:\s*auto/, "scrolls horizontally");
+  assert.match(stripRule, /min-width:\s*0/, "must not refuse to shrink below its tiles' total width -- the exact mirror of the vertical min-height: 0 trap");
+  // Tiles never shrink to fit (flex: none) -- that's what actually forces
+  // the overflow rather than everyone cramming into the available width.
+  assert.match(css, /\.wtn-dv-gallery-filmstrip \.wtn-dv-gimg\s*\{[^}]*flex:\s*none;?/);
+
+  // The body itself must NEVER scroll horizontally -- only the strip does.
+  const bodyRule = css.match(/\.wtn-dv-body\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(bodyRule, /overflow-x/, "the scrolling body must not gain its own horizontal scrollbar");
+});
+
+test("buildModelDetailView: the prompt drawer still renders over a filmstrip tile", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [{ url: "a.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, layout: "filmstrip",
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const strip = findAll(el, "wtn-dv-gallery-filmstrip")[0];
+  assert.equal(findAll(strip, "wtn-dv-gdrawer").length, 1);
+  assert.equal(findAll(strip, "wtn-dv-gprompt")[0].textContent, "1girl, forest");
+});
+
+// =========================================================================
+// Owner, 2026-08-01: "GALLERY"/"VERSION DESCRIPTION"/"MODEL DESCRIPTION"
+// too small to read as section separators -- size only, same letter-
+// spacing/uppercase, and identical across all three.
+// =========================================================================
+
+test("BUG (owner, 2026-08-01): the three section headings share ONE (larger) font-size", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const rule = styleEl.textContent.match(/\.wtn-dv-sechead\s*\{([^}]*)\}/)[1];
+  const sizeMatch = rule.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
+  assert.ok(sizeMatch, "wtn-dv-sechead must declare an explicit font-size");
+  assert.ok(Number(sizeMatch[1]) > 10, "must be larger than the old 10px");
+  // Style, not just size, is unchanged -- same letter-spacing/uppercase.
+  assert.match(rule, /letter-spacing:\s*\.08em/);
+  assert.match(rule, /text-transform:\s*uppercase/);
+});
+
+test("buildModelDetailView: GALLERY/VERSION DESCRIPTION/MODEL DESCRIPTION all share the identical .wtn-dv-sechead class -- one font-size for all three by construction", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: {
+      status: "loaded", modelDescription: "M.", versionDescription: "V.", modelDescriptionChecked: true,
+      gallery: [{ url: "a.jpg", nsfw_level: 1 }],
+    },
+  });
+  const headings = findAll(el, "wtn-dv-sechead");
+  assert.equal(headings.length, 3);
+  for (const h of headings) {
+    assert.ok(h.classList.contains("wtn-dv-sechead"));
+  }
+});
+
+// =========================================================================
+// Owner-reported, with a screenshot (2026-08-01): the modal's fixed top bar
+// -- '← back to results' reads shorter than the version <select>, and the
+// select's own dropdown arrow sits flush against its right border.
+// =========================================================================
+
+test("BUG (owner, 2026-08-01): the topbar's three controls (back / version select / action host's child) share ONE explicit height", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const backRule = css.match(/\.wtn-dv-topbar \.wtn-dv-back\s*\{([^}]*)\}/)[1];
+  const selRule = css.match(/\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  const backHeight = backRule.match(/height:\s*(\d+)px/)[1];
+  const selHeight = selRule.match(/height:\s*(\d+)px/)[1];
+  assert.equal(backHeight, selHeight, "the back button and the version select must share one explicit height");
+  assert.match(backRule, /box-sizing:\s*border-box/, "an explicit height only measures the full box with border-box");
+  assert.match(selRule, /box-sizing:\s*border-box/);
+});
+
+test("BUG (owner, 2026-08-01): the topbar's version select has right padding so its dropdown arrow clears the border, not flush against it", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const rule = styleEl.textContent.match(/\.wtn-dv-topbar \.wtn-dv-version-sel\s*\{([^}]*)\}/)[1];
+  const paddingMatch = rule.match(/padding:\s*0\s+(\d+)px\s+0\s+(\d+)px/);
+  assert.ok(paddingMatch, "the topbar version select must declare explicit top/right/bottom/left padding");
+  assert.ok(Number(paddingMatch[1]) >= 16, "the right padding must clear a native <select>'s own dropdown arrow, not sit flush against the border");
 });
 
 test("buildModelDetailView: the gallery is level-filtered, and shows 'locked' where appropriate", () => {
@@ -522,7 +776,7 @@ test("buildModelDetailView: the gallery lazy-loads through a REAL concurrency ga
 // default `min-height: auto` silently defeats it further up the chain).
 // =========================================================================
 
-test("buildModelDetailView: identity/civlink/version-selector/download action are pinned in .wtn-dv-header; descriptions/gallery/back are in the scrolling .wtn-dv-body -- not one flat column", () => {
+test("buildModelDetailView: identity/civlink/version-selector/download action are pinned in .wtn-dv-header; descriptions/gallery are in the scrolling .wtn-dv-body -- not one flat column", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const { el } = buildModelDetailView({
@@ -533,7 +787,7 @@ test("buildModelDetailView: identity/civlink/version-selector/download action ar
       b.className = "wtn-cs-action";
       return b;
     },
-    onBack: () => {},
+    onClose: () => {},
   });
   const header = findAll(el, "wtn-dv-header")[0];
   const body = findAll(el, "wtn-dv-body")[0];
@@ -554,9 +808,57 @@ test("buildModelDetailView: identity/civlink/version-selector/download action ar
   // gallery) belongs in the SCROLLING body, never the pinned header.
   assert.equal(findAll(body, "wtn-dv-desc").length, 1, "descriptions belong in the scrolling body");
   assert.equal(findAll(body, "wtn-dv-gimg").length, 1, "the gallery belongs in the scrolling body");
-  assert.equal(findAll(body, "wtn-dv-back").length, 1, "the back affordance belongs in the scrolling body");
   assert.equal(findAll(header, "wtn-dv-desc").length, 0, "a description must never leak into the pinned header");
   assert.equal(findAll(header, "wtn-dv-gimg").length, 0, "the gallery must never leak into the pinned header");
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01): "why do we have a back button in this menu?"
+// -- the picker's detail view is a SIBLING overlay, not a swap back to a
+// list, so leaving it is "close", not "back". `onBack` no longer has any
+// effect in the header shape at all; `onClose` renders a ✕ pinned to
+// `.wtn-dv-header`'s own corner instead.
+// =========================================================================
+
+test("buildModelDetailView: header shape (picker) with onClose renders a working ✕ close affordance pinned in the header, never a '← back to results' button anywhere", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  let closed = false;
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, onClose: () => { closed = true; },
+  });
+  const header = findAll(el, "wtn-dv-header")[0];
+  const closeBtn = findAll(header, "wtn-dv-close")[0];
+  assert.ok(closeBtn, "the header must render a close affordance");
+  assert.equal(closeBtn.textContent, "✕");
+  closeBtn.dispatch("click", { stopPropagation() {} });
+  assert.ok(closed, "clicking the close affordance must invoke onClose");
+  assert.equal(findAll(el, "wtn-dv-back").length, 0, "the header shape must never render '← back to results', with or without onClose");
+});
+
+test("buildModelDetailView: header shape (picker) without onClose simply omits the ✕ -- never a dead/disabled button", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({ doc, result, versionId: 3, browsingLevel: 1 });
+  assert.equal(findAll(el, "wtn-dv-close").length, 0);
+});
+
+test("buildModelDetailView: header shape (picker) ignores onBack entirely -- passing it renders neither a back button nor a close button on its own", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({ doc, result, versionId: 3, browsingLevel: 1, onBack: () => {} });
+  assert.equal(findAll(el, "wtn-dv-back").length, 0, "onBack must have no effect in the header shape");
+  assert.equal(findAll(el, "wtn-dv-close").length, 0, "onBack must not accidentally render a close button either");
+});
+
+test("buildModelDetailView: topbar shape (modal) ignores onClose entirely -- never renders a stray ✕, even when onClose is passed alongside onBack", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, fixedTopBar: true, onBack: () => {}, onClose: () => {},
+  });
+  assert.equal(findAll(el, "wtn-dv-close").length, 0, "the topbar shape must never render the header's close affordance");
+  assert.equal(findAll(el, "wtn-dv-back").length, 1, "the topbar shape's own '← back to results' is unaffected by onClose being passed");
 });
 
 test("BUG (owner, 2026-08-01): every ancestor in the scroll chain carries min-height: 0, not just .wtn-dv-body's own overflow-y -- the exact trap that silently defeats it", () => {
@@ -585,6 +887,81 @@ test("BUG (owner, 2026-08-01): every ancestor in the scroll chain carries min-he
     /\.wtn-dv\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-height:\s*0;?/,
     "the root itself must also be min-height: 0 so a bounded mount can actually constrain it",
   );
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01): "the detail panel should have padding, see
+// how the content is tight to the border of the panel" -- neither pinned
+// region nor the scrolling body had any padding at all.
+// =========================================================================
+
+test("BUG (owner, 2026-08-01): the scrolling body carries its OWN padding (on the element with overflow-y: auto itself, not an ancestor), matching civitai_search.mjs's own .wtn-cs-body rhythm", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  assert.match(
+    css,
+    /\.wtn-dv-body\s*\{[^}]*overflow-y:\s*auto;[^}]*padding:\s*9px 10px 10px;?/,
+    "the scrolling body itself must carry the padding, alongside its own overflow-y: auto",
+  );
+});
+
+test("BUG (owner, 2026-08-01): both pinned regions (the picker's .wtn-dv-header and the modal's .wtn-dv-topbar) carry padding too, not just the scrolling body", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  const headerRule = css.match(/\.wtn-dv-header\s*\{([^}]*)\}/)[1];
+  assert.match(headerRule, /padding:\s*9px 28px 0 10px;?/, "the picker's pinned header must have padding");
+  const topbarRule = css.match(/\.wtn-dv-topbar\s*\{([^}]*)\}/)[1];
+  assert.match(topbarRule, /padding:\s*8px 10px 8px;?/, "the modal's pinned topbar must have padding");
+});
+
+// =========================================================================
+// Task brief: "verify both mounts render every section" -- the owner
+// compared two screenshots and worried a section (description or gallery)
+// was being dropped in one shape and not the other; this proves the two
+// SHAPES (`fixedTopBar` false/true) build the identical SET of sections,
+// merely relocated between the pinned region and the scrolling body.
+// =========================================================================
+
+test("buildModelDetailView: both mounts (picker header vs. modal topbar) build the exact same set of sections -- identity, both descriptions, and the gallery, never dropped in one shape and not the other", () => {
+  const result = makeTwoVersionResult();
+  const detail = {
+    status: "loaded",
+    modelDescription: "Model write-up.",
+    versionDescription: "Version write-up.",
+    modelDescriptionChecked: true,
+    gallery: [{ url: "v3.jpg", nsfw_level: 1 }],
+  };
+  const buildActionEl = (d) => {
+    const b = d.createElement("button");
+    b.className = "wtn-cs-action";
+    return b;
+  };
+
+  const picker = buildModelDetailView({
+    doc: makeDocStub(), result, versionId: 3, browsingLevel: 1, detail, buildActionEl,
+    fixedTopBar: false, onClose: () => {},
+  });
+  const modal = buildModelDetailView({
+    doc: makeDocStub(), result, versionId: 3, browsingLevel: 1, detail, buildActionEl,
+    fixedTopBar: true, onBack: () => {},
+  });
+
+  const sectionClasses = ["wtn-dv-title", "wtn-dv-civlink", "wtn-dv-version-sel", "wtn-cs-action", "wtn-dv-desc", "wtn-dv-gimg"];
+  for (const cls of sectionClasses) {
+    const pickerCount = findAll(picker.el, cls).length;
+    const modalCount = findAll(modal.el, cls).length;
+    assert.ok(pickerCount > 0, `the picker shape must render at least one .${cls}`);
+    assert.equal(pickerCount, modalCount, `.${cls} count must match between the picker and modal shapes (picker=${pickerCount}, modal=${modalCount})`);
+  }
+  // Both descriptions AND the gallery heading, present in both shapes.
+  const pickerHeadings = findAll(picker.el, "wtn-dv-sechead").map(textOf).sort();
+  const modalHeadings = findAll(modal.el, "wtn-dv-sechead").map(textOf).sort();
+  assert.deepEqual(pickerHeadings, ["Gallery", "Model Description", "Version Description"].sort());
+  assert.deepEqual(pickerHeadings, modalHeadings, "the exact same set of section headings must render in both shapes");
 });
 
 // =========================================================================

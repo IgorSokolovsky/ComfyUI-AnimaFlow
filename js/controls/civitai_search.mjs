@@ -189,10 +189,21 @@ const IMAGE_PLACEHOLDER_SVG =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2H4zm0 2h16v9.59l-3.79-3.8a1 1 0 00-1.42 0L11 15.59l-2.29-2.3a1 1 0 00-1.42 0L4 16.59V6zm4 2a2 2 0 100 4 2 2 0 000-4z'/%3E%3C/svg%3E";
 
 const CSS = `
+/* Owner, 2026-08-01: "increase our panels width to be a little bigger" (so
+   the picker's own two-across gallery tiles, \`model_detail_view.mjs\`'s
+   \`"twoCol"\` layout, read comfortably rather than cramped), confirmed the
+   same day across ALL three of this pack's node-anchored panels -- this one
+   (shared by BOTH the search panel and its \`openModelDetailPanel\` sibling,
+   already the SAME rule), \`model_info.mjs\`'s ⓘ panel, and none other.
+   \`--wtn-panel-width-boost\` (\`js/shared/theme.css\`) is the ONE shared
+   delta both files read, so "how much bigger" can never drift into two
+   different numbers on two panels meant to move together. This panel's own
+   pre-existing 346px base is unchanged; only the boost is added. */
 .wtn-cs-panel {
-  width: 346px; max-height: 76vh; /* JS-computed inline max-height overrides this the instant the
-  panel is attached (see \`applyMaxHeight\` below) -- 76vh only ever paints for the one frame before
-  that runs, and is the fallback if no real viewport is available at all (headless/no window). */
+  width: calc(346px + var(--wtn-panel-width-boost, 50px)); max-height: 76vh; /* JS-computed inline
+  max-height overrides this the instant the panel is attached (see \`applyMaxHeight\` below) -- 76vh
+  only ever paints for the one frame before that runs, and is the fallback if no real viewport is
+  available at all (headless/no window). */
   display: flex; flex-direction: column; overflow: hidden;
   box-sizing: border-box; border-radius: 10px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line, ${TOKENS.line});
@@ -303,11 +314,16 @@ const CSS = `
    withhold the pointer from.
    \`box-shadow\` on hover, not just a border-color change (\`model_picker.mjs\`'s
    own \`.wtn-mp-row:hover\`, this pack's only other row-hover precedent) --
-   this pack's ONE existing shadow token, \`--wtn-shadow\`, is tuned for a
-   whole FLOATING panel/tooltip (\`0 10px 28px rgba(0,0,0,.55)\`, this file's
-   own \`.wtn-cs-panel\`), disproportionate for a ~52px-tall row in a list --
-   so this is a deliberately smaller, new value, scoped to this one
-   selector rather than a pack-wide token. The version \`<select>\`/Download/
+   this pack's existing panel/tooltip shadow token, \`--wtn-shadow\`, is tuned
+   for a whole FLOATING panel/tooltip (\`0 10px 28px rgba(0,0,0,.55)\`, this
+   file's own \`.wtn-cs-panel\`), disproportionate for a ~52px-tall row in a
+   list -- so this uses \`--wtn-row-shadow\` instead (\`js/shared/theme.css\`),
+   a deliberately smaller ROW-scale value. Originally introduced here as a
+   selector-local literal, then lifted into that shared token the same day
+   (2026-08-01) once \`civitai_modal.mjs\`'s own \`.wtn-cm-card:hover\` needed
+   the identical treatment -- one shared value both surfaces read, not two
+   hand-tuned rgba()s meant to match that drift the first time either is
+   touched. The version \`<select>\`/Download/
    Delete controls inside the card already \`stopPropagation\` their own
    clicks (\`buildCard\`'s own comment, below) and keep their OWN colored
    borders/backgrounds regardless of hover -- this elevation is on the
@@ -319,7 +335,7 @@ const CSS = `
   border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); background: var(--wtn-surface-2, ${TOKENS.surface2});
   cursor: pointer; transition: box-shadow .12s ease;
 }
-.wtn-cs-card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.4); }
+.wtn-cs-card:hover { box-shadow: var(--wtn-row-shadow, 0 3px 10px rgba(0,0,0,.4)); }
 .wtn-cs-thumb {
   flex: none; width: 40px; height: 40px; border-radius: 5px; overflow: hidden;
   background: var(--wtn-console, ${TOKENS.console}); border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
@@ -2238,7 +2254,7 @@ export function openCivitaiSearch({
 // §7c-ii -- the picker's own VERTICAL detail panel (decision 21): a SIBLING
 // overlay of the ⓘ panel, anchored to the CARD that was clicked, never the
 // modal and never an in-panel swap of the results list. `model_detail_view.mjs`
-// supplies the actual content (`buildModelDetailView`, `layout: "vertical"`)
+// supplies the actual content (`buildModelDetailView`, `layout: "twoCol"`)
 // -- this function is purely the MOUNT: the overlay shell, the fetch/
 // re-render loop for the two extra fields a search result doesn't already
 // carry (`civitai_api.mjs`'s `fetchModelDetail`), and this surface's own
@@ -2414,7 +2430,7 @@ export function openModelDetailPanel({
   function render() {
     host.innerHTML = "";
     const built = buildModelDetailView({
-      doc, layout: "vertical", result, versionId: currentVersionId, browsingLevel: currentLevel(),
+      doc, layout: "twoCol", result, versionId: currentVersionId, browsingLevel: currentLevel(),
       detail: detailState, buildActionEl: buildAction,
       onVersionChange: (id) => {
         currentVersionId = id;
@@ -2423,7 +2439,12 @@ export function openModelDetailPanel({
         }
         loadDetail();
       },
-      onBack: () => handle.close(),
+      // A close affordance, not a back one (owner, 2026-08-01: "why do we
+      // have a back button in this menu?") -- this panel is a SIBLING
+      // overlay (§7c-ii), not a swap back to a list, so dismissing it reads
+      // as `onClose`, not `onBack`. See `model_detail_view.mjs`'s own doc
+      // comment on that parameter for the full "why".
+      onClose: () => handle.close(),
       thumbRetryBackoffMs,
     });
     host.appendChild(built.el);

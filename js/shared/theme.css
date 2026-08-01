@@ -31,6 +31,30 @@
   /* shape / type */
   --wtn-radius: 10px; --wtn-radius-sm: 7px; --wtn-radius-lg: 13px;
   --wtn-shadow: 0 10px 28px rgba(0,0,0,.55);
+  /* A second, smaller shadow scale for a hovered ROW/CARD inside a list or
+     grid (a ~52px search result row, a ~190px modal grid card) -- `--wtn-
+     shadow` above is tuned for a whole floating panel/tooltip and reads as
+     disproportionate at that size. Introduced 2026-08-01 for
+     `civitai_search.mjs`'s own `.wtn-cs-card:hover`, then shared here the
+     same day once `civitai_modal.mjs`'s `.wtn-cm-card` needed the identical
+     treatment -- genuinely shared vocabulary now, not two hand-tuned values
+     drifting apart the first time either is touched. */
+  --wtn-row-shadow: 0 3px 10px rgba(0,0,0,.4);
+  /* The shared WIDEN-BY delta for this pack's three node-anchored floating
+     panels -- `civitai_search.mjs`'s own `.wtn-cs-panel` (the search panel
+     AND its `openModelDetailPanel` sibling, which already share that ONE
+     rule) and `model_info.mjs`'s own `.wtn-mi-panel` (the ⓘ panel). Owner,
+     2026-08-01: "increase our panels width to be a little bigger" (to make
+     the picker's own two-across gallery tiles comfortable), then confirmed
+     across all three: "also the lora info panel width too." A single shared
+     DELTA, not three independently-typed widths -- each panel keeps its own
+     pre-existing base literal (346px / 336px; that 10px gap between them
+     predates this change and is preserved, not something this introduces or
+     removes) via `calc(<base> + var(--wtn-panel-width-boost))`, so the ONE
+     number that answers "how much bigger" can never drift into two
+     different amounts on two panels meant to move together -- the same
+     argument that already applied to `--wtn-row-shadow` above. */
+  --wtn-panel-width-boost: 50px;
   --wtn-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --wtn-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 

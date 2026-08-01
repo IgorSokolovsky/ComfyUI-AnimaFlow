@@ -11,11 +11,15 @@
  * neither owns a second copy of the actual content: identity, version
  * selector, both descriptions, `View on Civitai ↗`, and the gallery all
  * come from `buildModelDetailView` below, parameterised by `layout`
- * ("vertical" — one column — vs. "grid" — the modal's multi-column gallery,
- * §"The detail view": "same data, same component, two layouts") and, since
- * 2026-08-01, by `fixedTopBar` too (that parameter's own doc comment has the
- * full "why" — the picker and the modal turned out to want DIFFERENT pinned-
- * controls shapes, not just different gallery columns).
+ * (renamed 2026-08-01 -- see that parameter's own doc comment for the full
+ * "why": `"twoCol"`, the picker's small two-across grid, vs. `"filmstrip"`,
+ * the modal's single horizontally-scrolling row — the OLD names,
+ * `"vertical"`/`"grid"`, described the gallery's shape backwards once the
+ * picker's own gallery became a two-column GRID and the modal's became a
+ * single-row FILMSTRIP) and, since 2026-08-01, by `fixedTopBar` too (that
+ * parameter's own doc comment has the full "why" — the picker and the modal
+ * turned out to want DIFFERENT pinned-controls shapes, not just different
+ * gallery layouts).
  *
  * ## Track-agnostic, joining the existing reuse boundary
  *
@@ -213,6 +217,28 @@ export function visibleGalleryEntries(gallery, level) {
     && (Number.isFinite(img.nsfw_level) ? img.nsfw_level : 16) <= lvl);
 }
 
+/**
+ * How many usable gallery entries `visibleGalleryEntries` is filtering OUT
+ * at `level` -- owner, 2026-08-01: *"why does the gallery show only 6
+ * images"* turned out to be `visibleGalleryEntries`'s own level filter
+ * (working as designed), silently dropping the rest with no indication --
+ * inconsistent with a CARD's own thumbnail, which shows an explicit
+ * `locked` glyph for the same reason. This is the number a caller renders
+ * as an honest one-line count ("N images hidden by your browsing level")
+ * instead of just vanishing them. `total` uses the SAME "has a usable url"
+ * predicate `visibleGalleryEntries` itself applies (never counting a
+ * genuinely unusable entry as "hidden"), so the result is always
+ * `total - visible`, never negative. At the maximum browsing level nothing
+ * can be above it, so this is always `0` there -- never a special case, a
+ * consequence of the same subtraction. Garbage/non-array `gallery` degrades
+ * to `0`, never throws. */
+export function hiddenGalleryCount(gallery, level) {
+  const list = Array.isArray(gallery) ? gallery : [];
+  const total = list.filter((img) => img && typeof img.url === "string" && img.url).length;
+  const visible = visibleGalleryEntries(list, level).length;
+  return Math.max(0, total - visible);
+}
+
 /** The gallery BOX's own state -- reuses `civitai_thumb.mjs`'s `thumbState`
  * verbatim (same "empty list can also mean locked" bitmask-union logic,
  * §7c-iv), with `cardState` always `null`/absent: this view has no `gated`
@@ -328,7 +354,31 @@ const CSS = `
    own \`flex-grow\`/\`overflow-y\` are inert -- harmless, not a second,
    competing scrollbar. */
 .wtn-dv { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--wtn-ink, ${TOKENS.ink}); }
-.wtn-dv-header { flex: none; display: flex; flex-direction: column; gap: 2px; }
+/* Owner-reported bug (2026-08-01): "the detail panel should have padding,
+   see how the content is tight to the border of the panel" -- neither pinned
+   region (this rule, \`.wtn-dv-topbar\` below) nor the scrolling body
+   (\`.wtn-dv-body\` below) had ANY padding, so identity/descriptions/gallery
+   all butted straight against the panel edge. Matches this pack's own
+   existing panel rhythm rather than inventing a new spacing scale --
+   \`civitai_search.mjs\`'s own \`.wtn-cs-body\` is \`padding: 9px 10px 10px\`;
+   this header shares that same top/side value, minus the bottom third
+   (its last child, \`.wtn-dv-actionhost\`, already carries its own \`margin:
+   6px 0 8px\`, so a padding-bottom here would just double that gap against
+   \`.wtn-dv-body\`'s own top padding immediately below it). \`position:
+   relative\` is only so \`.wtn-dv-close\` (below) can anchor to THIS box's own
+   corner, not the whole \`.wtn-dv\` root. The reserved 18px on the right
+   (28px vs. the 10px every other edge gets) is that same close button's own
+   clearance -- so a long, wrapped title's first line never runs under it. */
+.wtn-dv-header { flex: none; display: flex; flex-direction: column; gap: 2px; position: relative; padding: 9px 28px 0 10px; }
+/* The picker's own close affordance (owner, 2026-08-01, replacing the
+   removed "← back to results" -- see \`onClose\`'s own doc comment on
+   \`buildModelDetailView\` for the full "why") -- same ✕ glyph, same
+   ink-faint/ink hover colours, same top-right corner as this pack's other
+   two panel closers (\`civitai_search.mjs\`'s own \`.wtn-cs-close\`,
+   \`civitai_modal.mjs\`'s own \`.wtn-cm-close\`), just this component's own
+   class rather than reaching into either sibling file's stylesheet. */
+.wtn-dv-close { position: absolute; top: 8px; right: 8px; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 13px; }
+.wtn-dv-close:hover { color: var(--wtn-ink, ${TOKENS.ink}); }
 /* Owner-reported, then corrected to modal-only (2026-08-01): "back to
    results should not be in the end of the scroll down... it should be in
    the top navigation bar, which should be fixed position, which should
@@ -344,12 +394,48 @@ const CSS = `
    their intrinsic size. */
 .wtn-dv-topbar {
   flex: none; display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-  padding-bottom: 8px; border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  /* Same padding fix as \`.wtn-dv-header\` above, this shape's own pinned
+     region -- top/sides match this pack's own panel rhythm
+     (\`civitai_search.mjs\`'s \`.wtn-cs-head\`, \`padding: 8px 10px\`); bottom
+     stays the pre-existing 8px (the separator's own clearance, unchanged). */
+  padding: 8px 10px 8px; border-bottom: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
 }
 .wtn-dv-topbar .wtn-dv-versionrow { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
 .wtn-dv-topbar .wtn-dv-actionhost { flex: none; margin: 0; }
-.wtn-dv-topbar .wtn-dv-back { flex: none; margin-top: 0; align-self: center; }
-.wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+/* Owner-reported, with a screenshot (2026-08-01): "← back to results" reads
+   shorter than the version <select> beside it in this row -- the SAME class
+   of bug \`.wtn-cs-action\`'s own doc comment already names for the Delete-vs-
+   ✓-installed mismatch (a plain element's box is padding+line-height+border,
+   but a native form control ALSO carries the browser's own chrome, which
+   doesn't obey that padding/line-height the same way) -- not a padding
+   difference to eyeball, a THIRD different element (a dashed \`<button>\`, a
+   native \`<select>\`, and whatever \`buildActionEl\` returns) each sized by its
+   own chrome. Fixed the same way: pin all three to one explicit height +
+   box-sizing: border-box, so line-height/native chrome no longer decides
+   it. Height picked to comfortably fit the SELECT (the tallest of the
+   three unstyled) rather than the button's smaller natural size. */
+.wtn-dv-topbar .wtn-dv-back {
+  flex: none; margin-top: 0; align-self: center; height: 26px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0 9px;
+  appearance: none; -webkit-appearance: none;
+}
+/* Owner-reported, same screenshot: the select's own dropdown arrow sits
+   flush against its right border -- needs its own padding-right to clear
+   it, same family of native-\`<select>\` problem \`.wtn-cs-version-sel\`
+   (civitai_search.mjs) already solved for ITS own narrow, ellipsised shape;
+   this one doesn't need the ellipsis treatment (this row's version select
+   is the flexible-width element, never clipped), just the right-hand
+   clearance and the same fixed-height/border-box treatment as the other
+   two controls in this row. */
+.wtn-dv-topbar .wtn-dv-version-sel { height: 26px; box-sizing: border-box; padding: 0 22px 0 8px; }
+/* The scrolling body's own padding lives HERE, on the element that actually
+   carries \`overflow-y: auto\` -- never on an ancestor. Padding on a scroll
+   container's PARENT instead would leave its scrollbar inset from the panel
+   edge and clip content oddly at the scroll boundary; this is why it isn't
+   hoisted onto \`.wtn-dv\` (the ancestor both pinned shapes and this body
+   share). Value matches \`civitai_search.mjs\`'s own \`.wtn-cs-body\` exactly
+   (\`padding: 9px 10px 10px\`) -- same family of panel, same rhythm. */
+.wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 9px 10px 10px; }
 .wtn-dv-head { display: flex; gap: 10px; align-items: flex-start; }
 .wtn-dv-thumb {
   width: 58px; height: 58px; flex: none; border-radius: 7px; overflow: hidden;
@@ -382,12 +468,42 @@ ${THUMB_SKELETON_CSS}
 
 .wtn-dv-actionhost { margin: 6px 0 8px; }
 
-.wtn-dv-sechead { font-family: var(--wtn-font-mono, monospace); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); margin: 8px 0 4px; }
+/* Owner-reported (2026-08-01): "GALLERY"/"VERSION DESCRIPTION"/"MODEL
+   DESCRIPTION" read too small to work as section separators in a panel this
+   size -- the fix is SIZE only ("keep whatever letter-spacing/uppercase
+   treatment they already have"), so only \`font-size\` changes here (10px ->
+   13px); letter-spacing/text-transform/colour are untouched, and every
+   section heading in this file shares this ONE rule, so the three stay
+   identical to each other by construction, not by three separate values
+   happening to agree. */
+.wtn-dv-sechead { font-family: var(--wtn-font-mono, monospace); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); margin: 8px 0 4px; }
 .wtn-dv-desc { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: pre-wrap; line-height: 1.4; }
 .wtn-dv-desc-empty { font-size: 11.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
+.wtn-dv-gallery-hidden { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 6px; }
 
-.wtn-dv-gallery-vertical { display: flex; flex-direction: column; gap: 10px; }
-.wtn-dv-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+/* Owner, 2026-08-01: two mounts, two DIFFERENT gallery shapes (renamed the
+   same day from the old "vertical"/"grid" \`layout\` values, which had come
+   to describe the gallery's shape BACKWARDS -- see \`buildModelDetailView\`'s
+   own \`layout\` doc comment for the full "why" and the rename itself).
+   \`"twoCol"\` (the picker, owner: "the author images gallery ... image
+   sizes should be small so 2 images fit in 1 row ... no horizontal scroll,
+   only vertical") is a plain 2-column grid that wraps downward with the
+   rest of the scrolling body -- no \`overflow\` of its own at all, so there
+   is nothing here that COULD scroll sideways. \`"filmstrip"\` (the modal,
+   owner: "it should be in 1 line with horizontal scroll") is a single ROW
+   that scrolls horizontally, contained to itself -- \`min-width: 0\` is the
+   exact horizontal mirror of \`.wtn-dv-body\`'s own \`min-height: 0\` fix
+   above (this file's own CSS comment on that rule has the full trap): a
+   flex item's default \`min-width: auto\` refuses to shrink below its
+   content's width, which would silently defeat \`overflow-x: auto\` here the
+   same way an unshrinkable height defeated \`overflow-y: auto\` there. Tiles
+   get \`flex: none\` (never shrinking to fit, which is what actually forces
+   the overflow rather than everyone cramming into the available width) and
+   an explicit width, since \`.wtn-dv-gbox\`'s own \`width: 100%\` needs a
+   definite box to be 100% OF. */
+.wtn-dv-gallery-twocol { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.wtn-dv-gallery-filmstrip { display: flex; flex-direction: row; gap: 10px; overflow-x: auto; overflow-y: hidden; min-width: 0; padding-bottom: 4px; }
+.wtn-dv-gallery-filmstrip .wtn-dv-gimg { flex: none; width: 200px; }
 .wtn-dv-gimg { position: relative; border-radius: 7px; overflow: hidden; }
 .wtn-dv-gbox {
   position: relative; width: 100%; aspect-ratio: 1 / 1; background: var(--wtn-console, ${TOKENS.console});
@@ -584,9 +700,17 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *
  * @param {object} opts
  * @param {Document} opts.doc
- * @param {"vertical"|"grid"} [opts.layout] - "vertical" (the picker's single
- *   column, §7c-ii) or "grid" (the modal's multi-column gallery, decision 11)
- *   -- the ONLY thing that differs between the two mounts.
+ * @param {"twoCol"|"filmstrip"} [opts.layout] - which GALLERY shape this
+ *   mount wants (renamed 2026-08-01 from `"vertical"`/`"grid"`, which had
+ *   drifted to describe the shape backwards -- the picker's own gallery is
+ *   now the one that's a GRID, and the modal's is now a single scrolling
+ *   ROW): `"twoCol"` (default, the picker, §7c-ii) is a plain 2-column grid,
+ *   small tiles, wrapping downward with the rest of the scrolling body --
+ *   NO horizontal scroll of its own (owner, 2026-08-01: "no horizontal
+ *   scroll, only vertical"). `"filmstrip"` (the modal, decision 11) is a
+ *   SINGLE row that scrolls sideways, contained to itself (owner: "it
+ *   should be in 1 line with horizontal scroll") -- this is the ONLY thing
+ *   that differs between the two mounts' gallery.
  * @param {object} opts.result - the raw search-result object (has `versions[]`,
  *   `model_id`, `name`, `creator`, `type`, `tags`, `stats`, `nsfw_level`).
  * @param {number} [opts.versionId] - the currently-selected version id;
@@ -604,15 +728,33 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *   makes a download decision itself (§7c: the two mounts' actions genuinely
  *   differ -- "returns to the row" vs. "lands in the derived folder").
  * @param {(versionId: number) => void} [opts.onVersionChange]
- * @param {() => void} [opts.onBack] - "← results"/"← back to results".
+ * @param {() => void} [opts.onBack] - "← back to results" -- the TOPBAR
+ *   shape's own control ONLY (`fixedTopBar: true`, the modal): it genuinely
+ *   swaps the master grid back into view, so "back" is an honest verb for
+ *   what it does. Rendered into `.wtn-dv-topbar`; has no effect at all when
+ *   `fixedTopBar` is false -- the header shape never had a real "back" step
+ *   to offer (see `onClose`, directly below, for what it renders instead).
+ * @param {() => void} [opts.onClose] - the HEADER shape's own control ONLY
+ *   (`fixedTopBar` false/default, the picker): a ✕ affordance pinned to the
+ *   top-right corner of `.wtn-dv-header`. Owner, 2026-08-01: *"why do we
+ *   have a back button in this menu?"* -- fair, because the picker's detail
+ *   view is a SIBLING overlay (§7c-ii), never a swap back to a list, so
+ *   dismissing it is "close", not "back". This replaced an earlier
+ *   `onBack`-driven "← back to results" that used to render at the BOTTOM of
+ *   the scrolling `.wtn-dv-body` in this shape -- both the wrong verb (no
+ *   "back" step exists here to describe) and the wrong place (the bottom of
+ *   a long scroll, when Escape/outside-click were the only OTHER way out of
+ *   this panel and neither is discoverable). Has no effect at all when
+ *   `fixedTopBar` is true -- the topbar shape's own `← back to results`
+ *   (above) already covers leaving it.
  * @param {boolean} [opts.fixedTopBar] - which PINNED shape this mount wants
  *   (owner, 2026-08-01, corrected to per-mount the same day -- "what i
  *   mentioned was for the browser modal"): `false` (default, the picker's
  *   own sibling panel) keeps identity/`View on Civitai ↗`/the version
- *   selector/the download action together in `.wtn-dv-header`, with `onBack`
- *   rendered down in the scrolling `.wtn-dv-body` (it just closes this
- *   panel, not a real "back" step -- not one of the three controls the
- *   fixed bar is for). `true` (the modal's master→detail swap) instead pins
+ *   selector/the download action together in `.wtn-dv-header`, with
+ *   `onClose`'s own ✕ pinned to that same header's corner (see its own doc
+ *   comment, above, for why a close affordance replaced the earlier back
+ *   button here). `true` (the modal's master→detail swap) instead pins
  *   ONLY `← results` + the version selector + the download action, together,
  *   on one row, in `.wtn-dv-topbar` -- the modal's own actual complaint was
  *   that reaching `← results` meant scrolling past an entire model
@@ -636,7 +778,7 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  */
 export function buildModelDetailView({
   doc,
-  layout = "vertical",
+  layout = "twoCol",
   result,
   versionId,
   browsingLevel = 1,
@@ -644,6 +786,7 @@ export function buildModelDetailView({
   buildActionEl,
   onVersionChange,
   onBack,
+  onClose,
   fixedTopBar = false,
   onCopyPrompt = defaultCopyToClipboard,
   thumbRetryBackoffMs = THUMB_RETRY_BACKOFF_MS,
@@ -654,7 +797,7 @@ export function buildModelDetailView({
   let stale = false;
   const isStale = () => stale;
 
-  const root = el(doc, "div", `wtn-dv wtn ${layout === "grid" ? "wtn-dv-grid" : "wtn-dv-vertical"}`);
+  const root = el(doc, "div", `wtn-dv wtn ${layout === "filmstrip" ? "wtn-dv-filmstrip" : "wtn-dv-twocol"}`);
   // The pinned/scrolling split (this file's own CSS comment, "Owner-reported
   // bug (2026-08-01)") -- `topControls` never scrolls; `bodyHost` is the ONE
   // region that does. Named `bodyHost`, not `body`, because the description
@@ -681,8 +824,7 @@ export function buildModelDetailView({
 
   // ---- the topbar shape's own "← results", built FIRST so it can be the
   // FIRST child appended below (task brief's own order: back, version,
-  // download) -- the header shape's back affordance is built later, in its
-  // usual place at the end of the scrolling body, unchanged. ---------------
+  // download). ---------------------------------------------------------------
   if (fixedTopBar && typeof onBack === "function") {
     const backBtn = el(doc, "button", "wtn-dv-back");
     backBtn.type = "button";
@@ -692,6 +834,25 @@ export function buildModelDetailView({
       onBack();
     });
     topControls.appendChild(backBtn);
+  }
+
+  // ---- the header shape's own ✕ close affordance (owner, 2026-08-01) --
+  // `onClose`'s own doc comment above has the full "why a close button, not
+  // a back button, and why the corner rather than the bottom of the scroll".
+  // `.wtn-dv-close` is absolutely positioned (this file's own CSS), so where
+  // it's appended within `topControls` doesn't affect where it paints --
+  // appended here, alongside the topbar's own pinned controls, rather than
+  // down in the identity block below, purely to keep every `topControls`-
+  // level append grouped together at the top of this function. -------------
+  if (!fixedTopBar && typeof onClose === "function") {
+    const closeBtn = el(doc, "span", "wtn-dv-close");
+    closeBtn.textContent = "✕"; // ✕
+    closeBtn.title = "Close";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClose();
+    });
+    topControls.appendChild(closeBtn);
   }
 
   // ---- identity ----------------------------------------------------------
@@ -795,40 +956,15 @@ export function buildModelDetailView({
   }
   topControls.appendChild(actionHost);
 
-  // ---- both descriptions, each under its OWN label (§7d-i) ---------------
   const d = detail && typeof detail === "object" ? detail : {};
-  const descView = detailDescriptionsView({
-    modelDescription: d.modelDescription,
-    versionDescription: d.versionDescription,
-    modelDescriptionChecked: d.modelDescriptionChecked,
-    loading: d.status === "loading",
-  });
-  if (descView.model) {
-    const heading = el(doc, "div", "wtn-dv-sechead");
-    heading.textContent = "Model Description";
-    bodyHost.appendChild(heading);
-    const body = el(doc, "div", "wtn-dv-desc");
-    body.textContent = descView.model; // never innerHTML -- already plain text (html_to_text ran server-side)
-    bodyHost.appendChild(body);
-  }
-  if (descView.version) {
-    const heading = el(doc, "div", "wtn-dv-sechead");
-    heading.textContent = "Version Description";
-    bodyHost.appendChild(heading);
-    const body = el(doc, "div", "wtn-dv-desc");
-    body.textContent = descView.version;
-    bodyHost.appendChild(body);
-  }
-  if (descView.emptyMessage) {
-    const empty = el(doc, "div", "wtn-dv-desc-empty");
-    empty.textContent = descView.emptyMessage;
-    bodyHost.appendChild(empty);
-  }
 
-  bodyHost.appendChild(el(doc, "hr", "wtn-dv-sep"));
-
-  // ---- gallery (author's own -- see this file's own top doc comment for
-  // why the heading reads GALLERY, not "community images") ----------------
+  // ---- gallery, MOVED to the TOP of the scrolling body (owner, 2026-08-01:
+  // "if its the author gallery it should be at the top, before the model
+  // description ... fastest answer to what does this LoRA actually do" --
+  // it used to sit below a description that can run thousands of pixels,
+  // which is what made it feel missing in the first place). Author's own --
+  // see this file's own top doc comment for why the heading reads GALLERY,
+  // not "community images". ------------------------------------------------
   const galleryHeading = el(doc, "div", "wtn-dv-sechead");
   galleryHeading.textContent = "Gallery";
   bodyHost.appendChild(galleryHeading);
@@ -850,31 +986,71 @@ export function buildModelDetailView({
       emptyEl.textContent = "No gallery images for this version.";
       bodyHost.appendChild(emptyEl);
     } else {
-      const grid = el(doc, "div", layout === "grid" ? "wtn-dv-gallery-grid" : "wtn-dv-gallery-vertical");
+      const grid = el(doc, "div", layout === "filmstrip" ? "wtn-dv-gallery-filmstrip" : "wtn-dv-gallery-twocol");
       const gate = createLoadGate(galleryConcurrency);
       for (const entry of visible) {
         grid.appendChild(buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs: thumbRetryBackoffMs, gate }));
       }
       bodyHost.appendChild(grid);
+      // Owner, 2026-08-01: "why does the gallery show only 6 images" -- the
+      // level filter, silently. State the omission instead of just vanishing
+      // it (never a grid of lock glyphs, one for each -- "one honest line is
+      // information"), and ONLY when something is actually hidden --
+      // `hiddenGalleryCount` is already 0 at the maximum browsing level, so
+      // this never renders a false claim there.
+      const hiddenCount = hiddenGalleryCount(gallery, browsingLevel);
+      if (hiddenCount > 0) {
+        const hiddenEl = el(doc, "div", "wtn-dv-gallery-hidden");
+        hiddenEl.textContent = `${hiddenCount} image${hiddenCount === 1 ? "" : "s"} hidden by your browsing level.`;
+        bodyHost.appendChild(hiddenEl);
+      }
     }
   }
 
-  // ---- back affordance -- HEADER shape only (stays in the SCROLLING body,
-  // never pinned there: the picker's own "back" just closes an already-
-  // sibling panel, not a real navigation step, so it isn't one of the
-  // header shape's pinned controls). The topbar shape built its OWN
-  // `← back to results` FIRST, at the top of this function, as the first
-  // child of `.wtn-dv-topbar` -- see that block's own comment. ------------
-  if (!fixedTopBar && typeof onBack === "function") {
-    const backBtn = el(doc, "button", "wtn-dv-back");
-    backBtn.type = "button";
-    backBtn.textContent = "← back to results";
-    backBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onBack();
-    });
-    bodyHost.appendChild(backBtn);
+  bodyHost.appendChild(el(doc, "hr", "wtn-dv-sep"));
+
+  // ---- both descriptions, each under its OWN label (§7d-i), VERSION before
+  // MODEL -- reordered the same day as the gallery move above (owner's own
+  // new body order: "identity/stats -> gallery -> version description ->
+  // model description"). ---------------------------------------------------
+  const descView = detailDescriptionsView({
+    modelDescription: d.modelDescription,
+    versionDescription: d.versionDescription,
+    modelDescriptionChecked: d.modelDescriptionChecked,
+    loading: d.status === "loading",
+  });
+  if (descView.version) {
+    const heading = el(doc, "div", "wtn-dv-sechead");
+    heading.textContent = "Version Description";
+    bodyHost.appendChild(heading);
+    const body = el(doc, "div", "wtn-dv-desc");
+    body.textContent = descView.version;
+    bodyHost.appendChild(body);
   }
+  if (descView.model) {
+    const heading = el(doc, "div", "wtn-dv-sechead");
+    heading.textContent = "Model Description";
+    bodyHost.appendChild(heading);
+    const body = el(doc, "div", "wtn-dv-desc");
+    body.textContent = descView.model; // never innerHTML -- already plain text (html_to_text ran server-side)
+    bodyHost.appendChild(body);
+  }
+  if (descView.emptyMessage) {
+    const empty = el(doc, "div", "wtn-dv-desc-empty");
+    empty.textContent = descView.emptyMessage;
+    bodyHost.appendChild(empty);
+  }
+
+  // The header shape (picker) used to build its OWN "← back to results"
+  // here, at the bottom of the scrolling body -- removed (owner, 2026-08-01:
+  // "why do we have a back button in this menu?"). It never described a real
+  // navigation step (this panel is a SIBLING overlay, not a swap back to a
+  // list) and sat at the bottom of a long scroll besides. Replaced by
+  // `onClose`'s own ✕, pinned in `.wtn-dv-header`'s corner -- see that
+  // parameter's own doc comment for the full "why". The topbar shape's
+  // (modal's) `← back to results` is unchanged, built at the TOP of this
+  // function as the first child of `.wtn-dv-topbar` -- see that block's own
+  // comment, above.
 
   return {
     el: root,

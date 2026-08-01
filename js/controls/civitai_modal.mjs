@@ -401,11 +401,27 @@ const CSS = `
 .wtn-cm-detailhost { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 16px; }
 .wtn-cm-empty { color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 12.5px; padding: 20px 4px; }
 .wtn-cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+/* Owner-reported (2026-08-01): "in the browser modal the cards should also
+   have shadow elevate and cursor pointer on hover" -- the same fix
+   \`civitai_search.mjs\`'s own \`.wtn-cs-card\` already got, reused rather than
+   re-authored (that file's own doc comment on \`.wtn-cs-card\` has the full
+   "why" for \`cursor: pointer\`/the hover elevation/why the interactive
+   children are unaffected). \`--wtn-row-shadow\` (\`js/shared/theme.css\`) is
+   the SAME token that selector reads -- lifted there specifically so this
+   card and that one can never drift onto two different hand-tuned values.
+   Every card in THIS grid is genuinely clickable, including a \`kind: null\`
+   one (\`buildCard\`'s own unconditional click listener, below, calls
+   \`openDetail(result)\` regardless of \`kind\` -- a null-kind result still
+   opens a real, useful detail view, just one whose action column shows the
+   honest "not installable" line instead of a download button) -- so unlike
+   a genuinely inert control, there is no card here to withhold the pointer
+   from. */
 .wtn-cm-card {
   display: flex; flex-direction: column; gap: 6px; padding: 8px;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line, ${TOKENS.line});
-  border-radius: 8px;
+  border-radius: 8px; cursor: pointer; transition: box-shadow .12s ease;
 }
+.wtn-cm-card:hover { box-shadow: var(--wtn-row-shadow, 0 3px 10px rgba(0,0,0,.4)); }
 .wtn-cm-thumb {
   position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 6px; overflow: hidden;
   background: var(--wtn-surface, ${TOKENS.surface}); display: flex; align-items: center; justify-content: center;
@@ -444,6 +460,25 @@ ${THUMB_SKELETON_CSS}
 .wtn-cm-action-gated { background: var(--wtn-warn, ${TOKENS.warn}); color: #201400; }
 .wtn-cm-action-cancel { background: transparent; border-color: rgba(248,113,113,.4); color: var(--wtn-bad, ${TOKENS.bad}); }
 .wtn-cm-actioncol-row { display: flex; align-items: center; gap: 8px; }
+/* Owner-reported, with a screenshot (2026-08-01): in the detail view's fixed
+   top bar ("← back to results" / the version select / this action), this
+   button read shorter than the version \`<select>\` beside it -- same class
+   of bug as \`civitai_search.mjs\`'s own \`.wtn-cs-action\` doc comment names
+   for the Delete-vs-✓-installed mismatch (a native form control carries
+   browser chrome that ignores ordinary padding/line-height sizing), fixed
+   the same way there. Scoped to \`.wtn-dv-topbar\` (\`model_detail_view.mjs\`'s
+   own class, defined in that file's stylesheet -- CSS cascades across
+   stylesheets regardless of which file declares a rule) rather than made
+   global, since THIS grid's own \`.wtn-cm-card\` action column was never
+   reported as mismatched and giving it a fixed height too is an unscoped
+   risk this task didn't ask for. Height matches \`.wtn-dv-topbar\`'s other
+   two controls (\`model_detail_view.mjs\`'s own \`.wtn-dv-back\`/\`.wtn-dv-
+   version-sel\`, 26px) exactly -- one shared number across two files' CSS,
+   not two independently-tuned ones. */
+.wtn-dv-topbar .wtn-cm-action {
+  height: 26px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 10px;
+}
 `;
 
 function el(doc, tag, className) {
@@ -1074,7 +1109,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
 
   // -------------------------------------------------------------------------
   // The master→detail swap (decision 11) -- `model_detail_view.mjs` supplies
-  // the actual content (`buildModelDetailView`, `layout: "grid"`); everything
+  // the actual content (`buildModelDetailView`, `layout: "filmstrip"`); everything
   // here is this MOUNT's own wiring: which half of `main` is visible, the
   // fetch/re-render loop for the two extra fields a search result doesn't
   // already carry (`civitai_api.mjs`'s `fetchModelDetail`), and this
@@ -1144,9 +1179,15 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       return wrap;
     }
 
+    // Owner-reported, with a screenshot (2026-08-01): "→ models/checkpoints/"
+    // sat ABOVE the Download button -- it's a CAPTION for that button (where
+    // the file will land), so it reads as attached to it by sitting
+    // UNDERNEATH, not floating above. Built here (destination is known
+    // before the button is), appended AFTER `btn` below -- DOM order is
+    // what actually controls the read order, not source order of the two
+    // `el()` calls.
     const dest = el(doc, "div", "wtn-cm-dest");
     dest.textContent = destinationLabelForKind(detailKind);
-    wrap.appendChild(dest);
     const missingFile = !view.file_name || !view.download_url;
     const btn = el(doc, "button", "wtn-cm-action");
     btn.type = "button";
@@ -1183,6 +1224,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       renderGrid(); // keep the list's own card in sync for when the user swaps back
     });
     wrap.appendChild(btn);
+    wrap.appendChild(dest);
     if (detailActionMessage) {
       const msgEl = el(doc, "div", "wtn-cm-cardmsg");
       msgEl.textContent = detailActionMessage;
@@ -1197,7 +1239,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       return;
     }
     const built = buildModelDetailView({
-      doc: targetDoc, layout: "grid", result: detailResult, versionId: detailVersionId,
+      doc: targetDoc, layout: "filmstrip", result: detailResult, versionId: detailVersionId,
       browsingLevel: levelLabelToInt(currentFilters.level), detail: detailData,
       buildActionEl: buildDetailAction,
       onVersionChange: (id) => {

@@ -3120,9 +3120,9 @@ await asyncTest("openModelDetailPanel: switching the version INSIDE the panel re
   }
 });
 
-await asyncTest("openModelDetailPanel: '← back to results' closes the detail panel only", async () => {
+await asyncTest("openModelDetailPanel: the header's ✕ close affordance closes the detail panel only -- no '← back to results' anywhere (owner, 2026-08-01: 'why do we have a back button in this menu?')", async () => {
   _resetDownloadStateForTests();
-  const result = makeMultiVersionSearchResult({ modelId: 52, name: "Back Button Test" });
+  const result = makeMultiVersionSearchResult({ modelId: 52, name: "Close Button Test" });
   invalidateModelDetail(52, 1);
   stubFetch(async (url) => {
     if (String(url).includes("/model_detail")) {
@@ -3139,10 +3139,11 @@ await asyncTest("openModelDetailPanel: '← back to results' closes the detail p
     const handle = openModelDetailPanel({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 1 });
     await settle();
 
-    const backBtn = findAll(handle.overlay, "wtn-dv-back")[0];
-    assert.ok(backBtn, "the detail panel must offer a back affordance");
-    assert.equal(backBtn.textContent, "← back to results");
-    backBtn.dispatch("click", { stopPropagation() {} });
+    assert.equal(findAll(handle.overlay, "wtn-dv-back").length, 0, "the picker's detail panel must never render '← back to results'");
+    const closeBtn = findAll(handle.overlay, "wtn-dv-close")[0];
+    assert.ok(closeBtn, "the detail panel must offer a ✕ close affordance in its header");
+    assert.equal(closeBtn.textContent, "✕");
+    closeBtn.dispatch("click", { stopPropagation() {} });
 
     assert.equal(handle.overlay.parentNode, null, "the detail panel itself must be gone");
   } finally {
@@ -3213,6 +3214,50 @@ await asyncTest("openModelDetailPanel: the primary action reads plain '↓ Downl
     restoreFetch();
     _resetDownloadStateForTests();
   }
+});
+
+await asyncTest("openModelDetailPanel: the gallery renders BEFORE both descriptions, as a small TWO-COLUMN grid (owner, 2026-08-01) -- no horizontal scroll", async () => {
+  _resetDownloadStateForTests();
+  const result = makeMultiVersionSearchResult({ modelId: 55, name: "Gallery Order Test" });
+  invalidateModelDetail(55, 1);
+  stubFetch(async (url) => {
+    if (String(url).includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: "Model write-up.", model_description_checked: true,
+        version_description: "Version write-up.",
+        gallery: [{ url: "a.jpg", nsfw_level: 1 }, { url: "b.jpg", nsfw_level: 1 }],
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const anchor = doc.createElement("button");
+    const handle = openModelDetailPanel({ ctx: { doc, getCanvasEl: () => null }, anchorEl: anchor, kind: "loras", result, versionId: 1 });
+    await settle();
+
+    const headings = findAll(handle.overlay, "wtn-dv-sechead").map((h) => h.textContent);
+    assert.deepEqual(headings, ["Gallery", "Version Description", "Model Description"], "the picker's own mount must render gallery, then version desc, then model desc");
+
+    const grid = findAll(handle.overlay, "wtn-dv-gallery-twocol")[0];
+    assert.ok(grid, "the picker's own mount must use the twoCol gallery shape, not the modal's filmstrip");
+    assert.equal(findAll(grid, "wtn-dv-gimg").length, 2);
+    assert.equal(findAll(handle.overlay, "wtn-dv-gallery-filmstrip").length, 0);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+  }
+});
+
+test("BUG (owner, 2026-08-01): .wtn-cs-panel's width reads the shared --wtn-panel-width-boost token, not a private literal (the search panel AND its openModelDetailPanel sibling share this ONE rule already)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const rule = styleEl.textContent.match(/\.wtn-cs-panel\s*\{([^}]*)\}/)[1];
+  assert.match(rule, /width:\s*calc\(346px \+ var\(--wtn-panel-width-boost,\s*50px\)\)/);
 });
 
 // =========================================================================

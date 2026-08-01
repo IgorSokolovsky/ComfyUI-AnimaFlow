@@ -18,6 +18,7 @@ import {
   lookupStateView,
   descriptionsView,
   openModelInfo,
+  injectStyles,
 } from "./model_info.mjs";
 import { invalidateInfo, invalidateList, hasFile, listModels, thumbUrl } from "./civitai_api.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
@@ -459,6 +460,15 @@ async function settle(n = 3) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
+
+test("BUG (owner, 2026-08-01): .wtn-mi-panel's width reads the SAME shared --wtn-panel-width-boost token as civitai_search.mjs's .wtn-cs-panel -- one delta, not two independently-tuned widths, and each panel's own pre-existing base (336px here, 10px narrower than the search panel's 346px) is preserved", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectStyles must append a <style> tag to <head>");
+  const rule = styleEl.textContent.match(/\.wtn-mi-panel\s*\{([^}]*)\}/)[1];
+  assert.match(rule, /width:\s*calc\(336px \+ var\(--wtn-panel-width-boost,\s*50px\)\)/);
+});
 
 const _origFetch = globalThis.fetch;
 

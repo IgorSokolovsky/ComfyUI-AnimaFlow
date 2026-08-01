@@ -26,7 +26,7 @@ import {
   openCivitaiModal,
   _resetModalForTests,
 } from "./civitai_modal.mjs";
-import { _resetDownloadStateForTests, sessionGatedKeys } from "./civitai_search.mjs";
+import { _resetDownloadStateForTests, sessionGatedKeys, injectStyles as injectSearchStyles } from "./civitai_search.mjs";
 import { invalidateModelDetail } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
@@ -229,6 +229,68 @@ test("D4: the '.wtn-cm-badge' CSS rule itself is gone (not merely the element)",
   const src = fs.readFileSync(path.join(here, "civitai_modal.mjs"), "utf8");
   assert.doesNotMatch(src, /\.wtn-cm-badge/);
 });
+
+test("BUG (owner, 2026-08-01): in the detail view's fixed top bar, this action's own height matches the OTHER two controls (model_detail_view.mjs's own .wtn-dv-back/.wtn-dv-version-sel, 26px) -- one shared number across two files' CSS", () => {
+  const doc = makeDocStub();
+  injectModalStyles(doc);
+  const modalCss = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const actionRule = modalCss.match(/\.wtn-dv-topbar \.wtn-cm-action\s*\{([^}]*)\}/)[1];
+  const actionHeight = actionRule.match(/height:\s*(\d+)px/)[1];
+
+  // model_detail_view.mjs's own stylesheet holds the OTHER two controls'
+  // height (that file's own test asserts the two match each other) -- read
+  // its raw source here just to compare the one number against THIS file's.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const dvSrc = fs.readFileSync(path.join(here, "model_detail_view.mjs"), "utf8");
+  const backHeight = dvSrc.match(/\.wtn-dv-topbar \.wtn-dv-back\s*\{[^}]*height:\s*(\d+)px/)[1];
+  assert.equal(actionHeight, backHeight, "the action's height must match the topbar's other controls exactly");
+});
+
+// =========================================================================
+// Owner-reported (2026-08-01): "in the browser modal the cards should also
+// have shadow elevate and cursor pointer on hover" -- same treatment as
+// civitai_search.mjs's own .wtn-cs-card, reusing the identical shared
+// shadow value rather than a second hand-tuned one.
+// =========================================================================
+
+test("owner-reported (2026-08-01): a grid card signals it opens the detail view -- cursor: pointer, plus a hover elevation", () => {
+  const doc = makeDocStub();
+  injectModalStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  assert.ok(styleEl, "injectModalStyles must append a <style> tag to <head>");
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cm-card\s*\{[^}]*cursor:\s*pointer;?/,
+    "the card must show a pointer cursor -- it is a real click target (decision 11)",
+  );
+  assert.match(
+    styleEl.textContent,
+    /\.wtn-cm-card:hover\s*\{\s*box-shadow:[^;]+;?\s*\}/,
+    "hovering the card must apply a shadow elevation",
+  );
+});
+
+test("owner-reported (2026-08-01): the modal grid card and the search panel card resolve to the SAME hover shadow value -- one shared token, not two hand-tuned rgba()s that can silently drift apart", () => {
+  const modalDoc = makeDocStub();
+  injectModalStyles(modalDoc);
+  const modalCss = modalDoc.head.children.find((c) => c.tagName === "style").textContent;
+  const modalShadow = modalCss.match(/\.wtn-cm-card:hover\s*\{\s*box-shadow:\s*([^;]+);?\s*\}/)[1].trim();
+
+  const searchDoc = makeDocStub();
+  injectSearchStyles(searchDoc);
+  const searchCss = searchDoc.head.children.find((c) => c.tagName === "style").textContent;
+  const searchShadow = searchCss.match(/\.wtn-cs-card:hover\s*\{\s*box-shadow:\s*([^;]+);?\s*\}/)[1].trim();
+
+  assert.equal(modalShadow, searchShadow, "both cards must resolve to the exact same box-shadow declaration");
+  assert.match(modalShadow, /var\(--wtn-row-shadow,/, "both must read the shared --wtn-row-shadow token, not a private literal");
+});
+
+// A `kind: null` card's own click-still-opens-detail behaviour is already
+// covered end-to-end by "the detail view's own download targets the
+// result's DERIVED kind..." further down (it clicks exactly such a card and
+// asserts the detail view's honest not-installable line) -- not re-proven
+// here, so `.wtn-cm-card`'s uniform cursor:pointer/hover treatment above has
+// no genuinely inert card to special-case.
 
 // =========================================================================
 // openCivitaiModal -- DOM-level integration, via a minimal stub DOM
@@ -1180,8 +1242,14 @@ await asyncTest("openCivitaiModal: a card click swaps the results area for the d
     assert.ok(title, "the swapped-in detail view must render");
     assert.equal(title.textContent, "Swap Test");
 
-    const gridImg = findAll(handle.panel, "wtn-dv-gallery-grid")[0];
-    assert.ok(gridImg, "the modal's own mount uses the GRID layout, not the picker's vertical one");
+    const stripImg = findAll(handle.panel, "wtn-dv-gallery-filmstrip")[0];
+    assert.ok(stripImg, "the modal's own mount uses the FILMSTRIP layout (renamed 2026-08-01 from 'grid'), not the picker's twoCol one");
+
+    // Owner, 2026-08-01: the gallery moved above the descriptions -- real
+    // integration proof on the MODAL's own mount, not just the shared
+    // component in isolation.
+    const headings = findAll(handle.panel, "wtn-dv-sechead").map((h) => h.textContent);
+    assert.deepEqual(headings, ["Gallery", "Model Description"], "the modal's own mount must render the gallery BEFORE the description, in DOM order");
 
     handle.close();
   } finally {
@@ -1221,6 +1289,11 @@ await asyncTest("openCivitaiModal: '← back to results' swaps back to the grid,
 
     const backBtn = findAll(handle.panel, "wtn-dv-back")[0];
     assert.ok(backBtn);
+    // The modal's topbar shape keeps '← back to results' -- it genuinely
+    // swaps the grid back into view, unlike the picker's sibling-overlay
+    // close. It must never ALSO show the picker's own ✕ close affordance
+    // (owner, 2026-08-01: the two mounts want different controls here).
+    assert.equal(findAll(handle.panel, "wtn-dv-close").length, 0, "the modal must never render the picker's own ✕ close affordance");
     backBtn.dispatch("click", { stopPropagation() {} });
 
     assert.equal(findAll(handle.panel, "wtn-dv-title").length, 0, "the detail view must be gone after 'back'");
@@ -1273,6 +1346,21 @@ await asyncTest("openCivitaiModal: the detail view's own download targets the re
     await settle();
     const downloadBtn = findAll(handle.panel, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
     assert.ok(downloadBtn, "the installable result's detail view must show a Download button");
+
+    // Owner-reported, with a screenshot (2026-08-01): "→ models/checkpoints/"
+    // sat ABOVE the Download button -- it's a caption FOR that button, so it
+    // must render UNDERNEATH it in DOM order, not above. Scoped to the
+    // DETAIL HOST specifically -- the (hidden, not removed) grid behind it
+    // also has its own `.wtn-cm-actioncol` per card, unrelated to this fix.
+    const detailHostForOrder = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    const actionCol = findAll(detailHostForOrder, "wtn-cm-actioncol")[0];
+    const destCaption = findAll(actionCol, "wtn-cm-dest")[0];
+    assert.ok(destCaption, "the detail view's own action must show the destination caption");
+    assert.ok(
+      actionCol.children.indexOf(downloadBtn) < actionCol.children.indexOf(destCaption),
+      "the destination caption must render AFTER (below) the Download button in DOM order",
+    );
+
     downloadBtn.dispatch("click", { stopPropagation() {} });
     await settle();
     assert.equal(startedKind, "checkpoints", "the download must target the result's own DERIVED kind");

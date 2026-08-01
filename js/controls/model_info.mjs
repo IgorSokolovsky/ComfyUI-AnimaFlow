@@ -183,8 +183,16 @@ const IMAGE_PLACEHOLDER_SVG =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2H4zm0 2h16v9.59l-3.79-3.8a1 1 0 00-1.42 0L11 15.59l-2.29-2.3a1 1 0 00-1.42 0L4 16.59V6zm4 2a2 2 0 100 4 2 2 0 000-4z'/%3E%3C/svg%3E";
 
 const CSS = `
+/* Owner, 2026-08-01: widened alongside \`civitai_search.mjs\`'s own
+   \`.wtn-cs-panel\` ("also the lora info panel width too") -- SAME shared
+   delta, \`--wtn-panel-width-boost\` (\`js/shared/theme.css\`), so the two
+   panels move by the identical amount rather than two independently-tuned
+   numbers. This panel's own pre-existing 336px base (already 10px narrower
+   than \`.wtn-cs-panel\`'s 346px, predating this change) is unchanged --
+   only the boost is added, preserving that gap rather than forcing the two
+   to a common width they were never given for the same reason. */
 .wtn-mi-panel {
-  width: 336px; max-height: 78vh; overflow-y: auto; box-sizing: border-box;
+  width: calc(336px + var(--wtn-panel-width-boost, 50px)); max-height: 78vh; overflow-y: auto; box-sizing: border-box;
   padding: 11px 12px 12px; border-radius: 10px; display: flex; flex-direction: column;
   background: var(--wtn-surface-2, ${TOKENS.surface2}); border: 1px solid var(--wtn-line, ${TOKENS.line});
   box-shadow: var(--wtn-shadow, 0 20px 46px rgba(0,0,0,.66));
