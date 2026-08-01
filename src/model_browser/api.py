@@ -91,6 +91,14 @@ resolve/write a path.
     GET  /wtn/model_browser/download/progress?job_id=...
     POST /wtn/model_browser/download/cancel    {job_id}
 
+The model/version DETAIL VIEW's own backend (`docs/lora-loader-design.md`'s
+"The detail view", §7c-ii/§7d-i) -- see `model_detail.py`'s own module
+docstring for why, uniquely among the routes here, this one takes no `kind`
+at all: it's a pure Civitai proxy by `(model_id, version_id)` that never
+resolves or writes a local path.
+
+    GET  /wtn/model_browser/model_detail?model_id=...&version_id=...
+
 `/thumb` is Slice 3's own addition (docs/lora-loader-design.md §1a-v's
 picker thumbnail) -- it's the one route here that answers with raw file
 BYTES rather than a `{reason, ...}` JSON envelope (there is no JSON shape
@@ -133,6 +141,7 @@ from . import download
 from . import keys
 from . import logs as logs_mod
 from . import lookup as lookup_mod
+from . import model_detail as model_detail_mod
 from . import rate_limit
 from . import remove as remove_mod
 from .kinds import folder_for_kind
@@ -156,6 +165,14 @@ _INVALID_KIND: Dict[str, Any] = {
 # phrasing) firing many searches at once.
 _SEARCH_MIN_INTERVAL_SECONDS = 1.5
 _SEARCH_LIMITER = rate_limit.MinIntervalLimiter(_SEARCH_MIN_INTERVAL_SECONDS)
+
+# §9, extended to the detail view (docs/lora-loader-design.md "The detail
+# view"): paging through search results and opening each one's detail is
+# exactly the kind of fan-out a stack of LoRA rows already gets its own
+# limiter for -- a single human clicking through cards is nowhere near this,
+# so it costs nothing in the common case.
+_MODEL_DETAIL_MIN_INTERVAL_SECONDS = 1.0
+_MODEL_DETAIL_LIMITER = rate_limit.MinIntervalLimiter(_MODEL_DETAIL_MIN_INTERVAL_SECONDS)
 
 # §9's "one download at a time (a serial queue)" -- a single process-wide
 # manager; every `download_*_impl` function below goes through THIS
@@ -883,6 +900,53 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# The model/version DETAIL VIEW (`docs/lora-loader-design.md`'s "The detail
+# view", §7c-ii, §7d-i) -- the ONE component mounted twice: the node picker's
+# vertical panel and the toolbar modal's master/detail swap.
+# ---------------------------------------------------------------------------
+
+
+def model_detail_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """`GET /wtn/model_browser/model_detail`'s pure-enough body -- the detail
+    view's own backend, reused unchanged by BOTH mounts (task brief: "one
+    component, not two"). See `model_detail.fetch_model_detail`'s own
+    docstring for the full contract and return shape; this wrapper only adds
+    §9's own rate limiting (mirroring `search_impl`'s identical short-circuit
+    for the identical reason -- paging through many results and opening each
+    one's detail can fan out the same way a stack of LoRA rows already can).
+
+    Deliberately no `kind`/whitelist check here, UNLIKE every other route in
+    this module -- see `model_detail.py`'s own top doc comment for why: this
+    is a pure Civitai proxy by `(model_id, version_id)` that never resolves
+    or writes a local path, so there is no destination a hostile `kind`
+    could redirect.
+    """
+    payload = payload or {}
+    model_id = payload.get("model_id")
+    version_id = payload.get("version_id")
+    if not _MODEL_DETAIL_LIMITER.allow():
+        logs_mod.log_summary(
+            _logger, logs_mod.format_model_detail_summary,
+            model_id=model_id, version_id=version_id, reason="rate_limited",
+        )
+        return {
+            "reason": "rate_limited",
+            "message": "Looking up too quickly -- wait a moment and try again.",
+            "offline_reason": None,
+            "model_description": None,
+            "model_description_checked": False,
+            "version_description": None,
+            "gallery": [],
+        }
+    result = model_detail_mod.fetch_model_detail(model_id, version_id)
+    logs_mod.log_summary(
+        _logger, logs_mod.format_model_detail_summary,
+        model_id=model_id, version_id=version_id, reason=result.get("reason"),
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # M2 -- the streamed download queue (docs/lora-loader-design.md §9).
 # ---------------------------------------------------------------------------
 
@@ -1158,6 +1222,16 @@ try:
         payload = _search_query_to_payload(request.query)
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, functools.partial(search_impl, payload))
+        return web.json_response(result, status=200)
+
+    @routes.get("/wtn/model_browser/model_detail")
+    async def _route_model_detail(request):  # noqa: ANN001 - aiohttp handler signature
+        # Same offload reasoning as `/search`/`/lookup` above: `model_detail_impl`
+        # can make up to two synchronous `urllib` calls with up to a 30s
+        # timeout each -- never inline on the event loop.
+        loop = asyncio.get_running_loop()
+        payload = {"model_id": request.query.get("model_id"), "version_id": request.query.get("version_id")}
+        result = await loop.run_in_executor(None, functools.partial(model_detail_impl, payload))
         return web.json_response(result, status=200)
 
     @routes.post("/wtn/model_browser/download/start")

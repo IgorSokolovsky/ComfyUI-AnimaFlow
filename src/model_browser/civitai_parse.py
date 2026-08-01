@@ -567,6 +567,106 @@ def parse_gallery_images(images_raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def parse_author_gallery(images_raw: Any) -> List[Dict[str, Any]]:
+    """The AUTHOR's own gallery -- a model-VERSION object's own `images`
+    array, as returned by `civitai_client.lookup_model_version_by_id`'s
+    `/api/v1/model-versions/{id}` -- into an ordered list of PROMPT-carrying
+    candidates for the model/version detail view's own gallery
+    (docs/lora-loader-design.md, "The detail view", the 2026-08-01 measured
+    correction at the top of that section):
+
+    | source | sampled | carrying a prompt |
+    |---|---|---|
+    | `/api/v1/images?modelVersionId=...` (community) | 40 | 0 -- `meta` is `{}` |
+    | `/api/v1/model-versions/{id}` (THIS function's input) | 20 | 18, with `seed`/`steps`/`sampler`/`Size`/`Model` |
+
+    So this is the gallery this pack actually builds the detail view's own
+    community-images section from -- the community endpoint would produce a
+    grid of pictures with nothing to copy, which the design doc's own test
+    ("a gallery without reusable prompts is decoration") rules out.
+
+    Each entry: `{url, nsfw_level, type, prompt?, negative_prompt?,
+    params?: {sampler?, steps?, cfg?, size?}}`. `url` is thumbnail-rewritten
+    (`_thumb_url`) -- the SAME level-aware candidate/retry/skeleton machinery
+    (`js/shared/civitai_thumb.mjs`) that already serves every other gallery
+    in this package serves this one too, no second mechanism. `prompt`/
+    `negative_prompt`/`params` are read from the image's own `meta` dict
+    (Civitai's own per-generation metadata); a missing/empty `meta` -- the
+    community endpoint's own shape, or an author image that genuinely has no
+    recorded generation info -- degrades to an entry with NONE of those
+    optional keys set, never an invented empty string/zero: a caller (the
+    detail view) reads their absence as "no hover overlay for this one"
+    rather than showing an empty box (task brief: "an image with no meta
+    degrading cleanly rather than showing an empty hover"). `size` prefers
+    `meta["Size"]` (Civitai's own pre-formatted `"832x1216"`-shaped string)
+    and falls back to the image's own top-level `width`/`height` pair when
+    that's absent.
+
+    Only entries with a truthy `url` are kept, same "not a usable candidate
+    otherwise" rule `parse_gallery_images` already applies; `nsfw_level`/
+    `type` follow that function's own conventions verbatim (an absent level
+    is UNKNOWN, never assumed safe). Non-list input -> `[]`; never raises.
+
+    Deliberately a SEPARATE function from `parse_gallery_images` rather than
+    that one extended with optional prompt/params keys: every OTHER consumer
+    of `parse_gallery_images` (the search card, the ⓘ panel) reads ONLY the
+    community-shaped `/api/v1/models`-embedded gallery, which never carries a
+    usable `meta` at all (measured above) -- adding prompt/params fields
+    there would be dead weight on every existing call site for a shape only
+    this one new caller ever populates.
+    """
+    if not isinstance(images_raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for image in images_raw:
+        if not isinstance(image, dict):
+            continue
+        url = image.get("url")
+        if not url:
+            continue
+        level = image.get("nsfwLevel")
+        meta = image.get("meta") if isinstance(image.get("meta"), dict) else {}
+
+        entry: Dict[str, Any] = {
+            "url": _thumb_url(str(url)),
+            "nsfw_level": level if isinstance(level, int) and not isinstance(level, bool) else None,
+            "type": str(image.get("type") or ""),
+        }
+
+        prompt = meta.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            entry["prompt"] = prompt
+        negative_prompt = meta.get("negativePrompt")
+        if isinstance(negative_prompt, str) and negative_prompt.strip():
+            entry["negative_prompt"] = negative_prompt
+
+        params: Dict[str, Any] = {}
+        sampler = meta.get("sampler")
+        if isinstance(sampler, str) and sampler.strip():
+            params["sampler"] = sampler
+        steps = meta.get("steps")
+        if isinstance(steps, int) and not isinstance(steps, bool):
+            params["steps"] = steps
+        cfg = meta.get("cfgScale")
+        if isinstance(cfg, (int, float)) and not isinstance(cfg, bool):
+            params["cfg"] = cfg
+        size = meta.get("Size")
+        if not (isinstance(size, str) and size.strip()):
+            width, height = image.get("width"), image.get("height")
+            has_dims = (
+                isinstance(width, int) and not isinstance(width, bool)
+                and isinstance(height, int) and not isinstance(height, bool)
+            )
+            size = f"{width}x{height}" if has_dims else None
+        if isinstance(size, str) and size.strip():
+            params["size"] = size
+        if params:
+            entry["params"] = params
+
+        out.append(entry)
+    return out
+
+
 def parse_model_description(obj: Any) -> Optional[str]:
     """A Civitai `GET /api/v1/models/{id}` response -> its own top-level
     `description`, converted to plain text (BUG 11a's `html_to_text`) --
@@ -661,6 +761,7 @@ def civitai_shape_from_search_meta(meta: Any) -> Dict[str, Any]:
 __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
     "pick_gallery_image_url", "pick_thumbnail_url", "parse_gallery_images",
+    "parse_author_gallery",
     "civitai_shape_from_search_meta",
     "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_VIDEO_TRANSFORM", "SOURCE_TRANSFORM",
     "saved_preview_url",
