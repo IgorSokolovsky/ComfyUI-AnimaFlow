@@ -45,19 +45,25 @@ They want opposite fixes. **Needed:** restart ComfyUI (`R` reloads JS but never 
 the instrumentation is not live until a restart), set Console logging to `debug`, click **Save now**,
 and read the two lines.
 
-Follow-up already unblocked whichever way it goes: `save_now` returns an absolute `"path"` and the
-status line still shows only the filename — it should say **where**.
+**Narrowed 2026-08-01 by the owner's own path.** Their `Save Image` node writes to
+`/content/ComfyUI/output/webtoon/episode 2/`, so `folder_paths.get_output_directory()` is
+`/content/ComfyUI/output` and that subfolder belongs to *that* node's widget. Our node has its **own**
+path setting defaulting to `AnimaFlow` (`src/anima/preview_settings.py:68`, `js/anima/state.mjs:319`),
+so unless the typed value reaches the payload, every Save now went to `output/AnimaFlow/` — not where
+they were looking. **The check is `ls /content/ComfyUI/output/AnimaFlow/`**, and it needs no restart.
 
-### 🧹 Retire the last hand-picked z-index values (2026-08-01)
+**Symlinks are ruled out** (owner asked, since their output is symlinked to Drive): `save_now` does no
+realpath check, no containment guard and no sanitization — `os.makedirs(..., exist_ok=True)` then a
+write, which follows symlinks transparently and handles a space and a nested folder in one call. A
+broken mount would raise and surface as a red error, not the `Saved …` the owner saw.
 
-`fa27ca1` introduced a named scale (`tooltip < panel < modal < confirm`) after four uncoordinated values
-had **inverted** — the delete confirm rendered behind the panel that opened it with Cancel unreachable,
-and the browser modal's scrim sat below the panel tier, which nobody had even reported yet.
+`f31a83f` made the status line say **where** rather than just the filename, so this now self-diagnoses.
 
-The scale covers `js/controls/` and `js/shared/`. Still hand-picking their own: `js/anima/render.mjs`,
-`js/autocomplete/render.mjs`, and three `js/prompt_rules/` files. Nothing is known-wrong there today —
-but that is exactly what was true of the confirm dialog until it wasn't.
-
+> **Latent, found while reading this — worth fixing separately.**
+> `os.path.join(get_output_dir(), out_subfolder)` silently **discards the output root** if
+> `out_subfolder` is absolute. Typing `/content/drive/MyDrive/…` into that field — a plausible thing to
+> do for someone who thinks in absolute paths — writes outside the output directory with nothing
+> explaining it. Not a security hole (same user, no remote input), but a real surprise.
 
 ### 📦 The queued Civitai work — one item of the frontend pass is left (2026-08-01)
 
@@ -77,19 +83,6 @@ bandwidth.
 
 Then, in the order they are worth doing: **installed-by-kind in the modal**, and **M3** (Loader Panel
 reuse for checkpoints + UNET).
-
-### 🧹 Collapse `model_info.mjs`'s local `repositionAfterChange` into the shared observer (unblocked 2026-07-31)
-
-`0a53398` put the re-place-on-content-growth mechanism in `overlay.mjs`, where every panel gets it for
-free, and the owner has now confirmed it (*"overflow fixed"*). That makes `model_info.mjs`'s own
-`repositionAfterChange` — the local workaround written a day earlier, wrapping 7 mutation sites —
-**redundant**. It's harmless (a second re-place computing the same position changes nothing) but it is
-exactly the kind of duplicate mechanic the *Shells and Core Mechanics* item is about.
-
-Held back deliberately during the shared fix so as not to disturb `b92eff0`'s verification while it was
-still fresh. Both are confirmed now, so the gate is passed. Small: delete the helper, unwrap its call
-sites, keep its tests that assert the *behaviour* (the panel stays on-screen after the content grows)
-and drop only the ones asserting the local mechanism's internals.
 
 ### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
 
@@ -416,6 +409,9 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit |
 |---|---|
+| **The last four hand-picked z-index literals joined the scale — and one ordering was backwards.** `js/anima/render.mjs` had claimed `10020` since it was written while `overlay.mjs` set `10010` **inline**, so that number was never once applied. The Rule Builder overlay (`10000`) and the encode node's picker (`10001`) were a deliberate pair resting on "they can never coexist" — they can, in exactly one direction: the Rule Builder is a global command with a keybinding and a toolbar button, and the picker's `keydown` acts only on `Escape` and never calls `stopPropagation`, so the command fires while the picker is open. Under the old numbers that put the Rule Builder **behind** the picker's scrim — summoned, invisible, unusable. Now reversed. The guard test covers ten consumers, so a fifth hand-picked value fails the suite. **To confirm — keyboard only, no click can reach it:** open the picker on an encode node, then invoke *AnimaFlow: Rule Builder* from the command palette; the Rule Builder must render **above** the picker's scrim | `91a9f21` |
+| **The Save-now status line says WHERE.** `save_now` has returned an absolute path since `e23e31d`; the client read only `data.filename`. Now `Saved final as AnimaFlow/anima_00007.png`, with the full path in the `title` on hover. One line deliberately — that row already caused one sizing bug, since `PREVIEW_PANEL_MIN_H` is static rather than measured. **To confirm:** click Save now and read the folder off the status line — this is also the instrument for the open Save-now bug in *Now* | `f31a83f` |
+| **The ⓘ panel stops re-placing itself** — `repositionAfterChange` deleted, all **ten** call sites unwrapped (the board said seven; each was checked individually, since a mutation that moves the panel without changing its observed height would NOT be covered by the shared observer and would have had to stay). **To confirm:** open ⓘ on a LoRA near the bottom of the screen and let the Civitai lookup land — the panel must still re-place and stay on screen | `d1141a4` |
 | **`fetch_model_detail` returns `files`** — the deleted-model `Download` had no target and rendered no button. `_parse_files` moved to `civitai_parse.parse_files` with a drift-guard test asserting both call paths produce byte-identical output for the same raw input | `7169733` |
 | **The model/version detail view** — one component, two mounts (picker panel + modal master→detail swap): version selector, badges, both labelled descriptions, `View on Civitai ↗` to the *selected version*, and the author's gallery with prompt-on-hover and copy-prompt | `f40c981` — owner: **"so far perfect"** (2026-08-01, after a long iteration on its layout) |
 | **Delete an installed model** — type-to-confirm on the word `delete`, naming the file, size and folder; sidecar and preview go with it; the row falls into the existing red missing-file state | `6ce43de` route + `99e24c5` UI + `9139d7b` — owner confirmed the flow, then the UX refinements |
@@ -492,6 +488,7 @@ ever grow — re-count rather than trusting the number.
 
 | Item | Commit |
 |---|---|
+| **A named z-index scale, because four hand-picked values had inverted.** The delete confirm rendered *behind* the ⓘ panel that opened it, with its warning clipped and **Cancel unreachable** — the worst failure mode a destructive-action dialog has. Nothing tied the four numbers together, so whichever file picked the bigger one won; raising one would only have held until the next surface picked bigger still. A scale, not a bump: the next surface picks a **name** | `fa27ca1` — owner: **"confirm delete dialog is over the lora info panel"** (2026-08-01) |
 | **An empty LoRA row no longer shows the ⓘ.** Not a wrong condition — `paintRow` repaints the name, strengths, off-state and switch but never touched the icon, so no code path could ever have hidden it. `visibility: hidden` rather than `display: none`, because `INFO_W` is a reserved column and dropping it out of flow would widen an empty row's name field out of alignment with the rows around it; `pointer-events: none` on the same rule is what makes the existing click binding inert, so there is no second "is a LoRA picked" guard that could drift out of step. The row menu's `More info` follows the same rule | `24fa594` — owner: **"hide icon confirm fixed"** |
 | **Popovers are clamped inside the viewport on all four sides.** `reposition()` had NO horizontal handling for `"below"` at all, and the overlay box is not the visible box — the panels set their own wider fixed width on the CONTENT element, so anything measuring only the overlay measures the wrong rectangle | `eea739b` — owner: **"Fixed on all except lora info"** (that one was `b92eff0`, below) |
 | **The ⓘ info panel grew after opening and overflowed** — the only popover placed against a near-empty box and then populated asynchronously from the Civitai lookup. Re-measures and re-places when the content lands | `b92eff0` — owner: **"lora info expand overflow fixed"**. Turned out to be *one instance* of the systemic gap below |
