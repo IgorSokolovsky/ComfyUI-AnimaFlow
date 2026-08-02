@@ -193,11 +193,13 @@ class FilenameCollisionExhausted(RuntimeError):
 
 def write_without_overwriting(directory: str, filename: str, writer: Callable[[str], None]) -> str:
     """Call `writer(full_path)` at the first collision-free candidate name
-    under `directory` for `filename` -- try `filename` itself first
-    (`collision_suffixed_filename`'s `attempt=0`, the "no collision" case),
-    then its `_00001`/`_00002`/... suffixed forms, up to
-    `_MAX_COLLISION_ATTEMPTS`. Returns the actual (base, not full-path)
-    filename `writer` was called with.
+    under `directory` for `filename` -- as of the "every saved image gets a
+    counter" reversal (owner, 2026-08-02; `collision_suffixed_filename`'s own
+    docstring), there is no more "try `filename` itself, unsuffixed, first"
+    step: `attempt=0` already yields `filename`'s `_00001`-suffixed form,
+    then `_00002`, `_00003`, ... up to `_MAX_COLLISION_ATTEMPTS`, each on an
+    actual `FileExistsError` from `writer`. Returns the actual (base, not
+    full-path) filename `writer` was called with.
 
     **Closes the race, doesn't just avoid it**: this does NOT `os.path.
     exists` check then write -- `writer` itself is required to use
@@ -845,11 +847,13 @@ def save_now(
         template, stage=stage, seed=resolve_seed_int(seed), width=width, height=height, counter=counter,
     )
     out_filename = f"{filename_stem}.{extension}"
-    # Never-overwrite (same fix as `save_images`): try `out_filename` itself
-    # first, then its `_00001`/`_00002`/... suffixed forms, until one
-    # writes cleanly. `write` (the default `_default_write_image_copy`, or
-    # an injected `write_fn`) is responsible for the actual exclusivity --
-    # this loop only supplies candidates and reacts to `FileExistsError`.
+    # Never-overwrite (same fix as `save_images`): `out_filename`'s own
+    # `_00001`-suffixed form is tried first (no more unsuffixed attempt --
+    # see `collision_suffixed_filename`'s docstring for the 2026-08-02
+    # reversal), then `_00002`, `_00003`, ... until one writes cleanly.
+    # `write` (the default `_default_write_image_copy`, or an injected
+    # `write_fn`) is responsible for the actual exclusivity -- this loop
+    # only supplies candidates and reacts to `FileExistsError`.
     try:
         out_filename = write_without_overwriting(
             output_dir, out_filename, lambda full_path: write(source_path, full_path),

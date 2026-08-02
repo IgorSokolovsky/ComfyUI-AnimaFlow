@@ -169,53 +169,61 @@ def test_hostile_template_never_raises():
 # ---------------------------------------------------------------------------
 # collision_suffixed_filename -- the PURE half of the "never overwrite" fix
 # (data-loss bug: a re-run with the same seed/day/stage silently clobbered
-# the previous file). attempt=0 is always the plain name; attempt>=1 inserts
-# a zero-padded 5-digit counter BEFORE the extension, equal to `attempt`
-# itself (owner's spec, 2026-08-01: starts at `_00001`, not `_00000`).
+# the previous file). REVERSED 2026-08-02 (owner: "the save name is good but
+# lets make sure by default we save with `<name>_00001`") from `40b3c9d`'s
+# same-day "the first file at a given name keeps its plain name, unsuffixed"
+# rule: there is no more unsuffixed case at all now -- EVERY `attempt` gets a
+# zero-padded 5-digit counter BEFORE the extension, equal to `attempt + 1`
+# (so `attempt=0` -> `_00001`, `attempt=1` -> `_00002`, ...).
 # ---------------------------------------------------------------------------
 
 
-def test_collision_suffixed_filename_no_collision_keeps_plain_name():
-    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 0) == "2026-07-29_42_final.png"
+def test_collision_suffixed_filename_first_attempt_is_00001():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 0) == "2026-07-29_42_final_00001.png"
 
 
-def test_collision_suffixed_filename_first_collision_is_00001():
-    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 1) == "2026-07-29_42_final_00001.png"
+def test_collision_suffixed_filename_second_attempt_is_00002():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 1) == "2026-07-29_42_final_00002.png"
 
 
-def test_collision_suffixed_filename_second_collision_is_00002():
-    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 2) == "2026-07-29_42_final_00002.png"
+def test_collision_suffixed_filename_third_attempt_is_00003():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 2) == "2026-07-29_42_final_00003.png"
 
 
 def test_collision_suffixed_filename_preserves_extension():
     # The suffix goes BEFORE the extension, never after it.
-    assert ps.collision_suffixed_filename("name.png", 1) == "name_00001.png"
-    assert not ps.collision_suffixed_filename("name.png", 1).endswith(".png_00001")
+    assert ps.collision_suffixed_filename("name.png", 0) == "name_00001.png"
+    assert not ps.collision_suffixed_filename("name.png", 0).endswith(".png_00001")
 
 
 def test_collision_suffixed_filename_handles_a_dotted_stem():
     # Only the LAST extension is treated as one -- `my.file.png`'s suffix
     # must land right before `.png`, not after the first dot.
-    assert ps.collision_suffixed_filename("my.file.png", 1) == "my.file_00001.png"
+    assert ps.collision_suffixed_filename("my.file.png", 0) == "my.file_00001.png"
 
 
 def test_collision_suffixed_filename_no_extension_at_all():
-    assert ps.collision_suffixed_filename("plain_name", 1) == "plain_name_00001"
+    assert ps.collision_suffixed_filename("plain_name", 0) == "plain_name_00001"
 
 
 def test_collision_suffixed_filename_owners_exact_case():
-    # The owner's own example (2026-08-01): `panel_ep2` at attempts 0/1/2.
-    assert ps.collision_suffixed_filename("panel_ep2.png", 0) == "panel_ep2.png"
-    assert ps.collision_suffixed_filename("panel_ep2.png", 1) == "panel_ep2_00001.png"
-    assert ps.collision_suffixed_filename("panel_ep2.png", 2) == "panel_ep2_00002.png"
+    # The owner's own example (2026-08-02): `panel_ep2` at attempts 0/1/2 now
+    # reads `_00001`/`_00002`/`_00003` -- the counter is ALWAYS present,
+    # including on the very first save (the reversal's whole point).
+    assert ps.collision_suffixed_filename("panel_ep2.png", 0) == "panel_ep2_00001.png"
+    assert ps.collision_suffixed_filename("panel_ep2.png", 1) == "panel_ep2_00002.png"
+    assert ps.collision_suffixed_filename("panel_ep2.png", 2) == "panel_ep2_00003.png"
 
 
 def test_collision_suffixed_filename_top_of_range_stays_5_digits():
     # `_MAX_COLLISION_ATTEMPTS = 10_000` (`nodes/anima/_preview_helpers.py`)
-    # means the largest `attempt` the collision loop ever tries is 9999 --
-    # pinning this so a future bump of that constant past 99999 can't
-    # silently widen the field past 5 digits without a test noticing.
-    assert ps.collision_suffixed_filename("name.png", 9999) == "name_09999.png"
+    # means the largest `attempt` the collision loop ever tries is 9999,
+    # whose suffix is now `attempt + 1` = `10000` -- still exactly 5 digits
+    # (`:05d` only pads UP to a minimum width, never truncates a longer
+    # number), so the field still fits with no widening needed. Pinning this
+    # so a future bump of that constant past 99999 can't silently widen the
+    # field without a test noticing.
+    assert ps.collision_suffixed_filename("name.png", 9999) == "name_10000.png"
 
 
 # ---------------------------------------------------------------------------
@@ -405,9 +413,9 @@ ALL_TESTS = [
     test_full_template_combining_every_token,
     test_template_with_no_tokens_passes_through_unchanged,
     test_hostile_template_never_raises,
-    test_collision_suffixed_filename_no_collision_keeps_plain_name,
-    test_collision_suffixed_filename_first_collision_is_00001,
-    test_collision_suffixed_filename_second_collision_is_00002,
+    test_collision_suffixed_filename_first_attempt_is_00001,
+    test_collision_suffixed_filename_second_attempt_is_00002,
+    test_collision_suffixed_filename_third_attempt_is_00003,
     test_collision_suffixed_filename_preserves_extension,
     test_collision_suffixed_filename_handles_a_dotted_stem,
     test_collision_suffixed_filename_no_extension_at_all,

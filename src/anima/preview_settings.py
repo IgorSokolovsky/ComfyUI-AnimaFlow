@@ -313,17 +313,25 @@ def normalize_preview_settings(raw: Any) -> Dict[str, Any]:
 
 
 def collision_suffixed_filename(filename: str, attempt: int) -> str:
-    """The `attempt`-th candidate name in the "never overwrite" collision
-    loop (data-loss bug fix: `AnimaPreview` was silently clobbering an
-    existing file that happened to resolve to the same templated name --
-    e.g. the same seed run twice on the same day at the same stage, the
-    default filename template has no `%counter%` token). `attempt == 0` is
-    the plain `filename` unchanged -- the FIRST file at a given name always
-    keeps its plain name, per the owner's spec; a suffix only appears once
-    there is an actual collision. `attempt >= 1` inserts a zero-padded
-    5-digit counter BEFORE the extension, equal to `attempt` itself:
-    `name_00001.ext`, `name_00002.ext`, ... (per the owner's own numbering,
-    starting at 1, not 0).
+    """The `attempt`-th candidate name in the "every saved image gets a
+    counter" naming scheme (owner, 2026-08-02: "the save name is good but
+    lets make sure by default we save with `<name>_00001`") -- a REVERSAL of
+    this function's own earlier behaviour (`40b3c9d`, same day): that commit
+    deliberately kept "the first file at a given name keeps its plain name,
+    unsuffixed" as a separate, untouched decision; the owner has now changed
+    that decision, so the early-return this docstring used to describe is
+    gone, not special-cased around.
+
+    There is no more "no collision" case here -- EVERY `attempt` inserts a
+    zero-padded 5-digit counter BEFORE the extension, equal to `attempt + 1`
+    (1-indexed, never 0-indexed, per the owner's own numbering): `attempt=0`
+    -> `name_00001.ext`, `attempt=1` -> `name_00002.ext`, `attempt=2` ->
+    `name_00003.ext`, and so on. The collision LOOP above this function
+    (`nodes/anima/_preview_helpers.py`'s `write_without_overwriting`) still
+    starts at `attempt=0` and counts up one at a time on a real
+    `FileExistsError`, so it naturally yields "the next free number":
+    `_00001` taken -> try `_00002`, and so on -- that loop is UNCHANGED, only
+    this naming function's mapping from `attempt` to a suffix moved by one.
 
     Extension-preserving via `os.path.splitext`, so a dotted stem
     (`my.file.png`) only has its LAST extension treated as one --
@@ -335,13 +343,18 @@ def collision_suffixed_filename(filename: str, attempt: int) -> str:
     impure and lives in `nodes/anima/_preview_helpers.py`, which calls this
     for each candidate in turn -- this function only ever answers "what
     would attempt N look like", never "is attempt N free".
+
+    `_MAX_COLLISION_ATTEMPTS` (`nodes/anima/_preview_helpers.py`) is
+    `10_000`, so the loop's last `attempt` is `9999`, whose suffix here is
+    `_10000` -- still exactly 5 digits (`:05d` only pads UP to a minimum
+    width, it never truncates a longer number), so the field still fits with
+    no widening needed; see `tests/test_anima_preview_settings.py`'s
+    top-of-range test for the pin.
     """
-    if attempt <= 0:
-        return filename
     import os.path
 
     stem, ext = os.path.splitext(filename)
-    return f"{stem}_{attempt:05d}{ext}"
+    return f"{stem}_{attempt + 1:05d}{ext}"
 
 
 def format_filename(

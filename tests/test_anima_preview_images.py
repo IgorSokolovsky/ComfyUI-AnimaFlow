@@ -318,7 +318,10 @@ def test_save_now_prefers_final_then_mid_then_base():
         )
         assert result["stage"] == "final"
         assert result["type"] == "output"
-        assert result["filename"] == "final_42.png"
+        # Every save now gets a counter, starting at `_00001` (2026-08-02
+        # reversal, `src/anima/preview_settings.py`'s `collision_suffixed_
+        # filename`) -- even this, the first save into a fresh directory.
+        assert result["filename"] == "final_42_00001.png"
         assert len(calls["write"]) == 1
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
@@ -340,7 +343,7 @@ def test_save_now_accepts_the_posted_seed_as_a_string_and_survives_a_20_digit_va
             seed=big_seed,
             **fakes,
         )
-        assert result["filename"] == f"final_{big_seed}.png"
+        assert result["filename"] == f"final_{big_seed}_00001.png"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -362,7 +365,7 @@ def test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file():
                 seed=bad,
                 **fakes,
             )
-            assert result["filename"] == "final_0.png", f"seed={bad!r} produced {result['filename']!r}"
+            assert result["filename"] == "final_0_00001.png", f"seed={bad!r} produced {result['filename']!r}"
 
         # A 40-digit number: no clamping, no crash, no corruption -- Python's
         # arbitrary precision carries it through exactly (unlike the JS
@@ -374,7 +377,7 @@ def test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file():
             seed=forty_digit,
             **fakes,
         )
-        assert result["filename"] == f"final_{forty_digit}.png"
+        assert result["filename"] == f"final_{forty_digit}_00001.png"
 
         # Absent entirely -- `seed` not passed at all -- must fall back to
         # the function's own default (`0`) exactly like an explicit `None`.
@@ -383,7 +386,7 @@ def test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file():
             preview_settings={"save": {"extension": "png", "path": "AnimaFlow", "filename": "%stage%_%seed%"}},
             **fakes,
         )
-        assert result["filename"] == "final_0.png"
+        assert result["filename"] == "final_0_00001.png"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -487,13 +490,13 @@ def test_save_now_honours_a_custom_save_path_subfolder():
         )
         expected_dir = os.path.join(output_dir, "my_custom_folder")
         assert result["subfolder"] == "my_custom_folder"
-        assert result["filename"] == "final_7.png"
+        assert result["filename"] == "final_7_00001.png"
         # The write itself landed under the custom subfolder, not the
         # default "AnimaFlow" one -- `write_fn`'s own recorded call is the
         # ground truth here, not just the returned dict.
         assert len(calls["write"]) == 1
         _source, dest = calls["write"][0]
-        assert dest == os.path.join(expected_dir, "final_7.png")
+        assert dest == os.path.join(expected_dir, "final_7_00001.png")
         assert os.path.dirname(dest) == expected_dir
         # The returned `path` -- this task's own "return the location, not
         # just the name" ask -- is the full absolute path actually written,
@@ -515,7 +518,7 @@ def test_save_now_default_save_path_falls_back_to_animaflow_when_absent():
             **fakes,
         )
         _source, dest = calls["write"][0]
-        assert dest == os.path.join(output_dir, "AnimaFlow", "final_1.png")
+        assert dest == os.path.join(output_dir, "AnimaFlow", "final_1_00001.png")
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -544,7 +547,7 @@ def test_save_now_logs_the_absolute_path_at_summary_and_debug_levels():
 
         fakes, _ = _save_now_fakes(tmp_root)
         output_dir = fakes["output_dir_fn"]()
-        expected_path = os.path.join(output_dir, "my_custom_folder", "final_9.png")
+        expected_path = os.path.join(output_dir, "my_custom_folder", "final_9_00001.png")
 
         # "off" (no ANIMAFLOW_DEBUG, no comfy.settings.json reachable) --
         # genuinely silent.
@@ -570,7 +573,7 @@ def test_save_now_logs_the_absolute_path_at_summary_and_debug_levels():
         )
         assert len(recorded) == 2
         summary_line, debug_line = recorded
-        assert expected_path in summary_line or os.path.join(fakes2["output_dir_fn"](), "my_custom_folder", "final_9.png") in summary_line
+        assert expected_path in summary_line or os.path.join(fakes2["output_dir_fn"](), "my_custom_folder", "final_9_00001.png") in summary_line
         assert "my_custom_folder" in debug_line
         assert "save.path as received" in debug_line
         assert "%stage%_%seed%" in debug_line

@@ -56,12 +56,21 @@ def _xb_writer(full_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_collision_returns_the_plain_name():
+def test_the_first_write_already_gets_the_00001_suffix():
+    # Reversed 2026-08-02 (owner: "the save name is good but lets make sure
+    # by default we save with `<name>_00001`") -- `40b3c9d`'s same-day "the
+    # first file at a given name keeps its plain name, unsuffixed" rule is
+    # gone: even with NO pre-existing file at all, the very first write gets
+    # the `_00001` suffix, never the bare `name.png`.
     tmp = tempfile.mkdtemp()
     try:
         result = ph.write_without_overwriting(tmp, "name.png", _xb_writer)
-        assert result == "name.png"
-        assert os.path.isfile(os.path.join(tmp, "name.png"))
+        assert result == "name_00001.png"
+        assert os.path.isfile(os.path.join(tmp, "name_00001.png"))
+        assert not os.path.isfile(os.path.join(tmp, "name.png")), (
+            "the bare, unsuffixed name must never be written -- every save "
+            "gets a counter now, starting at _00001"
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -132,13 +141,16 @@ def test_repeated_calls_to_the_same_desired_name_each_get_their_own_file_first_u
     # level: two "saves" that both resolve to the same desired filename
     # must produce two files on disk, and the first one's bytes must be
     # byte-for-byte unchanged afterwards -- not just "a file count of two".
+    # Both counters are always present now (2026-08-02 reversal): the first
+    # call already lands on `_00001`, so the second collides with THAT and
+    # steps up to `_00002` -- neither call ever produces the bare name.
     tmp = tempfile.mkdtemp()
     try:
         first = ph.write_without_overwriting(tmp, "shot.png", lambda p: open(p, "xb").write(b"FIRST"))
         second = ph.write_without_overwriting(tmp, "shot.png", lambda p: open(p, "xb").write(b"SECOND"))
 
-        assert first == "shot.png"
-        assert second == "shot_00001.png"
+        assert first == "shot_00001.png"
+        assert second == "shot_00002.png"
         assert first != second, "must never resolve to the same path twice"
         with open(os.path.join(tmp, first), "rb") as fh:
             assert fh.read() == b"FIRST", "the first file's bytes must survive the second save"
@@ -287,18 +299,22 @@ def test_save_images_never_overwrites_and_first_file_survives():
             seed=42,
         )
 
-        assert first[0]["filename"] == "final_42.png"
-        assert second[0]["filename"] == "final_42_00001.png", (
+        # Every save now gets a counter, starting at `_00001` (2026-08-02
+        # reversal) -- so the FIRST save already carries the suffix, and the
+        # second (colliding with `final_42_00001.png`, not with a bare
+        # `final_42.png` that's never written) steps up to `_00002`.
+        assert first[0]["filename"] == "final_42_00001.png"
+        assert second[0]["filename"] == "final_42_00002.png", (
             "the second save with an identical resolved filename must get "
-            "the collision suffix, never overwrite the first"
+            "the NEXT collision suffix, never overwrite the first"
         )
 
         on_disk = sorted(os.listdir(output_dir))
-        assert on_disk == ["final_42.png", "final_42_00001.png"]
+        assert on_disk == ["final_42_00001.png", "final_42_00002.png"]
 
-        with open(os.path.join(output_dir, "final_42.png"), "rb") as fh:
-            assert fh.read() == b"IMAGE:RUN1:PNG", "first file's bytes must be unchanged"
         with open(os.path.join(output_dir, "final_42_00001.png"), "rb") as fh:
+            assert fh.read() == b"IMAGE:RUN1:PNG", "first file's bytes must be unchanged"
+        with open(os.path.join(output_dir, "final_42_00002.png"), "rb") as fh:
             assert fh.read() == b"IMAGE:RUN2:PNG"
     finally:
         ph._tensor_to_pil_images = original_tensor_to_pil
@@ -402,19 +418,22 @@ def test_save_now_default_writer_never_overwrites_and_first_file_survives():
             preview_settings=preview_settings, seed=42, **fakes,
         )
 
-        assert first["filename"] == "final_42.png"
-        assert second["filename"] == "final_42_00001.png", (
+        # Same 2026-08-02 reversal as `save_images` above -- the first
+        # Save-now click already lands on `_00001`, the second steps up to
+        # `_00002`.
+        assert first["filename"] == "final_42_00001.png"
+        assert second["filename"] == "final_42_00002.png", (
             "a second Save-now click resolving to the same filename must "
-            "get the collision suffix, never overwrite the first"
+            "get the NEXT collision suffix, never overwrite the first"
         )
 
         on_disk = sorted(os.listdir(final_output_dir))
-        assert on_disk == ["final_42.png", "final_42_00001.png"]
+        assert on_disk == ["final_42_00001.png", "final_42_00002.png"]
 
-        with open(os.path.join(final_output_dir, "final_42.png"), "rb") as fh:
+        with open(os.path.join(final_output_dir, "final_42_00001.png"), "rb") as fh:
             first_bytes = fh.read()
         assert first_bytes == f"COPY:{os.path.basename(source_path)}:PNG".encode("utf-8")
-        with open(os.path.join(final_output_dir, "final_42_00001.png"), "rb") as fh:
+        with open(os.path.join(final_output_dir, "final_42_00002.png"), "rb") as fh:
             assert fh.read() == first_bytes, "same source copied twice -> identical content, but two files"
     finally:
         restore_image()
@@ -422,11 +441,22 @@ def test_save_now_default_writer_never_overwrites_and_first_file_survives():
 
 
 # ---------------------------------------------------------------------------
-# Existing %counter% behaviour must be unaffected by this fix.
+# Existing %counter% behaviour -- `%counter:N%`'s own increment-per-batch-
+# item logic is untouched by this fix (same `_next_counter` call, same
+# per-item `counter += 1`), BUT as of the 2026-08-02 "every saved image gets
+# a counter" reversal, the NEW always-on `_NNNNN` collision suffix now lands
+# on top of it too, since `collision_suffixed_filename` no longer has an
+# unsuffixed `attempt=0` case for ANY filename -- including one whose
+# template already spelled out its own `%counter%` token. A template with
+# `%counter:3%` now reads e.g. `final_000_000_00001.png`: the explicit
+# `%counter%` value AND the new collision counter both present, back to
+# back. This is reported per the build task's own instruction ("do not
+# invent a de-duplication rule ... state what happens and let the owner
+# decide") -- NOT fixed here.
 # ---------------------------------------------------------------------------
 
 
-def test_explicit_counter_token_still_increments_per_batch_item_unaffected_by_collision_logic():
+def test_explicit_counter_token_now_also_gets_the_always_on_collision_suffix():
     output_dir = tempfile.mkdtemp()
     restore = _install_fake_pil_and_folder_paths(output_dir)
     original_tensor_to_pil = ph._tensor_to_pil_images
@@ -448,12 +478,18 @@ def test_explicit_counter_token_still_increments_per_batch_item_unaffected_by_co
             preview_settings=preview_settings,
             seed=0,
         )
-        # A batch of 2 -- `%counter:3%` still increments per item, exactly
-        # as before this fix (batch index is ALSO appended for a batch > 1,
-        # unchanged behaviour) -- and neither one collides with the other,
-        # so no collision suffix is added to either.
+        # A batch of 2 -- `%counter:3%` still increments per item (batch
+        # index is ALSO appended for a batch > 1, unchanged), but EACH
+        # resolved name is now itself a fresh name in an empty directory, so
+        # `collision_suffixed_filename`'s always-on suffix lands on both:
+        # `_00001` on the first (nothing else exists yet), and -- because the
+        # first write ALSO didn't collide with the second's own resolved
+        # name -- `_00001` on the second too, since the two `%counter%`
+        # values (`000`/`001`) already keep them from colliding with each
+        # OTHER. See this section's own comment above for why this doubled-
+        # looking name is a reported behaviour, not a fixed one.
         filenames = sorted(entry["filename"] for entry in result)
-        assert filenames == ["final_000_000.png", "final_001_001.png"]
+        assert filenames == ["final_000_000_00001.png", "final_001_001_00001.png"]
     finally:
         ph._tensor_to_pil_images = original_tensor_to_pil
         restore()
@@ -461,7 +497,7 @@ def test_explicit_counter_token_still_increments_per_batch_item_unaffected_by_co
 
 
 ALL_TESTS = [
-    test_no_collision_returns_the_plain_name,
+    test_the_first_write_already_gets_the_00001_suffix,
     test_one_existing_file_yields_the_00001_suffix_and_leaves_it_untouched,
     test_00001_also_taken_yields_00002,
     test_extension_preserved_suffix_lands_before_the_dot,
@@ -471,7 +507,7 @@ ALL_TESTS = [
     test_pil_format_for_extension_known_and_unknown,
     test_save_images_never_overwrites_and_first_file_survives,
     test_save_now_default_writer_never_overwrites_and_first_file_survives,
-    test_explicit_counter_token_still_increments_per_batch_item_unaffected_by_collision_logic,
+    test_explicit_counter_token_now_also_gets_the_always_on_collision_suffix,
 ]
 
 
