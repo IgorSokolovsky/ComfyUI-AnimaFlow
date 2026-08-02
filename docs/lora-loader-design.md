@@ -957,8 +957,113 @@ compensating for is gone. Revisit as a UI affordance only if it still reads wron
 
 **Licensing.** `../Civicomfy` is **MIT © 2025 MoonGoblin** — porting is permitted **with attribution**,
 the same rule as the other two clones. Cite `Civicomfy/api/civitai.py:127-236` at the ported code and
-extend `THIRD_PARTY_NOTICES.md`. The Cloudflare headers, the level normalisation and the
-discovery/details split are **ours**, not theirs — do not attribute those to upstream.
+extend `THIRD_PARTY_NOTICES.md`. The level normalisation, the period mapping and the discovery/details
+split are **ours**, not theirs — do not attribute those to upstream.
+
+**Headers: nothing new to decide.** An earlier draft of this section asked the owner to approve
+"browser-like headers" for Cloudflare. That was a false alarm on my part: `civitai_client.py:79-82`
+has sent a browser-shaped UA with our own product token appended **since 2026-07-30**, for exactly this
+reason (a bare `Product/version` UA got 401 on both `/api/v1/models` and the download endpoint). Meili
+needs nothing new — **reuse `_default_opener`'s existing header** and this question does not arise.
+> Measured 2026-08-02: the Cloudflare `1010` fires on the *default* `Python-urllib/3.x` UA specifically.
+> An **honest** UA (`ComfyUI-AnimaFlow/1.0 (+repo-url)`) returned 200 with no `Origin` and no `Referer`,
+> which would be better citizenship than a Chrome string. **Not adopted yet, deliberately:** that test
+> ran from a residential IP, and `civitai_client.py`'s own comment already records the hypothesis that
+> Colab's cloud IP ranges are filtered harder — which is where the owner actually runs. Worth a single
+> live check from Colab someday; a strict improvement if it passes, and not worth blocking on.
+
+---
+
+## 7c-0b. Implementation spec — the two-call search (2026-08-02)
+
+A delta against the existing `src/model_browser/civitai_search.py`, not a rewrite. **`_parse_version`,
+`_parse_search_item` and `pick_primary_file` are not touched at all** — step 2 hands them exactly the
+response shape they already parse.
+
+### Wire contract — UNCHANGED
+
+`search_impl` keeps returning `{reason, message, results, next_cursor, public_only}`. **`next_cursor`
+stays an opaque token the client never interprets** — it already is one — so the frontend needs no
+change to paginate. Internally it now encodes a Meili `offset` rather than a Civitai cursor.
+
+**One addition:** `total` (int or `None`), from Meili's `estimatedTotalHits`. The REST path cannot
+produce it and sends `None`. This is the count the UI has never been able to show.
+
+### Step 1 — Meili discovery
+
+`POST https://search.civitai.com/multi-search`, `indexUid: "models_v9"`, via the existing
+`_default_opener` header. Returns hit **ids in rank order** plus `estimatedTotalHits`. **Keep nothing
+else from the hit** — every other field is v1's job, and a second source for a field v1 already owns is
+how the two drift.
+
+Filter construction — a list of groups, OR within a group, AND between groups:
+
+| our filter | Meili filter | note |
+|---|---|---|
+| `kind` / `types[]` | `['"type"="LORA"', …]` | one group, OR'd — same values `clean_types` already validates |
+| `base_model` | `['"version.baseModel"="Anima"']` | **the filter that is broken today** |
+| — | `"availability = Public"` | always; excludes unlisted/removed |
+| `level` | see below | **not** Civicomfy's `nsfwLevel IN [1,2,4]` |
+| `period` | `lastVersionAtUnix > <epoch>` | see below |
+| `sort` | `sort: [...]` | see below |
+
+> #### ⚠️ The level filter is the one place a naive port leaks adult content
+>
+> A **model** hit's `nsfwLevel` is an **ARRAY** of every level present in it (`[4, 8, 16, 32]`), not a
+> single value. Meili's `IN` on an array field matches when **any** element matches — so
+> `nsfwLevel IN [1, 2]` (Civicomfy's approach, `civitai.py:178`) **matches a model containing both PG
+> and XXX images**, because its `1` matches. That is the opposite of "maximum browsing level".
+>
+> **Build the filter as an exclusion, not an inclusion:** `NOT nsfwLevel IN [<every rung ABOVE the
+> user's max>]`. At PG that is `NOT nsfwLevel IN [2,4,8,16,32]`. Test this against a model known to
+> carry mixed levels, not only against a clean one — an inclusion filter passes a clean-model test
+> perfectly while being wrong.
+>
+> Client-side level filtering on individual images stays exactly as it is; this is a coarser,
+> additional gate on whole models, and the two are not redundant.
+
+**Sort.** Our four `SORT_VALUES` map to Meili sort strings; `Relevancy` means **omit `sort` entirely**
+so Meili's own ranking applies (sending a sort is what broke relevance upstream in the first place —
+do not send one just to be explicit). `Highest Rated` → `metrics.thumbsUpCount:desc`,
+`Most Downloaded` → `metrics.downloadCount:desc`, `Newest` → `createdAt:desc`.
+
+**Period** has no native Meili equivalent and **will silently stop working if it is not mapped**. The
+hit carries `lastVersionAtUnix`; map each of `PERIOD_VALUES` to a `lastVersionAtUnix > <epoch>` filter,
+`AllTime` to no filter. Verify against the live index before trusting the field name.
+
+### Step 2 — v1 re-hydration
+
+`GET /api/v1/models?ids=<id>&ids=<id>…&nsfw=true&limit=<n>` — **repeated params, never comma-joined**
+(a comma-joined multi-value filter has silently done nothing here once already; `types` did exactly
+this and both sides stayed green). Then `parse_search_response` **unchanged**.
+
+Four rules, each from a measured failure, repeated here because they are the whole correctness story:
+
+1. **`nsfw=true` is mandatory** or adult models vanish with no error.
+2. **Re-sort into Meili's id order.** The response order differs from the request order.
+3. **Tolerate gaps** — 1 of 20 ids did not resolve. Drop that card; never fail the page.
+4. **Assert the returned ids are a SUBSET of the requested ids.** The 0-hit fallback can answer with
+   popular models that look like results. One line; converts silent wrongness into a detectable error.
+
+### Failure and fallback
+
+Meili failing at step 1 → fall back to today's REST search for the whole page, and mark the response so
+the UI can say which engine answered (see the fallback rule above — a degraded search can return
+plausible-but-unrelated models, and the user must be able to tell). Step 2 failing after step 1
+succeeded is **not** a fallback case: the ids are good, so surface `offline` and let the user retry
+rather than silently serving a different result set.
+
+Both steps go through the existing `_SEARCH_LIMITER` as **one** logical search — two upstream requests
+must not cost two rate-limit slots.
+
+### Tests
+
+Pure-parse tests off recorded fixtures for both halves, plus specifically: the level filter **excludes**
+a mixed-level model (the leak case above, which an inclusion filter fails); the encoded-offset cursor
+round-trips; the subset assertion rejects a fabricated foreign id; a missing id drops one card and keeps
+the rest; re-sorting restores Meili's order from a shuffled v1 response; `Relevancy` sends **no** sort
+key; each period maps to the epoch it claims; and the **encoded query string** for both calls, since
+that is where the last multi-value contract broke.
 
 ### 7c-i. All three get the FULL filter set (owner, 2026-07-29)
 
