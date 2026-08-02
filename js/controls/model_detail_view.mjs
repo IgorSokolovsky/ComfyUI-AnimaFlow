@@ -929,13 +929,36 @@ ${THUMB_SKELETON_CSS}
    picker's ~115px tiles the prompt column is narrow. \`.wtn-dv-gprompt\`'s
    own \`max-height: 72px; overflow-y: auto\` (below) is what keeps that
    readable -- it scrolls vertically rather than clipping, so a narrow
-   column just means a taller scroll, not lost text. */
+   column just means a taller scroll, not lost text.
+
+   REGRESSION (owner, 2026-08-02: "gallery fixed but prompt now is not
+   shown"), introduced by this very pass: this rule used to also flip
+   \`.wtn-dv-gimg\` to \`overflow: visible\` on hover, which is what let the
+   drawer be TALLER than the tile without anything clipping it -- removing
+   that (the fix above) was correct on its own terms, but nothing replaced
+   the "taller than the tile" allowance it happened to also provide. At the
+   picker's ~115px tiles the drawer's natural content height (prompt +
+   params + copy button) is ~147px -- taller than the whole tile -- so once
+   \`.wtn-dv-gimg\` clips permanently, the drawer's TOP ~32px (which is where
+   the prompt's own opening lines live, since the drawer bottom-anchors and
+   grows upward) is clipped clean off. Measured headless
+   (\`.claude/skills/css-layout-diagnose-headless\`): picker tile h=115,
+   drawer h=147 pre-fix, prompt top 23px above the tile top. Escaping the
+   tile again is not an option (the comment above already proves why, and
+   redoing it would reintroduce the cut-off-mid-word bug that removal
+   fixed) -- so the drawer must FIT instead: \`max-height: 100%\`, resolving
+   against \`.wtn-dv-goverlay\`'s own height, which is exactly the tile's
+   (\`inset: 0\` against \`.wtn-dv-gimg\`, whose own height is fully determined
+   by \`.wtn-dv-gbox\`'s \`aspect-ratio\`-driven box -- verified headless
+   before relying on it, both tile sizes). \`.wtn-dv-gprompt\` (below) is what
+   actually absorbs the cap -- it becomes the flexible child. */
 .wtn-dv-gdrawer {
   position: absolute; left: 0; right: 0; bottom: 0;
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
   background: rgba(6, 8, 11, .65);
   border-top: 1px solid var(--wtn-line, ${TOKENS.line});
   border-radius: 0 0 7px 7px;
+  max-height: 100%;
 }
 /* \`overflow-x: hidden\` is explicit, not assumed -- CSS computes a
    \`visible\`/non-\`visible\` overflow PAIR: if either axis is set to
@@ -947,11 +970,38 @@ ${THUMB_SKELETON_CSS}
    \`overflow-wrap: anywhere\` above already exists to guard against, here
    applied to the same failure mode. \`overflow-wrap: anywhere\` lets an
    unbreakable token (a long tag run with no spaces) wrap instead of forcing
-   the box wider in the first place. */
-.wtn-dv-gprompt { font-size: ${fontCalc(FONT_RATIOS.gprompt)}; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
-.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gparams)}; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); overflow-wrap: anywhere; }
+   the box wider in the first place.
+
+   \`flex: 1 1 auto\` is new (2026-08-02, the clipped-prompt regression fix,
+   above) -- this is now \`.wtn-dv-gdrawer\`'s ONE flexible child: the params
+   line and the copy button (both \`flex: none\`, below) must always stay
+   fully visible, so the prompt is what shrinks when \`.wtn-dv-gdrawer\`'s new
+   \`max-height: 100%\` cap leaves less room than the prompt's own content (up
+   to its pre-existing 72px) plus its siblings need. The JS side pairs this
+   with the \`wtn-flex-bound\` class (\`js/shared/theme.css\`) on this element,
+   NOT a hand-written \`min-height: 0\` here -- a flex child's default
+   \`min-height: auto\` refuses to shrink below its own content otherwise,
+   which would silently defeat this rule's own \`overflow-y: auto\` the exact
+   same way \`.wtn-dv-body\`'s own doc comment (above) already documents for
+   the identical trap one level up -- \`lora_render.mjs\`'s \`.wtn-lora-name-
+   text wtn-flex-bound\` is the precedent this follows rather than
+   re-deriving a third copy of the same fix. */
+.wtn-dv-gprompt { font-size: ${fontCalc(FONT_RATIOS.gprompt)}; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; flex: 1 1 auto; }
+/* \`flex: none\` (2026-08-02, same pass as \`.wtn-dv-gprompt\`'s own \`flex: 1 1
+   auto\` above) -- without it, a flex column's default \`flex-shrink: 1\`
+   would let THIS line also give up height under the drawer's new
+   \`max-height\` cap, which is exactly the "losing the copy button would be
+   a worse bug" case the task brief calls out. Fixed-content-height, never
+   flexible. */
+.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gparams)}; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); overflow-wrap: anywhere; flex: none; }
 .wtn-dv-gcopy {
-  align-self: flex-start; font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gcopy)}; padding: 2px 7px; border-radius: 5px; cursor: pointer;
+  /* \`flex: none\` -- same reasoning as \`.wtn-dv-gparams\`'s own comment,
+     above: the copy button must never give up height to the prompt when
+     \`.wtn-dv-gdrawer\`'s \`max-height: 100%\` cap engages. \`align-self:
+     flex-start\` (pre-existing) is a DIFFERENT axis -- it keeps the button
+     from stretching to the drawer's full WIDTH, not from shrinking
+     vertically -- so this doesn't replace it, the two are independent. */
+  align-self: flex-start; flex: none; font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gcopy)}; padding: 2px 7px; border-radius: 5px; cursor: pointer;
   background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border: 1px solid var(--wtn-accent, ${TOKENS.accent});
 }
 .wtn-dv-gcopy:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
@@ -1123,7 +1173,14 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
     // directly, so the three read as a single panel rather than three
     // separate things floating over it.
     const drawer = el(doc, "div", "wtn-dv-gdrawer");
-    const promptEl = el(doc, "div", "wtn-dv-gprompt");
+    // `wtn-flex-bound` (js/shared/theme.css) -- pairs with this element's own
+    // `flex: 1 1 auto` (this file's CSS, above) so the prompt can actually
+    // SHRINK below its own content when `.wtn-dv-gdrawer`'s `max-height: 100%`
+    // cap leaves less room than it wants; without it a flex child's default
+    // `min-height: auto` would silently defeat the `overflow-y: auto` this
+    // rule already declares (`lora_render.mjs`'s `wtn-lora-name-text wtn-flex-
+    // bound` is the precedent this follows).
+    const promptEl = el(doc, "div", "wtn-dv-gprompt wtn-flex-bound");
     promptEl.textContent = entry.prompt; // never innerHTML -- a prompt may contain "<lora:x:0.8>" or raw HTML
     drawer.appendChild(promptEl);
     const paramsLabel = galleryParamsLabel(entry.params);

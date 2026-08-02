@@ -1363,6 +1363,82 @@ test("buildModelDetailView: .wtn-dv-gparams (a single mono-font line, the most l
 });
 
 // =========================================================================
+// REGRESSION (owner, 2026-08-02: "gallery fixed but prompt now is not
+// shown"), introduced by `c25b9bc`'s own `.wtn-dv-gimg` permanent-clip fix
+// (the tests just above this block pin THAT fix). Removing the drawer's old
+// hover-triggered `overflow: visible` escape was correct, but it also
+// removed the only thing that had let the drawer be TALLER than its own
+// tile -- at the picker's ~115px tiles the drawer's natural content height
+// (prompt + params + copy) is taller than the whole tile, so once
+// `.wtn-dv-gimg` clips permanently, the drawer's own top -- which is where
+// the prompt's opening lines live, since the drawer bottom-anchors and
+// grows upward -- gets clipped clean off.
+//
+// No plain-node test here has a layout engine, so none of these can PROVE a
+// box's rendered height the way a real one can -- they only pin the
+// DECLARATIONS this fix depends on. The actual proof is the headless
+// measurement in this task's own build report (both tile sizes, before vs.
+// after): picker tile=115 drawer/tile height now both 115 (was 147/115,
+// clipping the prompt's top 23px above the tile), modal tile=200 unaffected
+// either way, and a SHORT prompt at 200px still hugs its own content rather
+// than stretching to the tile's full height (confirming `max-height`, not
+// `height: 100%`, is what got used).
+// =========================================================================
+
+test("buildModelDetailView: .wtn-dv-gdrawer is capped at its own tile's height (max-height: 100%, resolving against the tile-sized .wtn-dv-goverlay) -- never allowed to grow taller than the tile again", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const drawerRule = css.match(/\.wtn-dv-gdrawer\s*\{([^}]*)\}/)[1];
+  assert.match(drawerRule, /max-height:\s*100%;?/, "the drawer must be capped at its own tile's height, not left to grow to its content's natural (taller) height");
+  // `height: 100%` would have been the WRONG fix -- it would stretch the
+  // drawer to the full tile height even for a short prompt with nothing
+  // needing that much room (the task brief's own "must still hug its
+  // content when there is room" check, proven headless, not here).
+  assert.doesNotMatch(drawerRule, /(?<!max-)height:\s*100%/, "must be max-height, not height -- height:100% would force full-tile size even for a short prompt");
+});
+
+test("buildModelDetailView: .wtn-dv-gprompt is the ONE flexible child inside the now-capped drawer -- flex: 1 1 auto, so it (not the params line or the copy button) absorbs the cap", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const promptRule = css.match(/\.wtn-dv-gprompt\s*\{([^}]*)\}/)[1];
+  assert.match(promptRule, /flex:\s*1 1 auto;?/, "the prompt must be the flexible child that shrinks when the drawer's own max-height cap engages");
+  // Its own pre-existing `max-height: 72px; overflow-y: auto` (pinned by an
+  // earlier test above) still applies ON TOP of the flex shrink -- the two
+  // combine: shrink toward 0 under a small drawer, cap at 72px under a
+  // roomy one, scroll rather than clip in between.
+  assert.match(promptRule, /max-height:\s*72px;?/, "the pre-existing 72px ceiling must still be there -- flex alone doesn't replace it");
+});
+
+test("buildModelDetailView: the prompt element itself carries wtn-flex-bound (js/shared/theme.css) -- without it a flex child's default min-height: auto silently defeats its own overflow-y: auto under the drawer's new cap", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const gallery = [{ url: "a.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery, modelDescriptionChecked: true },
+  });
+  const promptEl = findAll(el, "wtn-dv-gprompt")[0];
+  assert.ok(promptEl.classList.contains("wtn-flex-bound"), "the prompt element must carry wtn-flex-bound so it can actually shrink below its own content -- the SAME class/reasoning lora_render.mjs's own .wtn-lora-name-text already established, not a fourth hand-written min-height: 0");
+  assert.match(themeCss, /\.wtn-flex-bound\s*\{[^}]*min-height:\s*0/, "and that class must actually declare min-height: 0 in js/shared/theme.css -- otherwise carrying the class name alone would do nothing");
+});
+
+test("buildModelDetailView: the params line and the copy button are BOTH flex: none inside the drawer -- they must never give up height to the shrinking prompt, losing either would be a worse bug than the clip being fixed", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const paramsRule = css.match(/\.wtn-dv-gparams\s*\{([^}]*)\}/)[1];
+  const copyRule = css.match(/\.wtn-dv-gcopy\s*\{([^}]*)\}/)[1];
+  assert.match(paramsRule, /flex:\s*none;?/, "the params line must be a fixed-height flex item, never a shrink target");
+  assert.match(copyRule, /flex:\s*none;?/, "the copy button must be a fixed-height flex item, never a shrink target");
+  // `align-self: flex-start` (pre-existing, keeps the button from
+  // stretching to the drawer's full WIDTH) is a different axis and must
+  // survive this change untouched, not be replaced by the new declaration.
+  assert.match(copyRule, /align-self:\s*flex-start;?/, "the pre-existing width-axis fix must still be there alongside the new flex: none");
+});
+
+// =========================================================================
 // Owner-reported (2026-08-01): "why do we have a back button in this menu?"
 // -- the picker's detail view is a SIBLING overlay, not a swap back to a
 // list, so leaving it is "close", not "back". `onBack` no longer has any
