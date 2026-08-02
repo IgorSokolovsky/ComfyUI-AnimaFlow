@@ -123,6 +123,25 @@ _logger = logging.getLogger(logs_mod.LOGGER_NAME)
 MEILI_URL = "https://search.civitai.com/multi-search"
 MEILI_INDEX_UID = "models_v9"
 
+# The COMMUNITY gallery's own prompt-enrichment index (2026-08-02, "community
+# images gain their prompts") -- a SIBLING Meili index on the SAME endpoint,
+# NOT a second Meili host/client: `GET /api/v1/images?modelVersionId=...`
+# (`civitai_client.fetch_community_images`) answers `meta: {}` on every
+# sampled image (`civitai_parse.parse_community_images`'s own docstring,
+# "0/40 sampled" -- that measurement was RIGHT about the REST endpoint),
+# but Civitai's own `images_v6` Meili index carries `prompt` as a top-level
+# field on the SAME images, measured live against the owner's own report
+# (`/wtn/model_browser/community_images?version_id=2982108`): `GET /api/v1/
+# images?modelVersionId=2982108` -> 20 images, 0 prompts; the SAME 20 ids
+# resolved through `images_v6` via `id IN [...]` -> 20 prompts. `id` is
+# filterable on this index (`modelVersionId` is NOT -- the 400 body's own
+# error lists the filterable set: `aspectRatio`, `baseModel`,
+# `combinedNsfwLevel`, `createdAtUnix`, `id`, `minor`, `nsfwLevel`, `poi`,
+# `tagNames`, `techniqueNames`, `toolNames`, `type`, `user.username`), which
+# is exactly why this is a SECOND lookup keyed by the ids the REST call
+# already returned, not a way to ask Meili for a version's images directly.
+IMAGES_MEILI_INDEX_UID = "images_v6"
+
 # Civitai's own public web-app Meilisearch bearer token -- see this module's
 # own top docstring for why this is safe to keep verbatim, ported from
 # `Civicomfy/api/civitai.py:135` (MIT, with attribution).
@@ -693,10 +712,129 @@ def two_call_search(
     return {"reason": "ok", "results": reordered, "next_cursor": next_cursor, "total": total}
 
 
+# ---------------------------------------------------------------------------
+# The COMMUNITY gallery's own `images_v6` prompt enrichment (2026-08-02,
+# "community images gain their prompts") -- reuses `_post_meili`'s existing
+# transport (host, headers, byte cap, offline-reason vocabulary) verbatim;
+# only the payload shape and the index differ from `two_call_search`'s own
+# step 1. See `IMAGES_MEILI_INDEX_UID`'s own comment above for the measured
+# "why this index, why `id IN [...]`" story.
+# ---------------------------------------------------------------------------
+
+
+def build_images_meili_payload(ids: Sequence[int]) -> Dict[str, Any]:
+    """`ids` (already-cleaned positive ints -- the caller's job, same
+    division of labour `build_meili_payload`'s own caller keeps) -> the
+    `POST https://search.civitai.com/multi-search` body for `images_v6`'s
+    own `id IN [...]` filter. No text query (`q: ""`), no sort (rank order is
+    irrelevant here -- this is a lookup by id, not a search), `limit` sized
+    to the request itself so every requested id can come back in one page
+    (never Civitai's own default page size, which could silently truncate a
+    request for more ids than that default). Pure, no network.
+    """
+    clean_ids = [i for i in ids if isinstance(i, int) and not isinstance(i, bool)]
+    query_obj: Dict[str, Any] = {
+        "q": "",
+        "indexUid": IMAGES_MEILI_INDEX_UID,
+        "filter": [f"id IN [{','.join(str(i) for i in clean_ids)}]"],
+        "limit": max(len(clean_ids), 1),
+    }
+    return {"queries": [query_obj]}
+
+
+def parse_images_meili_response(raw: Any) -> Dict[int, Dict[str, Any]]:
+    """An `images_v6` `multi-search` response -> `{image_id: {"prompt":
+    str|None, "hide_meta": bool}}`. `prompt` is the hit's own top-level field,
+    kept only when it's a real, non-blank string (`None` otherwise -- "omit
+    rather than invent", the same rule every parser in this package
+    follows). `hide_meta` is the hit's own `hideMeta` boolean, coerced with
+    `bool()` -- an uploader who set it chose to hide their generation data,
+    and `fetch_image_prompts`'s own caller (`community_images_impl`) must
+    never surface a `prompt` for a hit where this is `True`, regardless of
+    what `prompt` itself holds.
+
+    Never raises; a malformed/unexpected shape (not a dict, no `results`
+    list, an empty `results` list, a non-dict first result, a non-list
+    `hits`) degrades to `{}` rather than raising, same as `parse_meili_
+    response` above. A hit with a non-integer/boolean `id` is dropped (no key
+    to file it under). Order is not meaningful here (unlike `parse_meili_
+    response`'s own rank-order contract) -- this is a lookup, not a search.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    results = raw.get("results")
+    if not isinstance(results, list) or not results:
+        return {}
+    first = results[0]
+    if not isinstance(first, dict):
+        return {}
+    hits = first.get("hits")
+    if not isinstance(hits, list):
+        return {}
+
+    out: Dict[int, Dict[str, Any]] = {}
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        hit_id = hit.get("id")
+        if not isinstance(hit_id, int) or isinstance(hit_id, bool):
+            continue
+        prompt = hit.get("prompt")
+        out[hit_id] = {
+            "prompt": prompt if isinstance(prompt, str) and prompt.strip() else None,
+            "hide_meta": bool(hit.get("hideMeta")),
+        }
+    return out
+
+
+def fetch_image_prompts(
+    ids: Sequence[int],
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    opener=None,
+) -> Dict[int, Dict[str, Any]]:
+    """Best-effort `id -> {"prompt": str|None, "hide_meta": bool}` enrichment
+    from `images_v6`, for the COMMUNITY gallery's own prompt reversal
+    (2026-08-02, docs/lora-loader-design.md's own community-gallery section).
+    `community_images_impl`'s ONE caller for this -- never raises, and a
+    failure/partial resolve degrades to `{}`/a PARTIAL dict rather than
+    turning a working community grid into a broken one: this extends
+    `fb949a8`'s own "the whole section is additive" rule to this SECOND
+    network call the same way it already governs the first
+    (`civitai_client.fetch_community_images`) -- a failed or rate-limited
+    `images_v6` lookup must never change `reason` or empty out `images`, it
+    can only ever leave some/all entries' `prompt` at `None`.
+
+    Reuses `_post_meili`'s existing transport (host, headers, byte cap,
+    offline-reason vocabulary) rather than a second Meili client -- only the
+    payload shape (`build_images_meili_payload`, `images_v6` instead of
+    `models_v9`, an `id IN [...]` filter instead of `two_call_search`'s own
+    filter groups) differs from that function's own step 1.
+
+    An empty/falsy/non-iterable `ids` (`None` included -- `_community_image_
+    ids`'s own non-list-input case) -- nothing to enrich -- short-circuits to
+    `{}` with NO network call, mirroring `two_call_search`'s own identical
+    short-circuit for an empty Meili hit list: an empty `id IN []` filter
+    isn't a request this pack should ever make.
+    """
+    if not ids:
+        return {}
+    clean_ids = [i for i in ids if isinstance(i, int) and not isinstance(i, bool)]
+    if not clean_ids:
+        return {}
+    payload = build_images_meili_payload(clean_ids)
+    step = _post_meili(payload, timeout=timeout, max_body_bytes=max_body_bytes, opener=opener)
+    if step["reason"] != "found":
+        return {}
+    return parse_images_meili_response(step["data"])
+
+
 __all__ = (
     "MEILI_URL",
     "MEILI_INDEX_UID",
     "MEILI_BEARER_TOKEN",
+    "IMAGES_MEILI_INDEX_UID",
     "SORT_TO_MEILI",
     "encode_meili_cursor",
     "decode_meili_cursor",
@@ -709,4 +847,7 @@ __all__ = (
     "ids_are_subset",
     "reorder_by_ids",
     "two_call_search",
+    "build_images_meili_payload",
+    "parse_images_meili_response",
+    "fetch_image_prompts",
 )

@@ -1773,6 +1773,13 @@ So the original §7c-ii rationale had **two** halves that pull apart, and each h
 actually is. The community grid is honestly decoration-plus-evidence, not a prompt source, and should not
 pretend otherwise: **no copy-prompt affordance on a tile that has nothing to copy.**
 
+> **⚠️ REVERSED 2026-08-02 ("community images gain their prompts") — see the correction box below the
+> measurement it responds to.** This paragraph's own conclusion turns out to be right about the
+> *endpoint* (`/api/v1/images?modelVersionId=…` really does answer `meta: {}` on every image, unchanged)
+> and wrong about the *data* (Civitai's own Meilisearch index for images carries the prompt anyway, from
+> a second call). Kept here, unedited, so the reasoning that held for four days is still visible — the
+> reversal is recorded in place, not by deleting this.
+
 Four things to settle:
 
 1. **Lazy-load it.** This is a *second* network call per detail open, and it is below both descriptions —
@@ -1812,6 +1819,60 @@ Four things to settle:
 >
 > Everything else in this section stands: the version selector, the descriptions, `View on Civitai ↗`, the
 > three constraints below, and the master→detail swap.
+
+> ### ✅ REVERSAL (owner, 2026-08-02): community images gain their prompts after all — the measurement
+> ### was right, the conclusion drawn from it was not
+>
+> Owner, with their **live route** as evidence: *"the community images doesn't have prompt."* Confirmed
+> against the running server — `/wtn/model_browser/community_images?version_id=2982108` answers
+> `{url, width, height, nsfw_level, username, reaction_count}`, no `prompt` — exactly what the box above
+> specced, and exactly what the box above measured. **The measurement was never wrong.** What was wrong
+> was treating "this REST endpoint has no prompt" as "this data has no prompt" — a different claim, and
+> a false one.
+>
+> Civitai's own `search.civitai.com/multi-search` (the same Meilisearch endpoint `§7c-0`/`§7c-0b` already
+> uses for model search, `src/model_browser/civitai_meili.py`) has an `images_v6` index, and `prompt` is
+> a TOP-LEVEL field on it. Measured live, against the owner's own version id, minutes after their report:
+>
+> ```
+> REST  /api/v1/images?modelVersionId=2982108   -> 20 images,  0 carrying a prompt (as always)
+> Meili images_v6, filter id IN [those 20 ids]  -> 20 resolved, 20 carrying a prompt
+> ```
+>
+> `modelVersionId` is **not** filterable on `images_v6` (the 400 body lists what is: `aspectRatio`,
+> `baseModel`, `combinedNsfwLevel`, `createdAtUnix`, `id`, `minor`, `nsfwLevel`, `poi`, `tagNames`,
+> `techniqueNames`, `toolNames`, `type`, `user.username`) — but `id` **is**, and the REST call above
+> already hands back exactly the ids to look up. So this is the SAME two-call shape `dac7af1` already
+> shipped for search: one call decides *which* images (REST, by version), a second, best-effort call
+> (`images_v6`, by id) fills in the one field the first call can't provide. `civitai_meili.
+> fetch_image_prompts` is that second call, reusing `civitai_meili.py`'s existing transport (host,
+> headers, byte cap, offline-reason vocabulary) rather than a second Meili client.
+>
+> **`hideMeta` matters, and it is not optional.** `images_v6` also carries a `hideMeta` boolean — an
+> uploader who explicitly hid their generation data set it. `civitai_parse.parse_community_images` treats
+> `hideMeta: true` as `prompt: null` regardless of what the index otherwise holds: publishing a prompt
+> somebody deliberately hid would be the one way this feature could do real harm, and there is no
+> justification for overriding that choice.
+>
+> **The "no copy-prompt affordance" rule reverses too, per-tile, not per-section.** A community tile whose
+> own `prompt` is non-null now gets the exact same hover-drawer/copy-prompt control the author gallery's
+> tiles already have (`js/controls/model_detail_view.mjs`'s `buildPromptDrawerOverlay`, shared by both,
+> not a second construction) — one whose `prompt` is `null` (no enrichment, `hideMeta` set, or the
+> enrichment call itself failed) still shows neither, exactly as this section originally specified. The
+> section's own point 4 above ("a failed or empty fetch renders nothing, silently... additive, must never
+> turn a working detail view into a broken one") now extends to this SECOND network call too: a failed or
+> rate-limited `images_v6` lookup degrades to every image's `prompt` at `null`, never a broken response
+> and never a second rate-limit slot spent (this is one logical request from the caller's point of view).
+>
+> **Measured tile-size consequence.** The community grid's tile floor was 90px (this section's own point
+> 1 above, sized for "3 columns, no scrollbar" in the ~396px picker panel) — smaller than the author
+> gallery's own 115px tile, which the drawer mechanism (`.wtn-dv-gdrawer`'s `max-height: 100%` cap) was
+> only ever verified against. Measured headless with a realistic long prompt + a params line: at 90px the
+> prompt element's own rendered height came back **zero** (`clientHeight: 0`, `scrollHeight: 285`) — not
+> cramped, genuinely invisible, with the params line alone consuming the whole box. At 115px (matching
+> the author gallery) the same fixture measured a real ~48px of visible prompt (scrollable for the rest).
+> `DETAIL_PANEL_COMMUNITY_TILE_PX` (`js/controls/civitai_search.mjs`) is raised 90 → 115 for this reason —
+> reusing the author gallery's own already-verified number rather than picking a fourth, untested one.
 
 
 **Clicking a result card opens its detail**, and it does so by **swapping the results area** while the

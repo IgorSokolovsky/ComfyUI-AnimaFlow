@@ -768,25 +768,45 @@ def _community_reaction_count(stats: Any) -> Optional[int]:
     return total if found_any else None
 
 
-def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
+def parse_community_images(
+    items_raw: Any, *, prompt_by_id: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """The COMMUNITY's own gallery -- `civitai_client.fetch_community_images`'s
     raw `items` array (`GET /api/v1/images?modelVersionId=...`) -- into the
     wire shape `api.py`'s `community_images_impl` sends the frontend
-    verbatim: `[{url, width, height, nsfw_level, username, reaction_count}]`.
-    Deliberately a SEPARATE function from `parse_author_gallery`, same
-    reasoning that function's own docstring already gives for being separate
-    from `parse_gallery_images`: this is a DIFFERENT source, feeding a
-    DIFFERENT part of the detail view (docs/lora-loader-design.md "BOTH
+    verbatim: `[{url, width, height, nsfw_level, username, reaction_count,
+    prompt}]`. Deliberately a SEPARATE function from `parse_author_gallery`,
+    same reasoning that function's own docstring already gives for being
+    separate from `parse_gallery_images`: this is a DIFFERENT source, feeding
+    a DIFFERENT part of the detail view (docs/lora-loader-design.md "BOTH
     galleries, for different reasons") --
 
       - the AUTHOR's gallery (`parse_author_gallery`) carries a reusable
-        `prompt`/`negative_prompt`/`params` 18/20 sampled times -- the
-        reusable, copy-prompt-first part;
-      - THIS, the COMMUNITY's gallery, carries a prompt 0/40 sampled times
-        (`meta` is always empty/absent here) -- "what it looks like in other
-        people's hands", honestly evidence rather than a prompt source. **No
-        `prompt` key is ever set here, deliberately** -- its presence would
-        invite a copy-prompt affordance on a tile that has nothing to copy.
+        `prompt`/`negative_prompt`/`params` 18/20 sampled times, read off
+        THIS endpoint's OWN `meta` object -- the reusable, copy-prompt-first
+        part;
+      - THIS, the COMMUNITY's gallery, still carries `meta: {}` on every
+        sampled image of ITS OWN REST endpoint (re-confirmed, unchanged) --
+        this function never reads `image["meta"]`, deliberately, for exactly
+        that reason.
+
+    **2026-08-02 reversal ("community images gain their prompts"): the
+    grid now DOES carry a `prompt`, from a SECOND source.** The owner's own
+    live report (`/wtn/model_browser/community_images?version_id=2982108`
+    answering with no prompt) held up the measurement above -- this REST
+    endpoint's own `meta` really is empty -- but disproved the conclusion
+    drawn from it: Civitai's own Meilisearch `images_v6` index carries
+    `prompt` as a top-level field on the SAME images (verified against that
+    exact version id: 20 images, 0 REST prompts, 20 resolved via `images_v6`
+    by id). `prompt_by_id` is that enrichment, keyed by the image's own
+    Civitai id (`civitai_meili.fetch_image_prompts`'s own return shape) --
+    OPTIONAL and best-effort: `None`/absent (no enrichment attempted, or it
+    failed) means every entry's `prompt` is `None`, exactly the prior
+    behaviour, never a broken response. A `prompt_by_id` entry whose
+    `hide_meta` is truthy is deliberately IGNORED even when it carries a
+    non-null `prompt` -- an uploader who set Civitai's own "hide generation
+    data" flag chose that, and this function is the one place that decision
+    is honoured before a prompt ever reaches the wire.
 
     `url` is thumbnail-rewritten (`_thumb_url`'s `anim=false,width=256`) --
     the SAME level-aware candidate/retry/skeleton machinery
@@ -815,6 +835,12 @@ def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
     `reaction_count` is `_community_reaction_count`'s own `stats`-derived
     sum, or `None` when unavailable -- see that function's own docstring.
 
+    `prompt` is ALWAYS present as a key -- `None` when unavailable (no
+    `prompt_by_id`, no entry for this image's id, `hide_meta` set, or a
+    blank/non-string value), a real string otherwise. Never absent -- this
+    task's own instruction: "null when unavailable, never absent, so the
+    frontend has one shape to branch on."
+
     Only entries with a truthy `url` are kept -- same "not a usable
     candidate otherwise" rule every other parser in this module applies.
     `width`/`height` are the entry's own top-level ints when present, else
@@ -822,6 +848,7 @@ def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
     """
     if not isinstance(items_raw, list):
         return []
+    prompt_by_id = prompt_by_id if isinstance(prompt_by_id, dict) else {}
     out: List[Dict[str, Any]] = []
     for image in items_raw:
         if not isinstance(image, dict):
@@ -832,6 +859,16 @@ def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
         width = image.get("width")
         height = image.get("height")
         username = image.get("username")
+
+        prompt: Optional[str] = None
+        image_id = image.get("id")
+        if isinstance(image_id, int) and not isinstance(image_id, bool):
+            enrichment = prompt_by_id.get(image_id)
+            if isinstance(enrichment, dict) and not enrichment.get("hide_meta"):
+                candidate = enrichment.get("prompt")
+                if isinstance(candidate, str) and candidate.strip():
+                    prompt = candidate
+
         out.append({
             "url": _thumb_url(url),
             "width": width if isinstance(width, int) and not isinstance(width, bool) else None,
@@ -839,6 +876,7 @@ def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
             "nsfw_level": _community_nsfw_level(image),
             "username": username if isinstance(username, str) and username else None,
             "reaction_count": _community_reaction_count(image.get("stats")),
+            "prompt": prompt,
         })
     return out
 

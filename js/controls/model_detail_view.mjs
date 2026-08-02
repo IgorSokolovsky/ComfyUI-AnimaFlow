@@ -79,14 +79,26 @@
  * `fetchCommunityImages`/`communityTileWidth`/`communityImagesLimit`
  * parameters for the rest of the contract.
  *
- * This grid carries NO prompt (`community_images_impl`'s own docstring: 0/40
- * sampled images carry one, deliberately no `prompt` key on the wire) and
- * gets no copy-prompt affordance and no prompt-on-hover — that is the AUTHOR
- * gallery's job, immediately below. It only attributes each image to its
- * `username` (rendered nowhere when absent — never a fabricated
- * "anonymous") and reports how many are hidden by the viewer's own browsing
- * level, reusing the exact `.wtn-dv-gallery-hidden` class/wording the author
- * gallery already established rather than inventing a second phrasing.
+ * **2026-08-02 reversal ("community images gain their prompts"):** this grid
+ * used to carry NO prompt at all (`community_images_impl`'s own docstring,
+ * pre-reversal: 0/40 sampled images carried one on THIS endpoint's own
+ * `meta`, so there was deliberately no `prompt` key on the wire, no copy-
+ * prompt affordance, no prompt-on-hover). The owner's own live route
+ * (`/wtn/model_browser/community_images?version_id=2982108`) disproved the
+ * CONCLUSION, not the measurement: Civitai's own Meilisearch `images_v6`
+ * index carries `prompt` as a top-level field on the SAME images, reached by
+ * a second, best-effort server-side lookup keyed by id
+ * (`civitai_meili.fetch_image_prompts`) that also honours `images_v6`'s own
+ * `hideMeta` flag. So a community tile now gets the exact SAME hover-drawer/
+ * copy-prompt affordance the author gallery already has (`buildPromptDrawer
+ * Overlay`, shared by both, below) whenever its own `prompt` is non-`null` --
+ * one whose `prompt` is `null` (no enrichment, hidden, or the enrichment
+ * call failed) still shows no drawer and no copy button, exactly as before
+ * this reversal. It also still attributes each image to its own `username`
+ * (rendered nowhere when absent — never a fabricated "anonymous") and
+ * reports how many are hidden by the viewer's own browsing level, reusing
+ * the exact `.wtn-dv-gallery-hidden` class/wording the author gallery
+ * already established rather than inventing a second phrasing.
  *
  * ## The gallery's source is the AUTHOR's, not the community's (measured 2026-08-01)
  *
@@ -1028,7 +1040,7 @@ ${THUMB_SKELETON_CSS}
    section that may render nothing at all (task brief point 5). */
 .wtn-dv-community-host { min-width: 0; }
 .wtn-dv-community-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--wtn-dv-community-tile, 90px), 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--wtn-dv-community-tile, 140px), 1fr));
   gap: 8px; margin-top: 4px;
 }
 .wtn-dv-community-tile { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -1037,15 +1049,22 @@ ${THUMB_SKELETON_CSS}
   display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px;
 }
 .wtn-dv-cbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Prompt-on-hover (2026-08-02, "community images gain their prompts",
+   REVERSING the rule immediately below this comment used to state) -- the
+   SAME \`.wtn-dv-goverlay\`/\`.wtn-dv-gdrawer\` the author gallery's own
+   \`.wtn-dv-gimg:hover\` rule (above) already reveals, scoped to THIS grid's
+   own clipping box (\`.wtn-dv-cbox\`, \`position: relative; overflow:
+   hidden; aspect-ratio: 1 / 1\`) instead of \`.wtn-dv-gimg\` -- see
+   \`buildCommunityEntryEl\`'s own doc comment for why the box, not the
+   whole tile, is the drawer's ancestor here (the caption sits OUTSIDE this
+   box, so it's never covered by the hover overlay). */
+.wtn-dv-cbox:hover .wtn-dv-goverlay, .wtn-dv-cbox:focus-within .wtn-dv-goverlay { opacity: 1; pointer-events: auto; }
 /* Attribution (task brief point 3: "an uncredited grid of other people's
-   work is the wrong default") -- a static caption UNDER the tile, never a
-   hover overlay: point 4 forbids a copy-prompt control here and the author
-   gallery's own \`.wtn-dv-gdrawer\` is exactly the hover mechanism that
-   would invite one, besides which "escaping a clip is impossible" (task
-   brief's own third constraint) makes a hover affordance the wrong choice
-   for a grid this dense anyway. \`overflow-wrap: anywhere\` mirrors
-   \`.wtn-dv-desc\`'s own guard -- a long, space-less username must wrap
-   rather than force the tile wider. */
+   work is the wrong default") -- a static caption UNDER the tile, unrelated
+   to the prompt drawer above (which lives inside \`.wtn-dv-cbox\`, never
+   over this caption). \`overflow-wrap: anywhere\` mirrors \`.wtn-dv-desc\`'s
+   own guard -- a long, space-less username must wrap rather than force the
+   tile wider. */
 .wtn-dv-ccaption { font-size: ${fontCalc(FONT_RATIOS.ccaption)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); overflow-wrap: anywhere; }
 
 .wtn-dv-back {
@@ -1133,6 +1152,72 @@ function buildThumb(doc, view, level, isStale, backoffMs) {
   return thumb;
 }
 
+/**
+ * Builds the prompt-on-hover drawer overlay (`.wtn-dv-goverlay` wrapping
+ * `.wtn-dv-gdrawer`: the prompt, an optional params line, and a copy-prompt
+ * button) for a gallery entry carrying a real, non-blank `entry.prompt` --
+ * `null` for an entry with no usable prompt (task brief: "an image with no
+ * meta degrading cleanly rather than showing an empty hover" -- the overlay
+ * itself is only ever built when there's something to show, never an empty
+ * box that reveals on hover with nothing in it).
+ *
+ * Shared by BOTH galleries' own entry builders -- `buildGalleryEntryEl`
+ * (the author filmstrip, this drawer's original home) and
+ * `buildCommunityEntryEl` (the community grid, since the 2026-08-02
+ * "community images gain their prompts" reversal made a community entry
+ * capable of carrying one too) -- so there is exactly ONE drawer
+ * construction in this file, never two independently-maintained copies that
+ * could drift apart. `entry.params` is read via `galleryParamsLabel`
+ * (already generic over any `{sampler?, steps?, cfg?, size?}}`-shaped
+ * object, or `undefined` -- a community entry simply never has one, and
+ * `galleryParamsLabel(undefined)` already returns `""`, so no branching is
+ * needed here for that difference between the two entry shapes).
+ *
+ * Never throws on garbage input; the CALLER is responsible for appending
+ * the returned element into a `position: relative` ancestor that clips to
+ * the exact box the drawer should be confined to (`.wtn-dv-gimg` for the
+ * author gallery, `.wtn-dv-cbox` for the community grid -- see each
+ * caller's own comment for why that ancestor differs between the two).
+ */
+function buildPromptDrawerOverlay(doc, entry, onCopyPrompt) {
+  if (!entry || typeof entry.prompt !== "string" || !entry.prompt) {
+    return null;
+  }
+  const overlay = el(doc, "div", "wtn-dv-goverlay");
+  // The drawer (this file's own CSS comment on `.wtn-dv-gdrawer`) -- ONE
+  // scrim behind prompt+params+copy, not each painted on the image
+  // directly, so the three read as a single panel rather than three
+  // separate things floating over it.
+  const drawer = el(doc, "div", "wtn-dv-gdrawer");
+  // `wtn-flex-bound` (js/shared/theme.css) -- pairs with this element's own
+  // `flex: 1 1 auto` (this file's CSS, above) so the prompt can actually
+  // SHRINK below its own content when `.wtn-dv-gdrawer`'s `max-height: 100%`
+  // cap leaves less room than it wants; without it a flex child's default
+  // `min-height: auto` would silently defeat the `overflow-y: auto` this
+  // rule already declares (`lora_render.mjs`'s `wtn-lora-name-text wtn-flex-
+  // bound` is the precedent this follows).
+  const promptEl = el(doc, "div", "wtn-dv-gprompt wtn-flex-bound");
+  promptEl.textContent = entry.prompt; // never innerHTML -- a prompt may contain "<lora:x:0.8>" or raw HTML
+  drawer.appendChild(promptEl);
+  const paramsLabel = galleryParamsLabel(entry.params);
+  if (paramsLabel) {
+    const paramsEl = el(doc, "div", "wtn-dv-gparams");
+    paramsEl.textContent = paramsLabel;
+    drawer.appendChild(paramsEl);
+  }
+  const copyBtn = el(doc, "button", "wtn-dv-gcopy");
+  copyBtn.type = "button";
+  copyBtn.textContent = "Copy prompt";
+  copyBtn.title = "Copy this prompt";
+  copyBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onCopyPrompt(entry.prompt);
+  });
+  drawer.appendChild(copyBtn);
+  overlay.appendChild(drawer);
+  return overlay;
+}
+
 function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gate }) {
   const card = el(doc, "div", "wtn-dv-gimg");
   const box = el(doc, "div", "wtn-dv-gbox");
@@ -1160,45 +1245,11 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
     });
   });
 
-  // Prompt-on-hover (task brief: "an image with no meta degrading cleanly
-  // rather than showing an empty hover") -- the overlay element itself is
-  // only ever built when there's a real prompt to show; an entry with no
-  // usable `prompt` (a community-shaped `meta: {}`, or an author image that
-  // genuinely lacks one) gets no overlay at all, never an empty box that
-  // reveals on hover with nothing in it.
-  if (typeof entry.prompt === "string" && entry.prompt) {
-    const overlay = el(doc, "div", "wtn-dv-goverlay");
-    // The drawer (this file's own CSS comment on `.wtn-dv-gdrawer`) -- ONE
-    // scrim behind prompt+params+copy, not each painted on the image
-    // directly, so the three read as a single panel rather than three
-    // separate things floating over it.
-    const drawer = el(doc, "div", "wtn-dv-gdrawer");
-    // `wtn-flex-bound` (js/shared/theme.css) -- pairs with this element's own
-    // `flex: 1 1 auto` (this file's CSS, above) so the prompt can actually
-    // SHRINK below its own content when `.wtn-dv-gdrawer`'s `max-height: 100%`
-    // cap leaves less room than it wants; without it a flex child's default
-    // `min-height: auto` would silently defeat the `overflow-y: auto` this
-    // rule already declares (`lora_render.mjs`'s `wtn-lora-name-text wtn-flex-
-    // bound` is the precedent this follows).
-    const promptEl = el(doc, "div", "wtn-dv-gprompt wtn-flex-bound");
-    promptEl.textContent = entry.prompt; // never innerHTML -- a prompt may contain "<lora:x:0.8>" or raw HTML
-    drawer.appendChild(promptEl);
-    const paramsLabel = galleryParamsLabel(entry.params);
-    if (paramsLabel) {
-      const paramsEl = el(doc, "div", "wtn-dv-gparams");
-      paramsEl.textContent = paramsLabel;
-      drawer.appendChild(paramsEl);
-    }
-    const copyBtn = el(doc, "button", "wtn-dv-gcopy");
-    copyBtn.type = "button";
-    copyBtn.textContent = "Copy prompt";
-    copyBtn.title = "Copy this prompt";
-    copyBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onCopyPrompt(entry.prompt);
-    });
-    drawer.appendChild(copyBtn);
-    overlay.appendChild(drawer);
+  // Prompt-on-hover -- `buildPromptDrawerOverlay` (above) is the ONE shared
+  // drawer construction; `card` (`.wtn-dv-gimg`, `position: relative`) is
+  // this gallery's own clipping ancestor, matching its pre-existing CSS.
+  const overlay = buildPromptDrawerOverlay(doc, entry, onCopyPrompt);
+  if (overlay) {
     card.appendChild(overlay);
   }
   return card;
@@ -1218,13 +1269,33 @@ async function defaultFetchCommunityImages(versionId, limit) {
  * One community-grid tile -- the thumbnail (same skeleton/retry/exhaust
  * machinery every other gallery in this pack shares, `attachThumbCandidate`)
  * plus a static attribution caption underneath (`communityAttributionLabel`,
- * reused verbatim, never re-derived). Deliberately carries NO prompt
- * overlay, NO drawer, NO copy button, and NO hover-revealed anything --
- * unlike `buildGalleryEntryEl` just above, this function has no `onCopyPrompt`
- * parameter to plumb through at all, which is what makes "no copy-prompt
- * control exists anywhere in this section" true by construction rather than
- * by a runtime check (task brief point 4). */
-function buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }) {
+ * reused verbatim, never re-derived).
+ *
+ * **2026-08-02 reversal ("community images gain their prompts"):** this
+ * tile used to carry NO prompt overlay, NO drawer, NO copy button, and NO
+ * hover-revealed anything at all -- the entire reason was that the
+ * community endpoint had nothing to show (`entry.prompt` was never even a
+ * key on the wire). Now that `civitai_parse.parse_community_images` can
+ * populate a real `prompt` (Meili's own `images_v6` enrichment,
+ * `src/model_browser/api.py`'s `community_images_impl`), this tile gets the
+ * SAME hover drawer/copy affordance the author gallery already has --
+ * `buildPromptDrawerOverlay` (above), reused verbatim rather than a second,
+ * independently-maintained construction. An entry whose `prompt` is `null`
+ * (no enrichment, `hideMeta` set, or the enrichment call itself failed)
+ * still gets no overlay at all -- `buildPromptDrawerOverlay` returns `null`
+ * for that case, so "no copy-prompt control on a tile with nothing to copy"
+ * stays true, just now decided per-entry instead of for the whole section.
+ *
+ * The overlay is appended to `box` (`.wtn-dv-cbox`), NOT `tile` -- `.wtn-dv-
+ * cbox` is this tile's own `position: relative; overflow: hidden;
+ * aspect-ratio: 1 / 1` square (this file's own CSS), the exact structural
+ * role `.wtn-dv-gimg` plays for the author gallery's own card (there, the
+ * card IS the image box; here, the tile is box-plus-caption, so scoping the
+ * drawer to the box keeps it "must FIT its tile" (the box, the actual image
+ * area) without also overlaying the attribution caption underneath). A new
+ * CSS hover rule (`.wtn-dv-cbox:hover .wtn-dv-goverlay`, below) mirrors
+ * `.wtn-dv-gimg`'s own, scoped to this different ancestor class. */
+function buildCommunityEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gate }) {
   const tile = el(doc, "div", "wtn-dv-community-tile");
   const box = el(doc, "div", "wtn-dv-cbox");
   const skeleton = el(doc, "span", THUMB_SKELETON_CLASS);
@@ -1251,6 +1322,11 @@ function buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }) {
     });
   });
 
+  const overlay = buildPromptDrawerOverlay(doc, entry, onCopyPrompt);
+  if (overlay) {
+    box.appendChild(overlay);
+  }
+
   const captionText = communityAttributionLabel(entry);
   if (captionText) {
     const caption = el(doc, "div", "wtn-dv-ccaption");
@@ -1271,8 +1347,13 @@ function buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }) {
  * heading and the hidden-count line, no empty grid), and the hidden-count
  * line (`.wtn-dv-gallery-hidden`, the AUTHOR gallery's own class/wording,
  * reused verbatim rather than a second phrasing) whenever anything is
- * actually hidden. */
-function renderCommunityImages(doc, host, resp, level, { tileWidthPx, backoffMs, concurrency, isStale }) {
+ * actually hidden.
+ *
+ * `onCopyPrompt` (2026-08-02, "community images gain their prompts") is
+ * plumbed straight through to `buildCommunityEntryEl` for each visible
+ * entry -- the SAME callback the author gallery already uses, never a
+ * second copy-to-clipboard implementation. */
+function renderCommunityImages(doc, host, resp, level, { tileWidthPx, backoffMs, concurrency, isStale, onCopyPrompt }) {
   host.innerHTML = "";
   const view = communityImagesView(resp, level);
   if (!view.shouldRender) {
@@ -1286,7 +1367,7 @@ function renderCommunityImages(doc, host, resp, level, { tileWidthPx, backoffMs,
     grid.style.setProperty("--wtn-dv-community-tile", `${tileWidthPx}px`);
     const gate = createLoadGate(concurrency);
     for (const entry of view.visible) {
-      grid.appendChild(buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }));
+      grid.appendChild(buildCommunityEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gate }));
     }
     host.appendChild(grid);
   }
@@ -1400,7 +1481,9 @@ function renderCommunityImages(doc, host, resp, level, { tileWidthPx, backoffMs,
  *   MINIMUM tile width, in px (default 140 -- the modal's size, mirroring
  *   `galleryTileWidth`'s own default being the MODAL's size while the picker
  *   overrides down; `civitai_search.mjs` passes its own narrower
- *   `DETAIL_PANEL_COMMUNITY_TILE_PX`, 90, for its ~396px panel). Sibling to
+ *   `DETAIL_PANEL_COMMUNITY_TILE_PX`, 115 as of 2026-08-02 (raised from 90 --
+ *   see that constant's own comment for the measured "prompt renders at
+ *   zero height" finding behind the raise), for its ~396px panel). Sibling to
  *   `galleryTileWidth`, above, in shape ("one option, one caller-supplied
  *   number per mount") but NOT in meaning: this grid is a responsive
  *   `auto-fill`/`minmax(...)` CSS grid (task brief: "a responsive grid, not
@@ -1793,6 +1876,7 @@ export function buildModelDetailView({
       }
       renderCommunityImages(doc, communityHost, resp, browsingLevel, {
         tileWidthPx: communityTileWidthPx, backoffMs: thumbRetryBackoffMs, concurrency: galleryConcurrency, isStale,
+        onCopyPrompt,
       });
     });
   }

@@ -2279,10 +2279,24 @@ const DETAIL_PANEL_GALLERY_TILE_PX = 115;
 // above, this is a `minmax()` FLOOR in a responsive `auto-fill` grid
 // (`model_detail_view.mjs`'s own `communityTileWidth` doc comment), not a
 // fixed size, so the arithmetic is looser: at the same ~364px of gallery
-// width and an 8px gap, a 90px floor fits three columns with room to spare,
-// which is what keeps this section legible in the ~396px panel without
-// forcing a horizontal scrollbar the way the filmstrip needs.
-const DETAIL_PANEL_COMMUNITY_TILE_PX = 90;
+// width and an 8px gap, a floor this size fits three columns with room to
+// spare, which is what keeps this section legible in the ~396px panel
+// without forcing a horizontal scrollbar the way the filmstrip needs.
+//
+// Raised 90 -> 115 (2026-08-02, "community images gain their prompts") --
+// matching `DETAIL_PANEL_GALLERY_TILE_PX` immediately above, not a third,
+// independently-chosen number. Measured headless (`.claude/skills/css-
+// layout-diagnose-headless`) at the ORIGINAL 90px, with a realistic
+// long prompt + a params line: the prompt element's own rendered height was
+// `0` -- `client=0 scroll=285` -- i.e. completely invisible, not merely
+// cramped; the params line alone (wrapped across several lines at that
+// width) already consumed the whole 90px box. At 115px (this file's own
+// pre-existing gallery tile size) the SAME fixture measured a real,
+// non-zero `prompt` height (~48px, scrollable via its own `overflow-y:
+// auto` for the rest) -- usable, if tight. Still 3 columns fit the panel at
+// this floor (3*115 + 2*8 = 361px, inside the ~364px budget above), so this
+// costs no layout change beyond the tile itself.
+const DETAIL_PANEL_COMMUNITY_TILE_PX = 115;
 
 // ---------------------------------------------------------------------------
 // §7c-ii -- the picker's own VERTICAL detail panel (decision 21): a SIBLING

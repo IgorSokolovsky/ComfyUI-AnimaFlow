@@ -101,14 +101,23 @@ resolves or writes a local path.
 
 The detail view's own COMMUNITY gallery (`docs/lora-loader-design.md`'s "BOTH
 galleries, for different reasons", 2026-08-01/2026-08-02) -- the bottom grid,
-distinct from `model_detail`'s own author gallery above: 0/40 sampled carry a
-prompt (vs 18/20 for the author's), so it's *"what it looks like in other
-people's hands"*, not a prompt source -- see `community_images_impl`'s own
-docstring for the full contract. Same "no `kind`" reasoning as `/model_detail`
-(a pure Civitai proxy by `version_id`, no local path). Always
-`{"ok": true, "reason": ..., "images": [...]}`, HTTP 200 -- `images` is `[]`
-on ANY failure (design doc point 4: "a failed or empty fetch must never look
-like an error to the caller"), never surfaced as a broken response.
+distinct from `model_detail`'s own author gallery above. Same "no `kind`"
+reasoning as `/model_detail` (a pure Civitai proxy by `version_id`, no local
+path). Always `{"ok": true, "reason": ..., "images": [...]}`, HTTP 200 --
+`images` is `[]` on ANY failure (design doc point 4: "a failed or empty
+fetch must never look like an error to the caller"), never surfaced as a
+broken response.
+
+**Reversal, 2026-08-02 ("community images gain their prompts"):** this
+section originally shipped with 0/40 sampled images carrying a `prompt` (the
+REST endpoint's own `meta` is empty) and no `prompt` key on the wire at all.
+The owner's own live route disproved the CONCLUSION, not the measurement --
+Civitai's own Meilisearch `images_v6` index carries `prompt` as a top-level
+field on the SAME images, reached by a second, best-effort lookup
+(`civitai_meili.fetch_image_prompts`) keyed by the ids this route's own REST
+call already returned. See `community_images_impl`'s own docstring for the
+full contract, including `hideMeta` and the "never fails the whole route"
+rule that now covers BOTH network calls, not just the first.
 
     GET  /wtn/model_browser/community_images?version_id=...&limit=...
 
@@ -1092,6 +1101,26 @@ def _clean_community_images_limit(value: Any) -> int:
     return max(1, min(parsed, _COMMUNITY_IMAGES_MAX_LIMIT))
 
 
+def _community_image_ids(items_raw: Any) -> list:
+    """The raw community `items` array -> the list of int Civitai image ids
+    worth enriching with a prompt (`civitai_meili.fetch_image_prompts`'s own
+    input) -- extracted here, not inside that (index-agnostic) function, so
+    THIS route stays the one place that knows the community endpoint's own
+    raw item shape (`id`, an int, per image). Non-list input -> `[]`; a
+    non-dict entry or a missing/non-int/boolean `id` is skipped, never
+    raises."""
+    if not isinstance(items_raw, list):
+        return []
+    ids: list = []
+    for item in items_raw:
+        if not isinstance(item, dict):
+            continue
+        image_id = item.get("id")
+        if isinstance(image_id, int) and not isinstance(image_id, bool):
+            ids.append(image_id)
+    return ids
+
+
 def community_images_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     """`GET /wtn/model_browser/community_images`'s pure-enough body (touches
     the network only -- no local disk path is ever resolved or written,
@@ -1140,6 +1169,25 @@ def community_images_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     `images` is `civitai_parse.parse_community_images` applied to the raw
     response's own `items` array on `"ok"`, and `[]` on every OTHER branch
     -- never partially populated, and never a fabricated placeholder entry.
+
+    **2026-08-02 reversal ("community images gain their prompts"), on the
+    `"ok"` branch only:** before enriching and parsing, this route now makes
+    a SECOND, best-effort call -- `civitai_meili.fetch_image_prompts` against
+    the ids `_community_image_ids` pulls off the raw REST response -- to
+    resolve each image's own `prompt` (`None` when unavailable, `hideMeta`-
+    respecting: see `civitai_parse.parse_community_images`'s own docstring
+    for the full contract). This is genuinely a SECOND upstream request, not
+    a bigger version of the first -- but it costs no extra rate-limit slot:
+    `_COMMUNITY_IMAGES_LIMITER.allow()` above is checked ONCE per incoming
+    request, matching this task's own "one logical request from the user's
+    point of view" rule, the same way `civitai_meili.two_call_search`'s two
+    calls already share `_SEARCH_LIMITER`'s one check. A failed, rate-
+    limited, or partially-resolving enrichment call degrades to `{}`/a
+    partial dict (`fetch_image_prompts`'s own contract) -- `reason` stays
+    `"ok"` and `images` stays fully populated either way, just with some or
+    all `prompt` values at `None`: this SECOND call is additive, exactly
+    like the first (`fb949a8`'s own rule, "a failed fetch must never turn a
+    working detail view into a broken one," now covering both).
     """
     payload = payload or {}
     version_id_raw = payload.get("version_id")
@@ -1163,7 +1211,14 @@ def community_images_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if result["reason"] == "found":
         raw_data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        images = civitai_parse.parse_community_images(raw_data.get("items"))
+        items = raw_data.get("items")
+        # Best-effort SECOND call, never a second rate-limit slot -- see this
+        # function's own docstring "2026-08-02 reversal" note. A failure here
+        # degrades to `{}` (`fetch_image_prompts`'s own contract), which
+        # `parse_community_images` reads as "no enrichment for any image" --
+        # every image still comes back, just with `prompt: None`.
+        prompt_by_id = civitai_meili.fetch_image_prompts(_community_image_ids(items))
+        images = civitai_parse.parse_community_images(items, prompt_by_id=prompt_by_id)
         logs_mod.log_summary(
             _logger, logs_mod.format_community_images_summary,
             version_id=version_id, count=len(images), reason="ok",

@@ -785,6 +785,125 @@ def test_two_call_search_cursor_decodes_to_the_requested_offset():
 
 
 # ---------------------------------------------------------------------------
+# `images_v6` prompt enrichment (2026-08-02, "community images gain their
+# prompts") -- `build_images_meili_payload`/`parse_images_meili_response`/
+# `fetch_image_prompts`. Fixtures are SHAPED after the owner's own live
+# report (`community_images?version_id=2982108`): REST carries 0 prompts,
+# `images_v6` carries one per id via `id IN [...]`.
+# ---------------------------------------------------------------------------
+
+
+def test_build_images_meili_payload_shape_and_index():
+    payload = civitai_meili.build_images_meili_payload([8874915, 15198652])
+    query_obj = payload["queries"][0]
+    assert query_obj["indexUid"] == "images_v6"
+    assert query_obj["q"] == ""
+    assert query_obj["filter"] == ["id IN [8874915,15198652]"]
+    assert query_obj["limit"] == 2
+    assert "sort" not in query_obj  # a lookup by id has no relevance ranking to preserve
+
+
+def test_build_images_meili_payload_drops_non_integer_and_boolean_ids():
+    payload = civitai_meili.build_images_meili_payload([1, "bad", 2, True])
+    assert payload["queries"][0]["filter"] == ["id IN [1,2]"]
+    assert payload["queries"][0]["limit"] == 2
+
+
+def test_build_images_meili_payload_empty_ids_still_builds_a_valid_shape():
+    # `fetch_image_prompts` never calls this with an empty list (its own
+    # short-circuit, tested below) -- this function itself still degrades
+    # sanely rather than raising, same "never raises" discipline every pure
+    # builder in this module keeps.
+    payload = civitai_meili.build_images_meili_payload([])
+    assert payload["queries"][0]["filter"] == ["id IN []"]
+    assert payload["queries"][0]["limit"] == 1  # never zero -- see this function's own docstring
+
+
+def test_parse_images_meili_response_reads_prompt_and_hide_meta():
+    raw = {
+        "results": [{
+            "hits": [
+                {"id": 8874915, "prompt": "a cat, masterpiece", "hideMeta": False},
+                {"id": 15198652, "prompt": "a hidden one", "hideMeta": True},
+                {"id": 94080991, "hideMeta": False},  # no prompt at all
+            ],
+        }],
+    }
+    parsed = civitai_meili.parse_images_meili_response(raw)
+    assert parsed[8874915] == {"prompt": "a cat, masterpiece", "hide_meta": False}
+    assert parsed[15198652] == {"prompt": "a hidden one", "hide_meta": True}
+    assert parsed[94080991] == {"prompt": None, "hide_meta": False}
+
+
+def test_parse_images_meili_response_blank_prompt_and_missing_hide_meta_default_false():
+    raw = {"results": [{"hits": [{"id": 1, "prompt": "   "}, {"id": 2, "prompt": 123}]}]}
+    parsed = civitai_meili.parse_images_meili_response(raw)
+    assert parsed[1] == {"prompt": None, "hide_meta": False}
+    assert parsed[2] == {"prompt": None, "hide_meta": False}
+
+
+def test_parse_images_meili_response_malformed_shapes_never_raise():
+    for bad in (None, {}, {"results": []}, {"results": "not-a-list"}, {"results": [None]}, {"results": [{"hits": "nope"}]}, 42, "x"):
+        assert civitai_meili.parse_images_meili_response(bad) == {}
+
+
+def test_parse_images_meili_response_drops_non_integer_and_boolean_hit_ids():
+    raw = {"results": [{"hits": [{"id": 1, "prompt": "x"}, {"id": "two", "prompt": "y"}, {"id": True, "prompt": "z"}, "not-a-dict"]}]}
+    parsed = civitai_meili.parse_images_meili_response(raw)
+    assert list(parsed.keys()) == [1]
+
+
+def test_fetch_image_prompts_happy_path_via_a_fake_opener():
+    def opener(payload, timeout):
+        assert payload["queries"][0]["indexUid"] == "images_v6"
+        assert payload["queries"][0]["filter"] == ["id IN [8874915,15198652]"]
+        import json as _json
+        return _FakeHttpResponse(_json.dumps({
+            "results": [{"hits": [
+                {"id": 8874915, "prompt": "a cat, masterpiece", "hideMeta": False},
+                {"id": 15198652, "prompt": "another one", "hideMeta": False},
+            ]}],
+        }).encode("utf-8"))
+
+    result = civitai_meili.fetch_image_prompts([8874915, 15198652], opener=opener)
+    assert result[8874915]["prompt"] == "a cat, masterpiece"
+    assert result[15198652]["prompt"] == "another one"
+
+
+def test_fetch_image_prompts_empty_ids_never_touches_the_network():
+    def must_not_be_called(payload, timeout):
+        raise AssertionError("must never be called for an empty ids list")
+
+    assert civitai_meili.fetch_image_prompts([], opener=must_not_be_called) == {}
+    assert civitai_meili.fetch_image_prompts(None, opener=must_not_be_called) == {}
+
+
+def test_fetch_image_prompts_transport_failure_degrades_to_an_empty_dict_never_raises():
+    # Best-effort: a failed Meili call must never propagate a failure to the
+    # caller (`community_images_impl`'s own "additive, never breaks the
+    # route" rule) -- `{}` reads as "no enrichment for anyone", not an error.
+    def raising_opener(payload, timeout):
+        raise urllib.error.HTTPError("url", 500, "err", None, None)
+
+    assert civitai_meili.fetch_image_prompts([1, 2, 3], opener=raising_opener) == {}
+
+
+def test_fetch_image_prompts_partial_resolution_is_a_partial_dict_not_a_failure():
+    # Meili resolving fewer ids than requested (some unpublished/removed
+    # since indexed) is not an error -- the caller reads a missing key as
+    # "no enrichment for that one image", exactly like a gap in the search
+    # path's own `reorder_by_ids`.
+    def opener(payload, timeout):
+        import json as _json
+        return _FakeHttpResponse(_json.dumps({
+            "results": [{"hits": [{"id": 1, "prompt": "only this one resolved", "hideMeta": False}]}],
+        }).encode("utf-8"))
+
+    result = civitai_meili.fetch_image_prompts([1, 2, 3], opener=opener)
+    assert set(result.keys()) == {1}
+
+
+# ---------------------------------------------------------------------------
 # `api.py`'s `search_impl` -- choosing between the Meili default and the
 # REST fallback, and the new `total` field.
 # ---------------------------------------------------------------------------
@@ -987,6 +1106,17 @@ ALL_TESTS = [
     test_two_call_search_subset_violation_is_offline_with_no_results,
     test_two_call_search_a_gap_drops_one_card_and_still_succeeds,
     test_two_call_search_cursor_decodes_to_the_requested_offset,
+    test_build_images_meili_payload_shape_and_index,
+    test_build_images_meili_payload_drops_non_integer_and_boolean_ids,
+    test_build_images_meili_payload_empty_ids_still_builds_a_valid_shape,
+    test_parse_images_meili_response_reads_prompt_and_hide_meta,
+    test_parse_images_meili_response_blank_prompt_and_missing_hide_meta_default_false,
+    test_parse_images_meili_response_malformed_shapes_never_raise,
+    test_parse_images_meili_response_drops_non_integer_and_boolean_hit_ids,
+    test_fetch_image_prompts_happy_path_via_a_fake_opener,
+    test_fetch_image_prompts_empty_ids_never_touches_the_network,
+    test_fetch_image_prompts_transport_failure_degrades_to_an_empty_dict_never_raises,
+    test_fetch_image_prompts_partial_resolution_is_a_partial_dict_not_a_failure,
     test_search_impl_uses_meili_by_default_and_reports_total,
     test_search_impl_falls_back_to_rest_when_meili_unavailable_and_total_is_none,
     test_search_impl_meili_offline_after_success_never_falls_back_to_rest,

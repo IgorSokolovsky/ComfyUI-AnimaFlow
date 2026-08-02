@@ -12,16 +12,29 @@ https://civitai.com/api/v1/images?modelVersionId=207286&limit=100&nsfw=X`,
 this task's own required probe) -- including the two things that probe
 disproved from the task's own spec (see the fixture's own comment below):
 `nsfwLevel` absent/`null` -> `16`, a missing `username` -> `None`, a missing
-`stats` -> `reaction_count: None`, that NO `prompt` key is ever added
-(0/40+ of these carry one), and non-list/malformed input; `civitai_client.
-fetch_community_images` (the HTTP transport -- host-fallback, a definitive
-404, an offline timeout) via an injectable fake opener, no real network; and
-`api.community_images_impl` (`limit` clamping at both ends, a non-integer
-`version_id` rejected readably, rate-limiting, and -- the wire-contract
-regression this task's own brief warns about by name -- the LITERAL
-`{"ok", "reason", "images"}` response-key set and each image's own literal
-key set, pinned so this contract can't silently drift out of step with the
-frontend task consuming it).
+`stats` -> `reaction_count: None`, that this REST endpoint's own `meta` is
+NEVER read for a prompt (0/40+ of these carry one there), and non-list/
+malformed input; `civitai_client.fetch_community_images` (the HTTP transport
+-- host-fallback, a definitive 404, an offline timeout) via an injectable
+fake opener, no real network; and `api.community_images_impl` (`limit`
+clamping at both ends, a non-integer `version_id` rejected readably, rate-
+limiting, and -- the wire-contract regression this task's own brief warns
+about by name -- the LITERAL `{"ok", "reason", "images"}` response-key set
+and each image's own literal key set, pinned so this contract can't silently
+drift out of step with the frontend task consuming it).
+
+**2026-08-02 reversal ("community images gain their prompts"):** the section
+above still holds for THIS endpoint's own `meta` field -- it is genuinely
+always empty here, unchanged. But the wire now carries a real `prompt`
+anyway, sourced from a SECOND, best-effort call to Civitai's own Meilisearch
+`images_v6` index (`civitai_meili.fetch_image_prompts`), keyed by each
+image's own id and gated on that index's own `hideMeta` flag. This file's
+own new section below (`civitai_meili.build_images_meili_payload`/
+`parse_images_meili_response`/`fetch_image_prompts`, and
+`api._community_image_ids`/`community_images_impl`'s enrichment call) covers
+that addition; `tests/test_model_browser_meili.py` covers the SAME
+functions' pure filter/payload/parse pieces alongside the two-call search
+design they were named to sit next to.
 
 Run directly: `python tests/test_model_browser_community_images.py` (no
 pytest, per project convention).
@@ -38,7 +51,7 @@ import urllib.error
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.model_browser import api as mb_api
-from src.model_browser import civitai_client, civitai_parse, rate_limit
+from src.model_browser import civitai_client, civitai_meili, civitai_parse, rate_limit
 
 # ---------------------------------------------------------------------------
 # A TRIMMED, REAL response -- recorded live 2026-08-02 against
@@ -164,7 +177,11 @@ def test_parse_community_images_against_recorded_response_shape_and_count():
     images = civitai_parse.parse_community_images(RECORDED_COMMUNITY_IMAGES_RESPONSE["items"])
     assert len(images) == 4
     for image in images:
-        assert set(image.keys()) == {"url", "width", "height", "nsfw_level", "username", "reaction_count"}
+        assert set(image.keys()) == {"url", "width", "height", "nsfw_level", "username", "reaction_count", "prompt"}
+        # No `prompt_by_id` was passed -- every entry's own `prompt` stays
+        # `None`, present as a key but never absent (this task's own
+        # instruction: "null when unavailable, never absent").
+        assert image["prompt"] is None
 
 
 def test_parse_community_images_word_nsfw_level_mapped_via_browsing_level_common_case():
@@ -202,19 +219,72 @@ def test_parse_community_images_reaction_count_sums_four_reaction_types_plus_dis
     assert parsed[0]["reaction_count"] == 1 + 2 + 3 + 4 + 5  # commentCount NOT included
 
 
-def test_parse_community_images_no_prompt_key_ever_present_even_with_meta():
+def test_parse_community_images_never_reads_the_rest_endpoints_own_meta_for_a_prompt():
     # `meta` on a community image never carries a usable prompt (design
-    # doc's own measured 0/40 -- re-confirmed here at a higher sample size),
-    # but even a MALICIOUS/unexpected `meta.prompt` must never surface --
-    # this parser doesn't read `meta` at all, unlike `parse_author_gallery`.
+    # doc's own measured 0/40 -- re-confirmed here at a higher sample size,
+    # and unchanged by the 2026-08-02 reversal -- ONLY `prompt_by_id` can
+    # ever populate `prompt` now). Even a MALICIOUS/unexpected `meta.prompt`
+    # must never surface -- this parser doesn't read `image["meta"]` at all,
+    # unlike `parse_author_gallery`. `negative_prompt`/`params` (the AUTHOR
+    # gallery's own extra keys) are never invented here either.
     image = {
         "url": "https://image.civitai.com/x/y/original=true/y.jpeg",
+        "id": 999,
         "meta": {"prompt": "1girl, masterpiece"},
     }
     parsed = civitai_parse.parse_community_images([image])
-    assert "prompt" not in parsed[0]
+    assert parsed[0]["prompt"] is None  # present as a key, but not sourced from `meta`
     assert "negative_prompt" not in parsed[0]
     assert "params" not in parsed[0]
+
+
+def test_parse_community_images_prompt_by_id_enriches_the_matching_entry_only():
+    images = [
+        {"url": "https://image.civitai.com/x/a/original=true/a.jpeg", "id": 1},
+        {"url": "https://image.civitai.com/x/b/original=true/b.jpeg", "id": 2},
+    ]
+    prompt_by_id = {1: {"prompt": "a cat, masterpiece", "hide_meta": False}}
+    parsed = civitai_parse.parse_community_images(images, prompt_by_id=prompt_by_id)
+    assert parsed[0]["prompt"] == "a cat, masterpiece"
+    assert parsed[1]["prompt"] is None  # no enrichment entry for id 2
+
+
+def test_parse_community_images_hide_meta_suppresses_the_prompt_even_when_present():
+    image = {"url": "https://image.civitai.com/x/a/original=true/a.jpeg", "id": 1}
+    prompt_by_id = {1: {"prompt": "a cat, masterpiece", "hide_meta": True}}
+    parsed = civitai_parse.parse_community_images([image], prompt_by_id=prompt_by_id)
+    assert parsed[0]["prompt"] is None
+
+
+def test_parse_community_images_prompt_by_id_blank_or_non_string_prompt_is_none():
+    images = [
+        {"url": "https://image.civitai.com/x/a/original=true/a.jpeg", "id": 1},
+        {"url": "https://image.civitai.com/x/b/original=true/b.jpeg", "id": 2},
+    ]
+    prompt_by_id = {1: {"prompt": "   ", "hide_meta": False}, 2: {"prompt": 123, "hide_meta": False}}
+    parsed = civitai_parse.parse_community_images(images, prompt_by_id=prompt_by_id)
+    assert parsed[0]["prompt"] is None
+    assert parsed[1]["prompt"] is None
+
+
+def test_parse_community_images_missing_or_non_int_image_id_never_enriches():
+    images = [
+        {"url": "https://image.civitai.com/x/a/original=true/a.jpeg"},  # no id at all
+        {"url": "https://image.civitai.com/x/b/original=true/b.jpeg", "id": "not-an-int"},
+        {"url": "https://image.civitai.com/x/c/original=true/c.jpeg", "id": True},  # bool, rejected
+    ]
+    # Deliberately keyed by values that WOULD match if this function were
+    # sloppy about type-checking `image_id` -- proves it isn't.
+    prompt_by_id = {"not-an-int": {"prompt": "x", "hide_meta": False}, True: {"prompt": "y", "hide_meta": False}}
+    parsed = civitai_parse.parse_community_images(images, prompt_by_id=prompt_by_id)
+    assert all(entry["prompt"] is None for entry in parsed)
+
+
+def test_parse_community_images_garbage_prompt_by_id_never_raises():
+    image = {"url": "https://image.civitai.com/x/a/original=true/a.jpeg", "id": 1}
+    for garbage in (None, "not-a-dict", 42, [], {1: "not-a-dict"}, {1: None}):
+        parsed = civitai_parse.parse_community_images([image], prompt_by_id=garbage)
+        assert parsed[0]["prompt"] is None
 
 
 def test_parse_community_images_nsfw_level_absent_entirely_defaults_to_16():
@@ -372,6 +442,34 @@ def test_fetch_community_images_offline_timeout_is_a_distinct_reason():
 
 
 # ---------------------------------------------------------------------------
+# api._community_image_ids -- the raw-REST-items -> enrichment-ids extractor
+# (2026-08-02, "community images gain their prompts").
+# ---------------------------------------------------------------------------
+
+
+def test_community_image_ids_reads_the_id_field_off_every_item():
+    ids = mb_api._community_image_ids(RECORDED_COMMUNITY_IMAGES_RESPONSE["items"])
+    assert ids == [8874915, 15198652, 94080991, 99999999]
+
+
+def test_community_image_ids_non_list_input_is_empty():
+    assert mb_api._community_image_ids(None) == []
+    assert mb_api._community_image_ids({}) == []
+    assert mb_api._community_image_ids("not-a-list") == []
+
+
+def test_community_image_ids_skips_non_dict_entries_and_bad_ids():
+    items = [
+        "not-a-dict", 42, None,
+        {"id": 1},
+        {"id": "not-an-int"},
+        {"id": True},  # bool rejected, same as every other int field in this package
+        {},
+    ]
+    assert mb_api._community_image_ids(items) == [1]
+
+
+# ---------------------------------------------------------------------------
 # api.community_images_impl -- the pure route body. The literal wire
 # contract lives here: `{"ok", "reason", "images"}`, no other top-level key,
 # on EVERY branch -- this is the exact shape a separately-built frontend
@@ -399,6 +497,24 @@ def _install_fake_fetch_community_images(fn):
     previous = mb_api.civitai_client.fetch_community_images
     mb_api.civitai_client.fetch_community_images = fn
     return lambda: setattr(mb_api.civitai_client, "fetch_community_images", previous)
+
+
+def _install_fake_fetch_image_prompts(fn):
+    """Swaps `mb_api.civitai_meili.fetch_image_prompts` for `fn` -- same
+    monkeypatch shape as `_install_fake_fetch_community_images` above, for
+    the SECOND, 2026-08-02 network call `community_images_impl`'s own `"ok"`
+    branch now makes. Every test below that reaches that branch with a
+    NON-EMPTY `items` list installs this (a real, un-mocked
+    `fetch_image_prompts` would make a genuine network call, which this
+    plain-script suite never does) -- tests that pass an EMPTY `items` list
+    don't need it: `_community_image_ids` returns `[]`, and
+    `fetch_image_prompts`'s own empty-ids short-circuit never touches the
+    network even unmocked (`civitai_meili.fetch_image_prompts`'s own
+    docstring), so leaving those un-mocked is still zero-network, not an
+    oversight. Returns a restore callable."""
+    previous = mb_api.civitai_meili.fetch_image_prompts
+    mb_api.civitai_meili.fetch_image_prompts = fn
+    return lambda: setattr(mb_api.civitai_meili, "fetch_image_prompts", previous)
 
 
 def test_community_images_impl_non_integer_version_id_is_rejected_readably_with_no_network_call():
@@ -449,6 +565,7 @@ def test_community_images_impl_a_negative_or_zero_version_id_is_also_notfound():
 def test_community_images_impl_happy_path_ok_reason_and_parsed_images():
     restore_limiter = _install_permissive_community_images_limiter()
     captured_calls = []
+    captured_prompt_ids = []
 
     def fake_fetch(version_id, *, limit=24, **kw):
         captured_calls.append((version_id, limit))
@@ -457,16 +574,79 @@ def test_community_images_impl_happy_path_ok_reason_and_parsed_images():
             "data": copy.deepcopy(RECORDED_COMMUNITY_IMAGES_RESPONSE),
         }
 
+    def fake_fetch_image_prompts(ids, **kw):
+        captured_prompt_ids.append(sorted(ids))
+        return {8874915: {"prompt": "a cat, masterpiece", "hide_meta": False}}
+
     restore_fetch = _install_fake_fetch_community_images(fake_fetch)
+    restore_prompts = _install_fake_fetch_image_prompts(fake_fetch_image_prompts)
     try:
         result = mb_api.community_images_impl({"version_id": "207286", "limit": "10"})
         assert result["ok"] is True
         assert result["reason"] == "ok"
         assert len(result["images"]) == 4
         assert captured_calls == [(207286, 10)]
+        # The SAME four ids the REST response carried, handed to the
+        # enrichment call -- proves `_community_image_ids` really is reading
+        # off the raw REST items, not something invented.
+        assert captured_prompt_ids == [[8874915, 15198652, 94080991, 99999999]]
+        prompts_by_url = {img["url"]: img["prompt"] for img in result["images"]}
+        enriched = [p for p in prompts_by_url.values() if p is not None]
+        assert enriched == ["a cat, masterpiece"]  # only the one enriched id got a prompt
     finally:
+        restore_prompts()
         restore_fetch()
         restore_limiter()
+
+
+def test_community_images_impl_prompt_enrichment_failure_still_returns_ok_with_every_image_and_no_prompts():
+    # The task's own "enrichment must be best-effort" rule: a failed/empty
+    # `fetch_image_prompts` result must never change `reason` or drop an
+    # image -- every image comes back, just with `prompt: None`.
+    restore_limiter = _install_permissive_community_images_limiter()
+    restore_fetch = _install_fake_fetch_community_images(
+        lambda *a, **kw: {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": copy.deepcopy(RECORDED_COMMUNITY_IMAGES_RESPONSE),
+        }
+    )
+    restore_prompts = _install_fake_fetch_image_prompts(lambda ids, **kw: {})
+    try:
+        result = mb_api.community_images_impl({"version_id": "207286"})
+        assert result["reason"] == "ok"
+        assert len(result["images"]) == 4
+        assert all(img["prompt"] is None for img in result["images"])
+    finally:
+        restore_prompts()
+        restore_fetch()
+        restore_limiter()
+
+
+def test_community_images_impl_enrichment_never_consumes_a_second_rate_limit_slot():
+    # "This is one logical request from the user's point of view ... must
+    # not consume two slots" -- the rate limiter's own `.allow()` call is
+    # made exactly once per `community_images_impl` invocation regardless of
+    # whether the enrichment call runs, since nothing in this route's own
+    # code calls it a second time. Verified here by driving the SAME shared
+    # limiter through two calls at an interval that only tolerates one.
+    previous_limiter = mb_api._COMMUNITY_IMAGES_LIMITER
+    mb_api._COMMUNITY_IMAGES_LIMITER = rate_limit.MinIntervalLimiter(1000.0)
+    restore_fetch = _install_fake_fetch_community_images(
+        lambda *a, **kw: {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": copy.deepcopy(RECORDED_COMMUNITY_IMAGES_RESPONSE),
+        }
+    )
+    restore_prompts = _install_fake_fetch_image_prompts(lambda ids, **kw: {})
+    try:
+        first = mb_api.community_images_impl({"version_id": "207286"})
+        assert first["reason"] == "ok"  # the one free call succeeds
+        second = mb_api.community_images_impl({"version_id": "207286"})
+        assert second["reason"] == "rate_limited"  # immediately refused -- only one slot was ever spent
+    finally:
+        restore_prompts()
+        restore_fetch()
+        mb_api._COMMUNITY_IMAGES_LIMITER = previous_limiter
 
 
 def test_community_images_impl_offline_degrades_to_ok_true_empty_images_never_an_error():
@@ -616,20 +796,28 @@ def test_community_images_impl_literal_response_key_set_pinned_on_every_branch()
             restore_fetch()
 
         # ok, with real parsed images -- also pin EACH image's own key set.
+        # `fetch_image_prompts` is mocked (never a real network call in this
+        # plain-script suite) -- its own value doesn't matter for THIS
+        # test, only that `prompt` is present on every image regardless.
         restore_fetch = _install_fake_fetch_community_images(
             lambda *a, **kw: {
                 "reason": "found", "offline_reason": None, "message": "",
                 "data": copy.deepcopy(RECORDED_COMMUNITY_IMAGES_RESPONSE),
             }
         )
+        restore_prompts = _install_fake_fetch_image_prompts(lambda ids, **kw: {})
         try:
             result = mb_api.community_images_impl({"version_id": "207286"})
             assert set(result.keys()) == {"ok", "reason", "images"}
             assert result["reason"] == "ok"
             assert len(result["images"]) == 4
             for image in result["images"]:
-                assert set(image.keys()) == {"url", "width", "height", "nsfw_level", "username", "reaction_count"}
+                assert set(image.keys()) == {
+                    "url", "width", "height", "nsfw_level", "username", "reaction_count", "prompt",
+                }
+                assert image["prompt"] is None  # no enrichment installed for this branch's own assertion
         finally:
+            restore_prompts()
             restore_fetch()
     finally:
         restore_limiter()
@@ -642,7 +830,12 @@ ALL_TESTS = [
     test_parse_community_images_pg_level_reads_one,
     test_parse_community_images_missing_stats_reaction_count_is_none_not_zero,
     test_parse_community_images_reaction_count_sums_four_reaction_types_plus_dislike_excludes_comments,
-    test_parse_community_images_no_prompt_key_ever_present_even_with_meta,
+    test_parse_community_images_never_reads_the_rest_endpoints_own_meta_for_a_prompt,
+    test_parse_community_images_prompt_by_id_enriches_the_matching_entry_only,
+    test_parse_community_images_hide_meta_suppresses_the_prompt_even_when_present,
+    test_parse_community_images_prompt_by_id_blank_or_non_string_prompt_is_none,
+    test_parse_community_images_missing_or_non_int_image_id_never_enriches,
+    test_parse_community_images_garbage_prompt_by_id_never_raises,
     test_parse_community_images_nsfw_level_absent_entirely_defaults_to_16,
     test_parse_community_images_nsfw_level_explicit_null_defaults_to_16,
     test_parse_community_images_unrecognised_nsfw_word_defaults_to_16,
@@ -656,10 +849,15 @@ ALL_TESTS = [
     test_fetch_community_images_success_on_first_host_builds_the_documented_url,
     test_fetch_community_images_404_is_definitive_and_never_tries_backup_host,
     test_fetch_community_images_offline_timeout_is_a_distinct_reason,
+    test_community_image_ids_reads_the_id_field_off_every_item,
+    test_community_image_ids_non_list_input_is_empty,
+    test_community_image_ids_skips_non_dict_entries_and_bad_ids,
     test_community_images_impl_non_integer_version_id_is_rejected_readably_with_no_network_call,
     test_community_images_impl_missing_version_id_is_notfound_with_no_network_call,
     test_community_images_impl_a_negative_or_zero_version_id_is_also_notfound,
     test_community_images_impl_happy_path_ok_reason_and_parsed_images,
+    test_community_images_impl_prompt_enrichment_failure_still_returns_ok_with_every_image_and_no_prompts,
+    test_community_images_impl_enrichment_never_consumes_a_second_rate_limit_slot,
     test_community_images_impl_offline_degrades_to_ok_true_empty_images_never_an_error,
     test_community_images_impl_transport_notfound_also_degrades_to_ok_true_empty_images,
     test_community_images_impl_empty_items_is_still_ok_not_an_error,

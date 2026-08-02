@@ -2013,18 +2013,17 @@ await asyncTest("buildModelDetailView: a failed OR empty response renders NOTHIN
   }
 });
 
-await asyncTest("buildModelDetailView: no copy-prompt control (or hover overlay) exists ANYWHERE in the community section -- even alongside an author gallery that legitimately has one", async () => {
+await asyncTest("buildModelDetailView: 2026-08-02 reversal -- a community entry with a null prompt still renders NO copy-prompt control or hover overlay", async () => {
+  // Before the reversal this was true of the WHOLE section, unconditionally
+  // (the wire never carried a `prompt` key at all). Now it's true PER ENTRY,
+  // decided by `entry.prompt` -- this test pins the null-prompt half; the
+  // next one pins the has-a-prompt half.
   FAKE_IO_INSTANCES.length = 0;
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
-  // A rogue `prompt` field on a community entry (should never arrive per the
-  // wire contract, but defence-in-depth: this section must not grow a
-  // control even if bad data slips through) alongside a LEGITIMATE
-  // prompt-carrying entry in the AUTHOR gallery, proving the assertion below
-  // is actually scoped to the community section and not vacuously true.
   const fetchCommunityImages = makeFetchStub({
     reason: "ok",
-    images: [{ url: "c1.jpg", nsfw_level: 1, username: "a", prompt: "should be ignored" }],
+    images: [{ url: "c1.jpg", nsfw_level: 1, username: "a", prompt: null }],
   });
   const { el } = buildModelDetailView({
     doc, result, versionId: 3, browsingLevel: 1,
@@ -2039,9 +2038,71 @@ await asyncTest("buildModelDetailView: no copy-prompt control (or hover overlay)
   assert.equal(findAll(el, "wtn-dv-gcopy").length, 1, "the author gallery's own copy-prompt button must still exist");
   const communityHost = findAll(el, "wtn-dv-community-host")[0];
   assert.ok(communityHost);
-  assert.equal(findAll(communityHost, "wtn-dv-gcopy").length, 0, "no copy-prompt button inside the community section");
-  assert.equal(findAll(communityHost, "wtn-dv-goverlay").length, 0, "no hover-overlay mechanism inside the community section");
-  assert.equal(findAll(communityHost, "wtn-dv-gdrawer").length, 0, "no prompt drawer inside the community section");
+  assert.equal(findAll(communityHost, "wtn-dv-gcopy").length, 0, "no copy-prompt button for a null-prompt community entry");
+  assert.equal(findAll(communityHost, "wtn-dv-goverlay").length, 0, "no hover-overlay mechanism for a null-prompt community entry");
+  assert.equal(findAll(communityHost, "wtn-dv-gdrawer").length, 0, "no prompt drawer for a null-prompt community entry");
+});
+
+await asyncTest("buildModelDetailView: 2026-08-02 reversal -- a community entry WITH a prompt DOES render the drawer and a working copy-prompt button", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({
+    reason: "ok",
+    images: [
+      { url: "c1.jpg", nsfw_level: 1, username: "a", prompt: "a cat, masterpiece" },
+      { url: "c2.jpg", nsfw_level: 1, username: "b", prompt: null }, // sibling with no prompt, for contrast
+    ],
+  });
+  let copied = null;
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+    onCopyPrompt: (text) => { copied = text; },
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const communityHost = findAll(el, "wtn-dv-community-host")[0];
+  assert.ok(communityHost);
+  // Exactly ONE of the two tiles gets a drawer -- the one that carries a prompt.
+  assert.equal(findAll(communityHost, "wtn-dv-goverlay").length, 1, "exactly one community tile gets a hover overlay");
+  assert.equal(findAll(communityHost, "wtn-dv-gdrawer").length, 1, "exactly one community tile gets a drawer");
+  const promptEl = findAll(communityHost, "wtn-dv-gprompt")[0];
+  assert.ok(promptEl, "the prompt-carrying tile must render its prompt text");
+  assert.equal(promptEl.textContent, "a cat, masterpiece");
+  const copyBtn = findAll(communityHost, "wtn-dv-gcopy")[0];
+  assert.ok(copyBtn, "the prompt-carrying tile must render a copy-prompt button");
+  copyBtn.dispatch("click", { stopPropagation() {} });
+  assert.equal(copied, "a cat, masterpiece", "clicking it invokes the SAME onCopyPrompt callback the author gallery uses");
+  // The drawer's own ancestor is `.wtn-dv-cbox` (the tile's clipping box),
+  // NOT the whole `.wtn-dv-community-tile` -- see `buildCommunityEntryEl`'s
+  // own doc comment for why (the caption sits outside it).
+  const cbox = findAll(communityHost, "wtn-dv-cbox").find((box) => findAll(box, "wtn-dv-goverlay").length > 0);
+  assert.ok(cbox, "the overlay's parent must be a .wtn-dv-cbox, not the bare tile");
+});
+
+await asyncTest("buildModelDetailView: a hostile community prompt (raw HTML + a lora tag) renders as INERT plain text, never parsed", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const hostilePrompt = "1girl <lora:example:0.8>, <script>alert(1)</script>";
+  const fetchCommunityImages = makeFetchStub({
+    reason: "ok",
+    images: [{ url: "c1.jpg", nsfw_level: 1, prompt: hostilePrompt }],
+  });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const communityHost = findAll(el, "wtn-dv-community-host")[0];
+  const promptEl = findAll(communityHost, "wtn-dv-gprompt")[0];
+  assert.ok(promptEl, "the hostile-prompt tile must still render a prompt element");
+  assert.equal(promptEl.textContent, hostilePrompt, "the raw string must survive VERBATIM as textContent");
+  assert.equal(promptEl.children.length, 0, "textContent must never be parsed into child elements (never innerHTML)");
 });
 
 await asyncTest("buildModelDetailView: a username containing markup reaches the DOM as INERT text, never parsed", async () => {
