@@ -1117,6 +1117,90 @@ await asyncTest(
   },
 );
 
+// ---------------------------------------------------------------------------
+// BUG (2026-08-02 owner report), "the names of the lora sometimes goes back
+// to filename" -- the actual regression, not merely the end state. A test
+// that only checks BEFORE and AFTER an invalidate-then-refetch cycle would
+// have passed even with the original defect (a bare `invalidateList` with
+// nothing that ever refetches) as long as SOMETHING ELSE eventually
+// repopulated the cache before the assertions ran -- this test asserts the
+// row's OWN display during the WINDOW itself, immediately after invalidation
+// and before the refetch has resolved, which is exactly the moment the
+// original bug showed a filename flash/revert.
+// ---------------------------------------------------------------------------
+const _origFetchForInvalidateWindow = globalThis.fetch;
+await asyncTest(
+  "paintRow: a KNOWN Civitai name survives the invalidate-then-refetch window intact -- it never flips to the filename mid-window, and the repopulated cache confirms the same name at the end",
+  async () => {
+    const kind = "loras";
+    const name = "real_skin-step00000200.safetensors";
+    let resolveList;
+    const listGate = new Promise((resolve) => {
+      resolveList = resolve;
+    });
+    globalThis.fetch = async () => {
+      // The FIRST call (seeding) resolves immediately below via a plain
+      // `await listModels(kind, true)`; every call AFTER that point is the
+      // refetch this test controls the timing of via `listGate`.
+      await listGate;
+      return {
+        json: async () => ({
+          reason: "ok",
+          models: [{ name, civitai_name: "Anima Real Skin Enhancer" }],
+        }),
+      };
+    };
+    globalThis.window = { app: { extensionManager: { setting: { get: (id) => (id === SETTING_IDS.SHOW_CIVITAI_NAME ? true : undefined) } } } };
+    try {
+      invalidateList(kind);
+      // Seed the cache directly (bypassing the gated stub above) so the row
+      // starts out KNOWING the Civitai name, same as a real session where
+      // this file's own list already resolved earlier.
+      const seedFetch = globalThis.fetch;
+      globalThis.fetch = async () => ({
+        json: async () => ({ reason: "ok", models: [{ name, civitai_name: "Anima Real Skin Enhancer" }] }),
+      });
+      await listModels(kind, true);
+      globalThis.fetch = seedFetch;
+
+      const doc = makeDocStub();
+      const refs = buildRowElement(doc);
+      paintRow(refs, mkStateRow({ name }));
+      assert.equal(refs.nameLabel.textContent, "Anima Real Skin Enhancer", "sanity: the row shows the Civitai name before anything is invalidated");
+
+      // The ⓘ panel's own "found" handling (model_info.mjs's `runLookup`):
+      // invalidate, THEN kick off a real refetch -- but the refetch has NOT
+      // landed yet (gated by `listGate`).
+      invalidateList(kind);
+      const refetchPromise = listModels(kind, true);
+
+      // THE ACTUAL BUG: repaint the SAME row DURING this window, before the
+      // refetch resolves. The old code (a bare `invalidateList` with no
+      // tri-state honesty in `civitaiNameFor`) would have shown the filename
+      // here. The row must still show the Civitai name.
+      paintRow(refs, mkStateRow({ name }));
+      assert.equal(
+        refs.nameLabel.textContent,
+        "Anima Real Skin Enhancer",
+        "BUG: must NOT flip to the filename during the invalidate-then-refetch window",
+      );
+      assert.notEqual(refs.nameLabel.textContent, name, "must never show the bare filename mid-window");
+
+      // Now let the refetch actually land, and repaint once more -- the end
+      // state must independently confirm the SAME name, from the freshly
+      // repopulated cache (not merely the held-over DOM text).
+      resolveList();
+      await refetchPromise;
+      paintRow(refs, mkStateRow({ name }));
+      assert.equal(refs.nameLabel.textContent, "Anima Real Skin Enhancer", "the repopulated cache confirms the same Civitai name at the end");
+    } finally {
+      globalThis.fetch = _origFetchForInvalidateWindow;
+      delete globalThis.window;
+      invalidateList(kind);
+    }
+  },
+);
+
 test("⚙: is keyed PER NODE -- opening a second node's dialog does not just toggle the first one closed", () => {
   const nodeA = makeFakeNode(stateJSON([]));
   const nodeB = makeFakeNode(stateJSON([]));

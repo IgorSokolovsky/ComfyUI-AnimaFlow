@@ -87,8 +87,18 @@ test("hasFile: null for a missing kind/name argument, never throws", () => {
 // filename"), read with no network of its own from the already-fetched list.
 // =========================================================================
 
-test("civitaiNameFor: null for a kind that has never been fetched, or a missing kind/name argument", () => {
-  assert.equal(civitaiNameFor("kind-never-fetched-civitai-name", "a.safetensors"), null);
+// BUG (2026-08-02 owner report, "the LoRA row names sometimes go back to
+// filename"): `civitaiNameFor` is now tri-state, same "unknown, not missing"
+// discipline as `hasFile` -- `undefined` ("we don't know yet, ask again
+// later") must never be confused with `null` ("we asked, and there really is
+// none"). A missing kind/name argument is still a settled `null` (an
+// incomplete pair has nothing to look up, ever -- there's no "ask again
+// later" for it).
+test("civitaiNameFor: undefined (unknown) for a kind that has never been fetched -- NOT null, so a caller can tell 'ask again' apart from 'genuinely no name'", () => {
+  assert.equal(civitaiNameFor("kind-never-fetched-civitai-name", "a.safetensors"), undefined);
+});
+
+test("civitaiNameFor: still a settled null for a missing kind/name argument -- an incomplete pair is never 'ask again later'", () => {
   assert.equal(civitaiNameFor(null, "a.safetensors"), null);
   assert.equal(civitaiNameFor("loras", null), null);
   assert.equal(civitaiNameFor("", ""), null);
@@ -123,6 +133,45 @@ await asyncTest("civitaiNameFor: a blank/whitespace-only civitai_name is treated
     restoreFetch();
   }
 });
+
+// =========================================================================
+// BUG (2026-08-02 owner report) -- verifying the actual premise: does an
+// `invalidateList` with no refetch really turn a KNOWN Civitai name back
+// into an "unknown" (not merely re-derive the same conclusion from reading
+// the source). This is the exact node harness the task brief asked for --
+// seed the cache, read `civitaiNameFor`, call `invalidateList`, read it
+// again -- settled by running it, not by inspecting the code.
+// =========================================================================
+
+await asyncTest(
+  "PREMISE CHECK: invalidateList(kind) alone turns a KNOWN Civitai name back into unknown (undefined), not a settled null -- the tri-state civitaiNameFor now makes that distinction visible; the OLD (pre-fix) contract would have made this indistinguishable from 'genuinely no name'",
+  async () => {
+    const kind = "kind-premise-check";
+    stubFetch(async () => jsonResponse({
+      reason: "ok",
+      models: [{ name: "real_skin.safetensors", civitai_name: "Anima Real Skin Enhancer" }],
+    }));
+    try {
+      await listModels(kind);
+      assert.equal(civitaiNameFor(kind, "real_skin.safetensors"), "Anima Real Skin Enhancer", "sanity: the name is known before invalidation");
+
+      invalidateList(kind);
+      assert.equal(
+        civitaiNameFor(kind, "real_skin.safetensors"),
+        undefined,
+        "PREMISE CONFIRMED: a bare invalidateList with no refetch does turn a known name into 'unknown' -- this is what fed the filename fallback before this fix",
+      );
+
+      // The correct pattern (`lora_interaction.mjs`'s own `refreshLoraModels`,
+      // now also `model_info.mjs`'s own `runLookup`): invalidate THEN
+      // refetch. Once that refetch lands, the name is known again.
+      await listModels(kind, true);
+      assert.equal(civitaiNameFor(kind, "real_skin.safetensors"), "Anima Real Skin Enhancer", "a refetch after invalidate restores the known name");
+    } finally {
+      restoreFetch();
+    }
+  },
+);
 
 // =========================================================================
 // listModels / hasFile -- the real fetch + cache round trip

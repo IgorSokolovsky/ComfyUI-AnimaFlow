@@ -118,8 +118,8 @@
  */
 
 import {
-  lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, deleteModel, savePreview, hasFile,
-  fetchModelDetail, cachedModelDetail,
+  lookupInfo, forgetInfo, thumbUrl, cachedInfo, invalidateInfo, invalidateList, listModels, deleteModel, savePreview,
+  hasFile, fetchModelDetail, cachedModelDetail,
 } from "./civitai_api.mjs";
 // "Remove an installed model" (`docs/TODO.md`) -- the type-to-confirm
 // dialog is shared with `civitai_search.mjs`'s own "installed" card rather
@@ -793,6 +793,7 @@ function prettyTitle(name) {
  * @param {() => void} [opts.onClose]
  * @param {(kind: string, name: string) => void} [opts.onDeleted] - called after a successful delete, BEFORE this panel closes -- the caller's own re-check/re-render hook (`docs/TODO.md`: "the row still pointing at that file must fall into the existing red missing-file state").
  * @param {(name: string) => void} [opts.onSearchByName] - `notfound`'s "Search Civitai by name →" action (§7e) -- called with this model's own file name; the CALLER opens the actual search surface (this file never imports `civitai_search.mjs`, staying track-agnostic).
+ * @param {() => void} [opts.onListRefreshed] - bug fix, 2026-08-02 owner report: called once a real "found" lookup's own `invalidateList(kind)` (`runLookup`'s own comment) has been followed by a real refetch that landed -- this file has no row of its own to repaint (track-agnostic, top doc comment), so the CALLER (`lora_interaction.mjs`'s `openInfoPanelFor`) is who repaints whatever row this info came from, mirroring `onDeleted`'s own "the caller's own re-check/re-render hook" split.
  * @returns {object|null} the overlay handle, or `null` if this call just toggled an already-open panel closed.
  */
 export function openModelInfo({
@@ -816,6 +817,7 @@ export function openModelInfo({
   onClose,
   onDeleted,
   onSearchByName,
+  onListRefreshed,
 } = {}) {
   const key = ownerKey || `model-info:${kind}:${name}`;
   if (closeOverlayIfOwnedBy(key)) {
@@ -1821,16 +1823,40 @@ export function openModelInfo({
       // a sidecar write only ever happens on a "found" reason). Two things
       // that were dead code until this call reached them:
       //
-      //  1. invalidateList(kind) -- so a freshly-known name (§1a-vii) or
-      //     preview doesn't sit on disk unused until something else
-      //     happens to refetch the picker's list.
+      //  1. invalidateList(kind), THEN a real refetch -- so a freshly-known
+      //     name (§1a-vii) or preview doesn't sit on disk unused until
+      //     something else happens to refetch the picker's list.
       //  2. save_preview -- hand back the URL of whichever CANDIDATE this
       //     panel is already displaying (level-filtered by construction,
       //     `pickThumbCandidates`) so the local preview is saved too
       //     (§7c-iv). No candidate passes ⇒ send nothing at all -- correct,
       //     not a failure. A failure from the route itself must never
       //     disturb this panel (`savePreview` already never rejects).
+      //
+      // BUG (2026-08-02 owner report, "LoRA row names revert to the
+      // filename"): this used to be a bare `invalidateList(kind)` with
+      // NOTHING that ever refetched -- an invalidation with no refetch makes
+      // things worse than doing nothing at all, because `civitaiNameFor`
+      // (`civitai_api.mjs`) then reads an EMPTY cache and (before that
+      // function's own tri-state fix) returned a settled "no name," so
+      // every row of this kind fell back to its filename until some
+      // UNRELATED action happened to repopulate the list. Mirror the
+      // correct, pre-existing pattern (`lora_interaction.mjs`'s own
+      // `refreshLoraModels`: "invalidate THEN listModels(kind, true)") --
+      // and, since this file has no row of its own to repaint
+      // (track-agnostic, top doc comment), tell the CALLER once the refetch
+      // actually lands via `onListRefreshed` so IT can repaint. Deliberately
+      // NOT awaited -- the panel's own render below must not block on a
+      // network round trip that's purely "make the picker/rows current," and
+      // `civitai_api.mjs`'s own "unknown, not missing" tri-state is what
+      // keeps every row honest (holding its current display) during the
+      // window between this call and the refetch actually landing.
       invalidateList(kind);
+      listModels(kind, true).then(() => {
+        if (typeof onListRefreshed === "function") {
+          onListRefreshed();
+        }
+      });
       const images = response.data && Array.isArray(response.data.images) ? response.data.images : [];
       const civitaiCandidates = pickThumbCandidates(images, levelLabelToInt(browsingLevel));
       if (civitaiCandidates.length > 0) {

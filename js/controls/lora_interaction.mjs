@@ -570,6 +570,15 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
       r.customTriggers = nextCustom;
       persistState(node, ctx);
     },
+    // BUG (2026-08-02 owner report): a "found" lookup's own invalidate is
+    // now always followed by a real refetch (`model_info.mjs`'s own
+    // `runLookup` comment) -- this is the repaint half of that fix. A DOM-
+    // only sync (no `persistState`/dirty of its own -- nothing about THIS
+    // row's saved state changed, only what the freshly-repopulated `loras`
+    // list now says about its Civitai name).
+    onListRefreshed: () => {
+      syncRows(node, ctx);
+    },
     onDeleted: () => {
       // The row still pointing at the just-deleted file must fall into the
       // existing red missing-file state, not vanish or throw -- the SAME

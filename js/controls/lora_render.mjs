@@ -1055,24 +1055,56 @@ export function buildRowElement(doc) {
  * shows its FILENAME, whatever the setting says** (§1a-vii's own carve-out,
  * mirroring §1a-ii's "the whole point of the red state is telling the user
  * which file on disk is gone") -- `civitaiName` is simply never looked up
- * for a missing row. */
+ * for a missing row.
+ *
+ * **BUG (2026-08-02 owner report) -- "the LoRA row names sometimes go back to
+ * filename":** `civitaiNameFor` is tri-state (its own doc comment) --
+ * `undefined` means "unknown, ask again later" (an incomplete pair, or the
+ * `loras` list mid an invalidate-then-refetch window, e.g. right after the ⓘ
+ * panel's own lookup writes a fresh sidecar), never "no Civitai name." An
+ * `undefined` here must NOT flip an already-Civitai-named row back to its
+ * filename -- it holds whatever CIVITAI NAME the label already had for this
+ * exact `row.name`, if any (the DOM itself is the "previous value" here;
+ * `row` never carries a second copy of the name -- this pack has been
+ * bitten by exactly that kind of duplicated source of truth before, the
+ * detached-row-object bug).
+ *
+ * **Narrowly scoped, on purpose**: the hold applies ONLY when the row's
+ * PREVIOUS paint actually resolved to a real Civitai name (`wtnHasCivitaiName
+ * === "1"`, a plain boolean DOM marker -- never the name text itself) --
+ * never for a row that has simply never had one, or lost a settled `null`
+ * ("genuinely no Civitai name," a real answer, unrelated to this bug). A row
+ * with nothing to hold still recomputes its FILENAME fallback live, on every
+ * paint, exactly as before this fix -- e.g. toggling "Hide file extension"
+ * must keep repainting immediately even while `loras`'s list happens to be
+ * mid a warm-up fetch (`wtnPaintedFor`/`wtnHasCivitaiName` gate WHETHER to
+ * hold, they never supply what to show). */
 export function paintRow(refs, row, sepStrengths) {
   const missing = !!row.name && hasFile("loras", row.name) === false;
   const civitaiName = missing ? null : civitaiNameFor("loras", row.name);
-  const shown = row.name ? displayRowName(row.name, civitaiName) : "";
-  refs.nameLabel.textContent = shown || "(pick a LoRA)";
+  const paintedFor = refs.nameLabel.dataset.wtnPaintedFor;
+  const hadCivitaiName = paintedFor === row.name && refs.nameLabel.dataset.wtnHasCivitaiName === "1";
+  const holdCurrent = civitaiName === undefined && !!row.name && hadCivitaiName;
+  if (!holdCurrent) {
+    const effectiveCivitaiName = civitaiName === undefined ? null : civitaiName;
+    const shown = row.name ? displayRowName(row.name, effectiveCivitaiName) : "";
+    refs.nameLabel.textContent = shown || "(pick a LoRA)";
+    // The label's OWN tooltip (in addition to the button's, below). When the
+    // Civitai name is what's actually shown (§1a-vii: those run longer than
+    // filenames and this field ellipsis-truncates at a fixed width), the
+    // tooltip carries THAT name in full, so a truncated one is still readable
+    // on hover. Otherwise UNCHANGED from before this feature: always the real,
+    // untruncated/unstripped `row.name`, so hovering it directly still reveals
+    // the extension even when the display strips it.
+    const civitaiNameTrimmed = typeof effectiveCivitaiName === "string" ? effectiveCivitaiName.trim() : "";
+    const usedCivitaiName = !!(civitaiNameTrimmed && shown === civitaiNameTrimmed);
+    refs.nameLabel.title = usedCivitaiName ? civitaiNameTrimmed : (row.name || "");
+    refs.nameLabel.dataset.wtnPaintedFor = row.name || "";
+    refs.nameLabel.dataset.wtnHasCivitaiName = usedCivitaiName ? "1" : "0";
+  }
   refs.nameBtn.title = missing
     ? `Missing file: ${row.name} -- pick another LoRA`
     : row.name || "Click to pick a LoRA";
-  // The label's OWN tooltip (in addition to the button's, above). When the
-  // Civitai name is what's actually shown (§1a-vii: those run longer than
-  // filenames and this field ellipsis-truncates at a fixed width), the
-  // tooltip carries THAT name in full, so a truncated one is still readable
-  // on hover. Otherwise UNCHANGED from before this feature: always the real,
-  // untruncated/unstripped `row.name`, so hovering it directly still reveals
-  // the extension even when the display strips it.
-  const civitaiNameTrimmed = typeof civitaiName === "string" ? civitaiName.trim() : "";
-  refs.nameLabel.title = (civitaiNameTrimmed && shown === civitaiNameTrimmed) ? civitaiNameTrimmed : (row.name || "");
   refs.nameBtn.classList.toggle("wtn-lora-missing", missing);
   // BUG 17: `.value`, not `.textContent` -- the stepper's value is a real
   // `<input>` now. Repainting overwrites whatever the user may be mid-typing

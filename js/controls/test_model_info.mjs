@@ -550,6 +550,13 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
   invalidateInfo(kind, name);
   let lookupCalls = 0;
   globalThis.fetch = async (url, opts) => {
+    // The bug fix (2026-08-02): a real "found" lookup ALSO triggers its own
+    // `/list` refetch now (invalidate-then-refetch, never a bare
+    // invalidate) -- answered here, but not counted toward this test's own
+    // subject (`/lookup` call counting).
+    if (String(url).includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [] }) };
+    }
     lookupCalls += 1;
     const body = JSON.parse(opts.body);
     assert.equal(body.kind, kind);
@@ -643,6 +650,7 @@ await asyncTest("openModelInfo: renders identity + file trigger chips, auto-look
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);
+    invalidateList(kind);
   }
 });
 
@@ -1413,7 +1421,21 @@ await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE 
   const name = "info-bug20-twice.safetensors";
   invalidateInfo(kind, name);
   let fetchCalls = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (url) => {
+    // The bug fix (2026-08-02): a real "found" lookup now ALSO triggers its
+    // own `/list` refetch (`invalidateList` immediately followed by a real
+    // `listModels(kind, true)`, never a bare invalidate) -- that request is
+    // a SEPARATE mechanism this test isn't about, so it's answered but not
+    // counted toward "exactly ONE request" (this test's own subject is
+    // `/lookup` de-duplication, BUG 20's actual concern). Answering with
+    // THIS file present (not `[]`) matters too -- an empty list would
+    // resolve `hasFile` to a confirmed "missing," which would make the
+    // SECOND open's footer chase a (genuinely unrelated) `/model_detail`
+    // download-target lookup, inflating this count for a reason that has
+    // nothing to do with BUG 20.
+    if (String(url).includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name }] }) };
+    }
     fetchCalls += 1;
     return {
       json: async () => ({
@@ -1456,6 +1478,7 @@ await asyncTest("BUG 20: opening the SAME LoRA's panel twice issues exactly ONE 
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);
+    invalidateList(kind);
   }
 });
 
@@ -1637,6 +1660,13 @@ await asyncTest("BUG 20: 'Clear cache' evicts the CLIENT-side record too -- a su
       deleted = true;
       return { json: async () => ({ reason: "ok", deleted: true }) };
     }
+    // The bug fix (2026-08-02): a real "found" lookup ALSO triggers its own
+    // `/list` refetch now (invalidate-then-refetch, never a bare
+    // invalidate) -- answered here, but not counted toward this test's own
+    // subject (`/lookup` call counting).
+    if (String(url).includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [] }) };
+    }
     fetchCalls += 1;
     // Simulates the sidecar genuinely being gone the SECOND time this is
     // actually asked (post-delete) -- if the client cache were NOT evicted,
@@ -1680,6 +1710,7 @@ await asyncTest("BUG 20: 'Clear cache' evicts the CLIENT-side record too -- a su
   } finally {
     globalThis.fetch = _origFetch;
     invalidateInfo(kind, name);
+    invalidateList(kind);
   }
 });
 
@@ -2551,17 +2582,27 @@ await asyncTest("openModelInfo: a real 'found' lookup saves the preview of the c
     assert.notEqual(hasFile(kind, name), null, "sanity: seeded before the lookup");
 
     const doc = makeDocStub();
+    let listRefreshedCalls = 0;
     const handle = openModelInfo({
       ctx: { doc, getCanvasEl: () => null },
       anchorEl: doc.createElement("button"),
       kind,
       name,
+      onListRefreshed: () => {
+        listRefreshedCalls += 1;
+      },
     });
     await settle();
     await settle();
 
     assert.equal(savePreviewCalls, 1, "a real found lookup with a level-passing candidate must call save_preview exactly once");
-    assert.equal(hasFile(kind, name), null, "invalidateList must have run after the found lookup");
+    // BUG fix (2026-08-02 owner report): invalidate is now always followed by
+    // a real refetch, so the cache is REPOPULATED by the time this settles --
+    // never left empty (that bare-invalidate defect is exactly what made row
+    // names revert to the filename). `true`, not merely "not null": the
+    // refetched list actually contains this exact file.
+    assert.equal(hasFile(kind, name), true, "the refetch after invalidateList must have repopulated the cache, not left it empty");
+    assert.equal(listRefreshedCalls, 1, "onListRefreshed must fire once the refetch actually lands, so the caller can repaint its row");
 
     handle.close();
   } finally {

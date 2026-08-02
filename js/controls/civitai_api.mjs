@@ -213,18 +213,42 @@ export function hasFile(kind, name) {
 /**
  * The cached Civitai display name for `(kind, name)` (docs/lora-loader-
  * design.md §1a-vii), read with NO network of its own from `(kind, name)`'s
- * entry in the last-fetched `/list` response -- `null` for an incomplete
- * pair, a kind whose list hasn't resolved yet, a name not in it, or a real
- * entry that simply carries no `civitai_name` at all (the server already
- * OMITS that field rather than sending a blank one -- `src/model_browser/
- * local.py`'s own doc comment). Never a placeholder, never the file name
- * echoed back as if it were a Civitai name -- a caller (`lora_render.mjs`'s
- * `paintRow`) that gets `null` back falls through to the plain file-name
- * display, silently, same as a model that was never looked up at all.
+ * entry in the last-fetched `/list` response.
+ *
+ * **Tri-state, same "unknown, not missing" discipline as `hasFile` above**
+ * (bug fix, 2026-08-02 owner report -- "the LoRA row names sometimes go back
+ * to filename"): this function used to collapse "we don't know yet" and
+ * "we know, and there genuinely is no Civitai name" onto the SAME `null`,
+ * which made a transient empty cache (e.g. the invalidate-then-refetch
+ * window right after a fresh Civitai lookup writes a sidecar,
+ * `model_info.mjs`'s own `runLookup`) indistinguishable from a real "no
+ * name" answer -- a caller couldn't tell "hold what you had" apart from
+ * "this file truly has none," so it always fell back to the filename.
+ *
+ *   - `undefined` -- UNKNOWN: an incomplete `(kind, name)` pair, or `kind`'s
+ *     list has never resolved THIS SESSION (`!_listCache.has(kind)`,
+ *     mirroring `hasFile`'s own guard byte for byte). A caller must NOT
+ *     treat this as "no Civitai name" -- it means "ask again later," and
+ *     should keep showing whatever it was already showing rather than
+ *     flipping to the filename (`lora_render.mjs`'s `paintRow` is the one
+ *     that does this).
+ *   - `null` -- KNOWN, and there simply isn't one: the list HAS resolved,
+ *     but `name` isn't in it, or its entry carries no `civitai_name` at all
+ *     (the server already OMITS that field rather than sending a blank one
+ *     -- `src/model_browser/local.py`'s own doc comment). This is a real,
+ *     settled answer -- a caller falling through to the plain file-name
+ *     display for `null` is correct, not a degradation.
+ *   - a non-empty trimmed string -- KNOWN, and this is it.
+ *
+ * Never a placeholder, never the file name echoed back as if it were a
+ * Civitai name.
  */
 export function civitaiNameFor(kind, name) {
   if (!kind || !name) {
-    return null;
+    return null; // an incomplete pair has no name to hold onto -- a settled "no name", not "unknown"
+  }
+  if (!_listCache.has(kind)) {
+    return undefined; // unknown -- this kind's list has never resolved (or was just invalidated)
   }
   const entry = cachedList(kind).find((m) => m && m.name === name);
   const raw = entry && entry.civitai_name;
