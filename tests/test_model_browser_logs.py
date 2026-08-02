@@ -29,8 +29,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import console_logging
 from src.model_browser import api as mb_api
-from src.model_browser import civitai_client, download, keys, lookup, rate_limit, sidecar
+from src.model_browser import civitai_client, civitai_meili, download, keys, lookup, rate_limit, sidecar
 from src.model_browser import logs as mb_logs
+
+# docs/lora-loader-design.md §7c-0/§7c-0b -- the two-call Meili design is now
+# `search_impl`'s DEFAULT path; every `test_search_impl_*` test below (and
+# `test_api_key_never_appears_in_any_log_line_across_search_and_download`)
+# monkeypatches `civitai_search.search_models` directly and only reaches it
+# when Meili itself has already failed for this call. Same fix as
+# `tests/test_model_browser.py`'s own top comment, repeated here because
+# this is a SEPARATE process (`python tests/test_model_browser_logs.py`) --
+# see that file's comment for the full reasoning, not repeated here.
+def _force_meili_unavailable_for_this_file(*_args, **_kwargs):
+    return {
+        "reason": "meili_unavailable",
+        "message": "Meili forced offline for tests/test_model_browser_logs.py.",
+        "offline_reason": "unknown",
+    }
+
+
+civitai_meili.two_call_search = _force_meili_unavailable_for_this_file
 
 # ---------------------------------------------------------------------------
 # Test helpers

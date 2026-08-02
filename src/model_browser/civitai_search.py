@@ -281,12 +281,24 @@ def kind_for_type(civitai_type: object) -> Optional[str]:
     return KIND_FOR_TYPE.get(civitai_type)
 
 
-def _clean_limit(limit: Any) -> int:
+def clean_limit(limit: Any) -> int:
+    """A requested page size -> a valid, clamped `int` (`1..._MAX_LIMIT`),
+    or `DEFAULT_LIMIT` for anything non-numeric -- same "garbage falls back
+    to the default, never raises" posture as `clean_level`/`clean_types`.
+    Public (not `_`-prefixed) -- `civitai_meili.py`'s two-call design
+    (docs/lora-loader-design.md §7c-0b) reuses this EXACT clamp for the
+    Meili discovery call's own `limit` and for `search_models_by_ids`'s
+    optional one, rather than a second copy of it."""
     try:
         value = int(limit)
     except (TypeError, ValueError):
         return DEFAULT_LIMIT
     return max(1, min(value, _MAX_LIMIT))
+
+
+# Private alias -- every existing call site in this module was written
+# against the underscore-prefixed name; keeping it resolves them unchanged.
+_clean_limit = clean_limit
 
 
 def build_search_url(
@@ -461,6 +473,119 @@ def search_models(
         # "no results", it's unexpected; report it as an unknown-cause
         # offline failure rather than inventing a third meaning for
         # "notfound" that would contradict "found, zero results".
+        return {"reason": "offline", "offline_reason": "unknown", "message": result["message"], "data": None}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# The two-call Meili design's STEP 2 (docs/lora-loader-design.md §7c-0/
+# §7c-0b) -- Meili DECIDES which models (in rank order, `civitai_meili.py`'s
+# own job); this re-hydrates that page of ids from the SAME `/api/v1/models`
+# endpoint `build_search_url`/`search_models` above already target, so
+# `parse_search_response` (unchanged, per this task's own brief) parses the
+# result exactly as it parses a text search today.
+# ---------------------------------------------------------------------------
+
+
+def build_ids_search_url(host: str, ids: Sequence[Any], *, limit: Optional[int] = None) -> Optional[str]:
+    """A full `https://<host>/api/v1/models?ids=<id>&ids=<id>...&nsfw=true
+    [&limit=N]` URL. Pure string-building, no network. `None` for an empty/
+    non-list `ids` -- there is nothing to re-hydrate, and the caller
+    (`civitai_meili.two_call_search`) already never reaches this function
+    with an empty Meili hit list; this is a second, cheap guard against ever
+    constructing that URL by accident.
+
+    `ids=` is sent as one REPEATED pair PER id, NEVER comma-joined --
+    verified live 2026-08-02 against Civitai's real endpoint, and the SAME
+    convention `types=`/`baseModels=` already use above (`clean_base_models`'s
+    own docstring has the fuller "a comma-joined multi-value filter has
+    already silently done nothing in this codebase once" history). A
+    non-integer entry in `ids` is dropped rather than forwarded raw.
+
+    `nsfw=true` is UNCONDITIONAL, not a parameter of this function -- the
+    two-call design's rule 1 ("`nsfw=true` is mandatory on the `ids=` call,
+    or adult models vanish from the results with no error"): our own
+    browsing-level filtering happens client-side against `nsfw_level`,
+    exactly as it already does on the text-search path, so this call must
+    always ask Civitai for the full set regardless of the caller's chosen
+    level.
+
+    `limit`, when given, is clamped the same way `build_search_url`'s own
+    `limit` is (`clean_limit`) -- Civitai's own default page size for
+    `/api/v1/models` is smaller than our own page sizes CAN be (verified
+    live 2026-08-02: omitting `limit` still returned every resolvable id for
+    a 20-id page, but nothing guarantees that holds at our own `_MAX_LIMIT`
+    of 50), so a caller passing the SAME limit it used for the Meili
+    discovery call guarantees every requested id has room to come back.
+    `None` (the default) omits the parameter entirely.
+    """
+    clean_ids: List[int] = []
+    if isinstance(ids, (list, tuple)):
+        for value in ids:
+            if isinstance(value, int) and not isinstance(value, bool):
+                clean_ids.append(value)
+    if not clean_ids:
+        return None
+    params: List[tuple] = [("ids", str(i)) for i in clean_ids]
+    params.append(("nsfw", "true"))
+    if limit is not None:
+        params.append(("limit", str(clean_limit(limit))))
+    return f"https://{host}/api/v1/models?{urllib.parse.urlencode(params)}"
+
+
+def search_models_by_ids(
+    ids: Sequence[Any],
+    *,
+    limit: Optional[int] = None,
+    api_key: Optional[str] = None,
+    timeout: float = 30.0,
+    max_body_bytes: int = 4 * 1024 * 1024,
+    hosts: Sequence[str] = civitai_client.CIVITAI_HOSTS,
+    opener=None,
+) -> Dict[str, Any]:
+    """The two-call Meili design's step 2 -- re-hydrates a page of Meili-
+    discovered ids from `/api/v1/models?ids=...`, returning
+    `parse_search_response`'s EXACT input shape (this IS that same endpoint,
+    just filtered by id instead of by text) so that function parses it
+    UNCHANGED -- "Meili decides WHICH models; v1 describes them", same
+    parser either way.
+
+    Same `{"reason": "found"|"offline", "offline_reason", "message", "data"}`
+    envelope as `search_models` above (never `"notfound"` -- see that
+    function's own docstring for why a definitive-404 meaning doesn't fit a
+    list endpoint), via the SAME `civitai_client.fetch_json_with_host_fallback`
+    transport (two hosts, 30s timeout, 4 MB cap, distinct offline reasons).
+    An empty/all-invalid `ids` list -> `{"reason": "offline", "offline_reason":
+    "unknown", ...}` without any network call at all -- defensive only, since
+    the real caller (`civitai_meili.two_call_search`) already short-circuits
+    before an empty Meili hit list ever reaches here.
+
+    `api_key` rides the SAME `?token=` query convention `search_models`
+    already uses (see that function's own docstring for why a query
+    parameter rather than a header) -- 🔒 never logged, same rule.
+    """
+    if build_ids_search_url("civitai.com", ids, limit=limit) is None:
+        return {"reason": "offline", "offline_reason": "unknown", "message": "No ids to look up.", "data": None}
+
+    def build_url(host: str) -> str:
+        url = build_ids_search_url(host, ids, limit=limit)
+        assert url is not None  # already guarded above
+        if api_key:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}token={urllib.parse.quote(api_key)}"
+        return url
+
+    result = civitai_client.fetch_json_with_host_fallback(
+        build_url,
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        hosts=hosts,
+        opener=opener,
+        notfound_message="Civitai's search endpoint returned 404.",
+    )
+    if result["reason"] == "notfound":
+        # See `search_models`'s own docstring -- same "not a real 404
+        # meaning" fold.
         return {"reason": "offline", "offline_reason": "unknown", "message": result["message"], "data": None}
     return result
 
@@ -728,8 +853,11 @@ __all__ = (
     "clean_level",
     "clean_types",
     "clean_base_models",
+    "clean_limit",
     "build_search_url",
     "search_models",
+    "build_ids_search_url",
+    "search_models_by_ids",
     "pick_primary_file",
     "parse_search_response",
 )

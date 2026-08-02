@@ -740,7 +740,7 @@ return a value to the caller. The **modal** is a *browser* — it answers to nob
 on disk, with the destination folder taken from the result's type rather than from whoever opened it.
 Build the picker path first (it is what milestone 2 needs); the modal is milestone 2b.
 
-### 7c-0. Search must move to Civitai's MEILISEARCH endpoint (owner, 2026-08-02) — SPEC, not built
+### 7c-0. Search must move to Civitai's MEILISEARCH endpoint (owner, 2026-08-02) — BUILT `TBD`
 
 > **⚠️ MEASURED BEFORE SPECCING (2026-08-02).** Every number in this section came from live requests,
 > not from reading upstream source. Where a claim is inferred rather than observed, it says so.
@@ -974,7 +974,7 @@ needs nothing new — **reuse `_default_opener`'s existing header** and this que
 
 ---
 
-## 7c-0b. Implementation spec — the two-call search (2026-08-02)
+## 7c-0b. Implementation spec — the two-call search (2026-08-02) — BUILT `TBD`
 
 A delta against the existing `src/model_browser/civitai_search.py`, not a rewrite. **`_parse_version`,
 `_parse_search_item` and `pick_primary_file` are not touched at all** — step 2 hands them exactly the

@@ -82,6 +82,15 @@ _USER_AGENT = (
     "AnimaFlow-ComfyUI/model-browser"
 )
 
+# Public alias -- docs/lora-loader-design.md §7c-0's "Headers: nothing new to
+# decide... reuse `_default_opener`'s existing header" (the two-call Meili
+# search design, `civitai_meili.py`): that module's own POST to
+# `search.civitai.com` sends this SAME header rather than inventing a second
+# one, so it needs a non-private name to import. Same "public alias, no
+# behaviour change" pattern `civitai_search.py`'s `_parse_files =
+# civitai_parse.parse_files` already uses.
+USER_AGENT = _USER_AGENT
+
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
 
@@ -106,12 +115,19 @@ def _default_opener(url: str, timeout: float):
     return urllib.request.urlopen(request, timeout=timeout)
 
 
-def _classify_urlerror(exc: BaseException) -> str:
+def classify_urlerror(exc: BaseException) -> str:
     """`urllib.error.URLError`'s `.reason` -> one of `_OFFLINE_REASONS`'s
     connection-level values. `URLError` wraps whatever the underlying
     socket/SSL layer raised in `.reason`; a bare `socket.timeout`/
     `TimeoutError` can also reach here un-wrapped depending on Python
     version, so both shapes are checked.
+
+    Public (not `_`-prefixed, unlike this module's other single-endpoint
+    helpers) -- `civitai_meili.py`'s own POST transport shares this EXACT
+    classification rather than a second copy of it, since a Meili request can
+    fail with the same connection-level shapes a GET can (docs/lora-loader-
+    design.md §7c-0's two-call design reuses this module's error taxonomy
+    end to end, not just its host list).
     """
     reason = getattr(exc, "reason", exc)
     if isinstance(reason, (socket.timeout, TimeoutError)):
@@ -121,6 +137,12 @@ def _classify_urlerror(exc: BaseException) -> str:
     if isinstance(reason, (socket.gaierror, ssl.SSLError)):
         return "dns_tls"
     return "dns_tls"  # any other connection-level refusal folds in here
+
+
+# Private alias -- every existing call site in this module was written
+# against the underscore-prefixed name; keeping it resolves them unchanged
+# rather than touching every one just to rename it.
+_classify_urlerror = classify_urlerror
 
 
 def fetch_json_with_host_fallback(
@@ -428,6 +450,6 @@ def fetch_community_images(
 
 
 __all__ = (
-    "CIVITAI_HOSTS", "fetch_json_with_host_fallback", "lookup_by_hash", "lookup_model_by_id",
-    "lookup_model_version_by_id", "fetch_community_images",
+    "CIVITAI_HOSTS", "USER_AGENT", "fetch_json_with_host_fallback", "classify_urlerror",
+    "lookup_by_hash", "lookup_model_by_id", "lookup_model_version_by_id", "fetch_community_images",
 )

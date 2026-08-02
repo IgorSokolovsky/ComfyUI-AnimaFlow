@@ -150,6 +150,7 @@ from email.utils import formatdate
 from typing import Any, Dict, Optional, Tuple
 
 from . import civitai_client
+from . import civitai_meili
 from . import civitai_parse
 from . import civitai_search
 from . import download
@@ -794,17 +795,25 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     the same sense `lookup_impl` already uses, not "no I/O").
 
     Always returns `{"reason": ..., "message": str, "results": [...],
-    "next_cursor": str|None, "public_only": bool}`:
+    "next_cursor": str|None, "public_only": bool, "total": int|None}`:
 
       - `invalid_kind`   -- a GIVEN but unwhitelisted `kind` -- same
         whitelist short-circuit as every route here;
       - `rate_limited`   -- §9's own rate limiter refused this call (never
         Civitai's 429 -- that one surfaces as `offline`/`rate_limited` from
-        `civitai_search.search_models` itself, kept distinct on purpose);
+        the search itself, kept distinct on purpose);
       - `offline`        -- the search request itself failed (see
         `offline_reason` for the specific cause, same vocabulary as
         `civitai_client`);
       - `ok`             -- `results`/`next_cursor` are populated.
+
+    **`total` is the ONE new field this task (docs/lora-loader-design.md
+    §7c-0/§7c-0b, "move search to Civitai's Meilisearch endpoint") adds to
+    this contract** -- `estimatedTotalHits` from the Meili discovery step,
+    the result COUNT the UI has never been able to show. `None` on every
+    branch that isn't a Meili-served `ok` -- the REST fallback path (below)
+    cannot produce a total (its own cursor-based endpoint never returns
+    one), so it sends `None` rather than a guessed number.
 
     docs/lora-loader-design.md M2b task 1 -- `payload["kind"]` is now
     OPTIONAL, reflecting the toolbar modal's UNSCOPED search (§7c: "the
@@ -820,10 +829,9 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     the multi-value Civitai `types` filter for an UNSCOPED search only --
     ignored when `kind` is given (the picker's `kind` already locks the
     type; §7c-i: "type ... locked to the caller's kind"). Passed straight
-    to `civitai_search.search_models`, which validates it
-    (`civitai_search.clean_types`) before it ever reaches the wire -- this
-    route never does that validation itself, so there is exactly one place
-    it happens.
+    to the search itself, which validates it (`civitai_search.clean_types`)
+    before it ever reaches either wire -- this route never does that
+    validation itself, so there is exactly one place it happens.
 
     `payload["base_model"]` (the modal's "Filter by Base Model" rail, AND
     the anchored panel's own single-value filter -- ONE key, shared by
@@ -832,11 +840,11 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     already uses, so a caller with one value (the anchored panel) arrives
     here as a one-element list and a caller with several (the modal)
     arrives as several -- no special-casing either shape. Passed straight
-    to `civitai_search.search_models`, same "validated downstream, not
-    here" discipline as `types` (`civitai_search.clean_base_models`).
-    Fixed 2026-07-31 -- see `civitai_search.clean_base_models`'s own
-    docstring for the wire-contract bug this replaces (a comma-joined
-    value under an invented `base_models` plural key nothing ever read).
+    through, same "validated downstream, not here" discipline as `types`
+    (`civitai_search.clean_base_models`). Fixed 2026-07-31 -- see
+    `civitai_search.clean_base_models`'s own docstring for the wire-contract
+    bug this replaces (a comma-joined value under an invented `base_models`
+    plural key nothing ever read).
 
     `public_only` (the CORRECTION's "no API key set -- public results only"
     banner) is set from `keys.resolve_api_key()` on EVERY branch, including
@@ -847,15 +855,38 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     docs/lora-loader-design.md §7c-iv: `payload["level"]` is the "Maximum
     browsing level" setting (PG=1/PG-13=2/R=4/X=8/XXX=16), not an `nsfw`
     bool -- `civitai_search.clean_level` validates it (garbage/missing
-    falls back to PG, same tolerance `sort`/`period` already get). It maps
-    to Civitai's own binary `nsfw` request parameter exactly once, right
-    here: PG (`level == 1`) sends `nsfw=false` -- the one genuine server-
-    side guarantee, we never ask for adult content at all -- and every
-    level above PG sends `nsfw=true`, since Civitai has no request
+    falls back to PG, same tolerance `sort`/`period` already get). On the
+    Meili path it becomes `civitai_meili.level_exclusion_filter`'s own
+    server-side filter; on the REST fallback path it still maps to
+    Civitai's binary `nsfw` request parameter exactly once, right here: PG
+    (`level == 1`) sends `nsfw=false` -- the one genuine server-side
+    guarantee, we never ask for adult content at all -- and every level
+    above PG sends `nsfw=true`, since that endpoint has no request
     parameter for a specific level (measured: `browsingLevel=31`/`nsfw=16`/
     `nsfw=X` are all HTTP 400) -- the full gallery comes back and
     per-image/per-model filtering to the chosen level is the FRONTEND's job
     against `nsfw_level`/`images[].nsfw_level` (§7c-iv's own "Build notes").
+
+    docs/lora-loader-design.md §7c-0/§7c-0b -- **the two-call Meili design
+    is now the DEFAULT path**, via `civitai_meili.two_call_search`: Meili
+    decides WHICH models (in true relevance rank, plus a real
+    `total`); `civitai_search.search_models_by_ids` re-hydrates that exact
+    page from the SAME `/api/v1/models` endpoint the OLD path always used,
+    so `civitai_search.parse_search_response`/`_annotate_search_results`
+    below are UNCHANGED regardless of which path served this call.
+
+    Falls back to the EXISTING REST-only `civitai_search.search_models`
+    path -- unchanged from before this task, byte for byte -- ONLY when
+    Meili itself is unreachable (`two_call_search`'s own
+    `"meili_unavailable"` signal: a rotated public token, a Cloudflare
+    block, an index rename). This is a WHOLE-PAGE fallback, never a
+    per-result one, and it is NOT triggered by step 2 (the `ids=`
+    re-hydration) failing after Meili already succeeded -- see
+    `civitai_meili.two_call_search`'s own docstring for why that case
+    surfaces `offline` instead. Which path served a given search is logged
+    at `debug` only (`logs_mod.format_search_engine_debug`) -- never added
+    to this wire contract, so the frontend needs no change to keep working
+    unmodified.
     """
     payload = payload or {}
     kind = payload.get("kind")
@@ -868,7 +899,7 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         # say what was actually sent.
         logs_mod.log_debug(_logger, logs_mod.format_search_shortcircuit_debug, reason="invalid_kind", detail=f"kind={kind!r}")
         logs_mod.log_summary(_logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason="invalid_kind")
-        return {**_INVALID_KIND, "results": [], "next_cursor": None, "public_only": True}
+        return {**_INVALID_KIND, "results": [], "next_cursor": None, "public_only": True, "total": None}
 
     resolved_key = keys.resolve_api_key()
 
@@ -883,42 +914,80 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
             "message": "Searching too quickly -- wait a moment and try again.",
             "results": [], "next_cursor": None,
             "public_only": resolved_key.public_only,
+            "total": None,
         }
 
     level = civitai_search.clean_level(payload.get("level"))
+    types = payload.get("types")
+    # `payload["base_model"]` is always a LIST (see this function's own
+    # docstring) -- an empty one (`[]`, the common "no filter" case)
+    # collapses to `None` here, same "omit rather than send an empty
+    # filter" convention `sort`/`period`/`cursor` below already follow; a
+    # non-empty list rides straight through unchanged.
+    base_model = payload.get("base_model") or None
+    sort = payload.get("sort") or civitai_search.DEFAULT_SORT
+    period = payload.get("period") or civitai_search.DEFAULT_PERIOD
+    cursor = payload.get("cursor") or None
+    limit = payload.get("limit", civitai_search.DEFAULT_LIMIT)
 
-    result = civitai_search.search_models(
-        kind,
-        query,
-        types=payload.get("types"),
-        # `payload["base_model"]` is always a LIST (see this function's own
-        # docstring) -- an empty one (`[]`, the common "no filter" case)
-        # collapses to `None` here, same "omit rather than send an empty
-        # filter" convention `query`/`sort`/`period`/`cursor` below already
-        # follow; a non-empty list rides straight through to
-        # `civitai_search.search_models`/`clean_base_models` unchanged.
-        base_model=payload.get("base_model") or None,
-        sort=payload.get("sort") or civitai_search.DEFAULT_SORT,
-        period=payload.get("period") or civitai_search.DEFAULT_PERIOD,
-        nsfw=level > 1,
-        cursor=payload.get("cursor") or None,
-        limit=payload.get("limit", civitai_search.DEFAULT_LIMIT),
-        api_key=resolved_key.api_key,
+    meili_result = civitai_meili.two_call_search(
+        kind, query,
+        types=types, base_model=base_model, level=level, sort=sort, period=period,
+        cursor=cursor, limit=limit, api_key=resolved_key.api_key,
     )
-    if result["reason"] != "found":
+
+    if meili_result["reason"] == "meili_unavailable":
+        logs_mod.log_debug(
+            _logger, logs_mod.format_search_engine_debug,
+            engine="rest_fallback", detail=meili_result.get("offline_reason") or meili_result.get("message", ""),
+        )
+        result = civitai_search.search_models(
+            kind, query,
+            types=types, base_model=base_model, sort=sort, period=period,
+            nsfw=level > 1, cursor=cursor, limit=limit, api_key=resolved_key.api_key,
+        )
+        if result["reason"] != "found":
+            logs_mod.log_summary(
+                _logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason=result["reason"],
+            )
+            return {
+                "reason": result["reason"],
+                "message": result.get("message", ""),
+                "offline_reason": result.get("offline_reason"),
+                "results": [], "next_cursor": None,
+                "public_only": resolved_key.public_only,
+                "total": None,
+            }
+
+        parsed = civitai_search.parse_search_response(result["data"])
+        results = _annotate_search_results(parsed["results"], kind)
         logs_mod.log_summary(
-            _logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason=result["reason"],
+            _logger, logs_mod.format_search_summary, kind=kind, query=query, count=len(results), reason="ok",
         )
         return {
-            "reason": result["reason"],
-            "message": result.get("message", ""),
-            "offline_reason": result.get("offline_reason"),
-            "results": [], "next_cursor": None,
+            "reason": "ok",
+            "message": "",
+            "results": results,
+            "next_cursor": parsed["next_cursor"],
             "public_only": resolved_key.public_only,
+            "total": None,
         }
 
-    parsed = civitai_search.parse_search_response(result["data"])
-    results = _annotate_search_results(parsed["results"], kind)
+    if meili_result["reason"] == "offline":
+        logs_mod.log_summary(
+            _logger, logs_mod.format_search_summary, kind=kind, query=query, count=0, reason="offline",
+        )
+        return {
+            "reason": "offline",
+            "message": meili_result.get("message", ""),
+            "offline_reason": meili_result.get("offline_reason"),
+            "results": [], "next_cursor": None,
+            "public_only": resolved_key.public_only,
+            "total": None,
+        }
+
+    logs_mod.log_debug(_logger, logs_mod.format_search_engine_debug, engine="meili")
+    results = _annotate_search_results(meili_result["results"], kind)
     logs_mod.log_summary(
         _logger, logs_mod.format_search_summary, kind=kind, query=query, count=len(results), reason="ok",
     )
@@ -926,8 +995,9 @@ def search_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         "reason": "ok",
         "message": "",
         "results": results,
-        "next_cursor": parsed["next_cursor"],
+        "next_cursor": meili_result["next_cursor"],
         "public_only": resolved_key.public_only,
+        "total": meili_result["total"],
     }
 
 

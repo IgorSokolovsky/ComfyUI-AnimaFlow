@@ -42,9 +42,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.model_browser import api as mb_api
 from src.model_browser import (
-    civitai_client, civitai_parse, civitai_search, download, hashing, interop,
+    civitai_client, civitai_meili, civitai_parse, civitai_search, download, hashing, interop,
     keys, kinds, local, lookup, model_detail, rate_limit, remove, sidecar,
 )
+
+# ---------------------------------------------------------------------------
+# docs/lora-loader-design.md §7c-0/§7c-0b -- the two-call Meili design is now
+# `search_impl`'s DEFAULT path (`api.py`), with the REST-only path below
+# (`civitai_search.search_models`, unchanged by that task) demoted to its
+# FALLBACK, reached only when Meili itself is unreachable.
+#
+# EVERY `test_search_impl_*`/`test_annotate_search_results_*` test in this
+# file was written against the OLD "REST is the only path" world -- each one
+# monkeypatches `civitai_search.search_models` directly and asserts on
+# `search_impl`'s result, which only exercises that function at all when
+# Meili has already failed for this call. Rather than touching each of those
+# ~20 test bodies individually, Meili is forced UNAVAILABLE for this WHOLE
+# file, ONCE, here -- so every existing assertion about the REST response
+# shape (`parse_search_response`'s own fields, `_annotate_search_results`'s
+# `installed`/`gated`/`kind` computation, the `level`->`nsfw` mapping, the
+# whitelist/rate-limit short-circuits) keeps passing UNCHANGED, now
+# correctly read as pinning the FALLBACK path rather than the default one.
+# `tests/test_model_browser_meili.py` is the dedicated file that exercises
+# the Meili path itself (`civitai_meili`'s own pure functions, plus
+# `search_impl` choosing between the two engines) -- deliberately NOT here,
+# so this file's own scope stays "the REST/fallback behaviour", matching
+# its own top docstring.
+#
+# Not restored -- this file has no test that wants the real Meili path, and
+# each test process here runs standalone (`python tests/test_model_browser.py`,
+# no cross-file state), so there's nothing to restore FOR.
+def _force_meili_unavailable_for_this_file(*_args, **_kwargs):
+    return {
+        "reason": "meili_unavailable",
+        "message": "Meili forced offline for tests/test_model_browser.py -- see this file's own top comment.",
+        "offline_reason": "unknown",
+    }
+
+
+civitai_meili.two_call_search = _force_meili_unavailable_for_this_file
 
 # ---------------------------------------------------------------------------
 # kinds.py -- the whitelist / security boundary

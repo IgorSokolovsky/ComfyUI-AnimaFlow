@@ -161,6 +161,19 @@ SOFTWARE.
   constant and `translate_cminfo`'s field-name mapping (see the module's own
   docstring for the full citation, including its preview-file convention already
   being compatible with `local._PREVIEW_EXTS` with no change needed).
+- **2026-08-02 addition** (docs/lora-loader-design.md §7c-0/§7c-0b, "move search to
+  Civitai's Meilisearch endpoint"): `src/model_browser/civitai_meili.py`'s
+  `build_meili_payload`/`MEILI_URL`/`MEILI_BEARER_TOKEN` port the request SHAPE
+  (POST body, filter-group structure, the sort-string mapping) from
+  `Civicomfy/api/civitai.py:127-236`'s `search_models_meili`, including the public
+  web-app Meilisearch bearer token itself (`:135` — Civicomfy's own comment notes
+  it's identical for every account, verified against three; not a per-user secret).
+  The LEVEL-EXCLUSION filter (`level_exclusion_filter`), the period-to-
+  `lastVersionAtUnix` mapping (`period_filter`), and the whole two-call/subset-
+  check/re-sort orchestration (`two_call_search`) are AnimaFlow's own, not derived
+  from upstream — Civicomfy's own level filter (`nsfwLevel IN [1, 2, 4]`, an
+  INCLUSION) was measured live to leak mixed-level models and was deliberately not
+  ported; see `civitai_meili.py`'s own module docstring for the measured finding.
 
 ```
 MIT License

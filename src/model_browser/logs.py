@@ -269,6 +269,19 @@ def _format_search_shortcircuit_debug_impl(*, reason: str, detail: str = "") -> 
 format_search_shortcircuit_debug = _safe(_format_search_shortcircuit_debug_impl)
 
 
+def _format_search_engine_debug_impl(*, engine: str, detail: str = "") -> str:
+    """docs/lora-loader-design.md §7c-0's own fallback rule: "Log which path
+    served a search at debug, or a silent downgrade will look like the
+    filter bug coming back." `engine` is `"meili"` or `"rest_fallback"` --
+    debug-only (never part of `search_impl`'s own wire contract, which this
+    task deliberately leaves unchanged apart from the new `total` field)."""
+    suffix = f" ({detail})" if detail else ""
+    return f"[AnimaFlow] Model Browser search engine: {engine}{suffix}"
+
+
+format_search_engine_debug = _safe(_format_search_engine_debug_impl)
+
+
 # ---------------------------------------------------------------------------
 # Download (download.py's `stream_download`).
 # ---------------------------------------------------------------------------
@@ -430,6 +443,7 @@ __all__ = (
     "format_response_debug",
     "format_search_summary",
     "format_search_shortcircuit_debug",
+    "format_search_engine_debug",
     "format_download_summary",
     "format_download_failure_debug",
     "format_lookup_summary",
