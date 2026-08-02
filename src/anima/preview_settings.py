@@ -321,14 +321,13 @@ def collision_suffixed_filename(filename: str, attempt: int) -> str:
     the plain `filename` unchanged -- the FIRST file at a given name always
     keeps its plain name, per the owner's spec; a suffix only appears once
     there is an actual collision. `attempt >= 1` inserts a zero-padded
-    6-digit counter BEFORE the extension: `name_000000.ext`,
-    `name_000001.ext`, ... so `attempt=1` is the first collision's name
-    (`_000000`), matching the spec's own example numbering exactly (its
-    `_000000`/`_000001` are 1-indexed off `attempt`, not 0-indexed).
+    5-digit counter BEFORE the extension, equal to `attempt` itself:
+    `name_00001.ext`, `name_00002.ext`, ... (per the owner's own numbering,
+    starting at 1, not 0).
 
     Extension-preserving via `os.path.splitext`, so a dotted stem
     (`my.file.png`) only has its LAST extension treated as one --
-    `my.file_000000.png`, never `my.file.png_000000`. `os.path` is pure
+    `my.file_00001.png`, never `my.file.png_00001`. `os.path` is pure
     string manipulation (no filesystem access), so this stays a pure
     function: no I/O, callable from a plain-script test with no directory
     on disk at all. The actual collision LOOP (deciding which `attempt` is
@@ -342,7 +341,7 @@ def collision_suffixed_filename(filename: str, attempt: int) -> str:
     import os.path
 
     stem, ext = os.path.splitext(filename)
-    return f"{stem}_{attempt - 1:06d}{ext}"
+    return f"{stem}_{attempt:05d}{ext}"
 
 
 def format_filename(

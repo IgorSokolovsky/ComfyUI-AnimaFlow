@@ -66,7 +66,7 @@ def test_no_collision_returns_the_plain_name():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_one_existing_file_yields_the_000000_suffix_and_leaves_it_untouched():
+def test_one_existing_file_yields_the_00001_suffix_and_leaves_it_untouched():
     tmp = tempfile.mkdtemp()
     try:
         original_path = os.path.join(tmp, "name.png")
@@ -75,29 +75,29 @@ def test_one_existing_file_yields_the_000000_suffix_and_leaves_it_untouched():
 
         result = ph.write_without_overwriting(tmp, "name.png", _xb_writer)
 
-        assert result == "name_000000.png"
-        assert os.path.isfile(os.path.join(tmp, "name_000000.png"))
+        assert result == "name_00001.png"
+        assert os.path.isfile(os.path.join(tmp, "name_00001.png"))
         with open(original_path, "rb") as fh:
             assert fh.read() == b"ORIGINAL", "the pre-existing file must be untouched"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_000000_also_taken_yields_000001():
+def test_00001_also_taken_yields_00002():
     tmp = tempfile.mkdtemp()
     try:
         with open(os.path.join(tmp, "name.png"), "wb") as fh:
             fh.write(b"ORIGINAL")
-        with open(os.path.join(tmp, "name_000000.png"), "wb") as fh:
+        with open(os.path.join(tmp, "name_00001.png"), "wb") as fh:
             fh.write(b"SECOND")
 
         result = ph.write_without_overwriting(tmp, "name.png", _xb_writer)
 
-        assert result == "name_000001.png"
-        assert os.path.isfile(os.path.join(tmp, "name_000001.png"))
+        assert result == "name_00002.png"
+        assert os.path.isfile(os.path.join(tmp, "name_00002.png"))
         with open(os.path.join(tmp, "name.png"), "rb") as fh:
             assert fh.read() == b"ORIGINAL"
-        with open(os.path.join(tmp, "name_000000.png"), "rb") as fh:
+        with open(os.path.join(tmp, "name_00001.png"), "rb") as fh:
             assert fh.read() == b"SECOND"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -110,8 +110,8 @@ def test_extension_preserved_suffix_lands_before_the_dot():
             fh.write(b"ORIGINAL")
         result = ph.write_without_overwriting(tmp, "name.png", _xb_writer)
         assert result.endswith(".png")
-        assert "_000000" in result
-        assert not result.endswith(".png_000000")
+        assert "_00001" in result
+        assert not result.endswith(".png_00001")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -122,7 +122,7 @@ def test_dotted_stem_handled():
         with open(os.path.join(tmp, "my.file.png"), "wb") as fh:
             fh.write(b"ORIGINAL")
         result = ph.write_without_overwriting(tmp, "my.file.png", _xb_writer)
-        assert result == "my.file_000000.png"
+        assert result == "my.file_00001.png"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -138,7 +138,7 @@ def test_repeated_calls_to_the_same_desired_name_each_get_their_own_file_first_u
         second = ph.write_without_overwriting(tmp, "shot.png", lambda p: open(p, "xb").write(b"SECOND"))
 
         assert first == "shot.png"
-        assert second == "shot_000000.png"
+        assert second == "shot_00001.png"
         assert first != second, "must never resolve to the same path twice"
         with open(os.path.join(tmp, first), "rb") as fh:
             assert fh.read() == b"FIRST", "the first file's bytes must survive the second save"
@@ -288,17 +288,17 @@ def test_save_images_never_overwrites_and_first_file_survives():
         )
 
         assert first[0]["filename"] == "final_42.png"
-        assert second[0]["filename"] == "final_42_000000.png", (
+        assert second[0]["filename"] == "final_42_00001.png", (
             "the second save with an identical resolved filename must get "
             "the collision suffix, never overwrite the first"
         )
 
         on_disk = sorted(os.listdir(output_dir))
-        assert on_disk == ["final_42.png", "final_42_000000.png"]
+        assert on_disk == ["final_42.png", "final_42_00001.png"]
 
         with open(os.path.join(output_dir, "final_42.png"), "rb") as fh:
             assert fh.read() == b"IMAGE:RUN1:PNG", "first file's bytes must be unchanged"
-        with open(os.path.join(output_dir, "final_42_000000.png"), "rb") as fh:
+        with open(os.path.join(output_dir, "final_42_00001.png"), "rb") as fh:
             assert fh.read() == b"IMAGE:RUN2:PNG"
     finally:
         ph._tensor_to_pil_images = original_tensor_to_pil
@@ -403,18 +403,18 @@ def test_save_now_default_writer_never_overwrites_and_first_file_survives():
         )
 
         assert first["filename"] == "final_42.png"
-        assert second["filename"] == "final_42_000000.png", (
+        assert second["filename"] == "final_42_00001.png", (
             "a second Save-now click resolving to the same filename must "
             "get the collision suffix, never overwrite the first"
         )
 
         on_disk = sorted(os.listdir(final_output_dir))
-        assert on_disk == ["final_42.png", "final_42_000000.png"]
+        assert on_disk == ["final_42.png", "final_42_00001.png"]
 
         with open(os.path.join(final_output_dir, "final_42.png"), "rb") as fh:
             first_bytes = fh.read()
         assert first_bytes == f"COPY:{os.path.basename(source_path)}:PNG".encode("utf-8")
-        with open(os.path.join(final_output_dir, "final_42_000000.png"), "rb") as fh:
+        with open(os.path.join(final_output_dir, "final_42_00001.png"), "rb") as fh:
             assert fh.read() == first_bytes, "same source copied twice -> identical content, but two files"
     finally:
         restore_image()
@@ -462,8 +462,8 @@ def test_explicit_counter_token_still_increments_per_batch_item_unaffected_by_co
 
 ALL_TESTS = [
     test_no_collision_returns_the_plain_name,
-    test_one_existing_file_yields_the_000000_suffix_and_leaves_it_untouched,
-    test_000000_also_taken_yields_000001,
+    test_one_existing_file_yields_the_00001_suffix_and_leaves_it_untouched,
+    test_00001_also_taken_yields_00002,
     test_extension_preserved_suffix_lands_before_the_dot,
     test_dotted_stem_handled,
     test_repeated_calls_to_the_same_desired_name_each_get_their_own_file_first_untouched,

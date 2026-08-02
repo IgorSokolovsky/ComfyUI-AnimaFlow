@@ -170,7 +170,8 @@ def test_hostile_template_never_raises():
 # collision_suffixed_filename -- the PURE half of the "never overwrite" fix
 # (data-loss bug: a re-run with the same seed/day/stage silently clobbered
 # the previous file). attempt=0 is always the plain name; attempt>=1 inserts
-# a zero-padded 6-digit counter BEFORE the extension.
+# a zero-padded 5-digit counter BEFORE the extension, equal to `attempt`
+# itself (owner's spec, 2026-08-01: starts at `_00001`, not `_00000`).
 # ---------------------------------------------------------------------------
 
 
@@ -178,28 +179,43 @@ def test_collision_suffixed_filename_no_collision_keeps_plain_name():
     assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 0) == "2026-07-29_42_final.png"
 
 
-def test_collision_suffixed_filename_first_collision_is_000000():
-    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 1) == "2026-07-29_42_final_000000.png"
+def test_collision_suffixed_filename_first_collision_is_00001():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 1) == "2026-07-29_42_final_00001.png"
 
 
-def test_collision_suffixed_filename_second_collision_is_000001():
-    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 2) == "2026-07-29_42_final_000001.png"
+def test_collision_suffixed_filename_second_collision_is_00002():
+    assert ps.collision_suffixed_filename("2026-07-29_42_final.png", 2) == "2026-07-29_42_final_00002.png"
 
 
 def test_collision_suffixed_filename_preserves_extension():
     # The suffix goes BEFORE the extension, never after it.
-    assert ps.collision_suffixed_filename("name.png", 1) == "name_000000.png"
-    assert not ps.collision_suffixed_filename("name.png", 1).endswith(".png_000000")
+    assert ps.collision_suffixed_filename("name.png", 1) == "name_00001.png"
+    assert not ps.collision_suffixed_filename("name.png", 1).endswith(".png_00001")
 
 
 def test_collision_suffixed_filename_handles_a_dotted_stem():
     # Only the LAST extension is treated as one -- `my.file.png`'s suffix
     # must land right before `.png`, not after the first dot.
-    assert ps.collision_suffixed_filename("my.file.png", 1) == "my.file_000000.png"
+    assert ps.collision_suffixed_filename("my.file.png", 1) == "my.file_00001.png"
 
 
 def test_collision_suffixed_filename_no_extension_at_all():
-    assert ps.collision_suffixed_filename("plain_name", 1) == "plain_name_000000"
+    assert ps.collision_suffixed_filename("plain_name", 1) == "plain_name_00001"
+
+
+def test_collision_suffixed_filename_owners_exact_case():
+    # The owner's own example (2026-08-01): `panel_ep2` at attempts 0/1/2.
+    assert ps.collision_suffixed_filename("panel_ep2.png", 0) == "panel_ep2.png"
+    assert ps.collision_suffixed_filename("panel_ep2.png", 1) == "panel_ep2_00001.png"
+    assert ps.collision_suffixed_filename("panel_ep2.png", 2) == "panel_ep2_00002.png"
+
+
+def test_collision_suffixed_filename_top_of_range_stays_5_digits():
+    # `_MAX_COLLISION_ATTEMPTS = 10_000` (`nodes/anima/_preview_helpers.py`)
+    # means the largest `attempt` the collision loop ever tries is 9999 --
+    # pinning this so a future bump of that constant past 99999 can't
+    # silently widen the field past 5 digits without a test noticing.
+    assert ps.collision_suffixed_filename("name.png", 9999) == "name_09999.png"
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +406,13 @@ ALL_TESTS = [
     test_template_with_no_tokens_passes_through_unchanged,
     test_hostile_template_never_raises,
     test_collision_suffixed_filename_no_collision_keeps_plain_name,
-    test_collision_suffixed_filename_first_collision_is_000000,
-    test_collision_suffixed_filename_second_collision_is_000001,
+    test_collision_suffixed_filename_first_collision_is_00001,
+    test_collision_suffixed_filename_second_collision_is_00002,
     test_collision_suffixed_filename_preserves_extension,
     test_collision_suffixed_filename_handles_a_dotted_stem,
     test_collision_suffixed_filename_no_extension_at_all,
+    test_collision_suffixed_filename_owners_exact_case,
+    test_collision_suffixed_filename_top_of_range_stays_5_digits,
     test_resolve_wired_stages_returns_only_wired_in_stable_order,
     test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,
     test_resolve_shown_stage_one_entry_degrades_to_single_image,

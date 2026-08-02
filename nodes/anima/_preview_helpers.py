@@ -195,7 +195,7 @@ def write_without_overwriting(directory: str, filename: str, writer: Callable[[s
     """Call `writer(full_path)` at the first collision-free candidate name
     under `directory` for `filename` -- try `filename` itself first
     (`collision_suffixed_filename`'s `attempt=0`, the "no collision" case),
-    then its `_000000`/`_000001`/... suffixed forms, up to
+    then its `_00001`/`_00002`/... suffixed forms, up to
     `_MAX_COLLISION_ATTEMPTS`. Returns the actual (base, not full-path)
     filename `writer` was called with.
 
@@ -846,7 +846,7 @@ def save_now(
     )
     out_filename = f"{filename_stem}.{extension}"
     # Never-overwrite (same fix as `save_images`): try `out_filename` itself
-    # first, then its `_000000`/`_000001`/... suffixed forms, until one
+    # first, then its `_00001`/`_00002`/... suffixed forms, until one
     # writes cleanly. `write` (the default `_default_write_image_copy`, or
     # an injected `write_fn`) is responsible for the actual exclusivity --
     # this loop only supplies candidates and reacts to `FileExistsError`.
