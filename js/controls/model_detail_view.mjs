@@ -571,22 +571,31 @@ ${THUMB_SKELETON_CSS}
    ~115px to fit three across its ~396px panel -- narrow enough that the
    prompt drawer (below) is not readable if confined to the tile's own
    width, and legible prompts are the entire reason the AUTHOR gallery was
-   chosen over the community one (this file's own top doc comment). Fix:
-   the drawer escapes past its own tile's edge on hover/focus, wide enough
-   to stay readable regardless of how narrow the tile itself gets ("the
-   drawer breaks out of the tile on hover" -- the option taken of the three
-   raised for this change; see the build report for the other two and why
-   this one won). \`overflow: visible\` applies ONLY while hovered/focused --
-   a resting gallery still reads as a clean grid of tiles with nothing
-   overhanging. */
-.wtn-dv-gimg:hover, .wtn-dv-gimg:focus-within { overflow: visible; }
+   chosen over the community one (this file's own top doc comment). That
+   round's fix was the drawer escaping past its own tile's edge on
+   hover/focus (this rule flipping to \`overflow: visible\` was the mechanism)
+   -- REVERSED 2026-08-02, owner report with screenshots: "the prompt ...
+   seems it's not aligned to the image", the drawer overhanging onto the
+   NEIGHBOURING tile. The escape could never have worked: this tile's own
+   parent, \`.wtn-dv-gallery-filmstrip\` (above), carries \`overflow-x: auto\`,
+   and an ancestor's non-visible overflow clips its descendants regardless of
+   what any element between them says -- flipping THIS rule to \`visible\`
+   only moved the clip from the tile to the filmstrip one level up, which is
+   exactly what let the drawer spill sideways into whichever tile happened to
+   sit next to it. The durable fix is the drawer matching its own tile
+   exactly (see \`.wtn-dv-gdrawer\` below) rather than trying to escape a
+   scroll container that will always win. This rule now stays permanently
+   \`hidden\` -- nothing needs to get out any more. */
 .wtn-dv-gbox {
   position: relative; width: 100%; aspect-ratio: 1 / 1; background: var(--wtn-console, ${TOKENS.console});
   display: flex; align-items: center; justify-content: center;
-  /* Clips (and rounds) the IMAGE itself independently of \`.wtn-dv-gimg\`'s
-     own overflow, which toggles to \`visible\` on hover (above) so the
-     prompt drawer can escape past the tile edge -- without this, the image
-     would visibly square off at its corners for as long as it's hovered. */
+  /* Clips (and rounds) the IMAGE itself. \`.wtn-dv-gimg\` (the tile, above)
+     now clips permanently too, at the same rect, so this is redundant with
+     the tile's own clip for a plain image -- kept anyway to decouple "the
+     image reads with rounded corners" from "the tile clips its contents",
+     which are two different concerns that only coincide today; a future
+     change to the tile's own overflow rule (for an unrelated reason) should
+     not have to remember it was also the only thing rounding the image. */
   overflow: hidden; border-radius: 7px;
 }
 .wtn-dv-gbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -609,33 +618,49 @@ ${THUMB_SKELETON_CSS}
    reused rather than invented; the border colour is this pack's own
    \`--wtn-line\` (js/shared/theme.css), not invented either.
 
-   2026-08-01, second pass ("3 images per row"): WIDER than its own tile,
-   never narrower -- \`max(170px, var(--wtn-dv-gallery-tile))\`, the same
-   custom property \`.wtn-dv-gallery-filmstrip .wtn-dv-gimg\` (above) sizes
-   the tile itself from. At the modal's own 200px tile this is a no-op
-   (200 > 170 -- pixel-identical to before this change); only a tile
-   narrower than 170px (the picker's ~115px) actually widens it, which is
-   the entire point -- a prompt confined to a 115px box is not readable.
-   Centred on the tile (\`left: 50%; transform: translateX(-50%)\`) and
-   taken OUT of \`.wtn-dv-goverlay\`'s own flex flow (\`position: absolute\`)
-   so its width is independent of the flex column that used to just push it
-   to the bottom -- \`bottom: 0\` reproduces that same bottom anchoring
-   explicitly. Positions against \`.wtn-dv-goverlay\` (the nearest positioned
-   ancestor, itself sized to exactly match the tile via \`inset: 0\`), so
-   "50%" here IS "50% of the tile", not some other box. \`max-width\` keeps a
-   very wide gallery view from stretching this absurdly, and the rounded
-   bottom corners replace the square ones a mid-tile absolute box would
-   otherwise show against the tile's own rounded image beneath it. */
+   2026-08-01, second pass ("3 images per row"): tried making this WIDER
+   than its own tile (centred, escaping past both edges on hover) so a
+   ~115px picker tile could still show a readable prompt -- REVERSED
+   2026-08-02, owner report with screenshots: the drawer was overhanging its
+   tile and spilling onto the neighbouring image, because the tile's own
+   parent (\`.wtn-dv-gallery-filmstrip\`, above) is itself a scroll container
+   (\`overflow-x: auto\`), and an ancestor's own non-\`visible\` overflow clips
+   every descendant no matter what any element in between declares --
+   \`.wtn-dv-gimg\` flipping to \`overflow: visible\` on hover got the drawer
+   out of the TILE and straight into the FILMSTRIP's own clip, which is
+   exactly the cut-off-mid-word look the screenshot showed. That is the
+   durable fact to keep: a box cannot escape past an ancestor that clips,
+   however many of the boxes between the two say \`visible\`.
+
+   The fix instead: the drawer matches its own tile EXACTLY -- \`left: 0;
+   right: 0\` (no \`width\`, no \`transform\`) against \`.wtn-dv-goverlay\` (the
+   nearest positioned ancestor, itself sized to the tile via \`inset: 0\`), so
+   the drawer's box IS the tile's box, never wider. The known cost (the
+   owner has effectively accepted this by asking for alignment): at the
+   picker's ~115px tiles the prompt column is narrow. \`.wtn-dv-gprompt\`'s
+   own \`max-height: 72px; overflow-y: auto\` (below) is what keeps that
+   readable -- it scrolls vertically rather than clipping, so a narrow
+   column just means a taller scroll, not lost text. */
 .wtn-dv-gdrawer {
-  position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
-  width: max(170px, var(--wtn-dv-gallery-tile, 200px)); max-width: 260px;
+  position: absolute; left: 0; right: 0; bottom: 0;
   display: flex; flex-direction: column; gap: 4px; padding: 8px;
   background: rgba(6, 8, 11, .65);
   border-top: 1px solid var(--wtn-line, ${TOKENS.line});
   border-radius: 0 0 7px 7px;
 }
-.wtn-dv-gprompt { font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; }
-.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+/* \`overflow-x: hidden\` is explicit, not assumed -- CSS computes a
+   \`visible\`/non-\`visible\` overflow PAIR: if either axis is set to
+   something other than \`visible\` and the other is left \`visible\`, the
+   \`visible\` one silently COMPUTES to \`auto\` too. \`overflow-y: auto\` alone
+   therefore also turns on horizontal scrolling for anything wider than the
+   box (owner report, 2026-08-02: a horizontal scrollbar under the prompt,
+   its text clipped on the left edge) -- the same trap \`.wtn-dv-desc\`'s own
+   \`overflow-wrap: anywhere\` above already exists to guard against, here
+   applied to the same failure mode. \`overflow-wrap: anywhere\` lets an
+   unbreakable token (a long tag run with no spaces) wrap instead of forcing
+   the box wider in the first place. */
+.wtn-dv-gprompt { font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
+.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); overflow-wrap: anywhere; }
 .wtn-dv-gcopy {
   align-self: flex-start; font: 10px var(--wtn-font-mono, monospace); padding: 2px 7px; border-radius: 5px; cursor: pointer;
   background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border: 1px solid var(--wtn-accent, ${TOKENS.accent});
@@ -814,9 +839,11 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *   the moment a second shape stopped existing; this parameter names what
  *   it actually controls instead. The picker passes `115` (three tiles fit
  *   its own panel width); the modal keeps this default of `200` unchanged.
- *   The prompt drawer (below) reads this SAME value to decide how far past
- *   a narrow tile it needs to widen itself to stay readable -- see
- *   `.wtn-dv-gdrawer`'s own CSS comment.
+ *   The prompt drawer (below) is sized to match this SAME tile exactly (see
+ *   `.wtn-dv-gdrawer`'s own CSS comment) -- a 2026-08-02 reversal of an
+ *   earlier attempt to widen the drawer past a narrow tile, which could
+ *   never actually escape `.wtn-dv-gallery-filmstrip`'s own `overflow-x:
+ *   auto` clip regardless of what the tile itself did.
  * @param {object} opts.result - the raw search-result object (has `versions[]`,
  *   `model_id`, `name`, `creator`, `type`, `tags`, `stats`, `nsfw_level`).
  * @param {number} [opts.versionId] - the currently-selected version id;
@@ -1132,10 +1159,11 @@ export function buildModelDetailView({
     } else {
       const grid = el(doc, "div", "wtn-dv-gallery-filmstrip");
       // The one call site that knows "how wide" -- `--wtn-dv-gallery-tile`
-      // (read by `.wtn-dv-gallery-filmstrip .wtn-dv-gimg`'s own `width` AND
-      // `.wtn-dv-gdrawer`'s own widen-past-the-tile `width`, both above,
-      // both by inheritance from THIS element) is set here, once, rather
-      // than duplicated as a bare number on either downstream rule.
+      // (read by `.wtn-dv-gallery-filmstrip .wtn-dv-gimg`'s own `width`,
+      // above, by inheritance from THIS element) is set here, once, rather
+      // than duplicated as a bare number downstream. `.wtn-dv-gdrawer` no
+      // longer has a `width` of its own to read it (2026-08-02: it matches
+      // its tile via `left: 0; right: 0` instead of a computed width).
       grid.style.setProperty("--wtn-dv-gallery-tile", `${tileWidthPx}px`);
       const gate = createLoadGate(galleryConcurrency);
       for (const entry of visible) {

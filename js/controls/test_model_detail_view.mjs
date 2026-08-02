@@ -649,43 +649,45 @@ test("buildModelDetailView: the prompt drawer still renders over a filmstrip til
 });
 
 // =========================================================================
-// Owner, 2026-08-01, item 3's own "consequence to decide": a prompt drawer
-// confined to a ~115px tile is not readable -- the drawer BREAKS OUT of its
-// own tile on hover/focus, wide enough to stay legible regardless of how
-// narrow the tile gets (the option taken of the three raised; see the build
-// report for why).
+// Owner, 2026-08-02, with screenshots: "the prompt should not have
+// horizontal scroll only vertical, and seems it's not aligned to the
+// image" -- a REVERSAL of the 2026-08-01 "drawer breaks out of the tile on
+// hover" fix, which could never work: the tile's own parent
+// (`.wtn-dv-gallery-filmstrip`) is itself an `overflow-x: auto` scroll
+// container, and an ancestor's own clip wins over anything an element
+// between the two declares. The drawer now matches its tile exactly instead
+// of trying to escape it.
 // =========================================================================
 
-test("buildModelDetailView: the tile clips its own drawer at rest, but allows it to escape on hover/focus (breaks out of the tile)", () => {
+test("buildModelDetailView: the tile clips its own contents ALWAYS -- no hover/focus-within escape rule any more (nothing needs to get out)", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   const restRule = css.match(/(?:^|\n)\.wtn-dv-gimg\s*\{([^}]*)\}/)[1];
-  assert.match(restRule, /overflow:\s*hidden/, "at rest, the tile still clips (a resting gallery reads as a clean grid, nothing overhanging)");
-  const hoverRule = css.match(/\.wtn-dv-gimg:hover,\s*\.wtn-dv-gimg:focus-within\s*\{([^}]*)\}/);
-  assert.ok(hoverRule, "a hover/focus-within escape rule must exist on .wtn-dv-gimg");
-  assert.match(hoverRule[1], /overflow:\s*visible/, "hovering/focusing the tile must let its drawer escape past the tile edge");
-  // The image's OWN rounding must not depend on that overflow toggle -- it
-  // would otherwise visibly square off while hovered.
+  assert.match(restRule, /overflow:\s*hidden/, "the tile always clips (a resting AND active gallery reads as a clean grid, nothing overhanging)");
+  assert.doesNotMatch(css, /\.wtn-dv-gimg:hover,\s*\.wtn-dv-gimg:focus-within\s*\{[^}]*overflow:\s*visible/, "the old escape-on-hover rule must be gone -- it existed only to let the drawer out, and the drawer no longer tries to leave its tile");
+  // The image's OWN rounding is independent of the tile's clip either way.
   const gboxRule = css.match(/\.wtn-dv-gbox\s*\{([^}]*)\}/)[1];
   assert.match(gboxRule, /overflow:\s*hidden/);
   assert.match(gboxRule, /border-radius:\s*7px/);
 });
 
-test("buildModelDetailView: the drawer widens past a narrow tile, but is a no-op at the modal's own 200px tile (max(170px, tile-width))", () => {
+test("buildModelDetailView: the drawer matches its own tile exactly -- no width/max-width/transform that could take it outside the tile's edges", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const css = styleEl.textContent;
   const drawerRule = css.match(/\.wtn-dv-gdrawer\s*\{([^}]*)\}/)[1];
-  assert.match(drawerRule, /width:\s*max\(170px,\s*var\(--wtn-dv-gallery-tile/, "must widen relative to the SAME shared tile-width property, never a bare number");
-  assert.match(drawerRule, /position:\s*absolute/, "must be taken out of flow to size independently of the tile's own box");
-  assert.match(drawerRule, /left:\s*50%/);
-  assert.match(drawerRule, /transform:\s*translateX\(-50%\)/, "centred on the tile it belongs to");
+  assert.doesNotMatch(drawerRule, /width:/, "no computed/fixed width -- the drawer must never be wider (or narrower) than its own tile");
+  assert.doesNotMatch(drawerRule, /max-width:/, "no max-width either -- there is nothing left to cap");
+  assert.doesNotMatch(drawerRule, /transform:/, "no centring transform -- edge-anchoring replaces it");
+  assert.match(drawerRule, /position:\s*absolute/, "still positioned against the tile-sized .wtn-dv-goverlay");
+  assert.match(drawerRule, /left:\s*0/, "left-anchored to the tile's own left edge");
+  assert.match(drawerRule, /right:\s*0/, "right-anchored to the tile's own right edge -- together with left: 0, this IS the tile's own width");
 });
 
-test("buildModelDetailView: the gallery grid sets --wtn-dv-gallery-tile inline, which BOTH the tile width and the drawer's widen rule read -- one number, not two", () => {
+test("buildModelDetailView: the gallery grid sets --wtn-dv-gallery-tile inline, read by the tile's own width -- one number, not duplicated", () => {
   const doc = makeDocStub();
   const result = makeTwoVersionResult();
   const gallery = [{ url: "a.jpg", nsfw_level: 1, prompt: "1girl, forest" }];
@@ -1066,6 +1068,34 @@ test("buildModelDetailView: .wtn-dv-desc wraps a long unbreakable token instead 
   const css = doc.head.children.find((c) => c.tagName === "style").textContent;
   const descRule = css.match(/\.wtn-dv-desc\s*\{([^}]*)\}/)[1];
   assert.match(descRule, /overflow-wrap:\s*anywhere;?/);
+});
+
+// =========================================================================
+// Owner-reported (2026-08-02), with screenshots: "the prompt should not have
+// horizontal scroll only vertical" -- `.wtn-dv-gprompt` was `overflow-y:
+// auto` with no `overflow-x` declared, and CSS computes an unset axis to
+// `auto` too (not `visible`) whenever the other axis is non-`visible`, which
+// is exactly what put a horizontal scrollbar under the prompt nobody asked
+// for. Pinned explicitly so a future edit can't silently drop the `overflow-
+// x` and reintroduce it.
+// =========================================================================
+
+test("buildModelDetailView: .wtn-dv-gprompt declares an explicit overflow-x (never left to the overflow-y: auto computed-pair trap) and wraps instead of widening", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const promptRule = css.match(/\.wtn-dv-gprompt\s*\{([^}]*)\}/)[1];
+  assert.match(promptRule, /overflow-y:\s*auto;?/, "still scrolls vertically -- that part is unchanged");
+  assert.match(promptRule, /overflow-x:\s*hidden;?/, "must declare overflow-x explicitly -- leaving it unset lets it compute to auto alongside overflow-y: auto, which is the bug");
+  assert.match(promptRule, /overflow-wrap:\s*anywhere;?/, "long unbreakable content must wrap, not push the drawer wider");
+});
+
+test("buildModelDetailView: .wtn-dv-gparams (a single mono-font line, the most likely thing forcing the drawer wide) also wraps instead of widening", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const paramsRule = css.match(/\.wtn-dv-gparams\s*\{([^}]*)\}/)[1];
+  assert.match(paramsRule, /overflow-wrap:\s*anywhere;?/);
 });
 
 // =========================================================================
