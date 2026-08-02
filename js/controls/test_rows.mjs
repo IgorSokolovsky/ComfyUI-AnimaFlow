@@ -55,6 +55,7 @@ import {
   CLIP_TYPES,
   UNET_NAME_CANDIDATES,
   preferredNameDefault,
+  coerceBoolTolerant,
 } from "./rows.mjs";
 
 let failures = 0;
@@ -81,7 +82,7 @@ test("MAX_ROWS: control=16, loader=8", () => {
 });
 
 test("CONTROL_CATALOG / LOADER_CATALOG match the design doc's row catalog", () => {
-  assert.deepEqual(CONTROL_CATALOG, ["sampler", "scheduler", "seed", "int", "float", "latent"]);
+  assert.deepEqual(CONTROL_CATALOG, ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"]);
   assert.deepEqual(LOADER_CATALOG, ["unet", "vae", "clip"]);
 });
 
@@ -89,10 +90,12 @@ test("KIND_META has an entry for every catalog kind + auto, with hasGear matchin
   for (const kind of [...CONTROL_CATALOG, ...LOADER_CATALOG, "auto"]) {
     assert.ok(KIND_META[kind], `missing KIND_META for ${kind}`);
   }
-  // No ⚙ on int/float/sampler/scheduler/vae -- design doc §3: "range/step/
-  // value are adopted from the first wire" (int/float) or "no ⚙" (vae).
+  // No ⚙ on int/float/bool/sampler/scheduler/vae -- design doc §3: "range/
+  // step/value are adopted from the first wire" (int/float), "no ⚙" (vae),
+  // or "nothing an ⚙ would ever hold" (bool -- just the switch itself).
   assert.equal(KIND_META.int.hasGear, false);
   assert.equal(KIND_META.float.hasGear, false);
+  assert.equal(KIND_META.bool.hasGear, false);
   assert.equal(KIND_META.sampler.hasGear, false);
   assert.equal(KIND_META.scheduler.hasGear, false);
   assert.equal(KIND_META.vae.hasGear, false);
@@ -100,6 +103,94 @@ test("KIND_META has an entry for every catalog kind + auto, with hasGear matchin
   assert.equal(KIND_META.latent.hasGear, true);
   assert.equal(KIND_META.unet.hasGear, true);
   assert.equal(KIND_META.clip.hasGear, true);
+});
+
+// =========================================================================
+// bool row (owner, 2026-08-02: "control panel needs a switch/boolean row")
+// =========================================================================
+
+test("KIND_META.bool: BOOLEAN socket type, control panel, no ⚙", () => {
+  assert.deepEqual(KIND_META.bool, { menu: "Bool", outputType: "BOOLEAN", hasGear: false, panel: "control" });
+});
+
+test('mkRow("bool") defaults to value:false, opts:{}', () => {
+  const row = mkRow("bool");
+  assert.equal(row.value, false);
+  assert.deepEqual(row.opts, {});
+});
+
+test("coerceBoolTolerant: a real boolean passes through unchanged", () => {
+  assert.equal(coerceBoolTolerant(true), true);
+  assert.equal(coerceBoolTolerant(false), false);
+});
+
+test('coerceBoolTolerant: tolerates "true"/"false" (any case), 1/0, null, undefined, {} -- never throws', () => {
+  assert.equal(coerceBoolTolerant("true"), true);
+  assert.equal(coerceBoolTolerant("TRUE"), true);
+  assert.equal(coerceBoolTolerant("True"), true);
+  assert.equal(coerceBoolTolerant("false"), false);
+  assert.equal(coerceBoolTolerant("FALSE"), false);
+  assert.equal(coerceBoolTolerant(1), true);
+  assert.equal(coerceBoolTolerant(0), false);
+  assert.equal(coerceBoolTolerant(null), false);
+  assert.equal(coerceBoolTolerant(undefined), false);
+  assert.equal(coerceBoolTolerant({}), false);
+  assert.equal(coerceBoolTolerant([]), false);
+  assert.equal(coerceBoolTolerant("garbage"), false);
+  assert.equal(coerceBoolTolerant(NaN), false);
+  assert.equal(coerceBoolTolerant(Infinity), false);
+});
+
+test("normalizeState: a bool row's hostile stored values all coerce tolerantly, opts always {}", () => {
+  const cases = [
+    ["true", true],
+    ["false", false],
+    [1, true],
+    [0, false],
+    [null, false],
+    [undefined, false],
+    [{}, false],
+  ];
+  for (const [stored, expected] of cases) {
+    const state = normalizeState({ rows: [{ kind: "bool", slot: 1, name: "flag", value: stored, opts: { bogus: 1 } }] }, "control");
+    assert.equal(state.rows[0].value, expected, `stored=${JSON.stringify(stored)}`);
+    assert.deepEqual(state.rows[0].opts, {}, `stored=${JSON.stringify(stored)}: opts must always be {}`);
+  }
+});
+
+test("normalizeState: a bool row round-trips a real boolean value byte-for-byte through JSON", () => {
+  const original = { version: 1, rows: [mkRow("bool", { name: "flag", value: true })] };
+  original.rows[0].slot = 1;
+  const roundTripped = normalizeState(JSON.parse(JSON.stringify(original)), "control");
+  assert.equal(roundTripped.rows[0].value, true);
+  assert.equal(roundTripped.rows[0].kind, "bool");
+});
+
+test("resolveAutoKind: a BOOLEAN target resolves to bool on the Control Panel, adopting the target's current value", () => {
+  const resolved = resolveAutoKind(
+    { type: "BOOLEAN", name: "enable_something", value: true },
+    { allowedKinds: new Set(CONTROL_CATALOG) },
+  );
+  assert.equal(resolved.kind, "bool");
+  assert.equal(resolved.value, true);
+  assert.equal(resolved.name, "enable something"); // underscores -> spaces, same as int/float
+});
+
+test("resolveAutoKind: BOOLEAN is rejected on the Loader Panel's allowed set", () => {
+  const resolved = resolveAutoKind({ type: "BOOLEAN", value: true }, { allowedKinds: new Set(LOADER_CATALOG) });
+  assert.equal(resolved, null);
+});
+
+test("resolveAutoKind: a BOOLEAN target's hostile current value is coerced tolerantly too", () => {
+  const resolved = resolveAutoKind(
+    { type: "BOOLEAN", name: "flag", value: "true" },
+    { allowedKinds: new Set(CONTROL_CATALOG) },
+  );
+  assert.equal(resolved.value, true);
+});
+
+test("outputTypeForRow: a bool row's socket type is BOOLEAN", () => {
+  assert.equal(outputTypeForRow({ kind: "bool" }, {}), "BOOLEAN");
 });
 
 // =========================================================================
@@ -908,10 +999,11 @@ test("resolveAutoKind: MODEL/VAE/CLIP resolve on the Loader Panel's allowed set"
   assert.equal(resolveAutoKind({ type: "CLIP", value: "z.safetensors" }, { allowedKinds: LOADER_ALLOWED }).kind, "clip");
 });
 
-test("resolveAutoKind: seed/int/float/sampler/scheduler/latent are rejected on the Loader Panel", () => {
+test("resolveAutoKind: seed/int/float/bool/sampler/scheduler/latent are rejected on the Loader Panel", () => {
   assert.equal(resolveAutoKind({ type: "INT", name: "seed" }, { allowedKinds: LOADER_ALLOWED }), null);
   assert.equal(resolveAutoKind({ type: "INT", name: "steps" }, { allowedKinds: LOADER_ALLOWED }), null);
   assert.equal(resolveAutoKind({ type: "FLOAT" }, { allowedKinds: LOADER_ALLOWED }), null);
+  assert.equal(resolveAutoKind({ type: "BOOLEAN" }, { allowedKinds: LOADER_ALLOWED }), null);
   assert.equal(resolveAutoKind({ type: "LATENT" }, { allowedKinds: LOADER_ALLOWED }), null);
 });
 

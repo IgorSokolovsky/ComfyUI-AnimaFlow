@@ -219,6 +219,36 @@ def coerce_float(value: Any) -> float:
     return _finite_float(value, 0.0)
 
 
+def coerce_bool(value: Any) -> bool:
+    """`bool` row value -> a REAL Python `bool`, tolerant of every hostile
+    shape a hand-edited payload (or an older/foreign save) could hold --
+    mirrors `rows.mjs`'s `coerceBoolTolerant` (JS twin, same tolerance
+    contract) so the frontend's own normalization and this backend coercion
+    never disagree about what a given stored value means.
+
+    A real `bool` passes through unchanged. A number is truthiness (`0`/`0.0`
+    -> `False`, anything else finite -> `True`; a non-finite float -- NaN or
+    an inf, both valid Python `json` output -- defaults `False` rather than
+    raising). A string is matched case-insensitively against a small set of
+    common truthy/falsy spellings (`"true"`/`"1"`/`"yes"`/`"on"` vs.
+    `"false"`/`"0"`/`"no"`/`"off"`/empty); anything else -- `None`, a dict, a
+    list, an unrecognized string -- defaults `False` rather than guessing.
+    Never raises.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        return value != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        return False  # "false"/"0"/"no"/"off"/""/anything else unrecognized
+    return False  # None, dict, list, or any other hostile shape
+
+
 def coerce_seed(value: Any) -> int:
     """Seed row value -> a clamped `int` in `[0, 2**64-1]`.
 
@@ -304,10 +334,11 @@ def latent_wh_batch(opts: Any) -> Tuple[int, int, int]:
 def value_for_row(row: Optional[Dict[str, Any]]) -> Any:
     """A control-panel row (any kind except `latent`) -> the Python value its
     output slot should emit. `sampler`/`scheduler` pass their string through
-    as-is; `seed`/`int`/`float` are coerced per their own function above.
-    An unresolved `auto` row -- and any row of an unrecognized/garbage kind,
-    which can only arrive via a hand-edited payload -- emits `0`, same as an
-    empty slot (see `docs/control-panel-design.md` §4/§6: "Auto ... emits 0").
+    as-is; `seed`/`int`/`float`/`bool` are coerced per their own function
+    above. An unresolved `auto` row -- and any row of an unrecognized/garbage
+    kind, which can only arrive via a hand-edited payload -- emits `0`, same
+    as an empty slot (see `docs/control-panel-design.md` §4/§6: "Auto ...
+    emits 0").
     """
     if not isinstance(row, dict):
         return 0
@@ -323,4 +354,6 @@ def value_for_row(row: Optional[Dict[str, Any]]) -> Any:
         return coerce_int(row.get("value"))
     if kind == "float":
         return coerce_float(row.get("value"))
+    if kind == "bool":
+        return coerce_bool(row.get("value"))
     return 0

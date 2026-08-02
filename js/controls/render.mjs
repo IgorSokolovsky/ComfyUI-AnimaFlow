@@ -69,6 +69,32 @@ import { Z_PANEL } from "../shared/z_layers.mjs";
 // (`model_picker.mjs`'s own doc comment) rather than re-reading the setting
 // here directly.
 import { displayRowName } from "./model_picker.mjs";
+// `buildSwitch`/`injectFieldStyles` -- the pack's ONE pill-switch
+// implementation (`js/shared/fields.mjs`), reused here rather than a fifth
+// `.wtn-ctl-switch` reimplementation (task brief, 2026-08-02, "bool row"):
+// this pack already carried FOUR independent switch implementations before
+// this one (`fields.mjs`'s own `buildSwitch`, `lora_render.mjs`'s
+// `.wtn-lora-switch`, `js/prompt_rules/node/render.mjs`'s `.wtn-pr-switch`,
+// plus `js/anima/render.mjs`'s own use of this same `buildSwitch`) -- a bool
+// ROW is exactly `.claude/skills/animaflow-shared-fields/SKILL.md`'s rule 1
+// case (the control already exists in the shared library; use it, don't
+// rebuild it).
+//
+// NOTE, though: as of this change `js/controls/` did NOT already import
+// `js/shared/fields.mjs` anywhere -- `lora_render.mjs` explicitly does NOT
+// (see that file's own "Vocabulary" doc comment, citing `docs/lora-loader-
+// design.md` §0d: "`js/shared/fields.mjs` is deliberately NOT used ... this
+// pack's field vocabulary here is `.wtn-ctl-*`"), and `fields.mjs`'s own top
+// doc comment states the same thing from the other side ("`js/controls/`
+// does not import this module at all (confirmed by grep...)"). This IS the
+// first such import, made deliberately for this one row kind per this
+// task's explicit instruction -- see `docs/control-panel-design.md`'s own
+// "bool" row entry (§3) for the full discrepancy against this task's own
+// premise (that `lora_render.mjs` already imports `fields.mjs` -- it does
+// not). Only `buildSwitch`/`injectFieldStyles` are imported here, nothing
+// track-shaped, so this does not retroactively migrate `lora_render.mjs`'s
+// own `.wtn-lora-switch` -- that stays a separate, unscheduled decision.
+import { buildSwitch, injectFieldStyles } from "../shared/fields.mjs";
 
 const STYLE_ID = "wtn-controls-style";
 const THEME_URL = "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
@@ -242,6 +268,7 @@ const CSS = `
 }
 .wtn-ctl-dot.t-int { background: #7dd3fc; }
 .wtn-ctl-dot.t-float { background: #4ade80; }
+.wtn-ctl-dot.t-boolean { background: #fb923c; }
 .wtn-ctl-dot.t-combo { background: #9ca3af; }
 .wtn-ctl-dot.t-latent { background: #ff9cf9; }
 .wtn-ctl-dot.t-model { background: #b39ddb; }
@@ -446,6 +473,13 @@ export function injectStyles(doc) {
   if (!targetDoc || typeof targetDoc.createElement !== "function") {
     return;
   }
+  // `.wtn-fld-switch` (a bool row's own switch, `buildSwitch` above) needs
+  // `js/shared/fields.mjs`'s OWN stylesheet, which this file's `STYLE_ID`
+  // guard below has nothing to do with -- run it unconditionally, on every
+  // call, same as `js/anima/render.mjs`'s identical call site. Cheap: the
+  // shared module owns its own separate style-id guard, so a call after the
+  // first is a no-op.
+  injectFieldStyles(targetDoc);
   // Guarded dynamic import -- see this module's top doc comment.
   if (typeof document !== "undefined") {
     import(THEME_URL)
@@ -563,6 +597,21 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     const val = el(doc, "span", "wtn-ctl-val");
     body.appendChild(val);
     Object.assign(refs, { fill, val });
+  } else if (row.kind === "bool") {
+    // The pack's ONE shared switch (`js/shared/fields.mjs`'s `buildSwitch`,
+    // see this module's own import comment) -- non-`small` (30x16): this
+    // row's own `.wtn-ctl-body` is 30px tall (`ROW_H`, this module's own
+    // Resize section), and the seed row's `.wtn-ctl-mini` buttons -- the
+    // closest existing furniture at this same row height -- already sit
+    // around ~17px tall (9.5px font + 2px padding top/bottom), so the
+    // switch's full 16px height reads as the SAME scale as everything else
+    // already living in a Control Panel row; the `small` (13px) variant
+    // would look undersized next to it. No label of its own here -- the
+    // row's OWN `.wtn-ctl-name` (built above, every kind shares it) already
+    // is this row's label, so this is the row's entire value area.
+    const switchEl = buildSwitch(doc, !!row.value, false);
+    body.appendChild(switchEl);
+    refs.switchEl = switchEl;
   } else if (row.kind === "latent") {
     const val = el(doc, "span", "wtn-ctl-val");
     const dim = el(doc, "span", "wtn-ctl-dim");
@@ -654,6 +703,16 @@ export function paintRow(refs, row, optionList, disabledReason) {
   } else if (row.kind === "int" || row.kind === "float") {
     refs.fill.style.width = `${numericPercent(row)}%`;
     refs.val.textContent = formatNumericValue(row);
+  } else if (row.kind === "bool") {
+    // Toggle the switch's own `wtn-fld-on` class straight -- `buildSwitch`
+    // (`js/shared/fields.mjs`) returns a bare element with no `setValue`
+    // helper of its own (unlike `buildBoolField`, which this row does NOT
+    // use -- see this module's import comment: a Control Panel row already
+    // carries its own `.wtn-ctl-name` label, so wrapping in a second,
+    // label-carrying field would duplicate it).
+    if (refs.switchEl && refs.switchEl.classList && typeof refs.switchEl.classList.toggle === "function") {
+      refs.switchEl.classList.toggle("wtn-fld-on", !!row.value);
+    }
   } else if (row.kind === "latent") {
     const { main, dim } = formatLatentValue(row);
     refs.val.firstChild ? (refs.val.firstChild.textContent = "") : null; // no-op guard for stub doms

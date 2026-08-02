@@ -562,6 +562,28 @@ function wireNumericRow(node, ctx, rowId, refs) {
   refs.root.addEventListener("pointercancel", stop);
 }
 
+/** Clicking a `bool` row's switch (`render.mjs`'s `refs.switchEl`, `js/
+ * shared/fields.mjs`'s `buildSwitch`) flips the value and persists/repaints.
+ * `rowId` only, never a captured `row` -- resolves the CURRENT row from
+ * state at fire-time, same contract as every other `wireX` function in this
+ * file (this module's top doc comment; `lora_interaction.mjs`'s own switches
+ * are the reference for this exact pattern). */
+function wireBoolRow(node, ctx, rowId, refs) {
+  if (!refs.switchEl) {
+    return;
+  }
+  refs.switchEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const state = ensureState(node, ctx);
+    const row = state.rows.find((r) => r.id === rowId);
+    if (!row) {
+      return; // row vanished out from under this control -- nothing to flip
+    }
+    row.value = !row.value;
+    afterEdit(node, ctx);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // ⚙ popovers (seed / latent / unet / clip -- int/float/vae/sampler/scheduler
 // have `hasGear: false` in rows.mjs's KIND_META, so wireRow never calls
@@ -1372,6 +1394,8 @@ function wireRow(node, ctx, row, refs) {
     wireSeedRow(node, ctx, rowId, refs);
   } else if (row.kind === "int" || row.kind === "float") {
     wireNumericRow(node, ctx, rowId, refs);
+  } else if (row.kind === "bool") {
+    wireBoolRow(node, ctx, rowId, refs);
   }
 }
 

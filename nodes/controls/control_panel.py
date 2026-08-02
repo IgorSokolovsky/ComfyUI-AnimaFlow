@@ -1,5 +1,5 @@
 """Anima Control Panel -- one row per control (sampler, scheduler, seed, int,
-float, empty latent), one output slot per row (contract:
+float, bool, empty latent), one output slot per row (contract:
 docs/control-panel-design.md).
 
 State lives on a declared, natively-serialized STRING widget (`panel_state`),
@@ -42,11 +42,11 @@ MAX_ROWS = 16
 
 
 class AnimaControlPanel:
-    """`Anima Control Panel` -- sampler/scheduler/seed/int/float/latent rows,
-    each wired out to its own fixed output slot."""
+    """`Anima Control Panel` -- sampler/scheduler/seed/int/float/bool/latent
+    rows, each wired out to its own fixed output slot."""
 
     DESCRIPTION = (
-        "Holds sampler/scheduler/seed/int/float/empty-latent dials, one "
+        "Holds sampler/scheduler/seed/int/float/bool/latent dials, one "
         "row and socket per dial. A fresh row adopts its type, range and "
         "name from whatever you plug it into first, so wire it before "
         "setting its value. Reordering rows "
@@ -62,10 +62,10 @@ class AnimaControlPanel:
         (
             f"Control row output slot {i + 1}. Emits the row currently occupying "
             "this slot's value -- a sampler/scheduler name (STRING), a seed/int "
-            "(INT), a float (FLOAT), or a real LATENT for a latent row. Emits 0 "
-            "if no row currently occupies this slot (an unresolved 'auto' row "
-            "also emits 0). Wildcard-typed in Python; the frontend narrows the "
-            "visible wire type per row."
+            "(INT), a float (FLOAT), a real BOOLEAN for a bool row, or a real "
+            "LATENT for a latent row. Emits 0 if no row currently occupies this "
+            "slot (an unresolved 'auto' row also emits 0). Wildcard-typed in "
+            "Python; the frontend narrows the visible wire type per row."
         )
         for i in range(MAX_ROWS)
     )

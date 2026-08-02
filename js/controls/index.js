@@ -98,14 +98,14 @@ const PANEL_CONFIGS = {
     className: "AnimaControlPanel",
     key: "control",
     stateProp: "controlPanelState",
-    catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+    catalog: ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"],
     // The "+ Add control" menu's OWN order -- includes rows.mjs's `steps`/
     // `cfg`/`denoise` presets (still real `int`/`float` rows under the hood;
     // see `rows.mjs`'s `ROW_PRESETS` doc comment), placed BEFORE the bare
     // `int`/`float` escape hatches they shortcut, since a preset is what a
     // user wants most of the time. `catalog` above stays the plain KIND list
     // (used for `resolveAutoOnConnect`'s allowedKinds, unrelated to the menu).
-    menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "latent"],
+    menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "bool", "latent"],
     allowAuto: true,
     reorder: true,
     addLabel: "+ Add control",

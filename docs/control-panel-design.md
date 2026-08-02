@@ -132,11 +132,36 @@ row kind needs more than one field (modeled on `js/prompt_rules/node/picker.mjs`
 | `seed` | number field + mode button + `N` | `INT` | — | control-after-generate + exact value |
 | `int` | number field + inline slider fill | `INT` | — | **none** |
 | `float` | same, decimals from step | `FLOAT` | — | **none** |
+| `bool` | a switch (`js/shared/fields.mjs`'s `buildSwitch`) | `BOOLEAN` | — | **none** |
 | `latent` | `W × H (ratio)` + batch | `LATENT` | — | Custom / Predefined — see §3a |
 
 **No ⚙ on `int` / `float`.** Their range, step and starting value are adopted from the first input
 they're wired to (§6), so a settings panel would have nothing left to own. Drag across the row to set
 the value; the fill shows where you are in the range.
+
+**No ⚙ on `bool` either (added 2026-08-02)** — unlike `int`/`float`, this isn't because a value gets
+adopted from somewhere else; there is simply nothing left for a settings popover to hold once the row
+already shows its one value directly as a switch. The row reuses the pack's ONE shared switch
+(`js/shared/fields.mjs`'s `buildSwitch`) rather than a fifth reimplementation — the pack already had
+four independent ones (that module's own, `lora_render.mjs`'s `.wtn-lora-switch`, `js/prompt_rules/
+node/render.mjs`'s `.wtn-pr-switch`, and `js/anima/render.mjs`'s reuse of the shared one) before this
+row existed.
+
+**This is also the FIRST time anything in `js/controls/` imports `js/shared/fields.mjs`.** Measured
+before this row (grep for a real `import ... from "...fields.mjs"` specifier, not assumed): NOTHING
+under `js/controls/` imported it. `lora_render.mjs` explicitly does NOT — its own "Vocabulary" doc
+comment states this by name ("`js/shared/fields.mjs` is deliberately NOT used ... this pack's field
+vocabulary here is `.wtn-ctl-*`"), and `fields.mjs`'s own top doc comment independently states the same
+thing from the other side ("`js/controls/` does not import this module at all (confirmed by grep, not
+assumed)"). A 2026-08-02 build brief for this row asserted the opposite — that `lora_render.mjs`
+already imports `fields.mjs`, so this import would just be "established and correct" — and cited
+`.claude/skills/animaflow-shared-fields/SKILL.md` as having confirmed it. That assertion does not hold
+up: the skill's own "Current state" section already said the correct thing (`js/controls/` imports
+none of `fields.mjs`, only `field_logic.mjs`); nothing in it, or in the codebase, supports
+`lora_render.mjs` importing `fields.mjs`. This row's import is the first, made deliberately per this
+task's explicit instruction, not a codification of prior practice — and it imports `buildSwitch`/
+`injectFieldStyles` only (nothing track-shaped), so it doesn't retroactively migrate `lora_render.mjs`'s
+own `.wtn-lora-switch` — that stays a separate, unscheduled decision.
 
 **The seed row's mode button mirrors control-after-generate** — `F` fixed, `R` randomize, `I`
 increment, `D` decrement. Pick decrement in the ⚙ and the button reads `D`. Clicking it toggles to

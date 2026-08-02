@@ -230,6 +230,61 @@ def test_value_for_row_auto_and_garbage_kind_emit_zero():
 
 
 # ---------------------------------------------------------------------------
+# coerce_bool / value_for_row("bool") -- owner, 2026-08-02: "control panel
+# needs a switch/boolean field"
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_bool_real_bool_passes_through():
+    assert rh.coerce_bool(True) is True
+    assert rh.coerce_bool(False) is False
+
+
+def test_coerce_bool_tolerates_string_true_false_any_case():
+    assert rh.coerce_bool("true") is True
+    assert rh.coerce_bool("TRUE") is True
+    assert rh.coerce_bool("True") is True
+    assert rh.coerce_bool("false") is False
+    assert rh.coerce_bool("FALSE") is False
+    assert rh.coerce_bool("") is False
+    assert rh.coerce_bool("garbage") is False
+
+
+def test_coerce_bool_tolerates_numeric_1_and_0():
+    assert rh.coerce_bool(1) is True
+    assert rh.coerce_bool(0) is False
+    assert rh.coerce_bool(1.0) is True
+    assert rh.coerce_bool(0.0) is False
+    assert rh.coerce_bool(-5) is True  # any non-zero number is truthy
+
+
+def test_coerce_bool_hostile_shapes_default_false_never_raise():
+    assert rh.coerce_bool(None) is False
+    assert rh.coerce_bool({}) is False
+    assert rh.coerce_bool({"a": 1}) is False
+    assert rh.coerce_bool([]) is False
+    assert rh.coerce_bool([1, 2]) is False
+    assert rh.coerce_bool(float("nan")) is False
+    assert rh.coerce_bool(float("inf")) is False
+
+
+def test_value_for_row_bool_returns_a_real_python_bool():
+    for stored, expected in [
+        (True, True),
+        (False, False),
+        ("true", True),
+        ("false", False),
+        (1, True),
+        (0, False),
+        (None, False),
+        ({}, False),
+    ]:
+        result = rh.value_for_row({"kind": "bool", "value": stored})
+        assert isinstance(result, bool), f"stored={stored!r}: expected a real bool, got {type(result).__name__}"
+        assert result is expected, f"stored={stored!r}"
+
+
+# ---------------------------------------------------------------------------
 # Latent dims -- including a pair that matches no ratio at all (Custom mode).
 # ---------------------------------------------------------------------------
 
@@ -368,6 +423,23 @@ def test_control_panel_run_default_empty_state():
     assert out == tuple([0] * 16)
 
 
+def test_control_panel_run_bool_row_emits_a_real_bool_and_leaves_return_types_wildcard():
+    state = json.dumps({
+        "version": 1,
+        "rows": [
+            {"slot": 1, "kind": "bool", "name": "flag", "value": True, "opts": {}},
+            {"slot": 2, "kind": "bool", "name": "other", "value": "false", "opts": {}},
+        ],
+    })
+    out = AnimaControlPanel().run(state)
+    assert out[0] is True
+    assert out[1] is False
+    # RETURN_TYPES/RETURN_NAMES are unaffected by adding a new row kind --
+    # still the fixed wildcard tuple (design doc §5: Python stays ANY for
+    # every slot, the frontend narrows the wire type).
+    assert AnimaControlPanel.RETURN_TYPES == (ANY,) * CONTROL_MAX_ROWS
+
+
 # ---------------------------------------------------------------------------
 # AnimaLoaderPanel -- shape only (loading itself is test_controls_loaders.py).
 # ---------------------------------------------------------------------------
@@ -434,6 +506,11 @@ ALL_TESTS = [
     test_value_for_row_sampler_non_string_value_stringified,
     test_value_for_row_seed_int_float_use_their_coercers,
     test_value_for_row_auto_and_garbage_kind_emit_zero,
+    test_coerce_bool_real_bool_passes_through,
+    test_coerce_bool_tolerates_string_true_false_any_case,
+    test_coerce_bool_tolerates_numeric_1_and_0,
+    test_coerce_bool_hostile_shapes_default_false_never_raise,
+    test_value_for_row_bool_returns_a_real_python_bool,
     test_latent_wh_batch_defaults_when_opts_missing,
     test_latent_wh_batch_predefined_canonical_pair,
     test_latent_wh_batch_custom_dims_matching_no_ratio_are_legal,
@@ -448,6 +525,7 @@ ALL_TESTS = [
     test_control_panel_run_latent_row_emits_real_latent_dict,
     test_control_panel_run_hand_edited_garbage_payload_degrades_gracefully,
     test_control_panel_run_default_empty_state,
+    test_control_panel_run_bool_row_emits_a_real_bool_and_leaves_return_types_wildcard,
     test_loader_panel_max_rows_is_8,
     test_loader_panel_return_types_are_all_wildcard,
     test_loader_panel_input_types_declares_a_real_string_widget,

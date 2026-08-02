@@ -486,10 +486,10 @@ function makeCtx(doc, panelConfig, overrides = {}) {
 const CONTROL_PANEL_CONFIG = {
   key: "control",
   stateProp: "controlPanelState",
-  catalog: ["sampler", "scheduler", "seed", "int", "float", "latent"],
+  catalog: ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"],
   // Mirrors index.js's PANEL_CONFIGS.control.menuCatalog -- presets before
   // the bare int/float they shortcut.
-  menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "latent"],
+  menuCatalog: ["sampler", "scheduler", "seed", "steps", "cfg", "denoise", "int", "float", "bool", "latent"],
   allowAuto: true,
   reorder: true,
   addLabel: "+ Add control",
@@ -783,6 +783,124 @@ test("paintRow: latent row's dim span shows the ratio only in predefined mode", 
   const refs = buildRowElement(doc, row, KIND_META.latent, CONTROL_PANEL_CONFIG);
   paintRow(refs, row, null, null);
   assert.equal(refs.dim.textContent, "(2:3)");
+});
+
+// =========================================================================
+// bool row -- render.mjs / interaction.mjs halves (owner, 2026-08-02)
+// =========================================================================
+
+test("buildRowElement: a bool row gets a real switch (js/shared/fields.mjs's buildSwitch), no ⚙, and no other value furniture", () => {
+  const doc = makeDocStub();
+  const row = mkRow("bool", { value: true });
+  const refs = buildRowElement(doc, row, KIND_META.bool, CONTROL_PANEL_CONFIG);
+  assert.ok(refs.switchEl, "missing refs.switchEl");
+  assert.equal(refs.switchEl.parentNode, refs.body);
+  assert.ok(refs.switchEl.className.includes("wtn-fld-switch"));
+  assert.ok(refs.switchEl.className.includes("wtn-fld-on"), "a row built with value:true must paint the switch already on");
+  assert.equal(refs.gear, undefined, "bool has hasGear:false -- no gear should be built");
+  assert.equal(refs.val, undefined, "bool has no plain value span -- the switch IS the value area");
+});
+
+test("buildRowElement: a bool row built with value:false does not carry wtn-fld-on", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc, mkRow("bool", { value: false }), KIND_META.bool, CONTROL_PANEL_CONFIG);
+  assert.equal(refs.switchEl.className.includes("wtn-fld-on"), false);
+});
+
+test("paintRow: a bool row toggles the switch's wtn-fld-on class to match row.value on every repaint", () => {
+  const doc = makeDocStub();
+  const row = mkRow("bool", { value: false });
+  const refs = buildRowElement(doc, row, KIND_META.bool, CONTROL_PANEL_CONFIG);
+  paintRow(refs, row, null, null);
+  assert.equal(refs.switchEl.className.includes("wtn-fld-on"), false);
+  row.value = true;
+  paintRow(refs, row, null, null);
+  assert.ok(refs.switchEl.className.includes("wtn-fld-on"));
+  row.value = false;
+  paintRow(refs, row, null, null);
+  assert.equal(refs.switchEl.className.includes("wtn-fld-on"), false);
+});
+
+test("injected CSS: .wtn-ctl-dot.t-boolean has its own colour (not falling through to the default dot styling)", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-controls-style").textContent;
+  assert.ok(/\.wtn-ctl-dot\.t-boolean\s*\{[^}]*background:/.test(cssText), "expected a .wtn-ctl-dot.t-boolean rule with its own background");
+});
+
+test("injectStyles also injects js/shared/fields.mjs's OWN stylesheet (wtn-fields-style), so a bool row's .wtn-fld-switch is actually styled", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const fieldsStyle = doc.head.children.find((c) => c.id === "wtn-fields-style");
+  assert.ok(fieldsStyle, "expected js/shared/fields.mjs's injectFieldStyles to have run");
+  assert.ok(fieldsStyle.textContent.includes(".wtn-fld-switch"), "expected the switch's own CSS rule to be present");
+});
+
+test("end-to-end: clicking a bool row's switch flips the value, persists to panel_state, and repaints the switch", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const added = addRowAndSync(node, ctx, "bool");
+  assert.equal(added.value, false); // mkRow's own default
+  const refs = node._ctrlRows[0].refs;
+
+  fire(refs.switchEl, "click");
+  assert.equal(refs.row.value, true, "row.value must flip in place");
+  assert.ok(refs.switchEl.className.includes("wtn-fld-on"), "the switch must repaint to reflect the new value");
+  const persisted = JSON.parse(getStateWidget(node).value);
+  assert.equal(persisted.rows[0].value, true, "the flip must reach panel_state, not just the in-memory row");
+
+  fire(refs.switchEl, "click");
+  assert.equal(refs.row.value, false, "a second click flips it back");
+  assert.equal(refs.switchEl.className.includes("wtn-fld-on"), false);
+  const persistedAgain = JSON.parse(getStateWidget(node).value);
+  assert.equal(persistedAgain.rows[0].value, false);
+});
+
+test("end-to-end: a bool row's output socket type is BOOLEAN, and its dot carries the t-boolean class", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  const row = addRowAndSync(node, ctx, "bool");
+  assert.equal(node.outputs[row.slot - 1].type, "BOOLEAN");
+  const refs = node._ctrlRows[0].refs;
+  assert.equal(refs.dot.className, "wtn-ctl-dot t-boolean");
+});
+
+test("resolveAutoOnConnect: an auto row wired to a BOOLEAN target resolves to bool and adopts the target's value", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG, {
+    describeLinkTarget: () => ({ type: "BOOLEAN", name: "enable_thing", value: true }),
+  });
+  const row = addRowAndSync(node, ctx, "auto");
+  const resolved = resolveAutoOnConnect(node, ctx, row.slot - 1, { target_id: 1, target_slot: 0 });
+  assert.ok(resolved);
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows[0].kind, "bool");
+  assert.equal(state.rows[0].value, true);
+});
+
+test("a saved blob with no bool rows behaves exactly as before -- adding the bool kind changes nothing about an existing int/seed/latent panel", () => {
+  const node = makeFakeNode(JSON.stringify({
+    version: 1,
+    rows: [
+      { slot: 1, kind: "int", name: "steps", value: 30, opts: { min: 1, max: 120, step: 1 } },
+      { slot: 2, kind: "seed", name: "seed", value: "42", opts: { after: "fixed", lastMode: "fixed" } },
+    ],
+  }));
+  const doc = makeDocStub();
+  const ctx = makeCtx(doc, CONTROL_PANEL_CONFIG);
+  syncRows(node, ctx);
+  const state = ensureState(node, ctx);
+  assert.equal(state.rows.length, 2);
+  assert.equal(state.rows[0].kind, "int");
+  assert.equal(state.rows[0].value, 30);
+  assert.equal(state.rows[1].kind, "seed");
+  assert.equal(state.rows[1].value, "42");
+  assert.equal(node.outputs.length, 2);
+  assert.equal(node.outputs[0].type, "INT");
+  assert.equal(node.outputs[1].type, "INT"); // seed's socket type is INT too
 });
 
 test("buildAddRow builds a themed button with the given label", () => {
@@ -2119,7 +2237,7 @@ test("each preset appears in the Control Panel's \"+ Add control\" menu (before 
   const labels = menu.children.filter((c) => c.className.includes("wtn-ctl-opt")).map((c) => c.textContent);
   assert.deepEqual(
     labels,
-    ["Sampler", "Scheduler", "Seed", "Steps", "CFG", "Denoise", "Int", "Float", "Empty latent", "Auto"],
+    ["Sampler", "Scheduler", "Seed", "Steps", "CFG", "Denoise", "Int", "Float", "Bool", "Empty latent", "Auto"],
     "presets must appear, and BEFORE the bare Int/Float entries",
   );
   closeActiveOverlay();

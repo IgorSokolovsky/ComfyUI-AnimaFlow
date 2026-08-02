@@ -124,7 +124,7 @@ export const ZW = "​";
 // pack's own code ever gets a say.
 export const VACANT_SLOT_TYPE = "__wtn_ctl_vacant__";
 
-export const CONTROL_CATALOG = ["sampler", "scheduler", "seed", "int", "float", "latent"];
+export const CONTROL_CATALOG = ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"];
 export const LOADER_CATALOG = ["unet", "vae", "clip"];
 
 /**
@@ -156,6 +156,11 @@ export const KIND_META = {
   seed: { menu: "Seed", outputType: "INT", hasGear: true, panel: "control" },
   int: { menu: "Int", outputType: "INT", hasGear: false, panel: "control" },
   float: { menu: "Float", outputType: "FLOAT", hasGear: false, panel: "control" },
+  // No ⚙: unlike int/float (whose ⚙-less-ness comes from adopting range/step
+  // on first wire, §3), a bool row has nothing an ⚙ would ever hold in the
+  // first place -- there's no range/step/mode to configure, just the switch
+  // itself, which the row body already shows directly.
+  bool: { menu: "Bool", outputType: "BOOLEAN", hasGear: false, panel: "control" },
   latent: { menu: "Empty latent", outputType: "LATENT", hasGear: true, panel: "control" },
   unet: { menu: "UNET loader", outputType: "MODEL", pickerList: "unet", hasGear: true, panel: "loader" },
   vae: { menu: "VAE loader", outputType: "VAE", pickerList: "vae", hasGear: false, panel: "loader" },
@@ -369,6 +374,10 @@ export function mkRow(kind, overrides = {}) {
   } else if (kind === "float") {
     row.value = 0.5;
     row.opts = { min: 0, max: 1, step: 0.01 };
+  } else if (kind === "bool") {
+    row.value = false;
+    // opts stays {} (the base default above) -- nothing to configure, see
+    // this kind's own KIND_META comment.
   } else if (kind === "latent") {
     row.opts = { mode: "predefined", ratio: "1:1", tier: 1024, w: 1024, h: 1024, batch: 1 };
   } else if (kind === "unet") {
@@ -636,6 +645,36 @@ export function planHoleCompaction(rows, isWiredBySlot) {
 // State shape: default / normalize / mutate
 // ---------------------------------------------------------------------------
 
+/** A `bool` row's stored value -> a real JS `boolean`, tolerant of every
+ * hostile shape a hand-edited or older/foreign payload could hold -- mirrors
+ * `nodes/controls/_rows_helpers.py`'s `coerce_bool` (Python twin, identical
+ * tolerance contract, kept in sync deliberately) so the frontend's own
+ * normalization and the backend's coercion never disagree about what a given
+ * stored value means. A real boolean passes through unchanged. A number is
+ * truthiness (`0` -> `false`, any other finite number -> `true`; a
+ * non-finite one -- `NaN`/`Infinity`, both valid `JSON.parse` output --
+ * defaults `false`). A string is matched case-insensitively against a small
+ * set of common truthy/falsy spellings (`"true"`/`"1"`/`"yes"`/`"on"` vs.
+ * `"false"`/`"0"`/`"no"`/`"off"`/empty); anything else -- `null`, `undefined`,
+ * an object, an array, an unrecognized string -- defaults `false` rather
+ * than guessing. Never throws. */
+export function coerceBoolTolerant(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value !== 0 : false;
+  }
+  if (typeof value === "string") {
+    const s = value.trim().toLowerCase();
+    if (s === "true" || s === "1" || s === "yes" || s === "on") {
+      return true;
+    }
+    return false; // "false"/"0"/"no"/"off"/""/anything else unrecognized
+  }
+  return false; // null, undefined, object, array, or any other hostile shape
+}
+
 /** A brand-new node's starting state. The Loader Panel starts pre-populated
  * with its three fixed loaders (an empty loader panel has nothing useful to
  * emit); the Control Panel starts empty — its whole catalog is opt-in via
@@ -705,6 +744,9 @@ function normalizeRow(raw, panelKind) {
       step,
     };
     row.value = clampNumeric(kind, row.value, row.opts);
+  } else if (kind === "bool") {
+    row.value = coerceBoolTolerant(row.value);
+    row.opts = {};
   } else if (kind === "latent") {
     const mode = row.opts.mode === "custom" ? "custom" : "predefined";
     const ratio = RATIOS.some((r) => r[0] === row.opts.ratio) ? row.opts.ratio : "1:1";
@@ -1011,12 +1053,13 @@ function sameList(a, b) {
  * @param {object} target - `{ type, name, min, max, step2, value, comboValues }`
  *   describing the CONNECTION TARGET's declared input type and (for a
  *   widget-backed input) the widget behind it. `type` is one of
- *   `"INT"|"FLOAT"|"COMBO"|"LATENT"|"MODEL"|"VAE"|"CLIP"` (case-insensitive).
+ *   `"INT"|"FLOAT"|"BOOLEAN"|"COMBO"|"LATENT"|"MODEL"|"VAE"|"CLIP"`
+ *   (case-insensitive).
  * @param {{allowedKinds?: Set<string>, knownLists?: {sampler?: string[], scheduler?: string[]}}} opts
  *   `allowedKinds` restricts which kinds THIS panel may resolve into (the
  *   Control Panel rejects MODEL/VAE/CLIP; the Loader Panel rejects
- *   seed/int/float/sampler/scheduler/latent) — defaults to every Control
- *   Panel kind. `knownLists` is used to match a COMBO target by comparing
+ *   seed/int/float/bool/sampler/scheduler/latent) — defaults to every
+ *   Control Panel kind. `knownLists` is used to match a COMBO target by comparing
  *   its OPTION LIST against `sampler_name`'s/`scheduler`'s (never by input
  *   NAME — `sampler_name` isn't a reliable name across custom node packs).
  * @returns {{kind:string, name?:string, value?:*, opts?:object}|null} the
@@ -1075,6 +1118,18 @@ export function resolveAutoKind(target, opts = {}) {
       name: target.name ? String(target.name).replace(/_/g, " ") : "Value",
       value: Number.isFinite(cur) ? Number(cur.toFixed(decimalsOf(step))) : lo,
       opts: { min: lo, max: hi, step },
+    };
+  }
+
+  if (t === "BOOLEAN") {
+    if (!allowed.has("bool")) {
+      return null;
+    }
+    return {
+      kind: "bool",
+      name: target.name ? String(target.name).replace(/_/g, " ") : "Value",
+      value: coerceBoolTolerant(target.value),
+      opts: {},
     };
   }
 
