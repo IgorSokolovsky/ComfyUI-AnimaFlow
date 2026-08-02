@@ -1346,6 +1346,16 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     return wrap;
   }
 
+  // This modal's own base font size for the detail view
+  // (`model_detail_view.mjs`'s own `fontSizePx` parameter) -- a SEPARATE
+  // setting id from the picker's own (`civitai_search.mjs`'s
+  // `panelFontSizePx`), because the modal is wide while the picker's own
+  // panel is only ~396px (owner, 2026-08-02: "yes for our panel we should
+  // have different set then the browser modal"). Read fresh per render.
+  function modalFontSizePx() {
+    return getSetting(SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE]);
+  }
+
   function renderDetailHost() {
     detailHost.innerHTML = "";
     if (!detailResult) {
@@ -1356,6 +1366,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       // 200px default (this file's own comment above, "The master→detail
       // swap"), unlike the picker's narrower panel.
       doc: targetDoc, result: detailResult, versionId: detailVersionId,
+      fontSizePx: modalFontSizePx(),
       browsingLevel: levelLabelToInt(currentFilters.level), detail: detailData,
       buildActionEl: buildDetailAction,
       onVersionChange: (id) => {

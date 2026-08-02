@@ -86,6 +86,19 @@
  * but the actual `<img src=...>` attach (`attachThumbCandidate`, shared with
  * every other gallery in this pack) is deferred until a gate slot frees,
  * combined with the `<img loading="lazy">` that mechanism already sets.
+ *
+ * ## Font sizing is accessible, not a hardcoded px scale (2026-08-02)
+ *
+ * Every font-size in this file's own CSS reads off ONE root custom property,
+ * `--wtn-dv-font-scale` (a plain factor relative to `1rem`, never a bare
+ * `px`), so a user's own browser font-size/zoom preference still applies --
+ * see this file's own "Accessible font sizing" section (just above the CSS
+ * constant) for the full mechanism, `FONT_RATIOS`/`fontCalc`. The base itself
+ * is `buildModelDetailView`'s own `fontSizePx` parameter, a caller-supplied
+ * per-MOUNT value (the picker and the modal read two DIFFERENT
+ * `js/shared/settings.mjs` ids, at two different defaults) -- this component
+ * never reads a setting or asks which mount it's in, exactly like
+ * `galleryTileWidth` already established for gallery width.
  */
 
 import { resolveVersionView, resultBaseModel, formatCompactCount } from "./civitai_search.mjs";
@@ -321,6 +334,119 @@ export function createLoadGate(maxConcurrent = 4) {
 }
 
 // ---------------------------------------------------------------------------
+// Accessible font sizing (owner, 2026-08-02: "the text is small ... 14px or
+// 16px and heading should be 24px", then: "we should keep browser
+// conventions and accessibility in mind" -- that last sentence is what makes
+// the UNIT choice below load-bearing, not decorative).
+//
+// A hardcoded absolute `px` font-size ignores the single most common
+// accessibility setting there is (the user's own browser font-size
+// preference/zoom). Instead: ONE scale factor, `--wtn-dv-font-scale`, set on
+// the component's own root as the caller's chosen base size (a per-mount
+// setting, clamped below) divided by 16 -- the browser's conventional
+// default root size -- and every actual font-size in this file's CSS reads
+// `calc(var(--wtn-dv-font-scale) * <ratio> * 1rem)` (`fontCalc`, below),
+// NEVER a bare `em` on the rule itself: an `em` compounds through however
+// many ancestors also carry their own font-size (`.wtn-dv-gprompt` sits
+// several levels inside `.wtn-dv-gdrawer`), while every rule anchoring to
+// the SAME root-relative `1rem` cannot. The result is exactly the setting's
+// own px value at the browser's own default zoom, and it still scales
+// correctly for a user who has raised their default size or zoomed in --
+// the whole point of the instruction; a plain-px implementation would
+// satisfy "14px" today and fail the actual requirement the moment either
+// changes.
+//
+// TWO settings own this component's base, one per MOUNT, not one shared
+// value (owner, on being told a single shared setting would make the
+// picker's ~396px panel just as dense as the wide browser modal: "you did
+// right, and yes for our panel we should have different set then the
+// browser modal") -- `civitai_modal.mjs`/`civitai_search.mjs` each read
+// their OWN id (`SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE` /
+// `_PANEL_FONT_SIZE`, `js/shared/settings.mjs`) and pass the result as
+// `buildModelDetailView`'s own `fontSizePx` parameter -- the exact same
+// shape `galleryTileWidth` already established (one option, one caller-
+// supplied px number per mount; this component never reads a setting or
+// asks which mount it's in). `FONT_RATIOS`, directly below, is the ONE
+// shared table both mounts scale off of -- never a second, independently-
+// tuned ratio list; only the BASE differs per mount.
+// ---------------------------------------------------------------------------
+
+/** The accepted range for either detail-view font-size setting -- a floor so
+ * the user can't pick something genuinely unreadable, and a ceiling so body
+ * text can't overflow the picker's own ~396px panel. Exported so
+ * `js/shared/settings.mjs`'s own tooltip text and this file's tests both
+ * cite the SAME two numbers rather than restating them. */
+export const DETAIL_VIEW_FONT_SIZE_MIN = 12;
+export const DETAIL_VIEW_FONT_SIZE_MAX = 20;
+
+/** The modal's own default (owner's literal ask, "14px") -- also this file's
+ * own CSS-level `var()` fallback (`fontCalc`, below), for the (should-
+ * never-happen) case the root's inline custom property is somehow absent. */
+export const DETAIL_VIEW_FALLBACK_FONT_SIZE_PX = 14;
+
+const BROWSER_DEFAULT_ROOT_PX = 16;
+
+/** `px` clamped into `[DETAIL_VIEW_FONT_SIZE_MIN, DETAIL_VIEW_FONT_SIZE_MAX]`,
+ * or `fallback` for anything non-finite -- never throws, mirrors this file's
+ * own "a garbage caller value degrades, never crashes" convention
+ * (`galleryTileWidth`'s own handling in `buildModelDetailView`, below). */
+export function clampDetailViewFontSize(px, fallback = DETAIL_VIEW_FALLBACK_FONT_SIZE_PX) {
+  const n = Number(px);
+  const safe = Number.isFinite(n) ? n : fallback;
+  return Math.min(DETAIL_VIEW_FONT_SIZE_MAX, Math.max(DETAIL_VIEW_FONT_SIZE_MIN, safe));
+}
+
+/** The clamped `px` as a scale factor relative to `1rem` (the browser's own
+ * conventional 16px default root) -- what actually gets written into
+ * `--wtn-dv-font-scale`. `14 -> 0.875`, `12 -> 0.75`, etc. */
+export function detailViewFontScale(px, fallback = DETAIL_VIEW_FALLBACK_FONT_SIZE_PX) {
+  return clampDetailViewFontSize(px, fallback) / BROWSER_DEFAULT_ROOT_PX;
+}
+
+/**
+ * The ONE ratio table both mounts scale off of (task brief: "this must not
+ * become two font systems") -- every value is relative to `body: 1`, the
+ * base itself. Three are the owner's own named targets: `body` (the literal
+ * ask, "14px", so `.wtn-dv-desc` and its peers land exactly on the base),
+ * `sechead` (24/14, "heading should be 24px" at a 14px base), and `title`
+ * (~20/14 -- THIS FILE'S OWN INFERENCE, not an owner instruction: the owner
+ * named only "text" and "heading", so the model-name title sitting between
+ * the two is a judgment call, flagged in the build report for the owner to
+ * retune). Every remaining ratio is this component's PRE-EXISTING relative
+ * size -- old hardcoded px divided by the old hardcoded 12px root -- carried
+ * forward onto the new base rather than re-picked by eye (task brief). Note
+ * `body` covers FIVE selectors that were already identical (11.5px) before
+ * this change -- `.wtn-dv-creator`, `.wtn-dv-desc`, `.wtn-dv-desc-empty`,
+ * `.wtn-dv-gallery-empty`/`.wtn-dv-gallery-locked`, and `.wtn-dv-back` --
+ * literally this file's own "body text" tier already, by construction, not a
+ * new grouping invented for this pass.
+ */
+export const FONT_RATIOS = {
+  root: 1,
+  body: 1,
+  title: 20 / 14,
+  sechead: 24 / 14,
+  civlink: 12 / 12,
+  stats: 11 / 12,
+  badge: 10 / 12,
+  galleryHidden: 10.5 / 12,
+  gprompt: 10.5 / 12,
+  gparams: 9.5 / 12,
+  gcopy: 10 / 12,
+  close: 13 / 12,
+};
+
+/** `font-size: calc(...)` value for one `FONT_RATIOS` entry -- always
+ * anchored to `1rem` (never a bare `em`, this section's own top comment) so
+ * nesting depth can never compound it. The `var()` fallback is
+ * `DETAIL_VIEW_FALLBACK_FONT_SIZE_PX`'s own scale (0.875) -- only reached if
+ * `--wtn-dv-font-scale` is somehow unset on the root, which `buildModel
+ * DetailView` always sets. */
+function fontCalc(ratio) {
+  return `calc(var(--wtn-dv-font-scale, ${DETAIL_VIEW_FALLBACK_FONT_SIZE_PX / BROWSER_DEFAULT_ROOT_PX}) * ${ratio} * 1rem)`;
+}
+
+// ---------------------------------------------------------------------------
 // CSS
 // ---------------------------------------------------------------------------
 
@@ -354,7 +480,7 @@ const CSS = `
    simply sizes to its natural content height as before and \`.wtn-dv-body\`'s
    own \`flex-grow\`/\`overflow-y\` are inert -- harmless, not a second,
    competing scrollbar. */
-.wtn-dv { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--wtn-ink, ${TOKENS.ink}); }
+.wtn-dv { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: ${fontCalc(FONT_RATIOS.root)}; color: var(--wtn-ink, ${TOKENS.ink}); }
 /* Owner-reported bug (2026-08-01): "the detail panel should have padding,
    see how the content is tight to the border of the panel" -- neither pinned
    region (this rule, \`.wtn-dv-topbar\` below) nor the scrolling body
@@ -382,7 +508,7 @@ const CSS = `
    two panel closers (\`civitai_search.mjs\`'s own \`.wtn-cs-close\`,
    \`civitai_modal.mjs\`'s own \`.wtn-cm-close\`), just this component's own
    class rather than reaching into either sibling file's stylesheet. */
-.wtn-dv-close { position: absolute; top: 8px; right: 8px; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 13px; }
+.wtn-dv-close { position: absolute; top: 8px; right: 8px; cursor: pointer; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: ${fontCalc(FONT_RATIOS.close)}; }
 .wtn-dv-close:hover { color: var(--wtn-ink, ${TOKENS.ink}); }
 /* Owner-reported, then corrected to modal-only (2026-08-01): "back to
    results should not be in the end of the scroll down... it should be in
@@ -468,7 +594,7 @@ ${THUMB_SKELETON_CSS}
   width: 22px; height: 22px; background-color: var(--wtn-ink-faint, ${TOKENS.inkFaint});
 }
 .wtn-dv-identity { flex: 1 1 auto; min-width: 0; }
-.wtn-dv-title { font-size: 14px; font-weight: 600; line-height: 1.25; }
+.wtn-dv-title { font-size: ${fontCalc(FONT_RATIOS.title)}; font-weight: 600; line-height: 1.25; }
 /* Owner-reported (2026-08-01): "LORA / ZImageBase currently sit on their
    own line below 'by EauDeNoire' ... put them on the same row ... that
    reclaims a line in a panel where vertical space is the scarce resource"
@@ -478,15 +604,15 @@ ${THUMB_SKELETON_CSS}
    would misalign a LONE child (no creator, or no chips at all) to the left
    instead of leaving it exactly where it already belongs. */
 .wtn-dv-bylinerow { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.wtn-dv-creator { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
+.wtn-dv-creator { font-size: ${fontCalc(FONT_RATIOS.body)}; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 .wtn-dv-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-left: auto; }
 .wtn-dv-badge {
-  font-size: 10px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
+  font-size: ${fontCalc(FONT_RATIOS.badge)}; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft});
   color: var(--wtn-ink-dim, ${TOKENS.inkDim});
 }
-.wtn-dv-stats { font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 4px; }
+.wtn-dv-stats { font-size: ${fontCalc(FONT_RATIOS.stats)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 4px; }
 
-.wtn-dv-civlink { display: inline-block; margin: 6px 0 0; color: var(--wtn-info, ${TOKENS.info}); font-size: 12px; text-decoration: none; }
+.wtn-dv-civlink { display: inline-block; margin: 6px 0 0; color: var(--wtn-info, ${TOKENS.info}); font-size: ${fontCalc(FONT_RATIOS.civlink)}; text-decoration: none; }
 .wtn-dv-civlink:hover { text-decoration: underline; }
 
 .wtn-dv-sep { border: 0; border-top: 1px solid var(--wtn-line-soft, ${TOKENS.lineSoft}); margin: 10px 0; }
@@ -529,7 +655,20 @@ ${THUMB_SKELETON_CSS}
    section heading in this file shares this ONE rule, so the three stay
    identical to each other by construction, not by three separate values
    happening to agree. */
-.wtn-dv-sechead { font-family: var(--wtn-font-mono, monospace); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); margin: 8px 0 4px; }
+/* \`font-weight: normal\` is new here (2026-08-02, accessibility pass) --
+   these three headings are now real \`<h4>\` elements (\`buildModelDetailView\`,
+   below -- "Give the section headings real heading semantics", so a screen
+   reader gets actual structure, not a styled \`<div>\`), and a bare \`<h4>\`
+   carries the browser's own UA-stylesheet bold by default. Explicit \`normal\`
+   keeps the rendered weight identical to the old \`<div>\` (which inherited
+   \`normal\` from its own ancestors, having no font-weight of its own) -- the
+   ask was SIZE, not a new visual weight. \`<h4>\` was chosen to match this
+   pack's own existing convention for a real heading element (\`interaction
+   .mjs\`'s \`buildSeedPopover\`/\`buildLatentPopover\`/etc. each use a bare \`<h4>\`
+   for their own single popover title) -- there is no h1-h3 anywhere in this
+   pack's DOM to nest under, so matching the level already in use elsewhere
+   beats inventing a new tier. */
+.wtn-dv-sechead { font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.sechead)}; font-weight: normal; letter-spacing: .08em; text-transform: uppercase; color: var(--wtn-accent, ${TOKENS.accent}); margin: 8px 0 4px; }
 /* \`overflow-wrap: anywhere\` (owner: "i think we have horizontal issue in
    the model detail page, see its cut") -- \`min-width: 0\` up the whole flex
    chain (\`.wtn-flex-bound\`, this element's own root/body ancestors, and
@@ -538,9 +677,15 @@ ${THUMB_SKELETON_CSS}
    long URL with no spaces, in a pasted model description) still can't wrap
    at ordinary \`white-space: pre-wrap\` word boundaries -- this is what lets
    the text itself break instead of pushing its box wider. */
-.wtn-dv-desc { font-size: 11.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: pre-wrap; line-height: 1.4; overflow-wrap: anywhere; }
-.wtn-dv-desc-empty { font-size: 11.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
-.wtn-dv-gallery-hidden { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 6px; }
+/* \`line-height: 1.5\` (raised from 1.4, 2026-08-02) -- WCAG 1.4.12 wants body
+   text at line-height >= 1.5; this is the one place in this file that reads
+   as an actual paragraph of prose (a model/version description) rather than
+   a short label, so it's the one line-height this pass raises. Headings
+   stay tighter (\`.wtn-dv-title\`/\`.wtn-dv-sechead\` keep their own values,
+   above) -- that's WCAG's own carve-out, not an oversight. */
+.wtn-dv-desc { font-size: ${fontCalc(FONT_RATIOS.body)}; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); white-space: pre-wrap; line-height: 1.5; overflow-wrap: anywhere; }
+.wtn-dv-desc-empty { font-size: ${fontCalc(FONT_RATIOS.body)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
+.wtn-dv-gallery-hidden { font-size: ${fontCalc(FONT_RATIOS.galleryHidden)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); margin-top: 6px; }
 
 /* Owner, 2026-08-01: BOTH mounts are a single horizontally-scrolling
    FILMSTRIP row now ("in the detail panel ... the gallery, let's lower the
@@ -659,17 +804,17 @@ ${THUMB_SKELETON_CSS}
    applied to the same failure mode. \`overflow-wrap: anywhere\` lets an
    unbreakable token (a long tag run with no spaces) wrap instead of forcing
    the box wider in the first place. */
-.wtn-dv-gprompt { font-size: 10.5px; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
-.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: 9.5px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); overflow-wrap: anywhere; }
+.wtn-dv-gprompt { font-size: ${fontCalc(FONT_RATIOS.gprompt)}; color: var(--wtn-ink, ${TOKENS.ink}); max-height: 72px; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
+.wtn-dv-gparams { font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gparams)}; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); overflow-wrap: anywhere; }
 .wtn-dv-gcopy {
-  align-self: flex-start; font: 10px var(--wtn-font-mono, monospace); padding: 2px 7px; border-radius: 5px; cursor: pointer;
+  align-self: flex-start; font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.gcopy)}; padding: 2px 7px; border-radius: 5px; cursor: pointer;
   background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent}); border: 1px solid var(--wtn-accent, ${TOKENS.accent});
 }
 .wtn-dv-gcopy:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
-.wtn-dv-gallery-empty, .wtn-dv-gallery-locked { font-size: 11.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); padding: 6px 0; }
+.wtn-dv-gallery-empty, .wtn-dv-gallery-locked { font-size: ${fontCalc(FONT_RATIOS.body)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); padding: 6px 0; }
 
 .wtn-dv-back {
-  margin-top: 10px; align-self: flex-start; font: 11.5px var(--wtn-font-mono, monospace); padding: 4px 9px;
+  margin-top: 10px; align-self: flex-start; font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.body)}; padding: 4px 9px;
   border-radius: 6px; cursor: pointer; background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
   border: 1px dashed var(--wtn-line, ${TOKENS.line});
 }
@@ -903,6 +1048,19 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  * @param {number} [opts.thumbRetryBackoffMs]
  * @param {number} [opts.galleryConcurrency] - the gallery's own load-gate cap
  *   (default 4) -- task brief: "cap concurrency."
+ * @param {number} [opts.fontSizePx] - the base body-text size, in px, THIS
+ *   MOUNT wants (default `DETAIL_VIEW_FALLBACK_FONT_SIZE_PX`, 14 -- the
+ *   modal's own pre-existing/owner-asked-for size). Sibling to
+ *   `galleryTileWidth`, above, in every sense: one option, one caller-
+ *   supplied number per mount, clamped/degraded the same defensive way
+ *   (`clampDetailViewFontSize`, this file's own "Accessible font sizing"
+ *   section) rather than trusted raw. The picker passes its OWN, smaller
+ *   setting (`civitai_search.mjs` reads `CIVITAI_DETAIL_PANEL_FONT_SIZE`);
+ *   the modal passes its own (`civitai_modal.mjs` reads
+ *   `CIVITAI_DETAIL_MODAL_FONT_SIZE`) -- this component itself never reads a
+ *   setting or asks which mount it is in, exactly like `galleryTileWidth`.
+ *   Every OTHER font-size in this component is a fixed ratio off this one
+ *   number (`FONT_RATIOS`) -- never a second, independently-chosen size.
  * @returns {{el: Element, destroy: () => void}} `destroy()` marks every
  *   pending thumbnail/gallery retry timer stale so a caller that replaces
  *   this element mid-retry never leaves an orphaned timer writing into a
@@ -912,6 +1070,7 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
 export function buildModelDetailView({
   doc,
   galleryTileWidth = 200,
+  fontSizePx = DETAIL_VIEW_FALLBACK_FONT_SIZE_PX,
   result,
   versionId,
   browsingLevel = 1,
@@ -935,6 +1094,12 @@ export function buildModelDetailView({
   // mirrors this file's own "never throw on a bad caller value" convention.
   const tileWidthPx = Number.isFinite(galleryTileWidth) && galleryTileWidth > 0 ? galleryTileWidth : 200;
 
+  // The accessible font-size scale (this file's own "Accessible font
+  // sizing" section, above) -- clamped/degraded exactly like tileWidthPx
+  // just above, then written as the ONE custom property every font-size in
+  // this component's CSS reads through `fontCalc`.
+  const fontScale = detailViewFontScale(fontSizePx);
+
   // `wtn-flex-bound` (js/shared/theme.css) -- the shared `min-width: 0;
   // min-height: 0;` fix for a bounded flex/scroll region, applied to both
   // this root AND `bodyHost` below: this component's own third occurrence
@@ -942,6 +1107,7 @@ export function buildModelDetailView({
   // the other two) is exactly why it's a shared class now, not a fourth
   // hand-written copy of the same two properties.
   const root = el(doc, "div", "wtn-dv wtn wtn-flex-bound");
+  root.style.setProperty("--wtn-dv-font-scale", String(fontScale));
   // The pinned/scrolling split (this file's own CSS comment, "Owner-reported
   // bug (2026-08-01)") -- `topControls` never scrolls; `bodyHost` is the ONE
   // region that does. Named `bodyHost`, not `body`, because the description
@@ -1136,7 +1302,10 @@ export function buildModelDetailView({
   // which is what made it feel missing in the first place). Author's own --
   // see this file's own top doc comment for why the heading reads GALLERY,
   // not "community images". ------------------------------------------------
-  const galleryHeading = el(doc, "div", "wtn-dv-sechead");
+  // A real `<h4>`, not a styled `<div>` (2026-08-02, accessibility pass --
+  // `.wtn-dv-sechead`'s own CSS comment, above, has the full "why `<h4>`/why
+  // `font-weight: normal`"). Same for the two description headings below.
+  const galleryHeading = el(doc, "h4", "wtn-dv-sechead");
   galleryHeading.textContent = "Gallery";
   bodyHost.appendChild(galleryHeading);
 
@@ -1198,7 +1367,7 @@ export function buildModelDetailView({
     loading: d.status === "loading",
   });
   if (descView.version) {
-    const heading = el(doc, "div", "wtn-dv-sechead");
+    const heading = el(doc, "h4", "wtn-dv-sechead");
     heading.textContent = "Version Description";
     bodyHost.appendChild(heading);
     const body = el(doc, "div", "wtn-dv-desc");
@@ -1206,7 +1375,7 @@ export function buildModelDetailView({
     bodyHost.appendChild(body);
   }
   if (descView.model) {
-    const heading = el(doc, "div", "wtn-dv-sechead");
+    const heading = el(doc, "h4", "wtn-dv-sechead");
     heading.textContent = "Model Description";
     bodyHost.appendChild(heading);
     const body = el(doc, "div", "wtn-dv-desc");

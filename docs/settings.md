@@ -1,9 +1,11 @@
 # Settings — the **AnimaFlow** section in ComfyUI's Settings dialog
 
-Fifteen knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
+Eighteen knobs that used to be hardcoded constants (or one env var) live in ComfyUI's own Settings
 dialog, under an **AnimaFlow** entry in the sidebar — alongside EasyUseAnima, Pixaroma and Use
 Everywhere. Declared in [`js/shared/settings.mjs`](../js/shared/settings.mjs). (Count grows over
-time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number.)
+time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number; this table has
+undercounted before by simply missing rows — "Civitai: maximum browsing level" and "Show Civitai
+name instead of filename" were both live settings with no row here until this pass added them.)
 
 | Setting | Id | Type | Default | Reaches |
 |---|---|---|---|---|
@@ -22,6 +24,10 @@ time — re-count `ANIMAFLOW_SETTINGS.length` rather than trusting this number.)
 | Civitai search: sort | `AnimaFlow.Controls.CivitaiSearchSort` | combo | `Highest Rated` | `js/controls/civitai_search.mjs`'s remembered sort order, matching `src/model_browser/civitai_search.py`'s `DEFAULT_SORT` |
 | Civitai search: period | `AnimaFlow.Controls.CivitaiSearchPeriod` | combo | `AllTime` | `js/controls/civitai_search.mjs`'s remembered time-period filter, matching `src/model_browser/civitai_search.py`'s `DEFAULT_PERIOD` |
 | Civitai search: show NSFW | `AnimaFlow.Controls.CivitaiSearchNsfw` | bool | false | `js/controls/civitai_search.mjs`'s remembered NSFW-results toggle; ships off, then follows whatever the user last picked (§7c-i) |
+| Show Civitai name instead of filename | `AnimaFlow.Controls.ShowCivitaiName` | bool | false | `js/controls/model_picker.mjs`'s `displayRowName` — picker row, LoRA row's own name field, ⓘ panel title; purely cosmetic, falls back to the file name for anything not yet looked up |
+| Civitai: maximum browsing level | `AnimaFlow.Controls.CivitaiBrowsingLevel` | combo (`PG`/`PG-13`/`R`/`X`/`XXX`) | **`PG`** | every surface that loads a Civitai image — the search panel/toolbar browser's results/thumbnails, the ⓘ panel's identity thumbnail, the download-time preview sidecar |
+| Civitai detail view: modal body text size (px) | `AnimaFlow.Controls.CivitaiDetailModalFontSize` | int (clamped 12-20) | **14** | `js/controls/model_detail_view.mjs`'s `FONT_RATIOS` base, read by the browser modal (`civitai_modal.mjs`'s `modalFontSizePx`) |
+| Civitai detail view: picker panel body text size (px) | `AnimaFlow.Controls.CivitaiDetailPanelFontSize` | int (clamped 12-20) | **12** | same `FONT_RATIOS` base, read by the picker's ⓘ/detail panel (`civitai_search.mjs`'s `panelFontSizePx`) — a separate id so the two mounts can size differently |
 
 **The ids are the persistence key, so that namespace is append-only.** Renaming one silently
 abandons whatever the user had set. Same discipline as node widget order.
@@ -82,6 +88,19 @@ the CSS and the JS could drift silently. They're derived now.)
 it dies with the page — deliberately, because it describes *one run's* wiring. Turning this on
 persists it to `node.properties` (never the settings blob — it is run output, not settings) so it
 survives a reload, at the cost of possibly showing values from a run whose wiring no longer applies.
+
+**The two detail-view font-size settings are a scale factor, not a raw px value, on purpose.**
+Both feed `model_detail_view.mjs`'s own `--wtn-dv-font-scale` custom property (the setting's px value
+divided by 16, the browser's own conventional default root size); every actual `font-size` in that
+component reads `calc(var(--wtn-dv-font-scale) * <ratio> * 1rem)`, never a bare `px`. That is what
+lets a user's own browser font-size preference or zoom still apply on top of this setting instead of
+being overridden by it — a hardcoded `px` here would silently defeat the single most common
+accessibility control there is. The section headings (`GALLERY` / `VERSION DESCRIPTION` / `MODEL
+DESCRIPTION`) are real `<h4>` elements for the same reason (screen-reader structure), matching this
+pack's existing convention for a single popover title (`js/controls/interaction.mjs`'s `buildSeedPopover`
+and its siblings). Both settings are clamped to 12-20px in `model_detail_view.mjs` itself
+(`clampDetailViewFontSize`) regardless of what's typed into the number field — there is no
+min/max on the Settings-dialog widget itself, only at the point of use.
 
 **No sixth auto-loaded `.js`.** ComfyUI auto-loads every `.js` under `WEB_DIRECTORY`, and
 [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) caps this pack at 5. The settings are therefore declared

@@ -38,18 +38,20 @@ function test(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Declaration shape — NINETEEN registered ids (`SETTING_IDS`/`SETTING_
+// Declaration shape — TWENTY-ONE registered ids (`SETTING_IDS`/`SETTING_
 // DEFAULTS`: the original ten, plus M2's five -- docs/lora-loader-design.md
 // §8's `CIVITAI_API_KEY` and §7c-i's four remembered search filters,
 // `CIVITAI_SEARCH_BASE_MODEL`/`_SORT`/`_PERIOD`/`_NSFW`, plus §7c-iv's own
 // browsing-level id (`CIVITAI_BROWSING_LEVEL`, RENAMED 2026-07-31 from
 // `CIVITAI_SEARCH_LEVEL` -- see that id's own comment in `settings.mjs`),
 // plus M2b's own two internal multi-value rail filters, `CIVITAI_MODAL_BASE_
-// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`, plus §1a-vii's own `SHOW_CIVITAI_NAME`)
-// -- but only SIXTEEN of them get a dialog ROW in `ANIMAFLOW_SETTINGS`. Three
-// are deliberately excluded (A3/A4, owner screenshots 2026-07-31):
-// `CIVITAI_SEARCH_NSFW` (superseded, its own tooltip admitted it does
-// nothing) and the two `CIVITAI_MODAL_*` ids (the toolbar browser's own
+// MODELS`/`CIVITAI_MODAL_MODEL_TYPES`, plus §1a-vii's own `SHOW_CIVITAI_NAME`,
+// plus the 2026-08-02 detail-view accessibility pass's own two per-mount font
+// -size ids, `CIVITAI_DETAIL_MODAL_FONT_SIZE`/`CIVITAI_DETAIL_PANEL_FONT_
+// SIZE`) -- but only EIGHTEEN of them get a dialog ROW in `ANIMAFLOW_
+// SETTINGS`. Three are deliberately excluded (A3/A4, owner screenshots
+// 2026-07-31): `CIVITAI_SEARCH_NSFW` (superseded, its own tooltip admitted it
+// does nothing) and the two `CIVITAI_MODAL_*` ids (the toolbar browser's own
 // internal rail-chip state) -- see `ANIMAFLOW_SETTINGS`'s own top comment in
 // `settings.mjs` for why omitting a dialog row never stops an id from being
 // read/written. Re-count rather than trusting either number — they only ever
@@ -65,13 +67,13 @@ const DIALOG_EXCLUDED_IDS = [
   SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES,
 ];
 
-test("SETTING_IDS/SETTING_DEFAULTS both declare exactly nineteen ids", () => {
-  assert.equal(Object.keys(SETTING_IDS).length, 19);
+test("SETTING_IDS/SETTING_DEFAULTS both declare exactly twenty-one ids", () => {
+  assert.equal(Object.keys(SETTING_IDS).length, 21);
   assert.deepEqual(Object.keys(SETTING_DEFAULTS).sort(), Object.values(SETTING_IDS).sort());
 });
 
-test("ANIMAFLOW_SETTINGS declares exactly sixteen dialog rows -- every registered id EXCEPT the three internal/superseded ones", () => {
-  assert.equal(ANIMAFLOW_SETTINGS.length, 16);
+test("ANIMAFLOW_SETTINGS declares exactly eighteen dialog rows -- every registered id EXCEPT the three internal/superseded ones", () => {
+  assert.equal(ANIMAFLOW_SETTINGS.length, 18);
   const ids = ANIMAFLOW_SETTINGS.map((s) => s.id).sort();
   const expected = Object.values(SETTING_IDS).filter((id) => !DIALOG_EXCLUDED_IDS.includes(id)).sort();
   assert.deepEqual(ids, expected);
@@ -131,6 +133,41 @@ test("SHOW_CIVITAI_NAME: a boolean, defaulting OFF (filenames -- today's behavio
   assert.equal(setting.type, "boolean");
   assert.equal(setting.defaultValue, false);
   assert.ok(setting.tooltip.length > 20);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-02 (detail-view accessibility task) -- the model/version detail
+// view's own base body-text size, one id per MOUNT (owner correction: "yes
+// for our panel we should have different set then the browser modal"), NOT
+// `AnimaFlow.Anima.*` (that's the Generator/Preview node panel, a different
+// setting entirely -- `NODE_PANEL_FONT_SIZE`, above).
+// ---------------------------------------------------------------------------
+
+test("CIVITAI_DETAIL_MODAL_FONT_SIZE / CIVITAI_DETAIL_PANEL_FONT_SIZE: distinct AnimaFlow.Controls.* ids, NOT AnimaFlow.Anima.* (that's the unrelated Generator/Preview node-panel setting)", () => {
+  assert.equal(SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE, "AnimaFlow.Controls.CivitaiDetailModalFontSize");
+  assert.equal(SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE, "AnimaFlow.Controls.CivitaiDetailPanelFontSize");
+  assert.notEqual(SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE, SETTING_IDS.NODE_PANEL_FONT_SIZE);
+  assert.notEqual(SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE, SETTING_IDS.NODE_PANEL_FONT_SIZE);
+});
+
+test("CIVITAI_DETAIL_MODAL_FONT_SIZE defaults to 14 (the owner's own explicit ask) -- a number-type dialog row with a real tooltip", () => {
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE], 14);
+  const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE);
+  assert.equal(setting.type, "number");
+  assert.equal(setting.defaultValue, 14);
+  assert.ok(setting.tooltip.length > 20);
+});
+
+test("CIVITAI_DETAIL_PANEL_FONT_SIZE defaults to 12 (the builder's own call, NOT the owner's -- flagged for retuning), smaller than the modal's own default", () => {
+  assert.equal(SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE], 12);
+  const setting = ANIMAFLOW_SETTINGS.find((s) => s.id === SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE);
+  assert.equal(setting.type, "number");
+  assert.equal(setting.defaultValue, 12);
+  assert.ok(setting.tooltip.length > 20);
+  assert.ok(
+    SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE] < SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE],
+    "the picker's own narrower panel must default smaller than the wide modal",
+  );
 });
 
 test("the Civitai setting is a boolean, defaulting ON (must be explicitly turned off to go offline)", () => {

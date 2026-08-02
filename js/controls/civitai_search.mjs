@@ -2354,6 +2354,16 @@ export function openModelDetailPanel({
     return levelLabelToInt(getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]));
   }
 
+  // This panel's own base font size (`model_detail_view.mjs`'s own
+  // `fontSizePx` parameter) -- a SEPARATE setting id from the modal's own
+  // (`civitai_modal.mjs`'s `modalFontSizePx`, below), because the picker's
+  // ~396px panel wants a smaller default than the wide browser modal (owner,
+  // 2026-08-02: "yes for our panel we should have different set then the
+  // browser modal"). Read fresh per render, same as `currentLevel` above.
+  function panelFontSizePx() {
+    return getSetting(SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE]);
+  }
+
   /**
    * This panel's OWN primary action -- deliberately a SEPARATE, small
    * implementation from `buildCard`'s action column rather than a shared
@@ -2456,7 +2466,8 @@ export function openModelDetailPanel({
   function render() {
     host.innerHTML = "";
     const built = buildModelDetailView({
-      doc, galleryTileWidth: DETAIL_PANEL_GALLERY_TILE_PX, result, versionId: currentVersionId, browsingLevel: currentLevel(),
+      doc, galleryTileWidth: DETAIL_PANEL_GALLERY_TILE_PX, fontSizePx: panelFontSizePx(),
+      result, versionId: currentVersionId, browsingLevel: currentLevel(),
       detail: detailState, buildActionEl: buildAction,
       onVersionChange: (id) => {
         currentVersionId = id;

@@ -174,6 +174,25 @@ export const SETTING_IDS = {
   // non-negotiable" -- the filename stays the identity regardless of this
   // setting's value; this governs DISPLAY only).
   SHOW_CIVITAI_NAME: "AnimaFlow.Controls.ShowCivitaiName",
+  // 2026-08-02 (detail-view accessibility task, owner screenshot: "the text
+  // is small ... let's increase it"): the model/version DETAIL VIEW's own
+  // base body-text size (`js/controls/model_detail_view.mjs`) -- ONE id per
+  // MOUNT, not a single shared value. The task started as one setting; the
+  // owner, on being told that would make the picker's own ~396px panel just
+  // as dense as the wide browser modal, corrected it: "you did right, and
+  // yes for our panel we should have different set then the browser modal."
+  // `AnimaFlow.Controls.*`, not `AnimaFlow.Anima.*` -- that track's own
+  // `NODE_PANEL_FONT_SIZE` above is a DIFFERENT surface (the Generator/
+  // Preview node panel); this is a Civitai surface, matching every other
+  // `CIVITAI_*` id's own namespace. Every OTHER size in the detail view is a
+  // fixed ratio off whichever of these two the caller supplies
+  // (`model_detail_view.mjs`'s own `FONT_RATIOS`) -- never a second,
+  // independently-chosen number. Both are clamped to `DETAIL_VIEW_FONT_SIZE_
+  // MIN`/`_MAX` (`model_detail_view.mjs`, 12-20) regardless of what a user
+  // types here -- not an unreadable/overflowing size just because the number
+  // box allows it.
+  CIVITAI_DETAIL_MODAL_FONT_SIZE: "AnimaFlow.Controls.CivitaiDetailModalFontSize",
+  CIVITAI_DETAIL_PANEL_FONT_SIZE: "AnimaFlow.Controls.CivitaiDetailPanelFontSize",
 };
 
 // ---------------------------------------------------------------------------
@@ -305,6 +324,14 @@ export const SETTING_DEFAULTS = {
   [SETTING_IDS.CIVITAI_MODAL_MODEL_TYPES]: "[]",
   // Off -- filenames, today's behaviour (§1a-vii's own default rule).
   [SETTING_IDS.SHOW_CIVITAI_NAME]: false,
+  // 14 -- the owner's own explicit ask ("the text should be either 14px or
+  // 16px"), applied to the wide browser modal's detail view.
+  [SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE]: 14,
+  // 12 -- NOT the owner's number; this is the builder's own call, a real
+  // increase over today's 11.5px body text while staying legible in the
+  // picker's own ~396px panel. Flagged for the owner to retune once seen
+  // live (this task's own build report).
+  [SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE]: 12,
 };
 
 // ---------------------------------------------------------------------------
@@ -578,6 +605,40 @@ export const ANIMAFLOW_SETTINGS = [
   // here any more (they used to render as bare `[]` text fields) -- same
   // reasoning as CIVITAI_SEARCH_NSFW above: the ids/defaults stay live,
   // `civitai_modal.mjs`'s own rail is their only real editor.
+  {
+    id: SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE,
+    name: "Civitai detail view: modal body text size (px)",
+    category: ["AnimaFlow", "Controls", "Civitai detail view: modal body text size (px)"],
+    type: "number",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_MODAL_FONT_SIZE],
+    tooltip:
+      "Base body-text size (in pixels) for the browser modal's model/version "
+      + "detail view -- every other size in that view (section headings at "
+      + "24px, the model-name title, stats, gallery captions, ...) scales "
+      + "proportionally off this one number, never picked independently. "
+      + "Expressed internally as a scale relative to your browser's own root "
+      + "font size, so a larger browser zoom/default text size still "
+      + "enlarges everything in this view too -- never a fixed pixel size "
+      + "that ignores it. Clamped to 12-20px regardless of what's typed "
+      + "here -- outside that range stops being legible or starts "
+      + "overflowing the panel. Applied fresh every time the modal's detail "
+      + "view (re)renders.",
+  },
+  {
+    id: SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE,
+    name: "Civitai detail view: picker panel body text size (px)",
+    category: ["AnimaFlow", "Controls", "Civitai detail view: picker panel body text size (px)"],
+    type: "number",
+    defaultValue: SETTING_DEFAULTS[SETTING_IDS.CIVITAI_DETAIL_PANEL_FONT_SIZE],
+    tooltip:
+      "The SAME kind of base body-text size, for the LoRA picker's own "
+      + "narrower (~396px) ⓘ/detail panel -- a separate setting from the "
+      + "modal's own, above, so the two surfaces can size differently (the "
+      + "picker is much narrower than the modal). Defaults smaller than the "
+      + "modal's own setting for exactly that reason. Same 12-20px clamp, "
+      + "same proportional scaling of every other size in the view, same "
+      + "browser-zoom awareness.",
+  },
 ];
 
 // ---------------------------------------------------------------------------

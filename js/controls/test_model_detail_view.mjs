@@ -33,6 +33,12 @@ import {
   createLoadGate,
   buildModelDetailView,
   injectStyles,
+  FONT_RATIOS,
+  clampDetailViewFontSize,
+  detailViewFontScale,
+  DETAIL_VIEW_FONT_SIZE_MIN,
+  DETAIL_VIEW_FONT_SIZE_MAX,
+  DETAIL_VIEW_FALLBACK_FONT_SIZE_PX,
 } from "./model_detail_view.mjs";
 
 // `js/shared/theme.css`'s raw text -- the shared `.wtn-select` height fix
@@ -705,17 +711,134 @@ test("buildModelDetailView: the gallery grid sets --wtn-dv-gallery-tile inline, 
 // spacing/uppercase, and identical across all three.
 // =========================================================================
 
-test("BUG (owner, 2026-08-01): the three section headings share ONE (larger) font-size", () => {
+test("BUG (owner, 2026-08-01): the three section headings share ONE (larger) font-size, expressed as a rem-relative calc(), never a bare px", () => {
   const doc = makeDocStub();
   injectStyles(doc);
   const styleEl = doc.head.children.find((c) => c.tagName === "style");
   const rule = styleEl.textContent.match(/\.wtn-dv-sechead\s*\{([^}]*)\}/)[1];
-  const sizeMatch = rule.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
-  assert.ok(sizeMatch, "wtn-dv-sechead must declare an explicit font-size");
-  assert.ok(Number(sizeMatch[1]) > 10, "must be larger than the old 10px");
+  // 2026-08-02, accessibility pass: a bare `font-size: <n>px` would ignore
+  // the user's own browser font-size/zoom preference -- every size in this
+  // component now reads `calc(var(--wtn-dv-font-scale) * <ratio> * 1rem)`
+  // instead (this file's own "Accessible font sizing" section). Assert the
+  // SHAPE, not a bare px number.
+  assert.doesNotMatch(rule, /font-size:\s*[0-9.]+px/, "must never regress to a bare px font-size");
+  const calcMatch = rule.match(/font-size:\s*calc\(var\(--wtn-dv-font-scale(?:,\s*[0-9.]+)?\)\s*\*\s*([0-9.]+)\s*\*\s*1rem\)/);
+  assert.ok(calcMatch, "wtn-dv-sechead must declare its font-size as calc(var(--wtn-dv-font-scale) * <ratio> * 1rem)");
+  // The ratio itself must be the owner's own 24px-at-a-14px-base target
+  // (FONT_RATIOS.sechead, imported below) -- not merely "some larger number".
+  assert.ok(Math.abs(Number(calcMatch[1]) - FONT_RATIOS.sechead) < 1e-9, "the ratio must be exactly FONT_RATIOS.sechead (24/14)");
   // Style, not just size, is unchanged -- same letter-spacing/uppercase.
   assert.match(rule, /letter-spacing:\s*\.08em/);
   assert.match(rule, /text-transform:\s*uppercase/);
+});
+
+// =========================================================================
+// 2026-08-02, accessibility pass (owner: "the text is small ... 14px or
+// 16px and heading should be 24px", then: "we should keep browser
+// conventions and accessibility in mind" -- the reason for the rem-relative
+// unit, not a px one). Two settings, one per mount (owner correction: "yes
+// for our panel we should have different set then the browser modal"), both
+// scaling off the SAME `FONT_RATIOS` table -- never two independently-tuned
+// size lists.
+// =========================================================================
+
+test("FONT_RATIOS: the two owner-named targets are exact, not approximate -- body lands on the base (1), section headings on 24px at a 14px base", () => {
+  assert.equal(FONT_RATIOS.body, 1, "body text must resolve to exactly the base setting, per the owner's own ask");
+  assert.equal(FONT_RATIOS.sechead, 24 / 14, "section headings must resolve to exactly 24px at the default 14px base");
+});
+
+test("FONT_RATIOS.title: the builder's own inference (~20px at a 14px base), not an owner instruction -- flagged in the build report for the owner to retune", () => {
+  assert.equal(FONT_RATIOS.title, 20 / 14);
+  assert.ok(FONT_RATIOS.body < FONT_RATIOS.title && FONT_RATIOS.title < FONT_RATIOS.sechead, "the title must sit strictly between body text and a section heading, per the task brief");
+});
+
+test("clampDetailViewFontSize: clamps into [DETAIL_VIEW_FONT_SIZE_MIN, DETAIL_VIEW_FONT_SIZE_MAX], degrades garbage to the fallback -- never lets an unreadable/overflowing size through", () => {
+  assert.equal(clampDetailViewFontSize(14), 14, "an in-range value passes through unchanged");
+  assert.equal(clampDetailViewFontSize(1), DETAIL_VIEW_FONT_SIZE_MIN, "below the floor clamps up to it");
+  assert.equal(clampDetailViewFontSize(999), DETAIL_VIEW_FONT_SIZE_MAX, "above the ceiling clamps down to it");
+  assert.equal(clampDetailViewFontSize(DETAIL_VIEW_FONT_SIZE_MIN), DETAIL_VIEW_FONT_SIZE_MIN, "the floor itself is accepted, not excluded");
+  assert.equal(clampDetailViewFontSize(DETAIL_VIEW_FONT_SIZE_MAX), DETAIL_VIEW_FONT_SIZE_MAX, "the ceiling itself is accepted, not excluded");
+  // Genuinely non-finite input (Number(x) is NaN) degrades to the caller's
+  // own fallback -- never throws, never produces NaN.
+  for (const bad of [NaN, undefined, "not-a-number"]) {
+    assert.equal(clampDetailViewFontSize(bad, 16), 16, `garbage (${bad}) must degrade to the caller's own fallback, never throw or produce NaN`);
+  }
+  // `null` is a special case worth pinning explicitly: `Number(null)` is `0`,
+  // a genuinely finite number, so it is NOT treated as garbage -- it clamps
+  // up to the floor like any other too-small value would, rather than
+  // silently being swallowed into the fallback.
+  assert.equal(clampDetailViewFontSize(null, 16), DETAIL_VIEW_FONT_SIZE_MIN, "null coerces to the finite 0, which clamps to the floor, not the fallback");
+});
+
+test("detailViewFontScale: the clamped px as a scale relative to 1rem (16px) -- this IS the px outcome the calc() declarations encode, since a real layout engine isn't available in a plain-node test", () => {
+  // These are the exact numbers a browser at its own default zoom (root
+  // font-size 16px) would compute for `.wtn-dv-desc`/`.wtn-dv-sechead`
+  // (ratio 1 / 24/14) at each of the two mounts' own default settings --
+  // asserted arithmetically here, since there is no DOM layout engine in
+  // this plain-`node` test to measure a rendered pixel value directly.
+  assert.equal(detailViewFontScale(14) * FONT_RATIOS.body * 16, 14, "modal default: body text lands on exactly 14px");
+  assert.equal(detailViewFontScale(14) * FONT_RATIOS.sechead * 16, 24, "modal default: section headings land on exactly 24px");
+  assert.equal(detailViewFontScale(12) * FONT_RATIOS.body * 16, 12, "picker panel default: body text lands on exactly 12px");
+  assert.ok(Math.abs(detailViewFontScale(12) * FONT_RATIOS.sechead * 16 - (24 * 12 / 14)) < 1e-9, "picker panel default: section headings scale proportionally off the SAME ratio, not a second number");
+  // Out-of-range/garbage input goes through the same clamp as clampDetailViewFontSize.
+  assert.equal(detailViewFontScale(999), DETAIL_VIEW_FONT_SIZE_MAX / 16);
+  assert.equal(detailViewFontScale(NaN, 14), 14 / 16);
+});
+
+test("buildModelDetailView: fontSizePx sets --wtn-dv-font-scale on the root, clamped exactly like clampDetailViewFontSize -- a garbage/out-of-range value degrades, never NaN", () => {
+  for (const [input, expectedScale] of [
+    [14, 14 / 16],
+    [12, 12 / 16],
+    [999, DETAIL_VIEW_FONT_SIZE_MAX / 16],
+    [1, DETAIL_VIEW_FONT_SIZE_MIN / 16],
+    [NaN, DETAIL_VIEW_FALLBACK_FONT_SIZE_PX / 16],
+    [undefined, DETAIL_VIEW_FALLBACK_FONT_SIZE_PX / 16],
+  ]) {
+    const result = { model_id: 1, name: "X", versions: [{ version_id: 1, name: "v1" }] };
+    const { el } = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fontSizePx: input });
+    assert.equal(el.style["--wtn-dv-font-scale"], String(expectedScale), `fontSizePx=${input}`);
+  }
+});
+
+test("buildModelDetailView: the picker and the modal resolve to DIFFERENT base font scales from their OWN settings, while both reading the exact same (byte-for-byte identical) stylesheet -- one ratio table, two bases, never two font systems", () => {
+  const result = { model_id: 1, name: "X", versions: [{ version_id: 1, name: "v1" }] };
+  // The picker's own narrower-panel default (12) and the modal's own wider
+  // default (14) -- the exact two numbers civitai_search.mjs/civitai_modal.mjs
+  // each read from their own setting id. Separate `doc`s (the stub's own
+  // `getElementById` always returns null, so it can't prove the real
+  // once-per-page injection guard -- see `injectStyles`'s own doc comment
+  // for that mechanism) -- what's asserted here instead is the thing this
+  // task actually cares about: the STATIC CSS text itself never differs
+  // per mount, only the per-root custom property does.
+  const picker = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fontSizePx: 12 });
+  const modal = buildModelDetailView({ doc: makeDocStub(), result, versionId: 1, fontSizePx: 14 });
+  assert.notEqual(picker.el.style["--wtn-dv-font-scale"], modal.el.style["--wtn-dv-font-scale"], "the two mounts must resolve to different bases");
+  assert.equal(picker.el.style["--wtn-dv-font-scale"], String(12 / 16));
+  assert.equal(modal.el.style["--wtn-dv-font-scale"], String(14 / 16));
+
+  const pickerDoc = makeDocStub();
+  const modalDoc = makeDocStub();
+  injectStyles(pickerDoc);
+  injectStyles(modalDoc);
+  const pickerCss = pickerDoc.head.children.find((c) => c.tagName === "style").textContent;
+  const modalCss = modalDoc.head.children.find((c) => c.tagName === "style").textContent;
+  assert.equal(pickerCss, modalCss, "the CSS text itself must be identical regardless of mount -- a second, independently-tuned stylesheet is exactly the 'two font systems' this task rules out");
+});
+
+test("regression guard: no bare px font-size literal remains anywhere in this component's CSS -- every one must route through fontCalc/--wtn-dv-font-scale", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const css = doc.head.children.find((c) => c.tagName === "style").textContent;
+  const BARE_PX_FONT_SIZE_RE = /font(?:-size)?:\s*[0-9.]+px/g;
+  const offenders = [...css.matchAll(BARE_PX_FONT_SIZE_RE)].map((m) => m[0]);
+  assert.deepEqual(offenders, [], "a bare px font-size is exactly the hardcoded-size bug this accessibility pass exists to fix");
+});
+
+test("regression guard, false-green check: the bare-px-font-size detector above actually catches a planted violation (it must not be vacuously green)", () => {
+  const planted = ".some-rule { color: red; font-size: 12px; }";
+  const BARE_PX_FONT_SIZE_RE = /font(?:-size)?:\s*[0-9.]+px/g;
+  const found = [...planted.matchAll(BARE_PX_FONT_SIZE_RE)].map((m) => m[0]);
+  assert.deepEqual(found, ["font-size: 12px"], "the detector must actually flag a planted bare px literal, proving the guard above isn't vacuous");
 });
 
 test("buildModelDetailView: GALLERY/VERSION DESCRIPTION/MODEL DESCRIPTION all share the identical .wtn-dv-sechead class -- one font-size for all three by construction", () => {
@@ -733,6 +856,28 @@ test("buildModelDetailView: GALLERY/VERSION DESCRIPTION/MODEL DESCRIPTION all sh
   for (const h of headings) {
     assert.ok(h.classList.contains("wtn-dv-sechead"));
   }
+});
+
+test("2026-08-02, accessibility pass: all three section headings are real <h4> elements, not styled <div>s -- a screen reader gets actual structure", () => {
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: {
+      status: "loaded", modelDescription: "M.", versionDescription: "V.", modelDescriptionChecked: true,
+      gallery: [{ url: "a.jpg", nsfw_level: 1 }],
+    },
+  });
+  const headings = findAll(el, "wtn-dv-sechead");
+  assert.equal(headings.length, 3);
+  for (const h of headings) {
+    assert.equal(h.tagName, "h4", `every .wtn-dv-sechead element must be a real <h4>, got <${h.tagName}>`);
+  }
+  // <h4> matches this pack's OWN existing convention for a real heading
+  // element (js/controls/interaction.mjs's buildSeedPopover/buildLatentPopover/
+  // etc. each use a bare <h4> for their own single popover title) -- there is
+  // no h1-h3 anywhere in this pack's DOM to nest under.
+  assert.equal(findAllByTag(el, "h4").length, 3, "no OTHER element in this view should be a stray <h4>");
 });
 
 // =========================================================================
