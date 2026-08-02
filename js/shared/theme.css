@@ -89,6 +89,29 @@
    several independently hand-tuned copies quietly drifting apart. */
 .wtn-flex-bound { min-width: 0; min-height: 0; }
 
+/* The FLIP side of `.wtn-flex-bound` just above -- same family of trap
+   (a flex item quietly disobeying its own natural size), opposite
+   direction. `.wtn-flex-bound` stops an item from REFUSING to shrink;
+   this one stops an item from shrinking AT ALL. A flex item's default
+   `flex-shrink: 1` lets a growing/tall SIBLING squash an earlier section
+   toward zero -- measured 2026-08-02 (`model_detail_view.mjs`'s own
+   `.wtn-dv-gallery-filmstrip`): a live probe showed `firstTileBox: {width:
+   115, height: 0}` even though the tile's own `aspect-ratio` correctly
+   resolved 115px -- the community-images grid growing below it in the same
+   `.wtn-dv-body` scrolling flex column simply squashed the gallery section
+   to nothing first, and the filmstrip's own `overflow-y: hidden` clipped
+   the (nonzero, correctly-sized) tiles inside that collapsed box rather
+   than making them reachable. In a SCROLLING flex column the container
+   should scroll and every child should keep its natural content height --
+   nothing in a column like that legitimately wants to shrink. Add this
+   class to a flex item that must render at its natural size no matter what
+   its siblings need; for a column whose children come from many call sites
+   (so no single element's own class list is the fix), the structural
+   equivalent is a `> *` rule declaring the identical `flex: none` --
+   `model_detail_view.mjs`'s own `.wtn-dv-body > *` is that shape, and
+   pinned to this class's own declaration so the two can never drift apart. */
+.wtn-flex-fixed { flex: none; }
+
 /* buttons */
 .wtn-btn { font-family: var(--wtn-font-ui); font-size: 13px; font-weight: 600; cursor: pointer;
   border-radius: 9px; padding: 9px 15px; border: 1px solid var(--wtn-line);

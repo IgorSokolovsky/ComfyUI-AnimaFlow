@@ -696,6 +696,36 @@ const CSS = `
    below are also part of, rather than a fourth hand-written copy of the
    same two properties. */
 .wtn-dv-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 0 16px 16px 16px; }
+/* Owner-reported (2026-08-02): the GALLERY heading rendered with nothing
+   under it -- a live probe (\`.claude/skills/css-layout-diagnose-headless\`)
+   showed the data and tile widths were correct (\`firstTileBox: {width: 115,
+   height: 0}\`) but every filmstrip tile measured zero height. Cause: THIS
+   element (\`.wtn-dv-body\`, above) is itself \`display: flex; flex-direction:
+   column\`, so every section appended into it -- the gallery heading and its
+   filmstrip, both descriptions, the hidden-count line, the community grid
+   -- is a flex ITEM, and a flex item's default \`flex-shrink: 1\` lets a tall
+   sibling (the community grid, once it has content) squash an EARLIER
+   section below its own natural, \`aspect-ratio\`-derived height; the
+   filmstrip's own \`overflow-y: hidden\` (deliberate, see that rule's own
+   comment) then clips the squashed box to nothing rather than making it
+   reachable, instead of the intended behaviour -- the COLUMN scrolls, every
+   section keeps its natural height. This is not special to the gallery:
+   EVERY direct child of \`.wtn-dv-body\` has the identical latent defect, so
+   the fix is the whole column, never a per-section patch (verified: none of
+   this column's ~9 sections ever wants to grow OR shrink -- each is sized
+   entirely by its own content). \`flex: none\` is \`.wtn-flex-fixed\`'s own
+   declaration (\`js/shared/theme.css\`, the mirror of \`.wtn-flex-bound\` just
+   above -- that class's own comment has the full "why a pair"); applied
+   here STRUCTURALLY (\`> *\`, matching \`js/anima/render.mjs\`'s own
+   \`.wtn-an-panel-pv > .wtn-an-body > *\` precedent for the identical shape)
+   rather than as a class on each of the many call sites that append into
+   \`bodyHost\`, so a FUTURE section added to this column inherits the fix by
+   construction instead of depending on whoever adds it remembering a class.
+   A plain-node test has no layout engine and so cannot PROVE a box's
+   rendered height -- this declaration is asserted directly in
+   test_model_detail_view.mjs, but the real proof is the headless
+   measurement in this task's own build report. */
+.wtn-dv-body > * { flex: none; }
 .wtn-dv-head { display: flex; gap: 10px; align-items: flex-start; }
 .wtn-dv-thumb {
   width: 58px; height: 58px; flex: none; border-radius: 7px; overflow: hidden;

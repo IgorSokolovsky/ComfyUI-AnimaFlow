@@ -716,6 +716,48 @@ test("buildModelDetailView: the gallery is a single horizontally-scrolling row, 
   assert.doesNotMatch(bodyRule, /overflow-x/, "the scrolling body must not gain its own horizontal scrollbar");
 });
 
+// =========================================================================
+// Owner-reported (2026-08-02): the GALLERY heading rendered with nothing
+// under it -- `.wtn-dv-body` is `display: flex; flex-direction: column`
+// (the assertion just above), so every section appended into it is a flex
+// ITEM, and a flex item's default `flex-shrink: 1` let the community grid
+// squash the gallery filmstrip toward zero once it had content below it.
+// A plain-node test has no layout engine, so it cannot prove a box's
+// rendered height is non-zero -- that proof is the headless measurement in
+// this task's own build report (as-shipped: strip h=4.0, tile h=0.0, flex
+// computed 1/0/auto; with this fix: strip h=134.0, tile h=115.0, flex
+// 0/0/auto, same ancestor chain both times). What CAN be asserted here,
+// plain-node, is that the CSS declaration this fix depends on is actually
+// present and actually covers every section, not merely the gallery.
+// =========================================================================
+
+test("BUG (owner, 2026-08-02): every direct child of .wtn-dv-body is flex: none, so a growing sibling can never shrink an earlier section to zero height", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((c) => c.tagName === "style");
+  const css = styleEl.textContent;
+  // The structural rule -- covers the gallery filmstrip, both description
+  // blocks, the hidden-count line, and the community grid host alike, and
+  // (the whole point) any FUTURE section appended into bodyHost too, since
+  // it is not a class attached at each of the many call sites.
+  const rule = css.match(/\.wtn-dv-body > \*\s*\{([^}]*)\}/);
+  assert.ok(rule, ".wtn-dv-body > * must declare a rule -- the general column fix, not a per-section patch");
+  assert.match(rule[1], /flex:\s*none;?\s*$/, "must be exactly flex: none (flex-shrink: 0), never a partial override that leaves shrink at its default 1");
+});
+
+test("BUG (owner, 2026-08-02): .wtn-flex-fixed exists in the shared theme, is flex: none, and is named as the pair to .wtn-flex-bound", () => {
+  // `.wtn-flex-fixed` is `js/shared/theme.css`'s own shared vocabulary entry
+  // for this same fix (the mirror of `.wtn-flex-bound`) -- asserted against
+  // the real file text, same cross-file pattern this test file's own
+  // `themeCss` constant already uses for `.wtn-select`.
+  const rule = themeCss.match(/\.wtn-flex-fixed\s*\{([^}]*)\}/);
+  assert.ok(rule, ".wtn-flex-fixed must be declared in js/shared/theme.css");
+  assert.match(rule[1], /flex:\s*none;?\s*$/, ".wtn-flex-fixed must be exactly flex: none");
+  // Named as a pair -- .wtn-flex-bound must exist too, so a reader who
+  // meets one is pointed at the other.
+  assert.match(themeCss, /\.wtn-flex-bound\s*\{\s*min-width:\s*0;\s*min-height:\s*0;\s*\}/, ".wtn-flex-bound must still exist, unchanged, as the pair this class completes");
+});
+
 test("buildModelDetailView: the prompt drawer still renders over a filmstrip tile, at any tile width", () => {
   for (const galleryTileWidth of [200, 115]) {
     const doc = makeDocStub();
