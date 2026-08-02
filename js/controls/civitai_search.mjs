@@ -2275,6 +2275,15 @@ export function openCivitaiSearch({
 // future width change touches.
 const DETAIL_PANEL_GALLERY_TILE_PX = 115;
 
+// The picker's own COMMUNITY grid minimum tile width -- unlike the filmstrip
+// above, this is a `minmax()` FLOOR in a responsive `auto-fill` grid
+// (`model_detail_view.mjs`'s own `communityTileWidth` doc comment), not a
+// fixed size, so the arithmetic is looser: at the same ~364px of gallery
+// width and an 8px gap, a 90px floor fits three columns with room to spare,
+// which is what keeps this section legible in the ~396px panel without
+// forcing a horizontal scrollbar the way the filmstrip needs.
+const DETAIL_PANEL_COMMUNITY_TILE_PX = 90;
+
 // ---------------------------------------------------------------------------
 // §7c-ii -- the picker's own VERTICAL detail panel (decision 21): a SIBLING
 // overlay of the ⓘ panel, anchored to the CARD that was clicked, never the
@@ -2466,7 +2475,8 @@ export function openModelDetailPanel({
   function render() {
     host.innerHTML = "";
     const built = buildModelDetailView({
-      doc, galleryTileWidth: DETAIL_PANEL_GALLERY_TILE_PX, fontSizePx: panelFontSizePx(),
+      doc, galleryTileWidth: DETAIL_PANEL_GALLERY_TILE_PX, communityTileWidth: DETAIL_PANEL_COMMUNITY_TILE_PX,
+      fontSizePx: panelFontSizePx(),
       result, versionId: currentVersionId, browsingLevel: currentLevel(),
       detail: detailState, buildActionEl: buildAction,
       onVersionChange: (id) => {

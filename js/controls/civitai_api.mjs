@@ -89,6 +89,7 @@ const DOWNLOAD_START_URL = "/wtn/model_browser/download/start";
 const DOWNLOAD_PROGRESS_URL = "/wtn/model_browser/download/progress";
 const DOWNLOAD_CANCEL_URL = "/wtn/model_browser/download/cancel";
 const MODEL_DETAIL_URL = "/wtn/model_browser/model_detail";
+const COMMUNITY_IMAGES_URL = "/wtn/model_browser/community_images";
 
 // ---------------------------------------------------------------------------
 // Local file list -- per kind. `null`/absent-from-the-map means "never
@@ -840,6 +841,108 @@ export async function fetchModelDetail(modelId, versionId) {
     }
   })();
   _modelDetailPromise.set(key, p);
+  return p;
+}
+
+// ---------------------------------------------------------------------------
+// Community images (`docs/lora-loader-design.md` "BOTH galleries, for
+// different reasons" -- the BOTTOM grid, "what it looks like in other
+// people's hands", as opposed to `fetchModelDetail`'s own AUTHOR gallery
+// above). Cached per `(versionId, limit)`, session-indefinite -- same shape
+// as `_modelDetailCache`, except THIS cache is checked BEFORE a network call
+// is even made (mirroring `listModels`'s own cache-first `!force &&
+// _cache.has(key)` short-circuit, not `fetchModelDetail`'s "always re-fetch,
+// caller decides when to call" contract): `model_detail_view.mjs`'s own
+// section fetches this lazily, on an `IntersectionObserver` that can fire
+// more than once (a rebuild that re-mounts the whole detail view re-creates
+// the observer too), so THIS layer is the second, defence-in-depth guarantee
+// behind that component's own "already started" flag that a version's
+// community images are ever requested over the network at most once per
+// session.
+// ---------------------------------------------------------------------------
+
+const _communityImagesCache = new Map(); // "versionId limit" -> {reason, images}
+const _communityImagesPromise = new Map(); // same key -> in-flight promise (de-dupes concurrent callers)
+
+function communityImagesKey(versionId, limit) {
+  return `${versionId} ${limit}`;
+}
+
+/** Drops the cached community-images response for `(versionId, limit)` (or
+ * every entry, if `versionId` is omitted) -- exists for completeness/tests;
+ * no real caller forces a re-fetch today, same as `invalidateModelDetail`. */
+export function invalidateCommunityImages(versionId, limit) {
+  if (versionId == null) {
+    _communityImagesCache.clear();
+    return;
+  }
+  _communityImagesCache.delete(communityImagesKey(versionId, limit));
+}
+
+/**
+ * `GET /wtn/model_browser/community_images?version_id=...&limit=...` -- the
+ * COMMUNITY's own gallery (`src/model_browser/api.py`'s
+ * `community_images_impl`, the literal wire contract this function is built
+ * against): "what it looks like in other people's hands", not a prompt
+ * source -- `images` never carries a `prompt` key, by design, on the Python
+ * side.
+ *
+ * Always resolves -- never rejects -- to `{reason: "ok"|"notfound"|
+ * "offline"|"rate_limited", images: [...]}`. The route itself ALWAYS answers
+ * HTTP 200 with `ok: true` at the transport level (§"a failed or empty fetch
+ * must never turn a working detail view into a broken one") -- `reason` is
+ * where the actual outcome lives, not the HTTP status; a transport failure
+ * here (unreachable dev server, an unreadable reply) degrades to the SAME
+ * `{reason: "offline", images: []}` shape, so a caller has exactly one shape
+ * to branch on regardless of which hop actually failed -- same discipline as
+ * `fetchModelDetail`. `images` is `[]` on every branch except a genuine
+ * `"ok"`.
+ *
+ * A GARBAGE `versionId` still reaches the network -- the ROUTE is what
+ * validates it (`"notfound"` for an unusable `version_id`) -- this function
+ * has no whitelist of its own, mirroring every other call in this file.
+ *
+ * Cache-first, unlike `fetchModelDetail`: a call for a `(versionId, limit)`
+ * already resolved this session returns the cached response with NO second
+ * network round trip -- only a NON-"ok" reason from a genuine transport
+ * failure (this function's own `catch`) is left uncached, so a real outage
+ * can still recover on a later call rather than being pinned as "offline"
+ * for the rest of the session.
+ */
+export async function fetchCommunityImages(versionId, limit = 24) {
+  const key = communityImagesKey(versionId, limit);
+  if (_communityImagesCache.has(key)) {
+    return _communityImagesCache.get(key);
+  }
+  if (_communityImagesPromise.has(key)) {
+    return _communityImagesPromise.get(key);
+  }
+  const p = (async () => {
+    try {
+      const params = new URLSearchParams();
+      if (versionId != null) {
+        params.set("version_id", String(versionId));
+      }
+      if (limit != null) {
+        params.set("limit", String(limit));
+      }
+      const r = await fetch(`${COMMUNITY_IMAGES_URL}?${params.toString()}`, { cache: "no-store" });
+      const j = await r.json();
+      if (j && typeof j.reason === "string" && Array.isArray(j.images)) {
+        const result = { reason: j.reason, images: j.images };
+        _communityImagesCache.set(key, result);
+        return result;
+      }
+      return { reason: "offline", images: [] };
+    } catch (err) {
+      return { reason: "offline", images: [] };
+    } finally {
+      if (_communityImagesPromise.get(key) === p) {
+        _communityImagesPromise.delete(key);
+      }
+    }
+  })();
+  _communityImagesPromise.set(key, p);
   return p;
 }
 

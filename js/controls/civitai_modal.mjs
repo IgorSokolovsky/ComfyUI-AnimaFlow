@@ -1362,9 +1362,11 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       return;
     }
     const built = buildModelDetailView({
-      // `galleryTileWidth` omitted -- this mount wants the function's own
-      // 200px default (this file's own comment above, "The master→detail
-      // swap"), unlike the picker's narrower panel.
+      // `galleryTileWidth`/`communityTileWidth` both omitted -- this mount
+      // wants the function's own 200px/140px defaults (this file's own
+      // comment above, "The master→detail swap"), unlike the picker's
+      // narrower panel (`civitai_search.mjs`'s own `DETAIL_PANEL_GALLERY_
+      // TILE_PX`/`DETAIL_PANEL_COMMUNITY_TILE_PX`).
       doc: targetDoc, result: detailResult, versionId: detailVersionId,
       fontSizePx: modalFontSizePx(),
       browsingLevel: levelLabelToInt(currentFilters.level), detail: detailData,

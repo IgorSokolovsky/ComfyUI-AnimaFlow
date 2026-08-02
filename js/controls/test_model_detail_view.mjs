@@ -39,6 +39,8 @@ import {
   DETAIL_VIEW_FONT_SIZE_MIN,
   DETAIL_VIEW_FONT_SIZE_MAX,
   DETAIL_VIEW_FALLBACK_FONT_SIZE_PX,
+  communityImagesView,
+  communityAttributionLabel,
 } from "./model_detail_view.mjs";
 
 // `js/shared/theme.css`'s raw text -- the shared `.wtn-select` height fix
@@ -64,11 +66,80 @@ function test(name, fn) {
   }
 }
 
+// `asyncTest`/`settle` -- same pattern as `test_model_info.mjs`'s own pair,
+// needed now that the COMMUNITY IMAGES section's own fetch is genuinely
+// asynchronous (a real `await`-shaped promise, even against a stub network
+// function) -- the plain `test()` above never awaits `fn()`, so an async
+// assertion would silently race past its own `console.log("ok")`.
+async function asyncTest(name, fn) {
+  count += 1;
+  try {
+    await fn();
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL - ${name}`);
+    console.error(err && err.stack ? err.stack : err);
+  }
+}
+async function settle(n = 3) {
+  for (let i = 0; i < n; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // A minimal stub DOM -- same shape as test_civitai_search.mjs's own
 // makeDocStub, duplicated per this file's own convention (every render
 // module's test file in this pack builds its own).
+//
+// `FakeIntersectionObserver` is this file's own controllable stand-in for
+// the COMMUNITY IMAGES section's own real `IntersectionObserver` -- test
+// code grabs the last-created instance off `FAKE_IO_INSTANCES` and calls
+// `.trigger()` to simulate the section scrolling into view, as many times
+// as a test wants, since the whole point of several tests below is proving
+// repeated triggers still cost at most one fetch.
 // ---------------------------------------------------------------------------
+
+const FAKE_IO_INSTANCES = [];
+class FakeIntersectionObserver {
+  constructor(cb) {
+    this.cb = cb;
+    this.observed = [];
+    this.disconnected = false;
+    FAKE_IO_INSTANCES.push(this);
+  }
+  observe(el) {
+    this.observed.push(el);
+  }
+  unobserve(el) {
+    const i = this.observed.indexOf(el);
+    if (i >= 0) {
+      this.observed.splice(i, 1);
+    }
+  }
+  disconnect() {
+    this.disconnected = true;
+  }
+  /** Fires an intersection event for every currently-observed element --
+   * a no-op once `disconnect()` has been called, mirroring a REAL
+   * `IntersectionObserver`'s own guarantee that a disconnected observer
+   * never calls its callback again (needed so this stub's own `destroy()`
+   * test is genuine, not merely asserting a `disconnected` flag no code
+   * actually reads). */
+  trigger(isIntersecting = true) {
+    if (this.disconnected) {
+      return;
+    }
+    this.cb(this.observed.map((target) => ({ isIntersecting, target })));
+  }
+}
+/** The most-recently-constructed `FakeIntersectionObserver` (there is at
+ * most one per `buildModelDetailView` call in these tests) -- `null` if
+ * none has been built yet. */
+function lastFakeObserver() {
+  return FAKE_IO_INSTANCES.length ? FAKE_IO_INSTANCES[FAKE_IO_INSTANCES.length - 1] : null;
+}
 
 function makeDocStub() {
   let doc;
@@ -170,7 +241,13 @@ function makeDocStub() {
     },
     head: makeElement("head"),
     body: makeElement("body"),
-    defaultView: { innerWidth: 1200, innerHeight: 800 },
+    // `IntersectionObserver` -- the COMMUNITY IMAGES section's own lazy-load
+    // trigger (`model_detail_view.mjs`'s own "ONE deliberate exception").
+    // Present by default so every OTHER test in this file (none of which
+    // care about the community section) gets the LAZY behaviour -- no
+    // observer trigger, no fetch -- rather than this stub's absence
+    // silently exercising the component's eager fallback path everywhere.
+    defaultView: { innerWidth: 1200, innerHeight: 800, IntersectionObserver: FakeIntersectionObserver },
   };
   return doc;
 }
@@ -1569,6 +1646,385 @@ test("BUG (owner, 2026-08-01, modal-only): .wtn-dv-topbar is pinned (flex: none)
     /\.wtn-dv-topbar \.wtn-dv-back\s*\{[^}]*flex:\s*none;?/,
     "'← results' must keep its intrinsic size, not stretch",
   );
+});
+
+// =========================================================================
+// The COMMUNITY IMAGES grid ("BOTH galleries, for different reasons") --
+// the lazy-loaded bottom-of-panel grid, distinct from the AUTHOR gallery
+// tested above. `communityImagesView`/`communityAttributionLabel` are pure;
+// the rest is a DOM/async integration test of the section `buildModelDetailView`
+// itself builds.
+// =========================================================================
+
+test("communityImagesView: shouldRender is false for every non-'ok' reason, images always []", () => {
+  for (const reason of ["notfound", "offline", "rate_limited"]) {
+    const view = communityImagesView({ reason, images: [{ url: "a.jpg", nsfw_level: 1 }] }, 1);
+    assert.equal(view.shouldRender, false, `reason=${reason} must render nothing`);
+    assert.deepEqual(view.visible, []);
+    assert.equal(view.hiddenCount, 0);
+  }
+});
+
+test("communityImagesView: shouldRender is false for a real 'ok' with a genuinely EMPTY images array -- silent, not an empty-state box", () => {
+  const view = communityImagesView({ reason: "ok", images: [] }, 1);
+  assert.equal(view.shouldRender, false);
+});
+
+test("communityImagesView: 'ok' with images -- visible is level-filtered, hiddenCount is exact", () => {
+  const images = [
+    { url: "a.jpg", nsfw_level: 1 },
+    { url: "b.jpg", nsfw_level: 8 },
+    { url: "c.jpg", nsfw_level: 16 },
+  ];
+  const view = communityImagesView({ reason: "ok", images }, 1); // PG
+  assert.deepEqual(view.visible.map((e) => e.url), ["a.jpg"]);
+  assert.equal(view.hiddenCount, 2);
+  assert.equal(view.shouldRender, true);
+});
+
+test("communityImagesView: EVERY image above the viewer's level -- shouldRender true, visible empty, hiddenCount is the total (not silence, per the task brief's own 'state the hidden count' rule)", () => {
+  const images = [{ url: "a.jpg", nsfw_level: 16 }, { url: "b.jpg", nsfw_level: 16 }];
+  const view = communityImagesView({ reason: "ok", images }, 1);
+  assert.equal(view.shouldRender, true);
+  assert.deepEqual(view.visible, []);
+  assert.equal(view.hiddenCount, 2);
+});
+
+test("communityImagesView: garbage resp/level degrade to 'nothing to render', never throw", () => {
+  assert.deepEqual(communityImagesView(null, 1), { shouldRender: false, visible: [], hiddenCount: 0 });
+  assert.deepEqual(communityImagesView("not-an-object", 1), { shouldRender: false, visible: [], hiddenCount: 0 });
+  assert.deepEqual(communityImagesView({ reason: "ok", images: "not-an-array" }, 1), { shouldRender: false, visible: [], hiddenCount: 0 });
+  assert.deepEqual(communityImagesView(undefined, undefined), { shouldRender: false, visible: [], hiddenCount: 0 });
+});
+
+test("communityAttributionLabel: 'by <username>' when present, no reaction count known", () => {
+  assert.equal(communityAttributionLabel({ url: "a.jpg", username: "someone" }), "by someone");
+});
+
+test("communityAttributionLabel: appends '· ♥ N' only for a positive, finite reaction_count", () => {
+  assert.equal(communityAttributionLabel({ username: "someone", reaction_count: 12 }), "by someone · ♥ 12");
+  assert.equal(communityAttributionLabel({ username: "someone", reaction_count: 0 }), "by someone", "a zero count is not worth stating");
+  assert.equal(communityAttributionLabel({ username: "someone", reaction_count: null }), "by someone");
+});
+
+test("communityAttributionLabel: '' for a null/absent/empty username -- never a fabricated placeholder", () => {
+  assert.equal(communityAttributionLabel({ username: null }), "");
+  assert.equal(communityAttributionLabel({}), "");
+  assert.equal(communityAttributionLabel({ username: "" }), "");
+});
+
+test("communityAttributionLabel: garbage input never throws", () => {
+  assert.equal(communityAttributionLabel(null), "");
+  assert.equal(communityAttributionLabel("not-an-object"), "");
+});
+
+// -------------------------------------------------------------------------
+// DOM/async integration -- `buildModelDetailView`'s own community section.
+// -------------------------------------------------------------------------
+
+/** A minimal community-images fetch stub that counts its own calls and
+ * records the args it was called with -- injected as `fetchCommunityImages`
+ * so these tests never touch the real network layer (`civitai_api.mjs`) or
+ * its own module-level cache. */
+function makeFetchStub(resp) {
+  const calls = [];
+  const fn = async (versionId, limit) => {
+    calls.push({ versionId, limit });
+    return resp;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test("buildModelDetailView: the community section fetches NOTHING until it is actually observed", () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1, username: "a" }] });
+  buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  assert.equal(fetchCommunityImages.calls.length, 0, "no network call before the section ever scrolls into view");
+});
+
+await asyncTest("buildModelDetailView: the community section fetches EXACTLY ONCE even when the observer fires repeatedly", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1, username: "a" }] });
+  buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  const io = lastFakeObserver();
+  assert.ok(io, "the section must install an IntersectionObserver");
+  io.trigger();
+  io.trigger();
+  io.trigger();
+  await settle();
+  assert.equal(fetchCommunityImages.calls.length, 1, "repeated intersections must never cost a second request");
+  assert.equal(io.disconnected, true, "the observer disconnects once it has done its one job");
+});
+
+await asyncTest("buildModelDetailView: fetchCommunityImages is called with the SELECTED version's own id and the configured limit", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [] });
+  buildModelDetailView({
+    doc, result, versionId: 2, browsingLevel: 1, communityImagesLimit: 7,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  assert.deepEqual(fetchCommunityImages.calls, [{ versionId: 2, limit: 7 }]);
+});
+
+await asyncTest("buildModelDetailView: with no IntersectionObserver in this DOM, the section falls back to fetching EAGERLY rather than never loading at all", async () => {
+  const doc = makeDocStub();
+  delete doc.defaultView.IntersectionObserver;
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1 }] });
+  buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  await settle();
+  assert.equal(fetchCommunityImages.calls.length, 1, "no observer available -- the feature must not simply vanish");
+});
+
+await asyncTest("buildModelDetailView: level filtering hides the right community images and states the hidden count via the AUTHOR strip's OWN class + wording", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const images = [
+    { url: "pg.jpg", nsfw_level: 1, username: "a" },
+    { url: "r.jpg", nsfw_level: 4, username: "b" },
+    { url: "xxx.jpg", nsfw_level: 16, username: "c" },
+  ];
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, // PG
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const tiles = findAll(el, "wtn-dv-community-tile");
+  assert.equal(tiles.length, 1, "only the PG-passing image renders into the grid");
+  const hidden = findAll(el, "wtn-dv-gallery-hidden");
+  assert.equal(hidden.length, 1, "reuses the AUTHOR gallery's own hidden-count class, not a second one");
+  assert.equal(textOf(hidden[0]), "2 images hidden by your browsing level.");
+});
+
+await asyncTest("buildModelDetailView: nsfw_level at each rung (1/2/4/8/16) passes exactly the entries at or below the viewer's own level", async () => {
+  const rungs = [1, 2, 4, 8, 16];
+  for (const level of rungs) {
+    FAKE_IO_INSTANCES.length = 0;
+    const doc = makeDocStub();
+    const result = makeTwoVersionResult();
+    const images = rungs.map((n) => ({ url: `${n}.jpg`, nsfw_level: n, username: "u" }));
+    const fetchCommunityImages = makeFetchStub({ reason: "ok", images });
+    const { el } = buildModelDetailView({
+      doc, result, versionId: 3, browsingLevel: level,
+      detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+      fetchCommunityImages,
+    });
+    lastFakeObserver().trigger();
+    await settle();
+    const expectedVisible = rungs.filter((n) => n <= level).length;
+    assert.equal(findAll(el, "wtn-dv-community-tile").length, expectedVisible, `level=${level}`);
+  }
+});
+
+await asyncTest("buildModelDetailView: a null username renders NO attribution caption at all -- never the literal string 'null'", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const images = [
+    { url: "a.jpg", nsfw_level: 1, username: "known" },
+    { url: "b.jpg", nsfw_level: 1, username: null },
+  ];
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const tiles = findAll(el, "wtn-dv-community-tile");
+  assert.equal(tiles.length, 2);
+  const captions = findAll(el, "wtn-dv-ccaption");
+  assert.equal(captions.length, 1, "exactly one tile has a caption -- the one with a known username");
+  assert.equal(textOf(captions[0]), "by known");
+  for (const cap of captions) {
+    assert.doesNotMatch(textOf(cap), /\bnull\b/, "the literal string 'null' must never appear");
+  }
+});
+
+await asyncTest("buildModelDetailView: a failed OR empty response renders NOTHING at all -- no heading, no error text, no empty-state box", async () => {
+  for (const resp of [
+    { reason: "offline", images: [] },
+    { reason: "notfound", images: [] },
+    { reason: "rate_limited", images: [] },
+    { reason: "ok", images: [] },
+  ]) {
+    FAKE_IO_INSTANCES.length = 0;
+    const doc = makeDocStub();
+    const result = makeTwoVersionResult();
+    const fetchCommunityImages = makeFetchStub(resp);
+    const { el } = buildModelDetailView({
+      doc, result, versionId: 3, browsingLevel: 1,
+      detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+      fetchCommunityImages,
+    });
+    lastFakeObserver().trigger();
+    await settle();
+    assert.doesNotMatch(textOf(el), /Community Images/, `reason=${resp.reason}: heading must not render`);
+    assert.equal(findAll(el, "wtn-dv-community-tile").length, 0, `reason=${resp.reason}: no tiles`);
+    assert.equal(findAll(el, "wtn-dv-gallery-hidden").length, 0, `reason=${resp.reason}: no hidden-count line either`);
+    const host = findAll(el, "wtn-dv-community-host")[0];
+    assert.ok(host, "the sentinel host element itself must still exist (it's what the observer watches)");
+    assert.equal(host.children.length, 0, `reason=${resp.reason}: the host stays completely empty`);
+  }
+});
+
+await asyncTest("buildModelDetailView: no copy-prompt control (or hover overlay) exists ANYWHERE in the community section -- even alongside an author gallery that legitimately has one", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  // A rogue `prompt` field on a community entry (should never arrive per the
+  // wire contract, but defence-in-depth: this section must not grow a
+  // control even if bad data slips through) alongside a LEGITIMATE
+  // prompt-carrying entry in the AUTHOR gallery, proving the assertion below
+  // is actually scoped to the community section and not vacuously true.
+  const fetchCommunityImages = makeFetchStub({
+    reason: "ok",
+    images: [{ url: "c1.jpg", nsfw_level: 1, username: "a", prompt: "should be ignored" }],
+  });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [{ url: "author.jpg", nsfw_level: 1, prompt: "1girl, masterpiece" }], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  // Sanity: the author gallery's OWN copy button really is present elsewhere
+  // in this same document -- proves the community-scoped assertion below
+  // isn't just vacuously true because copy-prompt never renders at all.
+  assert.equal(findAll(el, "wtn-dv-gcopy").length, 1, "the author gallery's own copy-prompt button must still exist");
+  const communityHost = findAll(el, "wtn-dv-community-host")[0];
+  assert.ok(communityHost);
+  assert.equal(findAll(communityHost, "wtn-dv-gcopy").length, 0, "no copy-prompt button inside the community section");
+  assert.equal(findAll(communityHost, "wtn-dv-goverlay").length, 0, "no hover-overlay mechanism inside the community section");
+  assert.equal(findAll(communityHost, "wtn-dv-gdrawer").length, 0, "no prompt drawer inside the community section");
+});
+
+await asyncTest("buildModelDetailView: a username containing markup reaches the DOM as INERT text, never parsed", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const hostileUsername = "<img src=x onerror=alert(1)>";
+  const fetchCommunityImages = makeFetchStub({
+    reason: "ok",
+    images: [{ url: "c1.jpg", nsfw_level: 1, username: hostileUsername }],
+  });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const caption = findAll(el, "wtn-dv-ccaption")[0];
+  assert.ok(caption, "a known username must still render a caption");
+  assert.equal(caption.textContent, `by ${hostileUsername}`, "the raw string must survive VERBATIM as textContent");
+  assert.equal(caption.children.length, 0, "textContent must never be parsed into child elements (never innerHTML)");
+});
+
+await asyncTest("buildModelDetailView: the community grid is a RESPONSIVE GRID, not a filmstrip -- and communityTileWidth sets its own CSS var, defaulting to 140", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1 }] });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const grid = findAll(el, "wtn-dv-community-grid")[0];
+  assert.ok(grid, "a grid element must exist once there's something to show");
+  assert.equal(grid.style["--wtn-dv-community-tile"], "140px", "default tile-width floor");
+  assert.equal(findAll(el, "wtn-dv-gallery-filmstrip").length, 0, "the community grid must never reuse the author gallery's filmstrip class");
+});
+
+await asyncTest("buildModelDetailView: a garbage communityTileWidth degrades to the 140px default rather than an invalid CSS value", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1 }] });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1, communityTileWidth: -5,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const grid = findAll(el, "wtn-dv-community-grid")[0];
+  assert.equal(grid.style["--wtn-dv-community-tile"], "140px");
+});
+
+await asyncTest("buildModelDetailView: the community section sits BELOW both descriptions, in DOM order", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1, username: "a" }] });
+  const { el } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: {
+      status: "loaded", gallery: [], modelDescriptionChecked: true,
+      versionDescription: "Trained on preview3.", modelDescription: "Model write-up.",
+    },
+    fetchCommunityImages,
+  });
+  lastFakeObserver().trigger();
+  await settle();
+  const body = findAll(el, "wtn-dv-body")[0];
+  const order = body.children.map((c) => c.className);
+  const communityHostIdx = order.indexOf("wtn-dv-community-host");
+  const versionDescIdx = order.findIndex((c, i) => textOf(body.children[i]) === "Version Description");
+  const modelDescIdx = order.findIndex((c, i) => textOf(body.children[i]) === "Model Description");
+  assert.ok(communityHostIdx > versionDescIdx, "community section must come after the version description heading");
+  assert.ok(communityHostIdx > modelDescIdx, "community section must come after the model description heading");
+});
+
+await asyncTest("buildModelDetailView: destroy() disconnects the community observer if it never fired", async () => {
+  FAKE_IO_INSTANCES.length = 0;
+  const doc = makeDocStub();
+  const result = makeTwoVersionResult();
+  const fetchCommunityImages = makeFetchStub({ reason: "ok", images: [{ url: "c1.jpg", nsfw_level: 1 }] });
+  const { destroy } = buildModelDetailView({
+    doc, result, versionId: 3, browsingLevel: 1,
+    detail: { status: "loaded", gallery: [], modelDescriptionChecked: true },
+    fetchCommunityImages,
+  });
+  const io = lastFakeObserver();
+  assert.equal(io.disconnected, false);
+  destroy();
+  assert.equal(io.disconnected, true);
+  // A late-firing observer after destroy() must never write into the
+  // (now stale) host, and must never call the fetch either.
+  io.trigger();
+  await settle();
+  assert.equal(fetchCommunityImages.calls.length, 0, "destroy() must be equivalent to 'never observed' for network purposes");
 });
 
 const total = count;

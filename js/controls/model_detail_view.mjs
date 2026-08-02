@@ -54,7 +54,39 @@
  * ever RENDERS whatever `detail` shape it's handed (`{status, model
  * Description, versionDescription, modelDescriptionChecked, gallery}`), so a
  * loading/error state is exactly as testable as a resolved one with no
- * network anywhere in this module.
+ * network anywhere in this module for THAT data.
+ *
+ * ## ONE deliberate exception: the COMMUNITY IMAGES grid fetches itself
+ *
+ * `docs/lora-loader-design.md` "BOTH galleries, for different reasons" put a
+ * SECOND grid at the bottom — the community's own images (`/api/v1/images?
+ * modelVersionId=...`, `src/model_browser/api.py`'s `community_images_impl`)
+ * — below both descriptions, and required it to be LAZY: fetched only once
+ * the section itself scrolls into view, never on open. That is a DOM-
+ * visibility question only the element actually on screen can answer, so
+ * (unlike every other field above) this ONE section owns its own
+ * `IntersectionObserver` and its own fetch (`fetchCommunityImages`, an
+ * injectable option — same "caller-injectable, network-backed default"
+ * shape as `onCopyPrompt`/`defaultCopyToClipboard`, not a hardcoded `fetch()`
+ * call) rather than waiting on the caller to hand it pre-resolved data. Two
+ * things keep this from becoming a second, uncontrolled source of requests:
+ * the observer disconnects after its first intersection (a component-level
+ * "already started" flag guards a second network call even if it fires more
+ * than once first), and `civitai_api.mjs`'s own `fetchCommunityImages` cache
+ * is a SECOND, independent guarantee behind that, for the case a caller
+ * rebuilds this whole component (a new instance, a new observer) while the
+ * section is already visible. See `buildModelDetailView`'s own
+ * `fetchCommunityImages`/`communityTileWidth`/`communityImagesLimit`
+ * parameters for the rest of the contract.
+ *
+ * This grid carries NO prompt (`community_images_impl`'s own docstring: 0/40
+ * sampled images carry one, deliberately no `prompt` key on the wire) and
+ * gets no copy-prompt affordance and no prompt-on-hover — that is the AUTHOR
+ * gallery's job, immediately below. It only attributes each image to its
+ * `username` (rendered nowhere when absent — never a fabricated
+ * "anonymous") and reports how many are hidden by the viewer's own browsing
+ * level, reusing the exact `.wtn-dv-gallery-hidden` class/wording the author
+ * gallery already established rather than inventing a second phrasing.
  *
  * ## The gallery's source is the AUTHOR's, not the community's (measured 2026-08-01)
  *
@@ -104,6 +136,7 @@
 import { resolveVersionView, resultBaseModel, formatCompactCount } from "./civitai_search.mjs";
 import { civitaiModelUrl } from "./model_info.mjs";
 import { formatFileSize } from "./model_picker.mjs";
+import { fetchCommunityImages as networkFetchCommunityImages } from "./civitai_api.mjs";
 import {
   levelLabelToInt,
   thumbState,
@@ -263,6 +296,80 @@ export function hiddenGalleryCount(gallery, level) {
  * images at all), `"image"` (at least one passes). */
 export function galleryState(gallery, level, modelNsfwLevel) {
   return thumbState(null, gallery, level, modelNsfwLevel);
+}
+
+// ---------------------------------------------------------------------------
+// The COMMUNITY IMAGES grid ("BOTH galleries, for different reasons") -- the
+// bottom-of-panel grid, honestly evidence rather than a prompt source (no
+// `prompt` key on the wire at all, `src/model_browser/civitai_parse.py`'s
+// `parse_community_images`). Deliberately REUSES `visibleGalleryEntries`/
+// `hiddenGalleryCount` above rather than a second level-filter -- both
+// already operate generically on any `{url, nsfw_level}`-shaped array, and a
+// community entry is exactly that shape (plus `username`/`reaction_count`,
+// neither of which the filter itself needs to look at).
+// ---------------------------------------------------------------------------
+
+/**
+ * Decides what (if anything) the community grid should render, from a raw
+ * `fetchCommunityImages` response and the viewer's own browsing level --
+ * pure, no DOM, so the "silent on failure or empty" rule (task brief point
+ * 5) is directly testable without ever building a real section.
+ *
+ * `shouldRender` is `false` -- meaning: no heading, no grid, no hidden-count
+ * line, nothing at all -- for every NON-`"ok"` reason (`notfound`/`offline`/
+ * `rate_limited`, `community_images_impl`'s own vocabulary) and for a
+ * genuinely empty `images` array on a real `"ok"`. Both collapse to the same
+ * silence deliberately: "a failed or empty fetch must never turn a working
+ * detail view into a broken one" makes no distinction between them, and
+ * inventing one (an error line for the former, an empty-state box for the
+ * latter) is exactly what that rule forbids.
+ *
+ * When `shouldRender` is `true`, `visible` is `visibleGalleryEntries`'s own
+ * level-passing subset (reused verbatim, never a second predicate) and
+ * `hiddenCount` is `hiddenGalleryCount`'s own count for the SAME array/level
+ * -- which may be `> 0` even when `visible` is empty: every image the server
+ * sent is real, just every one sits above the viewer's own browsing level,
+ * so the honest render is the heading plus the hidden-count line and no
+ * grid, not silence (the images are not "absent", they are "hidden by your
+ * own setting" -- the same distinction `thumbState`'s own "empty list can
+ * also mean locked" doc comment draws, one level up: there the SERVER
+ * trimmed the list before it arrived; here the CLIENT filter empties an
+ * already-nonempty one, but the "these exist, you just can't see them"
+ * conclusion the caller shows the user is the identical honest message).
+ *
+ * Garbage `resp` (not an object, missing `images`) or a garbage/non-finite
+ * `level` degrade to "nothing to render"/PG respectively, never throw.
+ */
+export function communityImagesView(resp, level) {
+  const images = resp && typeof resp === "object" && resp.reason === "ok" && Array.isArray(resp.images)
+    ? resp.images
+    : [];
+  if (images.length === 0) {
+    return { shouldRender: false, visible: [], hiddenCount: 0 };
+  }
+  return {
+    shouldRender: true,
+    visible: visibleGalleryEntries(images, level),
+    hiddenCount: hiddenGalleryCount(images, level),
+  };
+}
+
+/** A community image's own attribution caption -- `"by someone"`, or `"by
+ * someone · ♥ 12"` when a positive `reaction_count` is also known -- or `""`
+ * for a `null`/absent `username` (task brief point 3: "render nothing rather
+ * than a placeholder", never a fabricated "anonymous"/"unknown"). Pure
+ * string construction only; the CALLER is responsible for writing the
+ * result with `textContent`, never `innerHTML` -- `username` is third-party,
+ * user-authored text (task brief's own "untrusted text" warning). Never
+ * throws on garbage input. */
+export function communityAttributionLabel(entry) {
+  if (!entry || typeof entry !== "object" || typeof entry.username !== "string" || !entry.username) {
+    return "";
+  }
+  const reactions = Number.isFinite(entry.reaction_count) && entry.reaction_count > 0
+    ? ` · ♥ ${entry.reaction_count}`
+    : "";
+  return `by ${entry.username}${reactions}`;
 }
 
 /** A gallery entry's generation-parameters line -- `"Euler a · 20 steps ·
@@ -434,6 +541,13 @@ export const FONT_RATIOS = {
   gparams: 9.5 / 12,
   gcopy: 10 / 12,
   close: 13 / 12,
+  // The community grid's own attribution caption -- same small-text tier as
+  // `badge` (a byline-shaped label, not a paragraph), added rather than
+  // reusing `badge` directly so this section's own font-size stays a named,
+  // independently-retunable entry (this table's own "never a second,
+  // independently-tuned ratio LIST" rule is about not FORKING the table,
+  // not about every selector sharing one entry with an unrelated one).
+  ccaption: 10 / 12,
 };
 
 /** `font-size: calc(...)` value for one `FONT_RATIOS` entry -- always
@@ -813,6 +927,47 @@ ${THUMB_SKELETON_CSS}
 .wtn-dv-gcopy:hover { background: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
 .wtn-dv-gallery-empty, .wtn-dv-gallery-locked { font-size: ${fontCalc(FONT_RATIOS.body)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); padding: 6px 0; }
 
+/* The COMMUNITY IMAGES grid ("BOTH galleries, for different reasons") --
+   deliberately a RESPONSIVE GRID, not a filmstrip: the author gallery above
+   already owns that shape, and this section is explicitly a different one
+   (task brief: "not a filmstrip -- the author strip is the filmstrip and
+   this is deliberately a different shape"). \`repeat(auto-fill, minmax(...))\`
+   is what makes it work at BOTH mounts with no JS branching on which mount
+   this is -- the same "one caller-supplied number per mount" pattern
+   \`galleryTileWidth\` already established, except here the number is a
+   MINIMUM a tile may shrink to (auto-fill lays out however many columns of
+   at least that width fit the container), not a fixed pixel width, since a
+   grid -- unlike a fixed-tile horizontal filmstrip -- is supposed to reflow
+   with the panel rather than force a scrollbar.
+   \`.wtn-dv-community-host\` is the section's OWN observed sentinel -- it is
+   the element \`buildModelDetailView\`'s own IntersectionObserver watches,
+   and (this file's own top doc comment, "ONE deliberate exception") stays
+   completely EMPTY -- no heading, no box, nothing -- until that observer
+   fires and a fetch resolves with something to show. An empty \`<div>\` has
+   zero height by construction, so this never reserves visible space for a
+   section that may render nothing at all (task brief point 5). */
+.wtn-dv-community-host { min-width: 0; }
+.wtn-dv-community-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--wtn-dv-community-tile, 90px), 1fr));
+  gap: 8px; margin-top: 4px;
+}
+.wtn-dv-community-tile { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wtn-dv-cbox {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; background: var(--wtn-console, ${TOKENS.console});
+  display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 7px;
+}
+.wtn-dv-cbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Attribution (task brief point 3: "an uncredited grid of other people's
+   work is the wrong default") -- a static caption UNDER the tile, never a
+   hover overlay: point 4 forbids a copy-prompt control here and the author
+   gallery's own \`.wtn-dv-gdrawer\` is exactly the hover mechanism that
+   would invite one, besides which "escaping a clip is impossible" (task
+   brief's own third constraint) makes a hover affordance the wrong choice
+   for a grid this dense anyway. \`overflow-wrap: anywhere\` mirrors
+   \`.wtn-dv-desc\`'s own guard -- a long, space-less username must wrap
+   rather than force the tile wider. */
+.wtn-dv-ccaption { font-size: ${fontCalc(FONT_RATIOS.ccaption)}; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); overflow-wrap: anywhere; }
+
 .wtn-dv-back {
   margin-top: 10px; align-self: flex-start; font-family: var(--wtn-font-mono, monospace); font-size: ${fontCalc(FONT_RATIOS.body)}; padding: 4px 9px;
   border-radius: 6px; cursor: pointer; background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
@@ -962,6 +1117,99 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
   return card;
 }
 
+/** `buildModelDetailView`'s own network default for its `fetchCommunityImages`
+ * option -- a thin wrapper around `civitai_api.mjs`'s network function
+ * (imported under an alias so the OPTION and the NETWORK function can share
+ * the more readable name, same reasoning `onCopyPrompt`/`defaultCopyToClipboard`
+ * already establishes: a caller-injected function with a real, working
+ * default, never a hardcoded `fetch()` call inline in the render path). */
+async function defaultFetchCommunityImages(versionId, limit) {
+  return networkFetchCommunityImages(versionId, limit);
+}
+
+/**
+ * One community-grid tile -- the thumbnail (same skeleton/retry/exhaust
+ * machinery every other gallery in this pack shares, `attachThumbCandidate`)
+ * plus a static attribution caption underneath (`communityAttributionLabel`,
+ * reused verbatim, never re-derived). Deliberately carries NO prompt
+ * overlay, NO drawer, NO copy button, and NO hover-revealed anything --
+ * unlike `buildGalleryEntryEl` just above, this function has no `onCopyPrompt`
+ * parameter to plumb through at all, which is what makes "no copy-prompt
+ * control exists anywhere in this section" true by construction rather than
+ * by a runtime check (task brief point 4). */
+function buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }) {
+  const tile = el(doc, "div", "wtn-dv-community-tile");
+  const box = el(doc, "div", "wtn-dv-cbox");
+  const skeleton = el(doc, "span", THUMB_SKELETON_CLASS);
+  box.appendChild(skeleton);
+  tile.appendChild(box);
+
+  gate.schedule((release) => {
+    if (isStale()) {
+      release();
+      return;
+    }
+    const clearSkeleton = (t) => {
+      if (skeleton.parentNode === t && typeof t.removeChild === "function") {
+        t.removeChild(skeleton);
+      }
+    };
+    attachThumbCandidate(doc, box, [entry.url], { index: 0, retried: false }, isStale, backoffMs, (d, t) => {
+      clearSkeleton(t);
+      t.appendChild(el(d, "span", "wtn-dv-gimg-ph"));
+      release();
+    }, (d, t) => {
+      clearSkeleton(t);
+      release();
+    });
+  });
+
+  const captionText = communityAttributionLabel(entry);
+  if (captionText) {
+    const caption = el(doc, "div", "wtn-dv-ccaption");
+    caption.textContent = captionText; // never innerHTML -- `username` is third-party, user-authored text
+    tile.appendChild(caption);
+  }
+  return tile;
+}
+
+/** Renders `communityImagesView(resp, level)` into `host` (a caller-owned,
+ * INITIALLY EMPTY `.wtn-dv-community-host`), wholesale -- `host.innerHTML =
+ * ""` first so a re-render (there is at most one, per this section's own
+ * "at most once per version per open" contract, but this stays idempotent
+ * regardless) never doubles up. Renders NOTHING at all -- no heading, no
+ * empty-state line -- when `communityImagesView` says not to (task brief
+ * point 5); otherwise a `Community Images` heading, the level-passing grid
+ * (only when non-empty -- a fully level-locked result still gets the
+ * heading and the hidden-count line, no empty grid), and the hidden-count
+ * line (`.wtn-dv-gallery-hidden`, the AUTHOR gallery's own class/wording,
+ * reused verbatim rather than a second phrasing) whenever anything is
+ * actually hidden. */
+function renderCommunityImages(doc, host, resp, level, { tileWidthPx, backoffMs, concurrency, isStale }) {
+  host.innerHTML = "";
+  const view = communityImagesView(resp, level);
+  if (!view.shouldRender) {
+    return; // silent -- covers every non-"ok" reason AND a genuinely empty gallery alike
+  }
+  const heading = el(doc, "h4", "wtn-dv-sechead");
+  heading.textContent = "Community Images";
+  host.appendChild(heading);
+  if (view.visible.length > 0) {
+    const grid = el(doc, "div", "wtn-dv-community-grid");
+    grid.style.setProperty("--wtn-dv-community-tile", `${tileWidthPx}px`);
+    const gate = createLoadGate(concurrency);
+    for (const entry of view.visible) {
+      grid.appendChild(buildCommunityEntryEl(doc, entry, { isStale, backoffMs, gate }));
+    }
+    host.appendChild(grid);
+  }
+  if (view.hiddenCount > 0) {
+    const hiddenEl = el(doc, "div", "wtn-dv-gallery-hidden");
+    hiddenEl.textContent = `${view.hiddenCount} image${view.hiddenCount === 1 ? "" : "s"} hidden by your browsing level.`;
+    host.appendChild(hiddenEl);
+  }
+}
+
 /**
  * Builds the detail view's own root element. Rebuilt wholesale on every
  * call (matches `civitai_search.mjs`/`civitai_modal.mjs`'s own "rebuild the
@@ -1061,16 +1309,54 @@ function buildGalleryEntryEl(doc, entry, { onCopyPrompt, isStale, backoffMs, gat
  *   setting or asks which mount it is in, exactly like `galleryTileWidth`.
  *   Every OTHER font-size in this component is a fixed ratio off this one
  *   number (`FONT_RATIOS`) -- never a second, independently-chosen size.
+ * @param {number} [opts.communityTileWidth] - the COMMUNITY grid's own
+ *   MINIMUM tile width, in px (default 140 -- the modal's size, mirroring
+ *   `galleryTileWidth`'s own default being the MODAL's size while the picker
+ *   overrides down; `civitai_search.mjs` passes its own narrower
+ *   `DETAIL_PANEL_COMMUNITY_TILE_PX`, 90, for its ~396px panel). Sibling to
+ *   `galleryTileWidth`, above, in shape ("one option, one caller-supplied
+ *   number per mount") but NOT in meaning: this grid is a responsive
+ *   `auto-fill`/`minmax(...)` CSS grid (task brief: "a responsive grid, not
+ *   a filmstrip"), so this is a FLOOR a tile may shrink to, not the fixed
+ *   width every filmstrip tile takes -- the grid itself decides how many
+ *   columns of at least this width fit whichever mount it's in. A
+ *   garbage/non-positive value degrades to this same default, mirroring
+ *   `galleryTileWidth`'s own guard.
+ * @param {number} [opts.communityImagesLimit] - the `limit` query param this
+ *   section's own fetch sends (default 24, matching the route's own default,
+ *   `src/model_browser/api.py`'s `_COMMUNITY_IMAGES_DEFAULT_LIMIT`).
+ * @param {(versionId: number, limit: number) => Promise<{reason: string, images: Array}>} [opts.fetchCommunityImages]
+ *   - the COMMUNITY grid's own network call, injectable for tests (default
+ *   `defaultFetchCommunityImages`, a thin wrapper around `civitai_api.mjs`'s
+ *   real `fetchCommunityImages`) -- same "caller-injectable, network-backed
+ *   default" shape as `onCopyPrompt`, never a hardcoded `fetch()` in the
+ *   render path. Called AT MOST ONCE per `buildModelDetailView` call (this
+ *   file's own top doc comment, "ONE deliberate exception", has the full
+ *   "why" and the two layers that enforce it), triggered by the section's
+ *   own `IntersectionObserver` the first time it scrolls into view -- never
+ *   on open, never a second time for repeated intersections of the SAME
+ *   call. Falls back to firing immediately (eager, not lazy) when
+ *   `doc.defaultView.IntersectionObserver` is unavailable -- an extremely
+ *   unlikely environment in practice (every evergreen browser this pack
+ *   targets has had it for years), but "the feature quietly never works"
+ *   is a worse failure than "the feature loses its lazy-load property" in
+ *   that one degenerate case (task brief: "behind an explicit action if an
+ *   observer proves impractical in this DOM" -- eager IS that fallback
+ *   action here, since there is no scroll-position signal left to wait on).
  * @returns {{el: Element, destroy: () => void}} `destroy()` marks every
  *   pending thumbnail/gallery retry timer stale so a caller that replaces
  *   this element mid-retry never leaves an orphaned timer writing into a
  *   detached box (same `renderGeneration` discipline every sibling render
- *   module in this pack already follows).
+ *   module in this pack already follows), and disconnects the community
+ *   section's own `IntersectionObserver` if it hasn't fired yet.
  */
 export function buildModelDetailView({
   doc,
   galleryTileWidth = 200,
   fontSizePx = DETAIL_VIEW_FALLBACK_FONT_SIZE_PX,
+  communityTileWidth = 140,
+  communityImagesLimit = 24,
+  fetchCommunityImages: fetchCommunityImagesFn = defaultFetchCommunityImages,
   result,
   versionId,
   browsingLevel = 1,
@@ -1093,6 +1379,10 @@ export function buildModelDetailView({
   // same 200px default rather than producing an invalid `width: NaNpx` --
   // mirrors this file's own "never throw on a bad caller value" convention.
   const tileWidthPx = Number.isFinite(galleryTileWidth) && galleryTileWidth > 0 ? galleryTileWidth : 200;
+
+  // Same degrade rule as `tileWidthPx`, for the community grid's own minimum
+  // tile width.
+  const communityTileWidthPx = Number.isFinite(communityTileWidth) && communityTileWidth > 0 ? communityTileWidth : 140;
 
   // The accessible font-size scale (this file's own "Accessible font
   // sizing" section, above) -- clamped/degraded exactly like tileWidthPx
@@ -1388,6 +1678,52 @@ export function buildModelDetailView({
     bodyHost.appendChild(empty);
   }
 
+  // ---- COMMUNITY IMAGES, below BOTH descriptions (task brief's own layout
+  // instruction) -- this file's own top doc comment, "ONE deliberate
+  // exception", has the full "why" this section owns its own fetch rather
+  // than waiting on the caller like every field above. `communityHost` is
+  // the sentinel the observer below watches; it starts and STAYS completely
+  // empty (no heading, no placeholder box) until a fetch resolves with
+  // something worth showing (`renderCommunityImages`'s own "silent on
+  // failure or empty" rule). --------------------------------------------
+  const communityHost = el(doc, "div", "wtn-dv-community-host");
+  bodyHost.appendChild(communityHost);
+
+  let communityFetchStarted = false;
+  let communityObserver = null;
+
+  function startCommunityFetch() {
+    if (communityFetchStarted) {
+      return; // an observer firing more than once must never trigger a second request
+    }
+    communityFetchStarted = true;
+    if (communityObserver) {
+      communityObserver.disconnect();
+    }
+    Promise.resolve(fetchCommunityImagesFn(view.primary_version_id, communityImagesLimit)).then((resp) => {
+      if (isStale()) {
+        return; // this render pass is no longer current -- never write into a detached host
+      }
+      renderCommunityImages(doc, communityHost, resp, browsingLevel, {
+        tileWidthPx: communityTileWidthPx, backoffMs: thumbRetryBackoffMs, concurrency: galleryConcurrency, isStale,
+      });
+    });
+  }
+
+  const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
+  if (win && typeof win.IntersectionObserver === "function") {
+    communityObserver = new win.IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        startCommunityFetch();
+      }
+    });
+    communityObserver.observe(communityHost);
+  } else {
+    // No IntersectionObserver in this DOM -- `fetchCommunityImages`'s own
+    // doc comment has the full "why eager, not silently never" reasoning.
+    startCommunityFetch();
+  }
+
   // The header shape (picker) used to build its OWN "← back to results"
   // here, at the bottom of the scrolling body -- removed (owner, 2026-08-01:
   // "why do we have a back button in this menu?"). It never described a real
@@ -1403,6 +1739,9 @@ export function buildModelDetailView({
     el: root,
     destroy() {
       stale = true;
+      if (communityObserver) {
+        communityObserver.disconnect();
+      }
     },
   };
 }
