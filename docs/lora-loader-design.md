@@ -798,6 +798,28 @@ site and relays model IDs — worth knowing that the alternative to this port is
 > treat a full page as proof the query matched.** A fallback that quietly shows the 100 newest models as
 > if they were search results is worse than one that shows nothing.
 
+#### CONSIDERED AND REJECTED: the widely-shared "use `tag=` instead of `query=`" advice
+
+A dev-tip post circulating in the Civitai community (surfaced by the owner, 2026-08-02) claims
+`?query=` is *"broken, fails ~70% of the time, returns zero results half the time"* and that `?tag=`
+*"just works. Every time."* — and recommends every integrator switch. **Do not.** Measured 2026-08-02:
+
+- **The flakiness does not reproduce.** `?query=photo&limit=10` returned a full page of 10 on **8 of 8**
+  consecutive runs. Zero empty responses. Whatever that author hit is not reproducible today.
+- **`tag=` is not a search.** It matches *tags*, not names or free text. `tag=moriimee` and
+  `query=moriimee` happen to return the identical two models — but `tag=gothic niji` returns
+  **Pony Diffusion V6 XL, majicMIX realistic, DreamShaper, Realistic Vision, EasyNegative**.
+
+That second result is the whole point, and it is the 0-hit Postgres fallback documented above, caught
+in the wild: **a `tag=` miss returns a page of popular models that looks exactly like a successful
+search.** Swapping `query=` for `tag=` would trade an endpoint with poor relevance for one that
+*confidently returns the wrong answer* on any term that is not a tag — which includes most model names,
+and every multi-word phrase. A user searching `gothic niji` would be shown Pony Diffusion and have no
+way to tell it was a miss.
+
+This is recorded so it is not re-proposed. The advice is popular, plausible, and wrong for a
+name-search UI.
+
 #### What actually fixes it
 
 `../Civicomfy` (**MIT © 2025 MoonGoblin**, cloned for reference) does not use `/api/v1/models` for search
