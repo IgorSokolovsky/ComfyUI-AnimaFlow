@@ -601,9 +601,49 @@ const CSS = `
   overflow: hidden;
 }
 .wtn-ctl-name.wtn-lora-name:hover { color: var(--wtn-accent-strong, ${TOKENS.accentStrong}); }
-.wtn-lora-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* BUG (owner, 2026-08-02): "the arrow down should be same width as [a longer
+   row's name] so it will be aligned" -- the button ('.wtn-lora-name' above)
+   already correctly fills the row's spare width ('flex: 1 1 auto'), but this
+   TEXT span had no 'flex' of its own, so it defaulted to 'flex: 0 1 auto' and
+   sized to its own content -- the caret sat immediately after the text, not
+   at the field's right edge, so a short name ('Anima Edit') put the caret far
+   left and a long one ('Anima Real Skin Enhancer') put it far right. 'flex: 1
+   1 auto' makes THIS span the one that fills the button, pushing the
+   flex:none caret to the button's own right edge on every row regardless of
+   name length. 'wtn-flex-bound' (js/shared/theme.css) supplies the
+   accompanying 'min-width: 0' -- a flex item's default min-width is its own
+   min-content width, which would otherwise defeat 'text-overflow: ellipsis'
+   and let a long name overflow the button instead of truncating
+   (.claude/skills/animaflow-shared-fields/SKILL.md's own documented trap).
+   Reused rather than a local declaration: this is exactly the "bounded flex/
+   scroll region" idiom 'wtn-flex-bound' exists for (its own doc comment in
+   theme.css lists three other sites needing the identical pair), and
+   js/controls/model_detail_view.mjs already established the precedent of a
+   js/controls/ render module reaching for this SPECIFIC shared class (unlike
+   the rest of this file's CSS, which is deliberately duplicated per-module --
+   see this file's own top doc comment -- 'wtn-flex-bound' is a global,
+   unscoped rule in theme.css, so it works here with no '.wtn' scoping
+   requirement and no risk of drifting from a second hand-copied
+   'min-width: 0'). */
+.wtn-lora-name-text { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* BUG (owner, 2026-08-02): the caret was 'caret.textContent = "▾"', a TEXT
+   glyph, styled at 'font-size: 9px' -- but the STEPPER arrows in this same
+   row ('.wtn-lora-arrow'/'.wtn-lora-up'/'.wtn-lora-down', below) are CSS-
+   drawn triangles. A text glyph carries built-in side bearing inside its own
+   em box (.claude/skills/css-layout-diagnose-headless/SKILL.md's own
+   "text-glyph side bearing masquerading as padding" root cause) and its
+   exact shape/position varies by platform font, so it could never sit
+   flush/aligned with a drawn triangle the way the arrows do with each other.
+   Drawn the SAME way as '.wtn-lora-down' (border-triangle, zero content) so
+   the box IS the shape -- in the caret's own faint colour, not the accent
+   used for the (interactive) stepper arrows, since this is a passive picker
+   hint, not a control. Element/class name unchanged (<span class=
+   "wtn-lora-caret">, no textContent) -- nothing else in this file or
+   test_lora_resize.mjs needed to move. */
 .wtn-lora-caret {
-  color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-size: 9px; margin-left: 4px; flex: none;
+  flex: none; width: 0; height: 0; margin-left: 4px;
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 5px solid var(--wtn-ink-faint, ${TOKENS.inkFaint});
 }
 /* Missing-file mark (design doc §1a-iii): the WHOLE name field turns red,
    border included -- not just the text, so it reads at a glance even in a
@@ -936,9 +976,13 @@ export function buildRowElement(doc) {
 
   const nameBtn = el(doc, "button", "wtn-ctl-name wtn-lora-name");
   nameBtn.type = "button";
-  const nameLabel = el(doc, "span", "wtn-lora-name-text");
+  // `wtn-flex-bound` (see this module's CSS, above, for the full "why"):
+  // this span must actually FILL the button so the caret lands at the
+  // field's right edge, not immediately after the text.
+  const nameLabel = el(doc, "span", "wtn-lora-name-text wtn-flex-bound");
+  // Drawn CSS triangle (see this module's CSS, above), NOT a "▾" textContent
+  // glyph -- no content needed, the box is the shape.
   const caret = el(doc, "span", "wtn-lora-caret");
-  caret.textContent = "▾"; // ▾ -- picker affordance, inert until Slice 3
   nameBtn.appendChild(nameLabel);
   nameBtn.appendChild(caret);
   body.appendChild(nameBtn);

@@ -507,6 +507,48 @@ test("buildRowElement: grip / name+caret / strength stepper / info / switch, in 
   assert.ok(order[4].includes("wtn-lora-switch"), "switch must be the LAST (rightmost) element in the row");
 });
 
+// BUG (owner, 2026-08-02): "the arrow down ... should be same width as
+// [a longer row's name] so it will be aligned" -- these two tests pin the
+// STATIC shape of the fix (class + CSS text), NOT alignment itself. A class
+// name and a regex match can be present while the numbers still don't line
+// up (e.g. a typo'd flex-basis, or a sibling rule winning the cascade) -- the
+// REAL proof that two rows' carets land at the same x is the headless
+// Chrome measurement (see this task's build report), which a plain-node
+// unit test cannot produce (no real layout engine here).
+test("layout: the name TEXT span fills its button (flex: 1 1 auto) and carries wtn-flex-bound for the shared min-width: 0 -- otherwise the caret hugs the text instead of the field's right edge", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc);
+  const nameLabelClasses = refs.nameLabel.className.split(/\s+/).filter(Boolean);
+  assert.ok(nameLabelClasses.includes("wtn-lora-name-text"));
+  assert.ok(
+    nameLabelClasses.includes("wtn-flex-bound"),
+    "the name text span must carry wtn-flex-bound (js/shared/theme.css) for the shared min-width: 0 fix, not a second hand-written copy",
+  );
+
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((e) => e.tagName === "style");
+  const css = styleEl.textContent;
+  assert.match(
+    css,
+    /\.wtn-lora-name-text\s*\{[^}]*flex:\s*1 1 auto/,
+    "the name text span must flex: 1 1 auto to fill the button, pushing the flex:none caret to the field's right edge on every row regardless of name length",
+  );
+});
+
+test("layout: the caret is a DRAWN triangle (border-shape, zero content box), not a '▾' text glyph -- matches .wtn-lora-down's own mechanism so it can align with it", () => {
+  const doc = makeDocStub();
+  const refs = buildRowElement(doc);
+  assert.equal(refs.caret.textContent, "", "no textContent glyph -- a glyph's side bearing can never sit flush with a drawn triangle");
+
+  injectStyles(doc);
+  const styleEl = doc.head.children.find((e) => e.tagName === "style");
+  const css = styleEl.textContent;
+  const rule = css.match(/\.wtn-lora-caret\s*\{([^}]*)\}/);
+  assert.ok(rule, "the caret must have its own CSS rule");
+  assert.match(rule[1], /width:\s*0/, "drawn triangles are zero-width boxes shaped entirely by their borders");
+  assert.doesNotMatch(rule[1], /font-size/, "no font-size left -- this is no longer a text glyph");
+});
+
 test("paintRow: name falls back to a placeholder when empty; strength formatted to 2 decimals; off dims the row", () => {
   const doc = makeDocStub();
   const refs = buildRowElement(doc);
