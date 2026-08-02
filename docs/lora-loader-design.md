@@ -740,6 +740,133 @@ return a value to the caller. The **modal** is a *browser* — it answers to nob
 on disk, with the destination folder taken from the result's type rather than from whoever opened it.
 Build the picker path first (it is what milestone 2 needs); the modal is milestone 2b.
 
+### 7c-0. Search must move to Civitai's MEILISEARCH endpoint (owner, 2026-08-02) — SPEC, not built
+
+> **⚠️ MEASURED BEFORE SPECCING (2026-08-02).** Every number in this section came from live requests,
+> not from reading upstream source. Where a claim is inferred rather than observed, it says so.
+
+#### The bug the owner found
+
+Owner: *"if we search only meili with `query=edit` we get only 2 results (with anima base model) — why is
+that? Isn't it should give more?"* They had also noticed that quoting the term (`query='edit'`) returned
+visibly better results than `query=edit`.
+
+Both observations are real, and they have **different causes**. The quoting one is cosmetic. The other
+is a defect in which endpoint we use.
+
+**`GET /api/v1/models` applies `baseModels` as a post-filter on the page, not as a search filter.** The
+search engine picks the top 20 by relevance, *then* discards everything that doesn't match the filter.
+So the first page of a filtered search is mostly, or entirely, empty — while matches sit on later pages:
+
+```
+query="edit" & baseModels=Anima, following the cursor:
+  page 1:  0 items   nextCursor=20
+  page 2:  2 items   nextCursor=40    ← the results were here all along
+```
+
+A client that treats an empty page as "no results" — which ours does — reports nothing found. **The
+narrower the filter, the emptier each page, and the more often we stop at the first one.** That is why
+the base-model filter has always felt like it finds nothing.
+
+#### What actually fixes it
+
+`../Civicomfy` (**MIT © 2025 MoonGoblin**, cloned for reference) does not use `/api/v1/models` for search
+at all. It POSTs to Civitai's own **Meilisearch** endpoint — the one the Civitai website itself queries —
+where the filters run *inside* the index instead of over a page:
+
+```
+POST https://search.civitai.com/multi-search
+  indexUid: "models_v9"
+  filter:  [ ['"type"="LORA"'], ['"version.baseModel"="Anima"'], "availability = Public" ]
+```
+
+Filters within a group are OR'd; groups are AND'd. Measured, same query and filter both ways:
+
+| | `edit` + Anima | `"edit"` + Anima |
+|---|---|---|
+| **REST** `/api/v1/models` | **1** item on page 1 | **0** items on page 1 |
+| **Meilisearch** | **49** hits, page 1 full | **10** hits, all relevant |
+
+It also returns **`estimatedTotalHits`**, so the UI can finally show a real result count — the REST
+cursor API returns no total at all.
+
+**This retires the cursor-chasing idea** that was drafted before this research (fetch page after page
+until one fills). That was a workaround for using the wrong endpoint; do not build it.
+
+#### Three findings that a straight port would get wrong
+
+1. **Civicomfy's code as published would fail today.** The Bearer token still works — it is Civitai's
+   public web-app search key, identical for every account — but the endpoint now sits behind Cloudflare.
+   A plain request gets **`403 error code: 1010`** (browser integrity check). It succeeds only with
+   browser-like `Origin: https://civitai.com`, `Referer`, and a real browser `User-Agent`. Civicomfy
+   sends none of these (`Civicomfy/api/civitai.py:134-135`). **This pack has been bitten by Civitai
+   User-Agent sensitivity once already** (`892b643`, a 401 misreported as `key_required`).
+   > **Owner call required before building.** Sending a browser UA and `Origin` from the server is
+   > satisfying a bot check by looking like a browser. It is a public read-only endpoint that the
+   > owner's own browser queries identically, and an MIT pack already ships the technique — but it is
+   > circumvention in form and belongs in a commit message and this doc, not in a silent diff.
+2. **The token is not ours and can rotate.** If Civitai rotates it, search dies with no warning. The
+   REST path therefore **stays as a fallback**, not deleted — see the fallback rule below.
+3. **`nsfwLevel` has a THIRD encoding here.** Already known: the images endpoint returns a *word*
+   (`"None"`/`"Soft"`/…) with the int in a sibling `browsingLevel` (`fb949a8`). In the Meili index a
+   **model** hit's `nsfwLevel` is an **array** (`[4, 8, 16, 32]`) while a **version**'s is a summed
+   **int** (`60`). Three encodings across three surfaces. `civitai_parse.py` must normalise at the
+   boundary, and the level filter must never assume a shape.
+
+#### What Meilisearch does NOT carry — the real design constraint
+
+A Meili hit has no `files` array. Confirmed absent: file **size**, file **name**, `downloadUrl`,
+`primary`, and per-file `sha256`. Our search-result contract carries all of them
+(`civitai_search.py:553-586`). **A straight swap would break downloading**, so it cannot be a swap.
+
+There is also no bulk re-hydration: `?ids=`, `ids=a,b` and `?modelIds=` are all **silently ignored** by
+`/api/v1/models` — each returns the default popular list rather than the requested models. Verified.
+So "search on Meili, refetch the page from REST" is not available.
+
+Two more shape differences to handle when mapping a hit onto our result contract:
+
+- **`images[].url` is a bare UUID**, not a URL (`29e34e3e-…`), unlike REST which returns a full URL.
+  The thumbnail URL must be constructed. `civitai_parse.pick_thumbnail_url`'s existing rewrite runs
+  *after* that construction, not instead of it.
+- **`versions[]` is present and complete enough** for the version picker (`id`, `name`, `baseModel`,
+  `trainedWords`, per-version `metrics`), which is the one place the hit is *richer* than we need.
+
+#### The design that follows
+
+**Meilisearch for discovery; REST for the file details, at the moment they are actually needed.**
+
+- Meili owns query, filters (type, base model, level), sort, `offset` pagination and the result count.
+- A card renders from the hit alone. The **download URL is constructible** without the files array —
+  `https://civitai.com/api/download/models/<version_id>` is the canonical form — so Download keeps
+  working from a Meili-sourced card.
+- Full file metadata arrives from the **existing** `fetch_model_detail` when the detail view opens,
+  which it already does today. No new call, no per-card enrichment: N cards must not mean N requests.
+
+**The one known regression, and it needs the owner's pick:** the card's **file size** chip has no
+source until the detail view is opened.
+- *(a)* Leave the size off the card until detail is opened — no extra requests, a visibly emptier card.
+- *(b)* Fetch size lazily for the visible cards only, capped concurrently like the gallery thumbnails —
+  the card stays complete, at the cost of up to one extra request per visible card.
+- *(c)* Show an approximate size from whatever the hit does carry — **not viable as far as measured**:
+  no size-like field exists on the hit or its versions. Listed only so it is not re-proposed.
+
+**Fallback rule.** Meili failing — Cloudflare, a rotated token, an index rename — must degrade to the
+existing REST search, not to an error. The REST path keeps its post-filter weakness, which is
+acceptable *as a fallback* and is exactly today's behaviour. Log which path served a search at `debug`,
+or a silent downgrade will look like the filter bug coming back.
+
+**Quoting, after all this.** Unquoted queries prefix-expand the last term (`edit` matches `Edith`,
+`Editorial`) and drop terms (`gothic niji` returns things matching only one word). Quoting fixes both
+and costs partial-word search: `anim` finds *Anime*, `"anim"` does not. Measured, unfiltered LORA:
+1116 hits unquoted vs 155 quoted. **Left as-is for now** — quotes already reach the API unchanged, so
+the owner's workaround works, and once Meili is filtering properly the empty-screen symptom this was
+compensating for is gone. Revisit as a UI affordance only if it still reads wrong afterwards.
+
+**Licensing.** `../Civicomfy` is **MIT © 2025 MoonGoblin** — porting is permitted **with attribution**,
+the same rule as the other two clones. Cite `Civicomfy/api/civitai.py:127-236` at the ported code and
+extend `THIRD_PARTY_NOTICES.md`. The Cloudflare headers, the level normalisation and the
+discovery/details split are **ours**, not theirs — do not attribute those to upstream.
+
 ### 7c-i. All three get the FULL filter set (owner, 2026-07-29)
 
 An earlier draft of this section called the pickers "narrow", which wrongly implied fewer features.
