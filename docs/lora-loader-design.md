@@ -754,9 +754,9 @@ visibly better results than `query=edit`.
 Both observations are real, and they have **different causes**. The quoting one is cosmetic. The other
 is a defect in which endpoint we use.
 
-**`GET /api/v1/models` applies `baseModels` as a post-filter on the page, not as a search filter.** The
-search engine picks the top 20 by relevance, *then* discards everything that doesn't match the filter.
-So the first page of a filtered search is mostly, or entirely, empty — while matches sit on later pages:
+**`GET /api/v1/models` selects the page badly, then filters it.** The filter runs over an already-chosen
+page of 20 rather than over the index — so the first page of a filtered search is mostly, or entirely,
+empty, while matches sit on later pages:
 
 ```
 query="edit" & baseModels=Anima, following the cursor:
@@ -767,6 +767,36 @@ query="edit" & baseModels=Anima, following the cursor:
 A client that treats an empty page as "no results" — which ours does — reports nothing found. **The
 narrower the filter, the emptier each page, and the more often we stop at the first one.** That is why
 the base-model filter has always felt like it finds nothing.
+
+#### It is a KNOWN, UNFIXED upstream bug — and the root cause is worse than "post-filtering"
+
+[`civitai/civitai#2214`](https://github.com/civitai/civitai/issues/2214), open since **2026-04-28**.
+A Civitai contributor (`daceheg`) root-caused it in that thread, and their finding is sharper than the
+behaviour we measured from outside:
+
+> *"When a `query` parameter was present, the API forcibly passed `sort: ['id:desc']` to Meilisearch in
+> order to make its cursor pagination logic work. This caused Meilisearch to return the 20 **newest**
+> models that matched the search string, entirely ignoring its own built-in text relevance score (and
+> ignoring any explicit `sort` parameters passed by the user, like `Most Downloaded`)."*
+
+So the REST endpoint **is Meilisearch underneath** — it just forces a sort that destroys relevance so
+its cursor pagination works. The page we then filter is *the 20 newest matches*, not the 20 best. Which
+is why going **direct** to Meili fixes it rather than merely working around it: the defect is entirely
+in that wrapper.
+
+**No fix is coming.** [PR #2348](https://github.com/civitai/civitai/pull/2348), which would have
+switched to offset pagination and restored relevance, was **closed without merging** (2026-05-29). The
+issue remains open. Other integrators in the thread resorted to a browser extension that scrapes the
+site and relays model IDs — worth knowing that the alternative to this port is that.
+
+> **⚠️ SAFETY NOTE for the REST fallback, from the same thread.** That PR also fixed *"an edge-case bug
+> where a 0-hit search would fallback and fetch the 100 newest published models from Postgres."* It was
+> never merged, so **that behaviour is live**: a REST search matching nothing can return a full page of
+> unrelated models rather than an empty list. This is almost certainly what our own `?ids=` probe hit —
+> the earlier claim in this section that `ids=` is "silently ignored" describes the effect correctly but
+> the mechanism is this 0-hit fallback. The consequence is what matters: **our REST fallback path cannot
+> treat a full page as proof the query matched.** A fallback that quietly shows the 100 newest models as
+> if they were search results is worse than one that shows nothing.
 
 #### What actually fixes it
 
@@ -819,9 +849,10 @@ A Meili hit has no `files` array. Confirmed absent: file **size**, file **name**
 `primary`, and per-file `sha256`. Our search-result contract carries all of them
 (`civitai_search.py:553-586`). **A straight swap would break downloading**, so it cannot be a swap.
 
-There is also no bulk re-hydration: `?ids=`, `ids=a,b` and `?modelIds=` are all **silently ignored** by
-`/api/v1/models` — each returns the default popular list rather than the requested models. Verified.
-So "search on Meili, refetch the page from REST" is not available.
+There is also no bulk re-hydration: `?ids=`, `ids=a,b` and `?modelIds=` each return a default list of
+popular models rather than the requested ones (verified) — which, per the 0-hit fallback described
+above, is the *unrecognised-parameter* path rather than a filter that quietly does nothing. Either way
+"search on Meili, refetch the page from REST" is not available.
 
 Two more shape differences to handle when mapping a hit onto our result contract:
 
@@ -851,9 +882,12 @@ source until the detail view is opened.
   no size-like field exists on the hit or its versions. Listed only so it is not re-proposed.
 
 **Fallback rule.** Meili failing — Cloudflare, a rotated token, an index rename — must degrade to the
-existing REST search, not to an error. The REST path keeps its post-filter weakness, which is
-acceptable *as a fallback* and is exactly today's behaviour. Log which path served a search at `debug`,
-or a silent downgrade will look like the filter bug coming back.
+existing REST search, not to an error. The REST path keeps its relevance weakness, which is acceptable
+*as a fallback* and is exactly today's behaviour. Log which path served a search at `debug`, or a silent
+downgrade will look like the filter bug coming back.
+**And say so in the UI when it happens** — because of the 0-hit fallback above, a degraded REST search
+can return a page of plausible-looking but unrelated models. A user who cannot tell which engine
+answered has no way to know the results are wrong rather than merely disappointing.
 
 **Quoting, after all this.** Unquoted queries prefix-expand the last term (`edit` matches `Edith`,
 `Editorial`) and drop terms (`gothic niji` returns things matching only one word). Quoting fixes both
