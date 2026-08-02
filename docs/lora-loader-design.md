@@ -865,16 +865,53 @@ until one fills). That was a workaround for using the wrong endpoint; do not bui
    **int** (`60`). Three encodings across three surfaces. `civitai_parse.py` must normalise at the
    boundary, and the level filter must never assume a shape.
 
-#### What Meilisearch does NOT carry — the real design constraint
+#### What Meilisearch does NOT carry — why this is not a straight swap
 
 A Meili hit has no `files` array. Confirmed absent: file **size**, file **name**, `downloadUrl`,
 `primary`, and per-file `sha256`. Our search-result contract carries all of them
-(`civitai_search.py:553-586`). **A straight swap would break downloading**, so it cannot be a swap.
+(`civitai_search.py:553-586`). **A straight swap would break downloading**, so it cannot be a swap —
+which is what the two-call design below exists to solve.
 
-There is also no bulk re-hydration: `?ids=`, `ids=a,b` and `?modelIds=` each return a default list of
-popular models rather than the requested ones (verified) — which, per the 0-hit fallback described
-above, is the *unrecognised-parameter* path rather than a filter that quietly does nothing. Either way
-"search on Meili, refetch the page from REST" is not available.
+For the record, the hit is *richer* than REST in two places: `triggerWords` carried 6 entries where the
+same version's REST `trainedWords` was empty, and it listed 30 gallery images against REST's 12.
+Everything else compared field-for-field identical (id, name, type, creator, tags, nsfw, download
+count, every version's id/name/baseModel, and `earlyAccessDeadline` for the gated flag).
+
+> #### ✅ CORRECTION (owner, 2026-08-02): bulk re-hydration DOES work — and it changes the design
+>
+> An earlier draft of this section claimed `?ids=` was unsupported, because `ids=915918` returned an
+> empty list. **That was a bad test.** That model is `nsfw: true`, and the `ids=` lookup silently drops
+> adult models unless `nsfw=true` is also passed. With it, the same request resolves perfectly.
+>
+> The owner proposed the architecture that follows from this: *"use search with meili but then reuse
+> the v1 api to get the data we need."* Measured end to end:
+>
+> ```
+> Meili:  q="edit", filter version.baseModel=Anima   -> 20 hits of ~49 total
+> v1:     ?ids=<20 ids>&nsfw=true                    -> 19/20 re-hydrated, ALL with files
+>         URL length 292 chars -- ONE request, not twenty
+> ```
+>
+> **This removes the only real loss.** `files`/`sizeKB`/`downloadUrl`/`primary`/hashes all come back, so
+> the search-card size chip needs no compromise and the three-option choice below is moot. Better: the
+> `ids=` response has the **same shape `parse_search_results` already parses**, so that parser does not
+> change — Meili decides *which* models, v1 describes them.
+>
+> Cost: exactly **two** upstream requests per search page, independent of page size.
+
+**Four rules this path must follow**, each from a measured failure:
+
+1. **`nsfw=true` is mandatory on the `ids=` call**, or adult models vanish from the results with no
+   error. Our own browsing level still filters client-side, where it already lives — this parameter is
+   about what the API is willing to return at all, not about what we show.
+2. **Re-sort into Meili's order.** The `ids=` response came back in a different order than requested.
+   Meili's ranking IS the relevance we switched endpoints to get; losing it on the second call would
+   throw away the entire point. (Upstream's own unmerged PR lists this as its step 3.)
+3. **Tolerate gaps.** 1 of 20 ids did not resolve — presumably unpublished or restricted since it was
+   indexed. A missing id is normal and must drop that card, never fail the page.
+4. **Verify the returned ids are a SUBSET of the requested ids.** Because of the 0-hit fallback above,
+   a lookup that matches nothing can answer with popular models that look like real results. This check
+   is one line and converts that entire class of silent wrongness into something detectable.
 
 Two more shape differences to handle when mapping a hit onto our result contract:
 
@@ -884,24 +921,24 @@ Two more shape differences to handle when mapping a hit onto our result contract
 - **`versions[]` is present and complete enough** for the version picker (`id`, `name`, `baseModel`,
   `trainedWords`, per-version `metrics`), which is the one place the hit is *richer* than we need.
 
-#### The design that follows
+#### The design that follows — two calls, one parser
 
-**Meilisearch for discovery; REST for the file details, at the moment they are actually needed.**
+**Meili decides WHICH models; v1 describes them.** Per search page:
 
-- Meili owns query, filters (type, base model, level), sort, `offset` pagination and the result count.
-- A card renders from the hit alone. The **download URL is constructible** without the files array —
-  `https://civitai.com/api/download/models/<version_id>` is the canonical form — so Download keeps
-  working from a Meili-sourced card.
-- Full file metadata arrives from the **existing** `fetch_model_detail` when the detail view opens,
-  which it already does today. No new call, no per-card enrichment: N cards must not mean N requests.
+1. **Meili** — query, filters (type, base model, level), sort, `offset` pagination, and
+   `estimatedTotalHits`. Take the hit ids **in rank order** and keep nothing else from the hit but that
+   order. *(Anything else kept becomes a second source of truth for a field v1 already owns.)*
+2. **v1 `?ids=<the page's ids>&nsfw=true`** — one request, returning the full existing shape.
+3. **Parse with the EXISTING `parse_search_results`, unchanged**, then re-sort into Meili's order.
 
-**The one known regression, and it needs the owner's pick:** the card's **file size** chip has no
-source until the detail view is opened.
-- *(a)* Leave the size off the card until detail is opened — no extra requests, a visibly emptier card.
-- *(b)* Fetch size lazily for the visible cards only, capped concurrently like the gallery thumbnails —
-  the card stays complete, at the cost of up to one extra request per visible card.
-- *(c)* Show an approximate size from whatever the hit does carry — **not viable as far as measured**:
-  no size-like field exists on the hit or its versions. Listed only so it is not re-proposed.
+Two upstream requests per page, regardless of page size. Nothing is lost relative to today, and the
+size chip, download URL, primary-file pick and hashes all keep working because they come from the same
+endpoint they come from now.
+
+> **Why not "render the card from the Meili hit and fetch details later"** (the design this section
+> originally proposed, before the owner's `ids=` question): it needs a second parser for the hit shape,
+> reintroduces the size-chip gap, and adds a per-card enrichment call. The two-call version is less
+> code AND more complete. Recorded so the earlier shape is not revived.
 
 **Fallback rule.** Meili failing — Cloudflare, a rotated token, an index rename — must degrade to the
 existing REST search, not to an error. The REST path keeps its relevance weakness, which is acceptable
