@@ -99,6 +99,19 @@ resolves or writes a local path.
 
     GET  /wtn/model_browser/model_detail?model_id=...&version_id=...
 
+The detail view's own COMMUNITY gallery (`docs/lora-loader-design.md`'s "BOTH
+galleries, for different reasons", 2026-08-01/2026-08-02) -- the bottom grid,
+distinct from `model_detail`'s own author gallery above: 0/40 sampled carry a
+prompt (vs 18/20 for the author's), so it's *"what it looks like in other
+people's hands"*, not a prompt source -- see `community_images_impl`'s own
+docstring for the full contract. Same "no `kind`" reasoning as `/model_detail`
+(a pure Civitai proxy by `version_id`, no local path). Always
+`{"ok": true, "reason": ..., "images": [...]}`, HTTP 200 -- `images` is `[]`
+on ANY failure (design doc point 4: "a failed or empty fetch must never look
+like an error to the caller"), never surfaced as a broken response.
+
+    GET  /wtn/model_browser/community_images?version_id=...&limit=...
+
 `/thumb` is Slice 3's own addition (docs/lora-loader-design.md §1a-v's
 picker thumbnail) -- it's the one route here that answers with raw file
 BYTES rather than a `{reason, ...}` JSON envelope (there is no JSON shape
@@ -136,6 +149,8 @@ import uuid
 from email.utils import formatdate
 from typing import Any, Dict, Optional, Tuple
 
+from . import civitai_client
+from . import civitai_parse
 from . import civitai_search
 from . import download
 from . import keys
@@ -173,6 +188,23 @@ _SEARCH_LIMITER = rate_limit.MinIntervalLimiter(_SEARCH_MIN_INTERVAL_SECONDS)
 # so it costs nothing in the common case.
 _MODEL_DETAIL_MIN_INTERVAL_SECONDS = 1.0
 _MODEL_DETAIL_LIMITER = rate_limit.MinIntervalLimiter(_MODEL_DETAIL_MIN_INTERVAL_SECONDS)
+
+# §9, extended to the detail view's own COMMUNITY gallery (docs/lora-loader-
+# design.md "BOTH galleries, for different reasons") -- same reasoning as
+# `_MODEL_DETAIL_LIMITER` immediately above: a stack of detail-view opens
+# scrolling their community grid into view is the same kind of fan-out a
+# single human is nowhere near in practice, so this costs nothing in the
+# common (lazy-loaded, lower-traffic) case that section's own design doc
+# entry calls for.
+_COMMUNITY_IMAGES_MIN_INTERVAL_SECONDS = 1.0
+_COMMUNITY_IMAGES_LIMITER = rate_limit.MinIntervalLimiter(_COMMUNITY_IMAGES_MIN_INTERVAL_SECONDS)
+
+# Wire contract (this task's own spec): default 24, clamped 1-60 -- distinct
+# numbers from `civitai_search.DEFAULT_LIMIT`/`_MAX_LIMIT` (20/50) since this
+# is a different endpoint with its own reasonable range for a grid of
+# thumbnails, not a paged search-results list.
+_COMMUNITY_IMAGES_DEFAULT_LIMIT = 24
+_COMMUNITY_IMAGES_MAX_LIMIT = 60
 
 # §9's "one download at a time (a serial queue)" -- a single process-wide
 # manager; every `download_*_impl` function below goes through THIS
@@ -947,6 +979,139 @@ def model_detail_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# The detail view's own COMMUNITY gallery (`docs/lora-loader-design.md`'s
+# "BOTH galleries, for different reasons", 2026-08-01/2026-08-02) -- the
+# bottom grid, lazy-loaded independently of `model_detail_impl`'s own author
+# gallery above (design doc point 1: "this is a SECOND network call ... most
+# opens will never scroll that far").
+# ---------------------------------------------------------------------------
+
+
+def _clean_community_version_id(value: Any) -> Optional[int]:
+    """A `version_id` query-string value -> a clean positive `int`, or
+    `None` -- same tolerant parse as `model_detail._clean_positive_int`
+    (bools rejected even though `bool` is an `int` subclass, a digit-only
+    string accepted since this arrives as a raw query-string value, anything
+    else rejected). Kept as this route's own copy rather than importing
+    `model_detail`'s private helper -- same "each route's own small,
+    self-contained validation" precedent `model_detail.py` itself already
+    set for this exact check, rather than a new cross-module coupling to a
+    function that isn't part of that module's public contract.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _clean_community_images_limit(value: Any) -> int:
+    """A `limit` query-string value -> a clean `int`, clamped to
+    `[1, _COMMUNITY_IMAGES_MAX_LIMIT]` -- garbage/missing falls back to
+    `_COMMUNITY_IMAGES_DEFAULT_LIMIT`, same tolerant-fallback shape
+    `civitai_search._clean_limit` already uses for the search route's own
+    `limit`, with this route's own default/ceiling (see those constants'
+    own comments for why they differ)."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _COMMUNITY_IMAGES_DEFAULT_LIMIT
+    return max(1, min(parsed, _COMMUNITY_IMAGES_MAX_LIMIT))
+
+
+def community_images_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """`GET /wtn/model_browser/community_images`'s pure-enough body (touches
+    the network only -- no local disk path is ever resolved or written,
+    same "no `kind`" reasoning `model_detail_impl` above already states for
+    its own route).
+
+    Always returns EXACTLY `{"ok": True, "reason": str, "images": [...]}`
+    -- no other keys, and no `message`/`offline_reason` alongside them: this
+    is the literal wire contract the frontend track is being built against
+    (this task's own brief, "assert the literal JSON shape in a test... a
+    contract split across two builders silently broke last time"), so this
+    route deliberately does NOT reuse `model_detail_impl`'s wider envelope.
+
+    `ok` is unconditionally `True` -- docs/lora-loader-design.md's own point
+    4 for this section, *"a failed or empty fetch must never turn a working
+    detail view into a broken one"*: this route never reports itself as an
+    error to the caller, on ANY branch below, including a missing/garbage
+    `version_id` or a genuine Civitai outage. `reason` is where the ACTUAL
+    outcome still shows up (for anyone reading a server log, or a future
+    caller that does want to distinguish "empty on purpose" from "empty
+    because Civitai is down") -- reusing this package's EXISTING vocabulary
+    rather than inventing new values (this task's own instruction), the same
+    three non-`"ok"` values `model_detail_impl`/`search_impl` already use:
+
+      - `"notfound"`     -- no usable `version_id` was given (mirrors
+        `model_detail.fetch_model_detail`'s own choice for the identical
+        situation -- "no model version to look up" -- rather than inventing
+        a new `invalid_version_id` value for what is, from the caller's
+        side, the exact same fact); ALSO what a genuine Civitai 404 on this
+        endpoint would map to (measured live, 2026-08-02: this endpoint does
+        NOT actually 404 for an unknown-but-numeric id -- see
+        `civitai_client.fetch_community_images`'s own docstring -- so this
+        branch is reached almost entirely through the validation path, not
+        a live 404, but both collapse to the SAME reason on purpose: either
+        way, there is no version to show images for);
+      - `"rate_limited"`  -- §9's own rate limiter refused this call, same
+        vocabulary/reasoning as `search_impl`/`model_detail_impl`'s own
+        identical branch;
+      - `"offline"`       -- the Civitai request itself failed (timeout,
+        DNS/TLS, rate-limited BY Civitai, ...) -- `civitai_client.
+        fetch_community_images`'s own `"offline"` outcome, passed through
+        under the SAME name rather than relabelled;
+      - `"ok"`            -- the fetch succeeded; `images` may still be `[]`
+        (a version with genuinely no community images is not a failure).
+
+    `images` is `civitai_parse.parse_community_images` applied to the raw
+    response's own `items` array on `"ok"`, and `[]` on every OTHER branch
+    -- never partially populated, and never a fabricated placeholder entry.
+    """
+    payload = payload or {}
+    version_id_raw = payload.get("version_id")
+    version_id = _clean_community_version_id(version_id_raw)
+    if version_id is None:
+        logs_mod.log_summary(
+            _logger, logs_mod.format_community_images_summary,
+            version_id=version_id_raw, count=0, reason="notfound",
+        )
+        return {"ok": True, "reason": "notfound", "images": []}
+
+    if not _COMMUNITY_IMAGES_LIMITER.allow():
+        logs_mod.log_summary(
+            _logger, logs_mod.format_community_images_summary,
+            version_id=version_id, count=0, reason="rate_limited",
+        )
+        return {"ok": True, "reason": "rate_limited", "images": []}
+
+    limit = _clean_community_images_limit(payload.get("limit"))
+    result = civitai_client.fetch_community_images(version_id, limit=limit)
+
+    if result["reason"] == "found":
+        raw_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        images = civitai_parse.parse_community_images(raw_data.get("items"))
+        logs_mod.log_summary(
+            _logger, logs_mod.format_community_images_summary,
+            version_id=version_id, count=len(images), reason="ok",
+        )
+        return {"ok": True, "reason": "ok", "images": images}
+
+    # `"notfound"` (a genuine Civitai 404 -- see this function's own
+    # docstring for why that's unlikely but handled) and `"offline"` both
+    # land here with their OWN reason preserved, `images` always `[]`.
+    reason = result.get("reason", "offline")
+    logs_mod.log_summary(
+        _logger, logs_mod.format_community_images_summary,
+        version_id=version_id, count=0, reason=reason,
+    )
+    return {"ok": True, "reason": reason, "images": []}
+
+
+# ---------------------------------------------------------------------------
 # M2 -- the streamed download queue (docs/lora-loader-design.md §9).
 # ---------------------------------------------------------------------------
 
@@ -1232,6 +1397,16 @@ try:
         loop = asyncio.get_running_loop()
         payload = {"model_id": request.query.get("model_id"), "version_id": request.query.get("version_id")}
         result = await loop.run_in_executor(None, functools.partial(model_detail_impl, payload))
+        return web.json_response(result, status=200)
+
+    @routes.get("/wtn/model_browser/community_images")
+    async def _route_community_images(request):  # noqa: ANN001 - aiohttp handler signature
+        # Same offload reasoning as `/model_detail`/`/search` above:
+        # `community_images_impl` can make a synchronous `urllib` call with
+        # up to a 30s timeout -- never inline on the event loop.
+        loop = asyncio.get_running_loop()
+        payload = {"version_id": request.query.get("version_id"), "limit": request.query.get("limit")}
+        result = await loop.run_in_executor(None, functools.partial(community_images_impl, payload))
         return web.json_response(result, status=200)
 
     @routes.post("/wtn/model_browser/download/start")

@@ -350,6 +350,25 @@ format_model_detail_summary = _safe(_format_model_detail_summary_impl)
 
 
 # ---------------------------------------------------------------------------
+# Community images (api.py's `community_images_impl`, `docs/lora-loader-
+# design.md`'s "BOTH galleries, for different reasons" -- the detail view's
+# bottom grid, the COMMUNITY's own images for a model version, lazy-loaded
+# separately from `model_detail_impl`'s own author-gallery fetch above).
+# ---------------------------------------------------------------------------
+
+
+def _format_community_images_summary_impl(*, version_id: Any, count: int, reason: str) -> str:
+    version_text = version_id if version_id is not None else "(unknown)"
+    return (
+        f"[AnimaFlow] Model Browser community images: version_id={version_text}, "
+        f"count={int(count)}, reason={reason}"
+    )
+
+
+format_community_images_summary = _safe(_format_community_images_summary_impl)
+
+
+# ---------------------------------------------------------------------------
 # Delete (remove.py's `delete_model`) -- "Remove an installed model", the
 # first code in this pack that destroys user data (docs/TODO.md, decisions
 # taken 2026-07-30). A delete is exactly the sort of thing that belongs at
@@ -420,4 +439,5 @@ __all__ = (
     "format_preview_candidate_debug",
     "format_preview_summary",
     "format_model_detail_summary",
+    "format_community_images_summary",
 )

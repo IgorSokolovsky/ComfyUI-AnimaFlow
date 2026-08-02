@@ -667,6 +667,182 @@ def parse_author_gallery(images_raw: Any) -> List[Dict[str, Any]]:
     return out
 
 
+# docs/lora-loader-design.md "BOTH galleries, for different reasons"
+# (2026-08-01/2026-08-02): the COMMUNITY endpoint (`/api/v1/images?
+# modelVersionId=...`) reports its NSFW ceiling in a DIFFERENT shape than
+# every other endpoint this module parses -- VERIFIED LIVE 2026-08-02 (600
+# sampled images across two model versions, one deliberately fetched with
+# `nsfw=X` to force adult content into the sample): `nsfwLevel` here is a
+# WORD (`"None"`/`"Soft"`/`"Mature"`/`"X"`/`"XXX"`), not the int bitmask
+# `parse_gallery_images`/`parse_author_gallery` read off `nsfwLevel` on
+# THEIR endpoints -- the actual int bitmask (`1`/`2`/`4`/`8`/`16`, matching
+# `civitai_search.LEVEL_VALUES`) rides along on THIS endpoint as a sibling
+# field, `browsingLevel`, present on every one of the 600 sampled images.
+# This map is the fallback ONLY (see `_community_nsfw_level` below) for the
+# case this task's own brief specifically flagged -- "one probe returned
+# null" -- which never reproduced in this task's own 600-image sample, but
+# Civitai's shape here is not stable across time (this endpoint's own
+# `nsfwLevel` already changed from int to word at some point), so a
+# genuinely `None`/absent `browsingLevel` alongside a WORD `nsfwLevel` is
+# handled without guessing a number.
+_COMMUNITY_NSFW_WORD_LEVELS: Dict[str, int] = {
+    "none": 1,
+    "soft": 2,
+    "mature": 4,
+    "x": 8,
+    "xxx": 16,
+}
+
+# The conservative default for a community image whose level can't be read
+# at all -- "missing/null -> 16" (XXX, the ceiling), the SAME rule
+# `pickThumbCandidates` already applies client-side (task brief) -- get this
+# wrong and a PG-set viewer sees an adult image; getting the direction
+# CONSERVATIVE is what a missing signal must default to.
+_COMMUNITY_DEFAULT_NSFW_LEVEL = 16
+
+
+def _community_nsfw_level(image: Dict[str, Any]) -> int:
+    """A single community-gallery image's own NSFW ceiling, as the SAME int
+    bitmask (`1`/`2`/`4`/`8`/`16`) every other gallery in this module already
+    uses -- see the module comment above this function for why this needs
+    two fallbacks rather than one straight field read:
+
+      1. `browsingLevel` -- the endpoint's own int bitmask (verified live,
+         present on every sampled image) -- preferred whenever it's a real
+         int.
+      2. `nsfwLevel` AS AN INT -- this task's own brief describes it that
+         way (and an older/different Civitai response shape might still
+         send it that way); accepted if `browsingLevel` wasn't usable.
+      3. `nsfwLevel` AS A WORD (`"None"`/`"Soft"`/`"Mature"`/`"X"`/`"XXX"`,
+         case-insensitively) -- THIS task's own live-measured shape --
+         mapped through `_COMMUNITY_NSFW_WORD_LEVELS`.
+
+    Anything else (both fields missing/null/unrecognised) -> `16`, never a
+    guessed "probably safe" number -- see that constant's own comment.
+    """
+    browsing_level = image.get("browsingLevel")
+    if isinstance(browsing_level, int) and not isinstance(browsing_level, bool):
+        return browsing_level
+    nsfw_level = image.get("nsfwLevel")
+    if isinstance(nsfw_level, int) and not isinstance(nsfw_level, bool):
+        return nsfw_level
+    if isinstance(nsfw_level, str) and nsfw_level.strip():
+        mapped = _COMMUNITY_NSFW_WORD_LEVELS.get(nsfw_level.strip().lower())
+        if mapped is not None:
+            return mapped
+    return _COMMUNITY_DEFAULT_NSFW_LEVEL
+
+
+# The `stats` sub-fields that count as a "reaction" for `reaction_count`
+# below -- VERIFIED LIVE 2026-08-02: a community image's own `stats` object
+# is `{cryCount, laughCount, likeCount, dislikeCount, heartCount,
+# commentCount}`, not a single pre-summed field (the task brief's own
+# warning: "do not invent a shape for it; look at what the API actually
+# returns" -- there IS no bare `reactionCount`). `commentCount` is
+# deliberately EXCLUDED: a comment is a reply, not a reaction to the image
+# itself, so folding it in would inflate this count with something that
+# isn't the same kind of signal as the other five.
+_COMMUNITY_REACTION_STAT_KEYS = ("likeCount", "heartCount", "laughCount", "cryCount", "dislikeCount")
+
+
+def _community_reaction_count(stats: Any) -> Optional[int]:
+    """`stats`'s own reaction tallies, summed into ONE number for the
+    community grid's tile (see `_COMMUNITY_REACTION_STAT_KEYS`'s own comment
+    for which sub-fields count and why `commentCount` doesn't). `None` when
+    `stats` isn't a dict at all, or when it is one but carries not a single
+    usable int among the five keys -- "unavailable", never a fabricated
+    `0` for an image whose reaction data genuinely never arrived (§1a-vi,
+    "omit rather than invent" extended to a null rather than a zero here,
+    since a caller's "no info yet" and "confirmed zero reactions" are
+    different facts).
+    """
+    if not isinstance(stats, dict):
+        return None
+    total = 0
+    found_any = False
+    for key in _COMMUNITY_REACTION_STAT_KEYS:
+        value = stats.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+            found_any = True
+    return total if found_any else None
+
+
+def parse_community_images(items_raw: Any) -> List[Dict[str, Any]]:
+    """The COMMUNITY's own gallery -- `civitai_client.fetch_community_images`'s
+    raw `items` array (`GET /api/v1/images?modelVersionId=...`) -- into the
+    wire shape `api.py`'s `community_images_impl` sends the frontend
+    verbatim: `[{url, width, height, nsfw_level, username, reaction_count}]`.
+    Deliberately a SEPARATE function from `parse_author_gallery`, same
+    reasoning that function's own docstring already gives for being separate
+    from `parse_gallery_images`: this is a DIFFERENT source, feeding a
+    DIFFERENT part of the detail view (docs/lora-loader-design.md "BOTH
+    galleries, for different reasons") --
+
+      - the AUTHOR's gallery (`parse_author_gallery`) carries a reusable
+        `prompt`/`negative_prompt`/`params` 18/20 sampled times -- the
+        reusable, copy-prompt-first part;
+      - THIS, the COMMUNITY's gallery, carries a prompt 0/40 sampled times
+        (`meta` is always empty/absent here) -- "what it looks like in other
+        people's hands", honestly evidence rather than a prompt source. **No
+        `prompt` key is ever set here, deliberately** -- its presence would
+        invite a copy-prompt affordance on a tile that has nothing to copy.
+
+    `url` is thumbnail-rewritten (`_thumb_url`'s `anim=false,width=256`) --
+    the SAME level-aware candidate/retry/skeleton machinery
+    (`js/shared/civitai_thumb.mjs`) that already serves every other gallery
+    in this package serves this one too, no second mechanism (same rule
+    `parse_author_gallery`'s own docstring states).
+
+    `nsfw_level` is ALWAYS an int (never `None`) -- `_community_nsfw_level`'s
+    own conservative `16` default for a missing/unreadable level, unlike
+    `parse_gallery_images`'s own `nsfw_level`, which stays `None` when
+    absent. The difference is deliberate: THIS field feeds the community
+    grid's OWN client-side "hide above my browsing level" filter (design doc
+    point 2, "the browsing level governs it, like every other image
+    surface"), and a `None` there would either need special-casing at every
+    call site or risk being read as "unrestricted" -- `16` (XXX, the
+    ceiling) is the one value that is safe to treat uniformly as "hide
+    unless the viewer's own ceiling is XXX".
+
+    `username` is `None` when the endpoint itself sent `null` (measured
+    live: it does, on some images) or omitted the field -- attribution when
+    available, never a fabricated "unknown" placeholder (design doc point
+    3, "an uncredited grid of other people's work is the wrong default" --
+    the frontend's own job to render a `None` as an honest "no attribution
+    available" rather than this layer inventing a string for it).
+
+    `reaction_count` is `_community_reaction_count`'s own `stats`-derived
+    sum, or `None` when unavailable -- see that function's own docstring.
+
+    Only entries with a truthy `url` are kept -- same "not a usable
+    candidate otherwise" rule every other parser in this module applies.
+    `width`/`height` are the entry's own top-level ints when present, else
+    `None` (never fabricated). Non-list input -> `[]`; never raises.
+    """
+    if not isinstance(items_raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for image in items_raw:
+        if not isinstance(image, dict):
+            continue
+        url = image.get("url")
+        if not (isinstance(url, str) and url):
+            continue
+        width = image.get("width")
+        height = image.get("height")
+        username = image.get("username")
+        out.append({
+            "url": _thumb_url(url),
+            "width": width if isinstance(width, int) and not isinstance(width, bool) else None,
+            "height": height if isinstance(height, int) and not isinstance(height, bool) else None,
+            "nsfw_level": _community_nsfw_level(image),
+            "username": username if isinstance(username, str) and username else None,
+            "reaction_count": _community_reaction_count(image.get("stats")),
+        })
+    return out
+
+
 def is_version_gated(v: Any) -> bool:
     """A raw Civitai model-version object's own gate status -- `earlyAccessEndsAt`
     non-null means the version is still gated behind early access (non-null
@@ -837,7 +1013,7 @@ def civitai_shape_from_search_meta(meta: Any) -> Dict[str, Any]:
 __all__ = (
     "parse_model_version", "parse_model_description", "html_to_text",
     "pick_gallery_image_url", "pick_thumbnail_url", "parse_gallery_images",
-    "parse_author_gallery",
+    "parse_author_gallery", "parse_community_images",
     "is_version_gated", "parse_files",
     "civitai_shape_from_search_meta",
     "LIVE_THUMB_TRANSFORM", "SAVED_PREVIEW_VIDEO_TRANSFORM", "SOURCE_TRANSFORM",

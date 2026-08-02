@@ -380,7 +380,54 @@ def lookup_model_version_by_id(
     )
 
 
+def fetch_community_images(
+    version_id: Any,
+    *,
+    limit: int = 24,
+    timeout: float = _DEFAULT_TIMEOUT,
+    max_body_bytes: int = _DEFAULT_MAX_BODY_BYTES,
+    hosts: Sequence[str] = _CIVITAI_HOSTS,
+    opener: Optional[Callable[[str, float], Any]] = None,
+) -> Dict[str, Any]:
+    """Ask Civitai's public IMAGES-BY-VERSION endpoint
+    (`/api/v1/images?modelVersionId={id}`) for the COMMUNITY's own gallery of
+    a model version -- `docs/lora-loader-design.md`'s "BOTH galleries, for
+    different reasons" (2026-08-01): distinct from `lookup_model_version_by_id`
+    above, whose embedded `images` are the AUTHOR's own gallery (18/20 sampled
+    carry a reusable prompt). This endpoint's images carry NONE (0/40 sampled,
+    `meta` is always `{}`/`null`) -- *"what it looks like in other people's
+    hands,"* not a prompt source; see `civitai_parse.parse_community_images`
+    for the parsing side of that distinction.
+
+    Same envelope/rules as every other call in this module (two hosts with a
+    definitive 404, 30s timeout, 4 MB body cap, distinct offline reasons) --
+    a thin wrapper over `fetch_json_with_host_fallback`, public, no API key
+    needed (same "no key needed" rule as the rest of this module).
+
+    VERIFIED LIVE 2026-08-02 (this task's own required probe, per the design
+    doc's own track record of wrong Civitai assumptions): this endpoint does
+    NOT 404 for an unknown/nonexistent `modelVersionId` -- it answers
+    `HTTP 200` with `{"items": [], "metadata": {...}}`, same as a real,
+    populated version, so `notfound_message` below is mostly theoretical
+    (kept anyway, for whatever genuine 404 Civitai's edge might still throw
+    on a malformed request) -- the CALLER (`api.py`'s `community_images_impl`)
+    is what actually decides "nothing to show" from an EMPTY `items` list,
+    not this transport. A non-numeric `modelVersionId` is a `HTTP 400` from
+    Civitai (a `ZodError`), which is exactly why `community_images_impl`
+    validates `version_id` itself, server-side, BEFORE this function is ever
+    called -- see that function's own docstring.
+    """
+    return fetch_json_with_host_fallback(
+        lambda host: f"https://{host}/api/v1/images?modelVersionId={version_id}&limit={limit}",
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        hosts=hosts,
+        opener=opener,
+        notfound_message="No community images found for this model version.",
+    )
+
+
 __all__ = (
     "CIVITAI_HOSTS", "fetch_json_with_host_fallback", "lookup_by_hash", "lookup_model_by_id",
-    "lookup_model_version_by_id",
+    "lookup_model_version_by_id", "fetch_community_images",
 )
