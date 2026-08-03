@@ -459,10 +459,28 @@ def downscale_thumb_bytes(
     substitute a small stub exposing an `.open()` compatible with what this
     function calls -- the seam that lets the actual downscale PATH be
     exercised here, not merely its no-Pillow fallback.
+
+    🔒 2026-08-03 fix (Bug 3, "the silent fallback hid all of this"): a
+    truncated preview file (Bug 1 above, before its own fix) made Pillow
+    throw here, and the caller silently served the untouched, broken 5.5 MB
+    original with no diagnostic at all -- confirmed live: `?max_edge=64`
+    returned the identical, unmodified 2,048,000 bytes. This function's
+    RETURN VALUE is unchanged (`None` on either failure, still a silent
+    fallback from the caller's point of view -- a broken preview must never
+    500 the route), but it now logs at `debug` (`logs.log_debug`, itself
+    never-raising and zero-cost at any other level) which of the two
+    branches ran and why: "Pillow isn't installed" versus "Pillow is
+    installed but decoding/re-encoding `data` raised", naming the raised
+    exception's TYPE (never its message -- `data` is remote-sourced bytes,
+    not something to echo verbatim into a log line). That distinction is
+    the whole diagnostic value here: the same symptom (untouched bytes
+    served) has two very different causes, and only a log line tells them
+    apart after the fact.
     """
     if image_module is None:
         image_module = _load_pillow_image_module()
     if image_module is None:
+        logs_mod.log_debug(_logger, logs_mod.format_thumb_fallback_debug, reason="pillow_missing")
         return None
     try:
         img = image_module.open(io.BytesIO(data))
@@ -478,7 +496,11 @@ def downscale_thumb_bytes(
         out = io.BytesIO()
         img.save(out, format=fmt)
         return out.getvalue()
-    except Exception:  # noqa: BLE001 - best-effort only, must never raise
+    except Exception as exc:  # noqa: BLE001 - best-effort only, must never raise
+        logs_mod.log_debug(
+            _logger, logs_mod.format_thumb_fallback_debug,
+            reason="decode_failed", detail=type(exc).__name__,
+        )
         return None
 
 

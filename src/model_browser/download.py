@@ -867,11 +867,52 @@ def _preview_extension_for_content_type(content_type: Any) -> Optional[str]:
     (split on the first `;`), same convention as `download.
     _is_html_content_type` above -- a trailing `charset=...` doesn't matter
     here either, though a real image response is not expected to carry one.
+
+    🔒 2026-08-03 fix (Bug 2, "the extension is taken from a header that
+    lied"): this is now `fetch_preview_image`'s FALLBACK, not its primary
+    source of truth -- see `_sniff_media_type` below, which inspects the
+    actual bytes first. Measured live: a Civitai CDN response served genuine
+    WebP bytes (`RIFF....WEBP`) under `Content-Type: image/jpeg`, so a file
+    saved as `.preview.jpeg` was actually a WebP container -- `/thumb` then
+    derived `Content-Type: image/jpeg` from the (wrong) filename via
+    `mimetypes.guess_type`, propagating the lie to the browser. This
+    function's OWN behaviour is unchanged; it is simply consulted second now.
     """
     if not isinstance(content_type, str):
         return None
     media_type = content_type.split(";", 1)[0].strip().lower()
     return _PREVIEW_CONTENT_TYPES.get(media_type)
+
+
+def _sniff_media_type(data: bytes) -> Optional[str]:
+    """The media type `data`'s own bytes look like, by magic-number
+    signature -- independent of whatever a `Content-Type` header claims.
+    Returns one of `"image/jpeg"`/`"image/png"`/`"image/webp"`/`"image/gif"`,
+    or `None` if the bytes don't match ANY signature this function
+    recognises (never guessed -- an unrecognised prefix is `None`, not a
+    best-effort guess).
+
+    🔒 2026-08-03 fix (Bug 2): `fetch_preview_image` prefers THIS over the
+    response's `Content-Type` header, falling back to the header only when
+    `data` doesn't match any signature here at all -- a header is untrusted
+    metadata the server attached, the bytes are the actual file. `image/gif`
+    is deliberately recognised here even though `_PREVIEW_CONTENT_TYPES` has
+    no `.preview.gif` slot (this package has never saved a GIF preview): a
+    body that sniffs as GIF is KNOWN not to be one of the three formats we
+    save, so the caller must refuse it outright rather than fall back to a
+    header that could mislabel it as one of those three (the exact class of
+    bug this fix closes) -- see `fetch_preview_image`'s own docstring for how
+    the two functions compose.
+    """
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG"):
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"GIF8"):
+        return "image/gif"
+    return None
 
 
 def fetch_preview_image(
@@ -932,6 +973,19 @@ def fetch_preview_image(
     the SAME one `stream_download` uses) installs the identical
     `_SafeRedirectHandler` for any redirect hop, so `_is_safe_redirect`/
     `_unsafe_ip` guard every hop of this fetch, not just the first one.
+
+    🔒 2026-08-03 fix (a blank UNET thumbnail, diagnosed against the owner's
+    live server): the read loop below now accumulates across as many
+    `response.read()` calls as it takes rather than trusting one call to
+    return the whole body (Bug 1 -- `HTTPResponse.read(n)` returns UP TO `n`
+    bytes, not exactly `n`; measured, this had saved a 2,048,000-byte file
+    for a WebP whose own RIFF header declared 5,584,420 bytes), and the
+    saved extension is now chosen from the bytes themselves via
+    `_sniff_media_type`, the header only as a fallback (Bug 2 -- the CDN
+    served WebP bytes under `Content-Type: image/jpeg`). See those two
+    functions' own docstrings for the full detail; existing truncated
+    `.preview.*` files already on disk from before this fix are NOT
+    repaired by it.
     """
     if not isinstance(url, str) or not url:
         return None
@@ -953,20 +1007,57 @@ def fetch_preview_image(
                 content_type = headers.get("Content-Type") if headers is not None else None
             except AttributeError:
                 content_type = None
-            ext = _preview_extension_for_content_type(content_type)
-            if ext is None:
-                return None
-            body = response.read(max_bytes + 1)
-            if len(body) > max_bytes:
-                return None
+            # Bug 1 fix ("a single `read()` is not a whole body"):
+            # accumulate across as many `read()` calls as it takes -- a
+            # chunked response's `read(n)` returns UP TO `n` bytes, not
+            # exactly `n`, so a single call can (and measurably did) return
+            # only what happened to be buffered so far. Same loop shape as
+            # `stream_download`'s own chunked read above; the cap is
+            # enforced AS WE GO so a hostile/oversized response is
+            # abandoned the instant it's known to exceed `max_bytes`,
+            # never after buffering the whole thing.
+            chunks = []
+            total_read = 0
+            while True:
+                chunk = response.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > max_bytes:
+                    return None
+                chunks.append(chunk)
+            body = b"".join(chunks)
     except Exception:  # noqa: BLE001 - best-effort only, must never raise or block the download
         return None
 
+    # Bug 2 fix ("the extension is taken from a header that lied"): prefer
+    # what the bytes actually ARE over what the header claims -- see
+    # `_sniff_media_type`'s own docstring. Falls back to the (untrusted)
+    # header only when the bytes don't match any signature recognised there
+    # at all.
+    sniffed_type = _sniff_media_type(body)
+    ext = _PREVIEW_CONTENT_TYPES.get(sniffed_type) if sniffed_type is not None else None
+    if ext is None:
+        ext = _preview_extension_for_content_type(content_type)
+    if ext is None:
+        return None
+
     preview_path = os.path.splitext(dest_model_path)[0] + ext
+    # Bug 1 fix, part 2: the body is fully assembled and validated (size AND
+    # extension) in memory before anything touches disk -- a preview is at
+    # most `max_bytes` (default 8 MiB), so buffering it isn't the concern
+    # `stream_download`'s multi-GB models have. The disk write itself still
+    # goes through the SAME `.part`-then-`os.replace` pattern (`_cleanup_part`
+    # reused from `stream_download` above) so a failure mid-WRITE (disk
+    # full, permissions) can never leave a half-written
+    # `<base>.preview.<ext>` sitting where a real preview is expected.
+    part_path = part_path_for(preview_path)
     try:
-        with open(preview_path, "wb") as fh:
+        with open(part_path, "wb") as fh:
             fh.write(body)
+        os.replace(part_path, preview_path)
     except OSError:
+        _cleanup_part(part_path)
         return None
     return preview_path
 

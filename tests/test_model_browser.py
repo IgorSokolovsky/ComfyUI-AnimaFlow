@@ -4781,6 +4781,219 @@ def test_fetch_preview_image_opener_raising_returns_none_never_raises():
         assert local.find_preview_path(dest_model) is None
 
 
+# ---------------------------------------------------------------------------
+# 2026-08-03 fix -- Bug 1 ("a single `read()` is not a whole body") and Bug 2
+# ("the extension is taken from a header that lied"), diagnosed against the
+# owner's live server (a blank UNET thumbnail: the saved `.preview.jpeg` was
+# 2,048,000 bytes while the actual WebP bytes' own RIFF header declared
+# 5,584,420 -- a single `response.read(max_bytes + 1)` had been treated as
+# the whole body).
+# ---------------------------------------------------------------------------
+
+
+class _ShortReadDownloadResponse:
+    """Same shape as `_FakeDownloadResponse` above, EXCEPT `.read(n)`
+    deliberately returns at most `max_chunk` bytes per call regardless of
+    how large `n` is or how much MORE is genuinely buffered and available --
+    simulating a chunked HTTP response, where a single `read(n)` call
+    returns only whatever happened to be delivered so far. This is the
+    fake the task brief calls "the whole point": a well-behaved fake that
+    always hands back everything requested in one call (like
+    `_FakeDownloadResponse` above) can never expose Bug 1, since the
+    now-fixed code and the old buggy code behave identically against it.
+    """
+
+    def __init__(self, body: bytes, *, headers=None, max_chunk: int = 16):
+        self._body = body
+        self.headers = headers or {}
+        self._max_chunk = max_chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n=-1):
+        if not self._body:
+            return b""
+        take = self._max_chunk if (n is None or n < 0) else min(n, self._max_chunk)
+        data, self._body = self._body[:take], self._body[take:]
+        return data
+
+
+class _RaisesAfterFirstReadResponse:
+    """`.read()` returns one short chunk, then raises on every call after --
+    simulating a connection that drops mid-transfer, PARTWAY through
+    assembling the body (not on the very first byte, and not via the opener
+    call itself, which `test_fetch_preview_image_opener_raising_returns_none_
+    never_raises` above already covers)."""
+
+    def __init__(self, first_chunk: bytes, exc: Exception, *, headers=None):
+        self._first_chunk = first_chunk
+        self._exc = exc
+        self._used = False
+        self.headers = headers or {"Content-Type": "image/png"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n=-1):
+        if not self._used:
+            self._used = True
+            return self._first_chunk
+        raise self._exc
+
+
+# A real (short, but genuinely valid-signature) PNG/JPEG/WebP/GIF prefix,
+# for the sniffing tests below -- the SAME four signatures `_sniff_media_
+# type`'s own docstring names.
+_REAL_PNG_PREFIX = b"\x89PNG\r\n\x1a\n" + b"rest-of-a-fake-png"
+_REAL_JPEG_PREFIX = b"\xff\xd8\xff\xe0" + b"rest-of-a-fake-jpeg"
+_REAL_WEBP_PREFIX = b"RIFF" + struct.pack("<I", 100) + b"WEBP" + b"rest-of-a-fake-webp"
+_REAL_GIF_PREFIX = b"GIF89a" + b"rest-of-a-fake-gif"
+
+
+def test_sniff_media_type_detects_all_four_known_signatures():
+    assert download._sniff_media_type(_REAL_PNG_PREFIX) == "image/png"
+    assert download._sniff_media_type(_REAL_JPEG_PREFIX) == "image/jpeg"
+    assert download._sniff_media_type(_REAL_WEBP_PREFIX) == "image/webp"
+    assert download._sniff_media_type(_REAL_GIF_PREFIX) == "image/gif"
+
+
+def test_sniff_media_type_returns_none_for_unrecognised_bytes():
+    assert download._sniff_media_type(b"<html>not an image</html>") is None
+    assert download._sniff_media_type(b"") is None
+    assert download._sniff_media_type(b"RIFF-but-not-webp") is None
+
+
+def test_fetch_preview_image_assembles_the_full_body_across_many_short_reads():
+    # The bug, reproduced directly: a payload comfortably under `max_bytes`,
+    # but delivered 16 bytes at a time -- the old single-`read()` code would
+    # have saved only the first 16 bytes and called it done.
+    payload = _REAL_PNG_PREFIX * 200  # comfortably larger than one short read
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _ShortReadDownloadResponse(payload, headers={"Content-Type": "image/png"}, max_chunk=16)
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result == os.path.join(tmp, "a.preview.png")
+        with open(result, "rb") as fh:
+            assert fh.read() == payload  # the WHOLE body, not just the first short read
+
+
+def test_fetch_preview_image_oversized_body_across_short_reads_still_rejects_and_leaves_no_file():
+    # The cap must still be enforced once the accumulated total (across many
+    # short reads) exceeds it -- not just when a single big read already did.
+    payload = b"x" * 4096
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _ShortReadDownloadResponse(payload, headers={"Content-Type": "image/png"}, max_chunk=16)
+
+        result = download.fetch_preview_image(
+            "https://image.civitai.com/x.png", dest_model, opener=opener, max_bytes=1024,
+        )
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+        assert not os.path.isfile(os.path.join(tmp, "a.preview.png") + ".part")
+        assert os.listdir(tmp) == ["a.safetensors"]  # nothing else was ever written
+
+
+def test_fetch_preview_image_a_read_raising_partway_leaves_no_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _RaisesAfterFirstReadResponse(b"partial-bytes-only", ConnectionResetError("dropped"))
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result is None
+        assert local.find_preview_path(dest_model) is None
+        assert os.listdir(tmp) == ["a.safetensors"]
+
+
+def test_fetch_preview_image_names_the_file_from_actual_bytes_even_when_the_header_disagrees():
+    # The confirmed live bug, Bug 2: real WebP bytes served under a LYING
+    # `Content-Type: image/jpeg` -- must be saved as `.preview.webp`, not
+    # `.preview.jpeg`, whatever the header claims.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(_REAL_WEBP_PREFIX, headers={"Content-Type": "image/jpeg"})
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result == os.path.join(tmp, "a.preview.webp")
+        with open(result, "rb") as fh:
+            assert fh.read() == _REAL_WEBP_PREFIX
+
+
+def test_fetch_preview_image_falls_back_to_the_header_only_when_the_magic_is_unrecognised():
+    # Genuinely unrecognisable bytes (no known signature) -- the header is
+    # still consulted as the fallback, same as before this fix.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+        payload = b"totally-opaque-bytes-not-a-known-signature"
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(payload, headers={"Content-Type": "image/png"})
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result == os.path.join(tmp, "a.preview.png")
+
+
+def test_fetch_preview_image_leaves_no_part_file_behind_on_success():
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(_REAL_PNG_PREFIX, headers={"Content-Type": "image/png"})
+
+        result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+        assert result is not None
+        assert not os.path.isfile(result + ".part")
+        assert sorted(os.listdir(tmp)) == ["a.preview.png", "a.safetensors"]
+
+
+def test_fetch_preview_image_final_rename_failure_cleans_up_the_part_file():
+    # A failure at the very last step (the atomic rename) must still leave
+    # NO file behind -- `_cleanup_part` runs on that path too, not just on a
+    # network-level failure.
+    with tempfile.TemporaryDirectory() as tmp:
+        dest_model = os.path.join(tmp, "a.safetensors")
+        open(dest_model, "wb").close()
+
+        def opener(url, timeout):
+            return _FakeDownloadResponse(_REAL_PNG_PREFIX, headers={"Content-Type": "image/png"})
+
+        previous_replace = download.os.replace
+
+        def raising_replace(*args, **kwargs):
+            raise OSError("simulated disk-full on rename")
+
+        download.os.replace = raising_replace
+        try:
+            result = download.fetch_preview_image("https://image.civitai.com/x.png", dest_model, opener=opener)
+            assert result is None
+            assert local.find_preview_path(dest_model) is None
+            assert os.listdir(tmp) == ["a.safetensors"]  # the `.part` file was cleaned up too
+        finally:
+            download.os.replace = previous_replace
+
+
 # --- finalize_successful_download -------------------------------------------
 
 
@@ -6596,6 +6809,15 @@ ALL_TESTS = [
     test_fetch_preview_image_unknown_content_type_is_rejected_body_never_written,
     test_fetch_preview_image_oversized_body_is_rejected,
     test_fetch_preview_image_opener_raising_returns_none_never_raises,
+    test_sniff_media_type_detects_all_four_known_signatures,
+    test_sniff_media_type_returns_none_for_unrecognised_bytes,
+    test_fetch_preview_image_assembles_the_full_body_across_many_short_reads,
+    test_fetch_preview_image_oversized_body_across_short_reads_still_rejects_and_leaves_no_file,
+    test_fetch_preview_image_a_read_raising_partway_leaves_no_file,
+    test_fetch_preview_image_names_the_file_from_actual_bytes_even_when_the_header_disagrees,
+    test_fetch_preview_image_falls_back_to_the_header_only_when_the_magic_is_unrecognised,
+    test_fetch_preview_image_leaves_no_part_file_behind_on_success,
+    test_fetch_preview_image_final_rename_failure_cleans_up_the_part_file,
     test_finalize_successful_download_writes_sidecar_and_preview,
     test_finalize_successful_download_no_civitai_meta_or_preview_url_is_a_no_op,
     test_finalize_successful_download_civitai_enabled_false_skips_the_preview_fetch_but_still_writes_sidecar,

@@ -427,6 +427,24 @@ def _format_preview_summary_impl(*, status: str, detail: str = "") -> str:
 format_preview_summary = _safe(_format_preview_summary_impl)
 
 
+# ---------------------------------------------------------------------------
+# `/thumb`'s downscale fallback (api.py's `downscale_thumb_bytes`, 2026-08-03
+# fix -- "the silent fallback hid all of this"): a blank thumbnail is the
+# SAME symptom whether Pillow is simply absent or a real decode failed on
+# bad bytes, and the route's own behaviour (silently serve the untouched
+# original either way) must not change -- this is debug-only observability
+# on top of that unchanged fallback, not a new failure mode.
+# ---------------------------------------------------------------------------
+
+
+def _format_thumb_fallback_debug_impl(*, reason: str, detail: str = "") -> str:
+    suffix = f" ({detail})" if detail else ""
+    return f"[AnimaFlow] Model Browser thumb fallback: reason={reason}{suffix}"
+
+
+format_thumb_fallback_debug = _safe(_format_thumb_fallback_debug_impl)
+
+
 __all__ = (
     "LOGGER_NAME",
     "CONSOLE_LOGGING_SETTING_ID",
@@ -452,6 +470,7 @@ __all__ = (
     "format_delete_summary",
     "format_preview_candidate_debug",
     "format_preview_summary",
+    "format_thumb_fallback_debug",
     "format_model_detail_summary",
     "format_community_images_summary",
 )

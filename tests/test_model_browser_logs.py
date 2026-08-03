@@ -297,6 +297,17 @@ def test_format_preview_summary_distinguishes_saved_skipped_failed():
     assert "failed" in failed
 
 
+def test_format_thumb_fallback_debug_names_reason_and_detail():
+    line = mb_logs.format_thumb_fallback_debug(reason="decode_failed", detail="ValueError")
+    assert "reason=decode_failed" in line
+    assert "ValueError" in line
+
+
+def test_format_thumb_fallback_debug_fail_safe_on_garbage():
+    line = mb_logs.format_thumb_fallback_debug(reason=object(), detail=object())
+    assert isinstance(line, str) and line
+
+
 def test_format_request_and_response_debug_redact_url_internally():
     url = "https://civitai.com/api/v1/models?token=leak-me"
     request_line = mb_logs.format_request_debug(url=url)
@@ -752,6 +763,74 @@ def test_fetch_preview_image_debug_logs_the_candidate_url():
 
 
 # ---------------------------------------------------------------------------
+# api.downscale_thumb_bytes -- the `/thumb` downscale fallback's own debug
+# observability (2026-08-03 fix, Bug 3: "the silent fallback hid all of
+# this"). The RETURN VALUE (`None` on either branch, so the caller still
+# silently serves the original bytes) is unchanged by this fix -- only
+# whether a debug line names WHICH branch ran, and why, is new.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingThumbImageModule:
+    """Stands in for `PIL.Image` -- `.open()` always raises, simulating a
+    real decode failure (as opposed to Pillow being absent at all)."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def open(self, fh):
+        raise self._exc
+
+
+def test_downscale_thumb_bytes_debug_logs_pillow_missing_when_no_image_module_at_all():
+    # No `image_module` injected -- this environment genuinely has no
+    # Pillow installed (verified elsewhere: `import PIL` fails here).
+    restore_level = _with_level("debug")
+    records, restore_logs = _capture_logs()
+    try:
+        result = mb_api.downscale_thumb_bytes(b"any bytes at all", 256)
+        assert result is None
+        joined = "\n".join(records)
+        assert "thumb fallback" in joined
+        assert "reason=pillow_missing" in joined
+    finally:
+        restore_logs()
+        restore_level()
+
+
+def test_downscale_thumb_bytes_debug_logs_decode_failed_with_the_exception_type():
+    restore_level = _with_level("debug")
+    records, restore_logs = _capture_logs()
+    try:
+        result = mb_api.downscale_thumb_bytes(
+            b"garbage", 256, image_module=_RaisingThumbImageModule(ValueError("corrupt")),
+        )
+        assert result is None
+        joined = "\n".join(records)
+        assert "thumb fallback" in joined
+        assert "reason=decode_failed" in joined
+        assert "ValueError" in joined  # the exception TYPE, never its message
+        assert "corrupt" not in joined
+    finally:
+        restore_logs()
+        restore_level()
+
+
+def test_downscale_thumb_bytes_off_emits_nothing_on_either_fallback_branch():
+    restore_level = _with_level("off")
+    records, restore_logs = _capture_logs()
+    try:
+        assert mb_api.downscale_thumb_bytes(b"any bytes", 256) is None
+        assert mb_api.downscale_thumb_bytes(
+            b"garbage", 256, image_module=_RaisingThumbImageModule(RuntimeError("boom")),
+        ) is None
+        assert records == []
+    finally:
+        restore_logs()
+        restore_level()
+
+
+# ---------------------------------------------------------------------------
 # lookup.lookup_model_info -- cache hit/miss debug + summary + sidecar-write.
 # ---------------------------------------------------------------------------
 
@@ -950,6 +1029,8 @@ ALL_TESTS = [
     test_format_delete_summary_empty_removed_reads_as_none,
     test_format_delete_summary_fail_safe_on_garbage,
     test_format_preview_summary_distinguishes_saved_skipped_failed,
+    test_format_thumb_fallback_debug_names_reason_and_detail,
+    test_format_thumb_fallback_debug_fail_safe_on_garbage,
     test_format_request_and_response_debug_redact_url_internally,
     test_current_level_defaults_to_off_with_no_comfyui_and_no_env_override,
     test_current_level_animaflow_debug_env_forces_debug,
@@ -973,6 +1054,9 @@ ALL_TESTS = [
     test_finalize_successful_download_summary_reports_skipped_when_civitai_disabled,
     test_finalize_successful_download_summary_reports_failed_on_a_bad_response,
     test_fetch_preview_image_debug_logs_the_candidate_url,
+    test_downscale_thumb_bytes_debug_logs_pillow_missing_when_no_image_module_at_all,
+    test_downscale_thumb_bytes_debug_logs_decode_failed_with_the_exception_type,
+    test_downscale_thumb_bytes_off_emits_nothing_on_either_fallback_branch,
     test_lookup_model_info_cache_hit_logs_debug_and_summary_found,
     test_lookup_model_info_cache_miss_then_fetch_and_write_logs_debug_miss_and_sidecar_write,
     test_lookup_model_info_missing_file_summary_reports_offline_missing_file,
