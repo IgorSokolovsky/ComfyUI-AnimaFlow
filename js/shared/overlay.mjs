@@ -246,7 +246,7 @@ function clampOverlayToViewport(overlay, contentEl, vw, vh) {
  * via its `minHeight` option instead, so this decision lives in exactly one
  * place rather than being computed once here and once per caller.
  */
-export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName) {
+export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName, zIndex) {
   const win = winOf(doc);
   const overlay = el(doc, "div", overlayClassName || "wtn-overlay wtn");
   // Belt-and-suspenders: `.wtn-overlay`'s `position: fixed` normally comes
@@ -263,8 +263,12 @@ export function openOverlay(doc, anchorEl, contentEl, placement, onClose, overla
   // (`../shared/z_layers.mjs` -- read that module's own top doc comment
   // before ever hand-picking a number here again: this used to be a bare
   // `"10020"`, and a DIFFERENT bare number in `delete_confirm.mjs` is the
-  // owner-reported bug this scale exists to fix).
-  overlay.style.zIndex = String(Z_PANEL);
+  // owner-reported bug this scale exists to fix). `zIndex` (optional) lets a
+  // caller whose anchor lives INSIDE an already-open higher layer (the ⓘ
+  // panel opened from a card in `civitai_modal.mjs`'s Installed tab, via
+  // `Z_MODAL_PANEL`) outrank that container instead of painting behind it --
+  // every existing caller omits it and keeps this exact default, unchanged.
+  overlay.style.zIndex = String(zIndex || Z_PANEL);
   overlay.appendChild(contentEl);
   const body = doc.body || doc;
   body.appendChild(overlay);
@@ -714,9 +718,12 @@ export function closeOverlaysNotAncestorOf(anchorEl) {
  * `handle.ownerKey = key` is still the CALLER's job (this function doesn't
  * know what key a given opener wants to use), see `js/anima/interaction.mjs`
  * for the pattern.
+ *
+ * `zIndex` (optional) is forwarded straight to `openOverlay` unchanged — see
+ * that function's own doc comment for why a caller would ever need it.
  */
-export function openOverlayWithZoom(getCanvasEl, doc, anchorEl, contentEl, placement, onClose, overlayClassName) {
-  const handle = openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName);
+export function openOverlayWithZoom(getCanvasEl, doc, anchorEl, contentEl, placement, onClose, overlayClassName, zIndex) {
+  const handle = openOverlay(doc, anchorEl, contentEl, placement, onClose, overlayClassName, zIndex);
   const uninstallZoom = installCanvasZoomPassthrough(handle.overlay, getCanvasEl, { forwardToCanvas: false });
   const origClose = handle.close;
   handle.close = () => {

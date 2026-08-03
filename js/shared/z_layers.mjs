@@ -60,6 +60,30 @@ export const Z_MODAL = 10020;
 export const Z_CONFIRM = 10030;
 
 /**
+ * An anchored panel opened WHILE a full modal is already showing — today,
+ * only the ⓘ info panel (`model_info.mjs`'s `openModelInfo`), opened from a
+ * card in the browser modal's own Installed tab (`civitai_modal.mjs`). Every
+ * anchored panel defaults to `Z_PANEL` (`overlay.mjs`'s own default), which
+ * is BELOW `Z_MODAL` — correct for the normal case (a panel anchored to a
+ * node on the canvas, with no modal open at all), but wrong the moment the
+ * anchor itself lives INSIDE an open modal: at `Z_PANEL` the panel would
+ * paint behind the modal's own scrim/panel (both siblings appended to
+ * `document.body`, the modal's `Z_MODAL` winning the stack), rendering it
+ * invisible rather than merely misplaced.
+ *
+ * Same "elevate above your own container" technique `Z_ELEVATED_TOOLTIP`
+ * already uses for a tooltip nested inside an anchored panel (that one
+ * reuses `Z_MODAL` itself, since nothing there is nested inside an actual
+ * modal) — here the container one level up is `Z_MODAL`, so this rung sits
+ * just above it. Kept below `Z_CONFIRM`, not equal to it: the ⓘ panel's own
+ * "Delete" action opens `delete_confirm.mjs`'s dialog on TOP of the ⓘ panel
+ * (nested one level deeper again), and that confirm must still outrank
+ * whatever it was launched from, per this module's own "required ordering"
+ * doc comment above.
+ */
+export const Z_MODAL_PANEL = Z_MODAL + 5;
+
+/**
  * `js/shared/fields.mjs`'s own field-row ⓘ tooltip (`.wtn-tip.wtn-fld-tip`)
  * is a genuine, pre-existing exception to the plain tooltip tier above: it
  * renders INSIDE an already-open anchored panel (a LoRA row or an Anima

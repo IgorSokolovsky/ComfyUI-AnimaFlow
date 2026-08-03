@@ -14,8 +14,8 @@ force. See §0e for what M1 shipped; the milestone list in §0c is the plan, thi
 | **ⓘ backfill saves the preview image** (§7c-iv) | ✅ built (`6ce43de` route, wired `99e24c5`) |
 | **`notfound`'s search-by-name link** | ✅ wired `99e24c5` |
 | **Remove an installed model** (decisions taken 2026-07-30, `docs/TODO.md`) | ✅ route `6ce43de`, type-to-confirm UI `99e24c5` |
-| **Installed-by-kind section in the modal** (owner, 2026-07-30) | ❌ **not built** |
-| **M3** — Loader Panel reuse, checkpoints + UNET | ❌ **not built** |
+| **Installed-by-kind section in the modal** (owner, 2026-07-30; placement 2026-08-02/03) | ✅ built, unverified — see "The Installed tab" under "The modal" |
+| **M3** — Loader Panel reuse: `unet` gets the picker + ⓘ; new `checkpoint` row (MODEL only) | ✅ built 2026-08-03 |
 
 > ⚠️ This header previously read *"M2 and M2b remain spec-only"* long after both shipped, and §7c-iv
 > still carried "SPEC, not yet built" after it was built and confirmed. **A status line is the first
@@ -139,7 +139,11 @@ search-by-name link from M1.
 `js/controls/index.js` with a lazy `import()`; 90% modal; filter rail with **`<select>`-adds-a-chip** (d10);
 result grid; detail **swap** keeping the rail, with the multi-column gallery (d11).
 
-**M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only**.
+**M3 — Loader Panel reuse**, scoped to **checkpoints + UNET only** — ✅ built 2026-08-03: `unet`
+rows get the searchable picker + ⓘ (an import of `model_picker.mjs`/`model_info.mjs`, unchanged);
+a new `checkpoint` row kind emits MODEL only (see `docs/control-panel-design.md` §3c for the
+CLIP/VAE gap this deliberately leaves open). `vae`/`clip` are untouched — `kinds.py` has no backend
+kind for either.
 
 ### 0d. Read these before touching code
 
@@ -1932,6 +1936,70 @@ than showing results the user cannot act on. Two consequences for anything built
 from that folder). Whatever is decided, the reasoning belongs in the comment, because it sets the standard
 for every type added later.
 
+#### The Installed tab, grouped by kind (owner, 2026-07-30; placement 2026-08-02/03) — BUILT
+
+Owner: *"installed-by-kind section in the browser"* — asked for on 2026-07-30, never specced beyond that
+line until the placement decision landed. This section is that spec, written as the feature was built.
+
+**Two tabs above the grid: `Search` | `Installed`, replacing the modal's old bare "Browse Civitai" title**
+(`civitai_modal.mjs`'s `tabStrip`). Installed is a **peer** of Search, not a filter of it — switching to
+it swaps out BOTH the filter rail and the main column for Installed's own pair, built once at open (hidden
+via `style.display`, never lazily mounted) so a tab switch is pure visibility, never a rebuild. That is
+what makes Search's own state (the query text, `currentFilters`, `results`, an in-flight download) survive
+a round trip through Installed for free — nothing about it is ever touched by `setActiveTab`.
+
+**The rail is per-tab.** Search's five existing sections (Sort/Period/Level/Base Model/Model Type) hide
+outright when Installed is active; Installed gets its own two sections instead — **Kind** (three checkboxes,
+`loras`/`checkpoints`/`unet`, all checked by default) and **Sort** (`Name`/`Size`, session-local, not a
+persisted setting like Search's own filters are). Unchecking a Kind checkbox removes that kind's WHOLE
+section from the grid (heading and all) — it is a rail filter over which sections render, not over which
+cards within a shown section render.
+
+**Grouped by kind, in `INSTALLED_KIND_ORDER` (`loras`, `checkpoints`, `unet` — `src/model_browser/kinds.py`'s
+own whitelist, the only three that exist)**, each with a heading and a count (`"LoRAs (24)"`). A kind with
+genuinely zero files still renders its heading plus a quiet `"No files."` line — "you have none" is
+information, and a silently missing section would read as a bug; a kind whose `/list` fetch hasn't resolved
+yet (`installedSections`'s own `loaded: false`) instead renders `"Loading…"`, never a false "no files" for
+one that just hasn't answered yet. Each kind's own list is fetched via the SAME `listModels(kind)`
+(`civitai_api.mjs`) the picker already uses, lazily on first switch to Installed (a per-kind cache hit on a
+later switch costs nothing, since `listModels` without `force` serves its own module-level cache).
+
+**Each card** (all sourced from `/list` — `name`, `size`, `group`, `base_model`, `triggers`, `has_preview`,
+`civitai_name`): the local `/thumb` preview (a placeholder for `has_preview: false` — the SAME neutral
+glyph the picker already uses, never a second one), the display name via `displayRowName` (so "Hide file
+extension"/"Show Civitai name" apply here exactly as everywhere else), and a size/base-model second line via
+`metaLineFor` — both reused verbatim from `model_picker.mjs`, not re-derived.
+
+**Two actions per card: ⓘ and Delete.** ⓘ opens the existing kind-parameterised `model_info.mjs` panel
+unchanged (`openModelInfo`); Delete opens the existing `delete_confirm.mjs` type-to-confirm dialog and
+calls `civitai_api.mjs`'s `deleteModel`. Neither is rebuilt.
+
+**The z-index trap this surfaced, not anticipated going in:** the ⓘ panel is an anchored popover
+(`overlay.mjs`'s `openOverlay`), which defaults to `Z_PANEL` — BELOW the modal's own `Z_MODAL`. Anchoring
+it to a card inside an already-open modal would therefore paint it invisibly behind the modal, not merely
+in the wrong place. Fixed with a new named rung, `Z_MODAL_PANEL` (`js/shared/z_layers.mjs`, `Z_MODAL + 5`),
+passed as `openModelInfo`'s new optional `overlayZIndex` parameter (forwarded straight to
+`openOverlayWithZoom`/`openOverlay`, which now accept it as an optional trailing argument, defaulting to
+the unchanged `Z_PANEL` for every other, non-modal caller) — the same "elevate above your own container"
+technique `Z_ELEVATED_TOOLTIP` already uses for a tooltip nested inside a panel, one rung further out.
+
+**Delete is invalidate-THEN-refetch-then-rerender, never invalidate alone** — the exact half-fix
+`d255da3` shipped and then had to correct (`lora_interaction.mjs:321-322`'s `refreshLoraModels` is the
+pattern followed verbatim: `invalidateList(kind)` empties the client-side list cache, but nothing
+repopulates it until a real `listModels(kind, true)` call lands). `model_info.mjs`'s own "Remove" already
+runs `invalidateList(kind)` internally before calling back out via `onDeleted` — the Installed tab's own
+`onDeleted`/Delete-button handlers both still do the refetch-and-rerender half themselves, matching that
+existing split.
+
+**Local previews are NOT browsing-level filtered** (unchanged elsewhere in this pack — `thumbUrl` serves
+whatever sits on disk, an explicit local act, not a Civitai gallery fetch) — there was no reason to
+introduce a level filter for this tab specifically, and it deliberately does not.
+
+**Thumbnails go through the shared load-gate + retry machinery** (`js/shared/civitai_thumb.mjs`'s
+`attachThumbCandidate`/skeleton, `model_detail_view.mjs`'s `createLoadGate`, ONE gate per render pass
+shared across all three kinds' own cards) rather than plain unthrottled `<img>` tags — three kinds' worth
+of previews rendering at once is the most image traffic this modal will ever produce in one screen.
+
 ### Where the button goes, and the budget constraint that shapes it
 
 Beside the **Rule Builder's** toolbar button, following the same pattern its `index.js` already
@@ -2075,7 +2143,7 @@ The ⓘ panel already has it (§1a-i). **It belongs on every surface that shows 
 |---|---|
 | the node's ⓘ panel | M1 |
 | the modal's detail view (which is also the picker's, §7c-ii) | M2b |
-| the Loader Panel's model info | M3 |
+| the Loader Panel's model info | M3 — ✅ built 2026-08-03 (reuses `model_info.mjs` unchanged) |
 
 **Why it is a rule rather than three separate buttons:** whatever we render is a *curated subset* of
 someone else's page. Civitai always has more — comments, the full image gallery, other versions'
@@ -2139,7 +2207,8 @@ Consequences, all deliberate:
   missing marks + file-derived trigger words + the hash lookup, which per §2b needs no key and caches
   offline. Search and download can land in milestone 2 once §9's policy is settled — so the open
   decision below **does not block starting**.
-- The Loader Panel gets nothing until milestone 3. Accepted; it already works today.
+- The Loader Panel got nothing until milestone 3 (built 2026-08-03) — accepted at the time; it
+  already worked before then.
 
 ---
 

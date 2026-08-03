@@ -25,9 +25,13 @@ import {
   injectModalStyles,
   openCivitaiModal,
   _resetModalForTests,
+  INSTALLED_KIND_ORDER,
+  INSTALLED_KIND_LABELS,
+  sortInstalledModels,
+  installedSections,
 } from "./civitai_modal.mjs";
 import { _resetDownloadStateForTests, sessionGatedKeys, injectStyles as injectSearchStyles } from "./civitai_search.mjs";
-import { invalidateModelDetail } from "./civitai_api.mjs";
+import { invalidateModelDetail, invalidateList, thumbUrl } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
 // `js/shared/theme.css`'s raw text -- the shared `.wtn-select` height fix
@@ -425,6 +429,18 @@ function makeDocStub() {
         },
         contains(c) {
           return this._set.has(c);
+        },
+        // Real DOM's two-arg `toggle(name, force)` -- `setActiveTab`'s own
+        // tab-active bookkeeping uses it (mirrors `lora_render.mjs`'s/
+        // `render.mjs`'s own unguarded `classList.toggle` call sites).
+        toggle(c, force) {
+          const on = force === undefined ? !this._set.has(c) : !!force;
+          if (on) {
+            this._set.add(c);
+          } else {
+            this._set.delete(c);
+          }
+          return on;
         },
       },
       addEventListener(t, fn) {
@@ -1098,7 +1114,11 @@ await asyncTest("openCivitaiModal: D3 -- the open <select> shows a checkmark aga
   }
 });
 
-await asyncTest("openCivitaiModal: D4 -- no header subtitle badge; the title alone renders", async () => {
+await asyncTest("openCivitaiModal: D4 -- no header subtitle badge; the head shows the Search/Installed tabs instead of a bare title", async () => {
+  // The Installed tab (docs/lora-loader-design.md "Installed-by-kind
+  // section") replaced the old bare "Browse Civitai" title with the tab
+  // pair itself -- this test now pins THAT shape rather than the title text
+  // it superseded.
   _resetDownloadStateForTests();
   _resetModalForTests();
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false }));
@@ -1107,8 +1127,10 @@ await asyncTest("openCivitaiModal: D4 -- no header subtitle badge; the title alo
     const handle = openCivitaiModal({ doc });
     await settle();
     assert.equal(findAll(handle.scrim, "wtn-cm-badge").length, 0, "the subtitle badge element must be gone entirely");
-    const headSpans = findAllByTag(handle.scrim, "span").filter((e) => e.textContent === "Browse Civitai");
-    assert.equal(headSpans.length, 1, "the title itself still renders");
+    const tabs = findAll(handle.scrim, "wtn-cm-tab");
+    const tabLabels = tabs.map((t) => t.textContent);
+    assert.ok(tabLabels.includes("Search"), "the Search tab renders");
+    assert.ok(tabLabels.includes("Installed"), "the Installed tab renders");
     handle.close();
   } finally {
     restoreFetch();
@@ -1128,7 +1150,14 @@ await asyncTest("openCivitaiModal: D5 -- rail sections are plain headings, never
 
     assert.equal(findAllByTag(handle.scrim, "details").length, 0, "the rail must never use <details> any more -- D5 reverses D1's collapsible mechanism, not just its chrome");
     assert.equal(findAllByTag(handle.scrim, "summary").length, 0, "no disclosure triangle left to render");
-    const headings = findAll(handle.scrim, "wtn-cm-rail-heading");
+    // Scoped to the SEARCH rail specifically (`findAll(..., "wtn-cm-rail")[0]`
+    // -- the search rail is built, and appended to `body`, before the
+    // Installed tab's own rail) -- the Installed tab now contributes two
+    // MORE `.wtn-cm-rail-heading` elements of its own ("Kind"/"Sort"), which
+    // this test must not count: it is pinning the SEARCH rail's own five
+    // sections, unaffected by anything Installed adds alongside it.
+    const searchRail = findAll(handle.scrim, "wtn-cm-rail")[0];
+    const headings = findAll(searchRail, "wtn-cm-rail-heading");
     assert.equal(headings.length, 5, "one plain heading per rail section: sort, period, level, base model, model type");
     const labels = headings.map((h) => h.textContent);
     assert.deepEqual(labels, ["Sort models by", "Period", "Maximum browsing level", "Filter by Base Model", "Filter by Model Type"]);
@@ -1549,6 +1578,451 @@ await asyncTest("openCivitaiModal: the detail view's own download targets the re
     restoreFetch();
     _resetDownloadStateForTests();
     _resetModalForTests();
+  }
+});
+
+// =========================================================================
+// The Installed tab (owner, 2026-07-30; placement settled 2026-08-02/03,
+// docs/lora-loader-design.md "Installed-by-kind section") -- pure helpers
+// first, then the DOM integration tests the task brief itself enumerates.
+// =========================================================================
+
+test("INSTALLED_KIND_ORDER: exactly the three kinds this pack can install, in the mockup's own order", () => {
+  assert.deepEqual(INSTALLED_KIND_ORDER, ["loras", "checkpoints", "unet"]);
+});
+
+test("INSTALLED_KIND_LABELS: a display label for every kind in INSTALLED_KIND_ORDER", () => {
+  for (const kind of INSTALLED_KIND_ORDER) {
+    assert.equal(typeof INSTALLED_KIND_LABELS[kind], "string");
+    assert.ok(INSTALLED_KIND_LABELS[kind].length > 0);
+  }
+});
+
+test("sortInstalledModels: 'name' sorts case-insensitively A->Z, never mutating the input", () => {
+  const models = [{ name: "Zeta.safetensors" }, { name: "alpha.safetensors" }, { name: "Mid.safetensors" }];
+  const sorted = sortInstalledModels(models, "name");
+  assert.deepEqual(sorted.map((m) => m.name), ["alpha.safetensors", "Mid.safetensors", "Zeta.safetensors"]);
+  assert.equal(models[0].name, "Zeta.safetensors", "the input array itself is never reordered");
+});
+
+test("sortInstalledModels: 'size' sorts largest first; a missing/garbage size sorts as if it were 0", () => {
+  const models = [{ name: "a", size: 10 }, { name: "b", size: 1000 }, { name: "c" }];
+  const sorted = sortInstalledModels(models, "size");
+  assert.deepEqual(sorted.map((m) => m.name), ["b", "a", "c"]);
+});
+
+test("sortInstalledModels: garbage input degrades to [], never throws", () => {
+  assert.deepEqual(sortInstalledModels(null, "name"), []);
+  assert.deepEqual(sortInstalledModels(undefined, "size"), []);
+  assert.deepEqual(sortInstalledModels("not an array", "name"), []);
+});
+
+test("installedSections: an unchecked kind's whole section is omitted outright", () => {
+  const sections = installedSections(
+    { loras: [{ name: "a" }], checkpoints: [{ name: "b" }], unet: [{ name: "c" }] },
+    ["loras"],
+    "name",
+  );
+  assert.deepEqual(sections.map((s) => s.kind), ["loras"]);
+});
+
+test("installedSections: a kind with zero files still appears (loaded, count 0) -- 'you have none' is real information", () => {
+  const sections = installedSections({ loras: [], checkpoints: undefined, unet: undefined }, INSTALLED_KIND_ORDER, "name");
+  const loras = sections.find((s) => s.kind === "loras");
+  assert.equal(loras.loaded, true);
+  assert.equal(loras.count, 0);
+  assert.deepEqual(loras.models, []);
+});
+
+test("installedSections: a kind whose fetch hasn't resolved yet is 'loaded: false' -- never a false 'no files'", () => {
+  const sections = installedSections({}, INSTALLED_KIND_ORDER, "name");
+  for (const s of sections) {
+    assert.equal(s.loaded, false, `${s.kind} must not claim to be loaded before its /list fetch has resolved`);
+    assert.equal(s.count, 0);
+  }
+});
+
+test("installedSections: sections always render in INSTALLED_KIND_ORDER, regardless of enabledKinds' own order", () => {
+  const sections = installedSections({ loras: [], checkpoints: [], unet: [] }, ["unet", "loras", "checkpoints"], "name");
+  assert.deepEqual(sections.map((s) => s.kind), ["loras", "checkpoints", "unet"]);
+});
+
+test("installedSections: garbage modelsByKind/enabledKinds degrades to [], never throws", () => {
+  assert.deepEqual(installedSections(null, null, "name"), []);
+  assert.deepEqual(installedSections(undefined, undefined, "size"), []);
+  assert.deepEqual(installedSections("garbage", "garbage", "name"), []);
+});
+
+// -------------------------------------------------------------------------
+// DOM integration -- a stub DOM, mirroring every other openCivitaiModal test
+// above. `invalidateList` (civitai_api.mjs) resets the REAL "loras"/
+// "checkpoints"/"unet" kinds before and after each test, since the Installed
+// tab -- unlike model_picker.mjs's own tests -- always fetches these three
+// fixed kind strings rather than a per-test fake one.
+// -------------------------------------------------------------------------
+
+function resetInstalledListCache() {
+  invalidateList("loras");
+  invalidateList("checkpoints");
+  invalidateList("unet");
+}
+
+function stubFetchForInstalled({ listByKind = {}, onDelete } = {}) {
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/wtn/model_browser/list")) {
+      const kind = new URL(u, "http://x").searchParams.get("kind");
+      return jsonResponse({ reason: "ok", models: listByKind[kind] || [] });
+    }
+    if (u.includes("/wtn/model_browser/delete")) {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      if (typeof onDelete === "function") {
+        onDelete(body);
+      }
+      return jsonResponse({ reason: "ok", message: "", removed: ["model"] });
+    }
+    if (u.includes("/wtn/model_browser/thumb")) {
+      return jsonResponse({});
+    }
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+}
+
+function installedTabBtnOf(root) {
+  return findAll(root, "wtn-cm-tab").find((t) => t.textContent === "Installed");
+}
+function searchTabBtnOf(root) {
+  return findAll(root, "wtn-cm-tab").find((t) => t.textContent === "Search");
+}
+
+await asyncTest("openCivitaiModal: the default tab is Search (both rails exist; only Search's is visible), and its own behaviour is untouched", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalled({});
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const rails = findAll(handle.scrim, "wtn-cm-rail");
+    assert.equal(rails.length, 2, "Search's own rail and the Installed tab's own rail both exist in the DOM");
+    // Search's own rail never has its `display` touched at all until a tab
+    // switch happens (only the Installed pair starts with an explicit
+    // `"none"`), so its untouched default is `undefined`, not the string
+    // `""` -- either way, "not none" is the actual behavioural claim here.
+    assert.notEqual(rails[0].style.display, "none", "Search's own rail is visible by default");
+    assert.equal(rails[1].style.display, "none", "the Installed tab's own rail starts hidden");
+
+    const mains = findAll(handle.scrim, "wtn-cm-main");
+    assert.notEqual(mains[0].style.display, "none", "Search's own main column is visible by default");
+    assert.equal(mains[1].style.display, "none", "the Installed tab's own main column starts hidden");
+
+    assert.ok(searchTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"), "the Search tab starts active");
+    assert.ok(!installedTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"));
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: switching to Installed swaps BOTH the rail and the grid; switching back restores Search's own", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalled({
+    listByKind: {
+      loras: [{ name: "a.safetensors", size: 1024, base_model: "SDXL", has_preview: false, triggers: [] }],
+      checkpoints: [],
+      unet: [],
+    },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const rails = findAll(handle.scrim, "wtn-cm-rail");
+    const mains = findAll(handle.scrim, "wtn-cm-main");
+    assert.equal(rails[0].style.display, "none", "Search's own rail hides");
+    assert.equal(rails[1].style.display, "", "the Installed tab's own rail shows");
+    assert.equal(mains[0].style.display, "none", "Search's own main column hides");
+    assert.equal(mains[1].style.display, "", "the Installed tab's own main column shows");
+    assert.ok(installedTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"));
+    assert.ok(!searchTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"));
+
+    const headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (1)", "Checkpoints (0)", "UNet (0)"], "one heading per kind, in order, each with its own count");
+
+    searchTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    assert.equal(rails[0].style.display, "", "Search's own rail is restored");
+    assert.equal(mains[0].style.display, "", "Search's own main column is restored");
+    assert.equal(rails[1].style.display, "none");
+    assert.equal(mains[1].style.display, "none");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a kind with zero files still shows its heading and a quiet empty line -- never a silently missing section", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalled({ listByKind: { loras: [], checkpoints: [], unet: [] } });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (0)", "Checkpoints (0)", "UNet (0)"]);
+    const emptyLines = findAll(handle.scrim, "wtn-cm-empty").filter((e) => e.textContent === "No files.");
+    assert.equal(emptyLines.length, 3, "every empty kind gets its own quiet empty line");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: the Kind checkboxes filter which sections render", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalled({
+    listByKind: {
+      loras: [{ name: "a.safetensors", size: 10, has_preview: false }],
+      checkpoints: [{ name: "b.safetensors", size: 10, has_preview: false }],
+      unet: [{ name: "c.safetensors", size: 10, has_preview: false }],
+    },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    let headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (1)", "Checkpoints (1)", "UNet (1)"]);
+
+    const kindChecks = findAll(handle.scrim, "wtn-cm-kind-check");
+    const loraCheck = kindChecks.find((l) => l.children[1] && l.children[1].textContent === "LoRAs");
+    assert.ok(loraCheck, "a Kind checkbox row exists for LoRAs");
+    const loraCheckbox = loraCheck.children[0];
+    loraCheckbox.checked = false;
+    loraCheckbox.dispatch("change", { stopPropagation() {} });
+
+    headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["Checkpoints (1)", "UNet (1)"], "unchecking a kind removes its WHOLE section, not just its cards");
+
+    loraCheckbox.checked = true;
+    loraCheckbox.dispatch("change", { stopPropagation() {} });
+    headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (1)", "Checkpoints (1)", "UNet (1)"], "re-checking restores the section");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a card with has_preview:false gets the shared placeholder; has_preview:true attempts the /thumb image", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/wtn/model_browser/list")) {
+      const kind = new URL(u, "http://x").searchParams.get("kind");
+      const byKind = {
+        loras: [
+          { name: "no-preview.safetensors", size: 100, base_model: "SDXL", has_preview: false, triggers: [] },
+          { name: "has-preview.safetensors", size: 200, base_model: "SDXL", has_preview: true, triggers: [] },
+        ],
+        checkpoints: [],
+        unet: [],
+      };
+      return jsonResponse({ reason: "ok", models: byKind[kind] || [] });
+    }
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const cards = findAll(handle.scrim, "wtn-cm-inst-card");
+    assert.equal(cards.length, 2);
+    const noPreviewCard = cards.find((c) => findAll(c, "wtn-cm-title").some((t) => t.title === "no-preview.safetensors"));
+    const hasPreviewCard = cards.find((c) => findAll(c, "wtn-cm-title").some((t) => t.title === "has-preview.safetensors"));
+
+    assert.equal(findAll(noPreviewCard, "wtn-cm-thumb-ph").length, 1, "has_preview:false renders the SAME placeholder the picker uses");
+    assert.equal(findAllByTag(noPreviewCard, "img").length, 0, "no <img> is ever attempted for a preview-less file");
+
+    // Loading a thumbnail is a plain `<img src>`, never a `fetch()` call
+    // (that's how a real browser resolves it; nothing here should assert a
+    // fetch stub was hit) -- the actual behavioural claim is that the
+    // element attempts the SAME `/thumb` URL `civitai_api.mjs`'s `thumbUrl`
+    // produces, no second URL scheme invented for this tab.
+    const previewImgs = findAllByTag(hasPreviewCard, "img");
+    assert.equal(previewImgs.length, 1, "has_preview:true attempts a real <img>");
+    assert.equal(previewImgs[0].src, thumbUrl("loras", "has-preview.safetensors"));
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: Delete on an Installed card invalidates AND refetches, then re-renders -- invalidate alone is not enough (d255da3's own half-fix)", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  let lorasModels = [{ name: "a.safetensors", size: 100, base_model: "SDXL", has_preview: false, triggers: [] }];
+  let listFetchCount = 0;
+  let deleteBody = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/wtn/model_browser/list")) {
+      const kind = new URL(u, "http://x").searchParams.get("kind");
+      if (kind === "loras") {
+        listFetchCount += 1;
+      }
+      const byKind = { loras: lorasModels, checkpoints: [], unet: [] };
+      return jsonResponse({ reason: "ok", models: byKind[kind] || [] });
+    }
+    if (u.includes("/wtn/model_browser/delete")) {
+      deleteBody = JSON.parse(opts.body);
+      lorasModels = []; // the file is genuinely gone server-side now
+      return jsonResponse({ reason: "ok", message: "", removed: ["model"] });
+    }
+    return jsonResponse({ reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(listFetchCount, 1, "the initial switch to Installed fetches loras' list exactly once");
+    let headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.ok(headings.includes("LoRAs (1)"));
+
+    const deleteBtn = findAll(handle.scrim, "wtn-cm-action-delete")[0];
+    assert.ok(deleteBtn, "the card renders a Delete action");
+    deleteBtn.dispatch("click", { stopPropagation() {} });
+
+    const confirmInput = findAllByTag(doc.body, "input").find((e) => e.placeholder === "delete");
+    assert.ok(confirmInput, "the type-to-confirm dialog opened");
+    confirmInput.value = "delete";
+    confirmInput.dispatch("input", {});
+    const confirmBtn = findAll(doc.body, "wtn-dc-confirm")[0];
+    assert.ok(!confirmBtn.disabled, "typing the confirm word enables Delete");
+    confirmBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.deepEqual(deleteBody, { kind: "loras", name: "a.safetensors" });
+    assert.equal(listFetchCount, 2, "delete must be followed by a REAL refetch -- invalidate alone would never bump this count");
+
+    headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.ok(headings.includes("LoRAs (0)"), "the tab re-renders with the file gone, not left showing a stale card");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: switching tabs preserves the search query/results, and an in-flight download keeps updating while Installed is showing", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  const results = [makeResult({ modelId: 61, versionId: 61, name: "Preserve Me", kind: "loras" })];
+  let progressCalls = 0;
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/download/start")) {
+      return jsonResponse({ reason: "started", message: "", job_id: "job-preserve" });
+    }
+    if (u.includes("/download/progress")) {
+      progressCalls += 1;
+      return jsonResponse({ reason: "ok", status: "downloading", bytes: progressCalls * 10, total: 100, message: "" });
+    }
+    if (u.includes("/wtn/model_browser/list")) {
+      return jsonResponse({ reason: "ok", models: [] });
+    }
+    return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc, pollIntervalMs: 10 });
+    await settle();
+
+    const searchInput = findAll(handle.scrim, "wtn-cm-search")[0];
+    searchInput.value = "preserve me"; // never dispatched -- just a value that must survive the round trip
+
+    const downloadBtn = findAll(handle.scrim, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assert.ok(progressCalls > 0, "the download's own poll keeps running while the Installed tab is showing, not paused");
+
+    searchTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+
+    assert.equal(searchInput.value, "preserve me", "the typed query text survives the round trip through Installed");
+    const cardsAfter = findAll(handle.scrim, "wtn-cm-card").filter((c) => !c.classList.contains("wtn-cm-inst-card"));
+    assert.equal(cardsAfter.length, 1, "the search results are still there, unchanged");
+    // This download was started from the search card that's STILL in
+    // `results` (never removed by a tab switch), so `renderActive`'s own
+    // "the card itself already shows this job's progress" guard means the
+    // separate `.wtn-cm-active` banner correctly renders NOTHING here (its
+    // own doc comment) -- the live progress instead shows on the CARD:
+    // percent text + a Cancel button, in its `state === "downloading"`
+    // branch. That is what must have survived the round trip through
+    // Installed, not a banner this scenario was never going to show.
+    const cancelBtns = findAll(handle.scrim, "wtn-cm-action-cancel");
+    assert.ok(cancelBtns.length >= 1, "the search card's own live 'downloading' state (with its Cancel button) survives the round trip through Installed");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
   }
 });
 

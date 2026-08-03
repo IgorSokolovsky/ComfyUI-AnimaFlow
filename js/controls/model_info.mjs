@@ -794,6 +794,7 @@ function prettyTitle(name) {
  * @param {(kind: string, name: string) => void} [opts.onDeleted] - called after a successful delete, BEFORE this panel closes -- the caller's own re-check/re-render hook (`docs/TODO.md`: "the row still pointing at that file must fall into the existing red missing-file state").
  * @param {(name: string) => void} [opts.onSearchByName] - `notfound`'s "Search Civitai by name →" action (§7e) -- called with this model's own file name; the CALLER opens the actual search surface (this file never imports `civitai_search.mjs`, staying track-agnostic).
  * @param {() => void} [opts.onListRefreshed] - bug fix, 2026-08-02 owner report: called once a real "found" lookup's own `invalidateList(kind)` (`runLookup`'s own comment) has been followed by a real refetch that landed -- this file has no row of its own to repaint (track-agnostic, top doc comment), so the CALLER (`lora_interaction.mjs`'s `openInfoPanelFor`) is who repaints whatever row this info came from, mirroring `onDeleted`'s own "the caller's own re-check/re-render hook" split.
+ * @param {number} [opts.overlayZIndex] - forwarded straight to `openOverlayWithZoom`'s own `zIndex` -- omit for the normal, canvas-anchored case (the LoRA row's ⓘ button), which keeps `overlay.mjs`'s own `Z_PANEL` default unchanged. A caller whose `anchorEl` lives INSIDE an already-open modal (`civitai_modal.mjs`'s Installed tab) passes `../shared/z_layers.mjs`'s `Z_MODAL_PANEL` so this panel outranks that modal instead of painting behind it.
  * @returns {object|null} the overlay handle, or `null` if this call just toggled an already-open panel closed.
  */
 export function openModelInfo({
@@ -818,6 +819,7 @@ export function openModelInfo({
   onDeleted,
   onSearchByName,
   onListRefreshed,
+  overlayZIndex,
 } = {}) {
   const key = ownerKey || `model-info:${kind}:${name}`;
   if (closeOverlayIfOwnedBy(key)) {
@@ -1912,7 +1914,7 @@ export function openModelInfo({
     if (typeof onClose === "function") {
       onClose();
     }
-  }, "wtn-mi-overlay wtn");
+  }, "wtn-mi-overlay wtn", overlayZIndex);
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
 

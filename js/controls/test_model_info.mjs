@@ -25,6 +25,7 @@ import {
 import { invalidateInfo, invalidateList, hasFile, listModels, thumbUrl, invalidateModelDetail, lookupInfo } from "./civitai_api.mjs";
 import { THUMB_SKELETON_CLASS } from "../shared/civitai_thumb.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
+import { Z_PANEL, Z_MODAL_PANEL } from "../shared/z_layers.mjs";
 // The shared download-job singleton this panel's own Download button now
 // goes through (task: "the Download button should actually download") --
 // `_resetDownloadStateForTests` is this module's own escape hatch for
@@ -2944,6 +2945,51 @@ await asyncTest("openModelInfo: clicking Download starts the SHARED download job
     invalidateList(kind);
     invalidateModelDetail(12, 34);
     _resetDownloadStateForTests();
+  }
+});
+
+await asyncTest("openModelInfo: overlayZIndex, when passed, sets the overlay's own z-index -- omitted, it keeps overlay.mjs's default Z_PANEL unchanged", async () => {
+  const kind = "loras";
+  const name = "z-index-check.safetensors";
+  invalidateInfo(kind, name);
+  invalidateList(kind);
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/lookup")) {
+      return { json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) };
+    }
+    if (u.includes("/list")) {
+      return { json: async () => ({ reason: "ok", models: [{ name, size: 1000 }] }) };
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  };
+  try {
+    // No override -- the normal, canvas-anchored case (a LoRA row's ⓘ
+    // button) must be unaffected by this parameter existing at all.
+    const doc1 = makeDocStub();
+    const handleDefault = openModelInfo({ ctx: { doc: doc1, getCanvasEl: () => null }, anchorEl: doc1.createElement("button"), kind, name });
+    await settle();
+    assert.equal(handleDefault.overlay.style.zIndex, String(Z_PANEL));
+    handleDefault.close();
+
+    // With an override -- the Installed tab's own case (civitai_modal.mjs's
+    // `openInfoForInstalled`, `Z_MODAL_PANEL`): the panel must outrank the
+    // modal it's anchored inside of instead of painting behind it.
+    const doc2 = makeDocStub();
+    const handleElevated = openModelInfo({
+      ctx: { doc: doc2, getCanvasEl: () => null },
+      anchorEl: doc2.createElement("button"),
+      kind,
+      name,
+      overlayZIndex: Z_MODAL_PANEL,
+    });
+    await settle();
+    assert.equal(handleElevated.overlay.style.zIndex, String(Z_MODAL_PANEL));
+    handleElevated.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+    invalidateList(kind);
   }
 });
 

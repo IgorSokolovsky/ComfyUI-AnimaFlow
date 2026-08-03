@@ -113,13 +113,34 @@ import {
   SCROLL_LOAD_MORE_THRESHOLD_PX,
   searchButtonEnabled,
 } from "./civitai_search.mjs";
-import { searchUnscoped, fetchModelDetail } from "./civitai_api.mjs";
-import { Z_MODAL } from "../shared/z_layers.mjs";
+import {
+  searchUnscoped,
+  fetchModelDetail,
+  listModels,
+  invalidateList,
+  cachedList,
+  deleteModel,
+  thumbUrl,
+} from "./civitai_api.mjs";
+import { Z_MODAL, Z_MODAL_PANEL } from "../shared/z_layers.mjs";
 // "The detail view" -- one component, mounted twice (this modal's own
 // master→detail swap, decision 11, and the picker's vertical sibling panel,
 // `civitai_search.mjs`'s `openModelDetailPanel`). See that file's own top
 // doc comment for the full "one component" contract.
-import { buildModelDetailView } from "./model_detail_view.mjs";
+import { buildModelDetailView, createLoadGate } from "./model_detail_view.mjs";
+// The Installed tab (`docs/lora-loader-design.md` "Installed-by-kind
+// section") reuses these two rather than growing a fourth naming rule/
+// preview mechanism of its own -- `displayRowName`/`metaLineFor` are the
+// SAME settings-aware name and size/base-model line the picker already
+// renders (§1a-vii's "one setting, one rule"); neither import makes this
+// file any less track-agnostic (`model_picker.mjs` is itself one of the
+// reuse-boundary files, `civitai_api.mjs`'s own top doc comment).
+import { displayRowName, metaLineFor } from "./model_picker.mjs";
+// The ⓘ panel and the type-to-confirm delete dialog -- both already built,
+// wired here rather than rebuilt (task brief: "both exist; wire them, do
+// not rebuild them").
+import { openModelInfo } from "./model_info.mjs";
+import { openDeleteConfirm, removedSummary } from "../shared/delete_confirm.mjs";
 import {
   getSetting,
   setSetting,
@@ -295,6 +316,79 @@ export function parseStoredList(raw) {
 export function serializeList(list) {
   const arr = Array.isArray(list) ? list.filter((v) => typeof v === "string" && v) : [];
   return JSON.stringify(arr);
+}
+
+// ---------------------------------------------------------------------------
+// The Installed tab (owner, 2026-07-30; placement settled 2026-08-02/03,
+// `docs/lora-loader-design.md` "Installed-by-kind section") -- a SECOND top-
+// level tab, peer of Search, grouped by kind. Every helper below is pure
+// (no DOM) so the grouping/sorting/filtering decisions are directly testable
+// without a stub DOM, matching this file's own top-of-file convention.
+// ---------------------------------------------------------------------------
+
+/** The three kinds this pack can install, in the order the Installed tab
+ * shows them (`src/model_browser/kinds.py`'s own whitelist -- these are the
+ * only three, and this file must never invent a fourth). A plain, swappable,
+ * TOP-LEVEL constant, matching `MODEL_TYPE_OPTIONS`'s own "one place, never
+ * inlined into the rendering code" convention above. */
+export const INSTALLED_KIND_ORDER = ["loras", "checkpoints", "unet"];
+
+/** Each kind's own section heading (the mockup's "LORAS"/"CHECKPOINTS"/
+ * "UNET" -- rendered in whatever case; `.wtn-cm-inst-heading`'s own CSS
+ * upper-cases it, so this holds the plain display form). */
+export const INSTALLED_KIND_LABELS = { loras: "LoRAs", checkpoints: "Checkpoints", unet: "UNet" };
+
+/**
+ * `models`, sorted for display -- `"name"` (case-insensitive, A→Z, the
+ * default) or `"size"` (largest first, the second option the task brief
+ * allows "only if it is nearly free" -- it is, the same numeric compare
+ * `model_picker.mjs`'s own `formatFileSize` already reads `model.size`
+ * through). Never mutates `models`; garbage/non-array input degrades to
+ * `[]`. A model missing the field it's being sorted by sorts as if that
+ * field were empty/zero, never thrown out of the list.
+ */
+export function sortInstalledModels(models, sortBy) {
+  const list = Array.isArray(models) ? models.slice() : [];
+  if (sortBy === "size") {
+    return list.sort((a, b) => (Number.isFinite(b && b.size) ? b.size : 0) - (Number.isFinite(a && a.size) ? a.size : 0));
+  }
+  return list.sort((a, b) => {
+    const an = (a && typeof a.name === "string" ? a.name : "").toLowerCase();
+    const bn = (b && typeof b.name === "string" ? b.name : "").toLowerCase();
+    return an.localeCompare(bn);
+  });
+}
+
+/**
+ * The Installed tab's own view model: one entry per kind the user has left
+ * CHECKED in the rail's "Kind" filter (`enabledKinds`), in `INSTALLED_KIND_
+ * ORDER` -- an unchecked kind's whole section is omitted outright (the rail
+ * filters SECTIONS, not just their contents; a kind with genuinely zero
+ * files is a different, ALWAYS-shown case, below). `modelsByKind` is a plain
+ * `{kind: models[]|undefined}` map -- `undefined` for a kind whose `/list`
+ * fetch hasn't resolved yet THIS session (`loaded: false`, so the caller
+ * renders a "Loading…" line rather than a false "no files" one); a present
+ * array, even `[]`, means the fetch genuinely landed (`loaded: true`,
+ * `count`/`models` reflect the real, possibly-empty, result -- "you have
+ * none" is still real information, per the task brief, so this never
+ * collapses an empty KIND out of the list the way an unchecked kind does).
+ * `models` is already sorted (`sortInstalledModels`). Never throws on
+ * garbage `modelsByKind`/`enabledKinds`.
+ */
+export function installedSections(modelsByKind, enabledKinds, sortBy) {
+  const enabled = new Set(Array.isArray(enabledKinds) ? enabledKinds : []);
+  const src = modelsByKind && typeof modelsByKind === "object" ? modelsByKind : {};
+  return INSTALLED_KIND_ORDER.filter((kind) => enabled.has(kind)).map((kind) => {
+    const raw = src[kind];
+    const loaded = Array.isArray(raw);
+    return {
+      kind,
+      label: INSTALLED_KIND_LABELS[kind] || kind,
+      loaded,
+      count: loaded ? raw.length : 0,
+      models: loaded ? sortInstalledModels(raw, sortBy) : [],
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +636,36 @@ ${THUMB_SKELETON_CSS}
   height: 26px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
   padding: 0 10px;
 }
+
+/* The Installed tab (docs/lora-loader-design.md "Installed-by-kind
+   section"). Search | Installed live where the modal's own title used to --
+   a plain segmented tab pair, not a second header row (matches the rest of
+   this modal's own "no extra chrome" convention, D1/D5 above). */
+.wtn-cm-tabs { display: flex; gap: 6px; }
+.wtn-cm-tab {
+  font: 12px var(--wtn-font-ui, inherit); font-weight: 600; padding: 5px 12px; border-radius: 7px;
+  border: 1px solid var(--wtn-line, ${TOKENS.line}); background: transparent; color: var(--wtn-ink-dim, ${TOKENS.inkDim});
+  cursor: pointer; appearance: none; -webkit-appearance: none;
+}
+.wtn-cm-tab-active {
+  background: var(--wtn-accent, ${TOKENS.accent}); color: var(--wtn-on-accent, ${TOKENS.onAccent});
+  border-color: var(--wtn-accent, ${TOKENS.accent});
+}
+.wtn-cm-kind-checks { display: flex; flex-direction: column; gap: 6px; }
+.wtn-cm-kind-check { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
+/* One heading per kind, in INSTALLED_KIND_ORDER -- uppercase via CSS
+   (INSTALLED_KIND_LABELS itself holds the plain-case form) so the JS side
+   never hand-cases a display string. */
+.wtn-cm-inst-heading {
+  font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--wtn-ink-dim, ${TOKENS.inkDim}); margin: 16px 0 8px;
+}
+.wtn-cm-inst-heading:first-child { margin-top: 0; }
+/* Delete -- mirrors civitai_search.mjs's own .wtn-cs-action-delete
+   verbatim (a duplicated copy, this file's own "every render module keeps
+   its own" convention, this file's top doc comment). */
+.wtn-cm-action-delete { background: transparent; border-color: rgba(248,113,113,.4); color: var(--wtn-bad, ${TOKENS.bad}); }
+.wtn-cm-action-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
 `;
 
 function el(doc, tag, className) {
@@ -802,9 +926,23 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   // D4 (REVERSED 2026-07-31, owner, from the built rail): the "unscoped --
   // every supported type" subtitle badge is GONE -- the title alone is
   // enough. Do not re-add a badge element here.
-  const headTitle = el(targetDoc, "span");
-  headTitle.textContent = "Browse Civitai";
-  head.appendChild(headTitle);
+  //
+  // Search | Installed (`docs/lora-loader-design.md` "Installed-by-kind
+  // section", placement settled 2026-08-02/03) -- the tab pair now sits
+  // where the plain "Browse Civitai" title used to; Installed is a PEER of
+  // Search, not a filter of it (task brief), so this is two tab buttons, not
+  // a second header row. `setActiveTab`, below (after both tabs' own rail/
+  // main DOM exist), is the only thing that ever toggles between them.
+  const tabStrip = el(targetDoc, "div", "wtn-cm-tabs");
+  const searchTabBtn = el(targetDoc, "button", "wtn-cm-tab wtn-cm-tab-active");
+  searchTabBtn.type = "button";
+  searchTabBtn.textContent = "Search";
+  tabStrip.appendChild(searchTabBtn);
+  const installedTabBtn = el(targetDoc, "button", "wtn-cm-tab");
+  installedTabBtn.type = "button";
+  installedTabBtn.textContent = "Installed";
+  tabStrip.appendChild(installedTabBtn);
+  head.appendChild(tabStrip);
   const closeBtn = el(targetDoc, "button", "wtn-cm-close");
   closeBtn.type = "button";
   closeBtn.textContent = "✕"; // ✕
@@ -926,6 +1064,298 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   const detailHost = el(targetDoc, "div", "wtn-cm-detailhost wtn-flex-bound");
   detailHost.style.display = "none";
   main.appendChild(detailHost);
+
+  // ---- the Installed tab (docs/lora-loader-design.md "Installed-by-kind
+  // section") -- a SECOND rail + SECOND main column, siblings of the two
+  // above; `setActiveTab` (below `close()`'s own definition, once every
+  // element it toggles exists) is the only thing that ever shows/hides
+  // either pair. Building both up front, hidden, rather than mounting one
+  // lazily on first switch is what makes "switching tabs preserves the
+  // Search query/results/download" (task brief) true for free -- nothing
+  // about Search's own DOM or state is ever rebuilt or touched by a tab
+  // switch, only `style.display`. -----------------------------------------
+
+  const installedRail = el(targetDoc, "div", "wtn-cm-rail");
+  installedRail.style.display = "none";
+  body.appendChild(installedRail);
+
+  // The rail's own "Kind"/"Sort" state -- session-local (not persisted to a
+  // setting, unlike Search's own filters), matching the task brief's own
+  // placement table: these two are Installed's own controls, not a saved
+  // preference the way Search's rail sections are.
+  const installedFilters = { kinds: new Set(INSTALLED_KIND_ORDER), sort: "name" };
+
+  const kindChecksWrap = el(targetDoc, "div", "wtn-cm-kind-checks");
+  for (const kind of INSTALLED_KIND_ORDER) {
+    const kindLabel = el(targetDoc, "label", "wtn-cm-kind-check");
+    const cb = el(targetDoc, "input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", (e) => {
+      e.stopPropagation();
+      if (cb.checked) {
+        installedFilters.kinds.add(kind);
+      } else {
+        installedFilters.kinds.delete(kind);
+      }
+      renderInstalled();
+    });
+    kindLabel.appendChild(cb);
+    const kindLabelText = el(targetDoc, "span");
+    kindLabelText.textContent = INSTALLED_KIND_LABELS[kind] || kind;
+    kindLabel.appendChild(kindLabelText);
+    kindChecksWrap.appendChild(kindLabel);
+  }
+  installedRail.appendChild(buildRailSection(targetDoc, "Kind", kindChecksWrap));
+
+  const installedSortSel = buildSingleSelectRow(targetDoc, ["name", "size"], installedFilters.sort, (v) => {
+    installedFilters.sort = v;
+    renderInstalled();
+  }, (value) => (value === "size" ? "Size" : "Name"));
+  installedRail.appendChild(buildRailSection(targetDoc, "Sort", installedSortSel));
+
+  const installedMain = el(targetDoc, "div", "wtn-cm-main wtn-flex-bound");
+  installedMain.style.display = "none";
+  body.appendChild(installedMain);
+
+  const installedGridWrap = el(targetDoc, "div", "wtn-cm-gridwrap");
+  installedMain.appendChild(installedGridWrap);
+
+  // Per-kind local-file list -- `undefined` until that kind's `/list` fetch
+  // has resolved THIS modal-open (`installedSections`'s own "loaded"
+  // distinction: "not fetched yet" renders a "Loading…" line, never a false
+  // "no files" one). A plain object holding THIS tab's own snapshot, never
+  // read from `civitai_api.mjs`'s module-level cache directly at render
+  // time -- only ever replaced wholesale by `fetchInstalledKind`/
+  // `refreshInstalledKind` (below), once a real fetch has actually landed.
+  // That is what keeps this tab immune to `civitaiNameFor`'s own tri-state
+  // "cache just invalidated, not yet repopulated" window (`civitai_api.mjs`'s
+  // own doc comment): there is no render in between invalidate and refetch
+  // that this object could ever observe, because nothing writes to it until
+  // the refetch itself resolves.
+  const installedModels = { loras: undefined, checkpoints: undefined, unet: undefined };
+  // A SEPARATE generation counter from the Search grid's own
+  // `renderGeneration` (below) -- switching tabs must never abandon a
+  // Search-tab thumbnail's in-flight retry chain, and vice versa; each tab
+  // owns its own "is this render pass still current" counter.
+  let installedRenderGeneration = 0;
+
+  function fetchInstalledKind(kind) {
+    return listModels(kind).then((models) => {
+      installedModels[kind] = models;
+      if (activeTab === "installed") {
+        renderInstalled();
+      }
+    });
+  }
+
+  /** Invalidate-then-refetch-then-rerender (task brief item 1; `d255da3`'s
+   * own half-fix, and `lora_interaction.mjs:321-322`'s `refreshLoraModels`
+   * is the exact pattern this follows): `invalidateList` alone leaves the
+   * client-side list cache empty until SOMETHING re-fetches it, so a delete
+   * must always be followed by a real `listModels(kind, true)` and a
+   * re-render, never the invalidate alone. */
+  function refreshInstalledKind(kind) {
+    invalidateList(kind);
+    return listModels(kind, true).then((models) => {
+      installedModels[kind] = models;
+      if (activeTab === "installed") {
+        renderInstalled();
+      }
+    });
+  }
+
+  function openInfoForInstalled(kind, model, anchorEl) {
+    const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
+    const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
+    const browsingLevel = getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]);
+    const showCivitaiName = getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
+    openModelInfo({
+      ctx: { doc: targetDoc, getCanvasEl: () => null },
+      anchorEl,
+      kind,
+      name: model.name,
+      ownerKey: `installed-info:${kind}:${model.name}`,
+      baseModel: model.base_model || "",
+      fileTriggers: Array.isArray(model.triggers) ? model.triggers : [],
+      civitaiEnabled,
+      showThumbnails,
+      browsingLevel,
+      showCivitaiName,
+      sizeBytes: Number.isFinite(model.size) ? model.size : undefined,
+      // This panel is anchored to a card INSIDE the modal -- without this it
+      // would paint at `overlay.mjs`'s default `Z_PANEL`, BELOW the modal's
+      // own `Z_MODAL`, and be invisible (`z_layers.mjs`'s own `Z_MODAL_PANEL`
+      // doc comment has the full "why").
+      overlayZIndex: Z_MODAL_PANEL,
+      onListRefreshed: () => {
+        // A real "found" lookup's own invalidate+refetch has already landed
+        // (`model_info.mjs`'s own `onListRefreshed` doc comment) -- just
+        // adopt the freshly-cached list and repaint, no network of our own.
+        installedModels[kind] = cachedList(kind);
+        if (activeTab === "installed") {
+          renderInstalled();
+        }
+      },
+      onDeleted: () => {
+        // `model_info.mjs`'s own delete flow already ran `invalidateList
+        // (kind)` (its own `renderFooterAction` doc comment) before calling
+        // this -- only the refetch+re-render half is left to do, same split
+        // `lora_interaction.mjs`'s row `onDeleted` makes.
+        listModels(kind, true).then((models) => {
+          installedModels[kind] = models;
+          if (activeTab === "installed") {
+            renderInstalled();
+          }
+        });
+      },
+    });
+  }
+
+  function buildInstalledCard(kind, model, thumbGate) {
+    const card = el(targetDoc, "div", "wtn-cm-card wtn-cm-inst-card");
+    const gen = installedRenderGeneration;
+    const isStale = () => gen !== installedRenderGeneration;
+
+    const thumb = el(targetDoc, "div", "wtn-cm-thumb");
+    card.appendChild(thumb);
+    // The local preview route (`thumbUrl`, `civitai_api.mjs`) is fully
+    // offline -- never level-filtered (§7c-iv: "never what the user already
+    // has locally"), unlike a Civitai-sourced thumbnail. Only ONE candidate
+    // URL ever exists for a local file (unlike a search result's own
+    // ordered gallery), but this still goes through the shared retry-then-
+    // advance/skeleton machinery (`attachThumbCandidate`) behind the SAME
+    // concurrency gate every other gallery in this pack uses (task brief
+    // item 3) -- three kinds' worth of cards requesting their previews at
+    // once is the most image traffic this modal will ever make.
+    if (model && model.has_preview) {
+      const skeleton = el(targetDoc, "span", THUMB_SKELETON_CLASS);
+      thumb.appendChild(skeleton);
+      const clearSkeleton = (t) => {
+        if (skeleton.parentNode === t && typeof t.removeChild === "function") {
+          t.removeChild(skeleton);
+        }
+      };
+      thumbGate.schedule((release) => {
+        if (isStale()) {
+          release();
+          return;
+        }
+        attachThumbCandidate(targetDoc, thumb, [thumbUrl(kind, model.name)], { index: 0, retried: false }, isStale, thumbRetryBackoffMs, (d, t) => {
+          clearSkeleton(t);
+          t.appendChild(el(d, "span", "wtn-cm-thumb-ph"));
+          release();
+        }, (d, t) => {
+          clearSkeleton(t);
+          release();
+        });
+      });
+    } else {
+      // `has_preview: false` -- the SAME placeholder the picker already
+      // uses (task brief: "do not invent a second one"), shown immediately,
+      // no gate/network involved at all.
+      thumb.appendChild(el(targetDoc, "span", "wtn-cm-thumb-ph"));
+    }
+
+    const title = el(targetDoc, "div", "wtn-cm-title");
+    // `model.civitai_name` read straight off THIS already-fetched `/list`
+    // entry -- never `civitaiNameFor`'s own tri-state cache lookup (see
+    // `installedModels`'s own doc comment, above, for why that's safe here).
+    // `displayRowName` is the ONE settings-aware seam every name in this
+    // pack paints through (§1a-vii), so "Hide file extension"/"Show Civitai
+    // name" apply here exactly as everywhere else.
+    const shownName = displayRowName(model.name, model.civitai_name);
+    title.textContent = shownName;
+    title.title = model.name; // ALWAYS the real file name, regardless of what's displayed
+    card.appendChild(title);
+
+    const meta = el(targetDoc, "div", "wtn-cm-sub");
+    // `metaLineFor` -- the picker's OWN size/base-model line ("144 MB · SDXL"
+    // normally, "no preview" for a preview-less file) -- reused verbatim
+    // (task brief: "matching the picker's own layout"), not re-derived.
+    meta.textContent = metaLineFor(model);
+    card.appendChild(meta);
+
+    const actionCol = el(targetDoc, "div", "wtn-cm-actioncol");
+
+    const infoBtn = el(targetDoc, "button", "wtn-cm-action");
+    infoBtn.type = "button";
+    infoBtn.textContent = "ⓘ"; // ⓘ -- not an emoji, a plain circled-letter glyph (this pack's own convention)
+    infoBtn.title = "More info";
+    infoBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openInfoForInstalled(kind, model, infoBtn);
+    });
+    actionCol.appendChild(infoBtn);
+
+    const deleteBtn = el(targetDoc, "button", "wtn-cm-action wtn-cm-action-delete");
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.title = "Delete this file from disk.";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openDeleteConfirm({
+        doc: targetDoc,
+        kind,
+        name: model.name,
+        sizeBytes: Number.isFinite(model.size) ? model.size : null,
+        deleteFn: deleteModel,
+        onDeleted: (delResult) => {
+          logSummary("Civitai browser", `deleted ${model.name} (${removedSummary(delResult.removed)})`);
+          refreshInstalledKind(kind);
+        },
+      });
+    });
+    actionCol.appendChild(deleteBtn);
+
+    card.appendChild(actionCol);
+    return card;
+  }
+
+  /** Repaints the Installed tab from `installedModels`/`installedFilters` --
+   * rebuilt wholesale on every call (matches this file's own `renderGrid`
+   * convention), never partially patched. */
+  function renderInstalled() {
+    installedRenderGeneration += 1;
+    installedGridWrap.innerHTML = "";
+    const sections = installedSections(installedModels, [...installedFilters.kinds], installedFilters.sort);
+    if (!sections.length) {
+      const msg = el(targetDoc, "div", "wtn-cm-empty");
+      msg.textContent = "No kinds selected.";
+      installedGridWrap.appendChild(msg);
+      return;
+    }
+    // ONE gate for the whole render pass, shared across every kind's own
+    // cards (task brief item 3) -- caps TOTAL concurrent thumbnail loads
+    // across all three kinds together, not per kind.
+    const thumbGate = createLoadGate(4);
+    for (const section of sections) {
+      const heading = el(targetDoc, "div", "wtn-cm-inst-heading");
+      heading.textContent = `${section.label} (${section.count})`;
+      installedGridWrap.appendChild(heading);
+      if (!section.loaded) {
+        const msg = el(targetDoc, "div", "wtn-cm-empty");
+        msg.textContent = "Loading…";
+        installedGridWrap.appendChild(msg);
+        continue;
+      }
+      if (!section.models.length) {
+        // A kind with genuinely zero files still gets its heading (above)
+        // plus this quiet empty line -- "you have none" is real information,
+        // not a silently missing section (task brief).
+        const msg = el(targetDoc, "div", "wtn-cm-empty");
+        msg.textContent = "No files.";
+        installedGridWrap.appendChild(msg);
+        continue;
+      }
+      const grid = el(targetDoc, "div", "wtn-cm-grid");
+      for (const model of section.models) {
+        grid.appendChild(buildInstalledCard(section.kind, model, thumbGate));
+      }
+      installedGridWrap.appendChild(grid);
+    }
+  }
 
   // ---- state ------------------------------------------------------------
   let results = [];
@@ -1571,6 +2001,47 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   const unsubscribe = subscribeDownloadState(onDownloadStateChange);
 
   renderGrid();
+
+  // ---- Search | Installed tab switching -----------------------------------
+  // `activeTab` is the single source of truth `setActiveTab` reads/writes;
+  // switching only ever toggles `style.display` on the four rail/main
+  // elements built above -- Search's own state (the query, `results`,
+  // `currentFilters`, the download subscription above) is never rebuilt or
+  // even read here, which is what makes "switching tabs preserves the
+  // search query/results/an in-flight download" (task brief) true for free.
+  let activeTab = "search";
+  function setActiveTab(tab) {
+    if (activeTab === tab) {
+      return;
+    }
+    activeTab = tab;
+    searchTabBtn.classList.toggle("wtn-cm-tab-active", tab === "search");
+    installedTabBtn.classList.toggle("wtn-cm-tab-active", tab === "installed");
+    rail.style.display = tab === "search" ? "" : "none";
+    main.style.display = tab === "search" ? "" : "none";
+    installedRail.style.display = tab === "installed" ? "" : "none";
+    installedMain.style.display = tab === "installed" ? "" : "none";
+    if (tab === "installed") {
+      // Repaint with whatever's already known FIRST (instant, possibly
+      // "Loading…" for a kind never fetched this modal-open) -- then kick
+      // off each kind's own fetch, which repaints again once it lands.
+      // `listModels` (no `force`) serves an already-warm kind's cache
+      // instantly, so re-entering this tab never re-hits the network for a
+      // kind that's already resolved.
+      renderInstalled();
+      for (const kind of INSTALLED_KIND_ORDER) {
+        fetchInstalledKind(kind);
+      }
+    }
+  }
+  searchTabBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setActiveTab("search");
+  });
+  installedTabBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setActiveTab("installed");
+  });
 
   // ---- lifecycle: Escape, scrim click, focus restore ---------------------
   // Escape is listened for on the WINDOW, not `doc` (mirrors `overlay.mjs`'s

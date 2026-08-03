@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Z_TOOLTIP, Z_PANEL, Z_MODAL, Z_CONFIRM, Z_ELEVATED_TOOLTIP } from "./z_layers.mjs";
+import { Z_TOOLTIP, Z_PANEL, Z_MODAL, Z_CONFIRM, Z_ELEVATED_TOOLTIP, Z_MODAL_PANEL } from "./z_layers.mjs";
 
 let failures = 0;
 let count = 0;
@@ -68,6 +68,13 @@ test("Z_ELEVATED_TOOLTIP (fields.mjs's field-row tooltip, deliberately escaping 
   );
 });
 
+test("Z_MODAL_PANEL (the ⓘ info panel opened from a card inside civitai_modal.mjs's Installed tab) outranks Z_MODAL but stays below Z_CONFIRM", () => {
+  assert.ok(Z_MODAL_PANEL > Z_MODAL, "must outrank the modal it's anchored inside of, or it paints invisibly behind it");
+  assert.ok(Z_MODAL_PANEL < Z_CONFIRM, "a delete confirmation opened FROM this panel must still outrank it");
+  assert.ok(Number.isInteger(Z_MODAL_PANEL) && Z_MODAL_PANEL > 0);
+  assert.ok(![Z_TOOLTIP, Z_PANEL, Z_MODAL, Z_CONFIRM].includes(Z_MODAL_PANEL), "must be its own distinct rung, not a collision with one of the four required ones");
+});
+
 // =========================================================================
 // theme.css mirrors these same numbers, by hand (same convention as
 // theme.mjs's own TOKENS) -- in the same required order.
@@ -100,7 +107,12 @@ test("theme.css's .wtn-tip rule reads the tooltip rung via var(), not a hardcode
 // =========================================================================
 
 const CONSUMERS = [
-  { file: path.join(here, "overlay.mjs"), importName: "Z_PANEL", usage: /overlay\.style\.zIndex\s*=\s*String\(Z_PANEL\)/ },
+  // `Z_MODAL_PANEL` (the ⓘ panel opened from inside `civitai_modal.mjs`'s
+  // Installed tab, docs/lora-loader-design.md) is an optional OVERRIDE on
+  // top of this default, not a replacement for it -- `openOverlay`'s own
+  // `String(zIndex || Z_PANEL)` still falls back to `Z_PANEL` for every
+  // existing caller, which is exactly what this regex pins.
+  { file: path.join(here, "overlay.mjs"), importName: "Z_PANEL", usage: /overlay\.style\.zIndex\s*=\s*String\(zIndex\s*\|\|\s*Z_PANEL\)/ },
   { file: path.join(here, "delete_confirm.mjs"), importName: "Z_CONFIRM", usage: /z-index:\s*\$\{Z_CONFIRM\}/ },
   { file: path.join(here, "fields.mjs"), importName: "Z_ELEVATED_TOOLTIP", usage: /z-index:\s*\$\{Z_ELEVATED_TOOLTIP\}/ },
   { file: path.join(controlsDir, "civitai_modal.mjs"), importName: "Z_MODAL", usage: /z-index:\s*\$\{Z_MODAL\}/ },
