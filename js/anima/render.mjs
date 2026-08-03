@@ -789,7 +789,21 @@ function buildCss() {
    for this shape (saverow / save-now-status (2026-08-01, conditional -- see
    \`.wtn-an-savenow-status\`'s own doc comment) / comparecard / wipe) -- see
    \`PREVIEW_PANEL_MIN_H\`'s own arithmetic comment in this file's "Resize"
-   section for the exact sum. ── */
+   section for the exact sum.
+   \`flex: none\` on that \`> *\` rule is \`.wtn-flex-fixed\`'s own declaration
+   (\`js/shared/theme.css\`, the mirror of \`.wtn-flex-bound\` -- that class's
+   own comment has the full "why a pair"), applied here STRUCTURALLY (\`> *\`)
+   rather than as a class on each child, because the children come from many
+   call sites (\`interaction.mjs\`'s \`buildSaveNowRow\`/\`buildHistoryButton\`/
+   the Compare card builder/etc) with no single element's own class list as
+   the natural home -- the identical shape \`model_detail_view.mjs\`'s own
+   \`.wtn-dv-body > *\` uses for the same trap (a flex item's default
+   \`flex-shrink: 1\` letting a growing sibling squash an earlier section to
+   zero height), and that file's own comment has the fuller "why". This used
+   to be a fourth independent hand-written \`flex: none\` copy of the same
+   fix -- now pinned to \`.wtn-flex-fixed\`'s own declaration by a cross-file
+   test in \`test_resize.mjs\`, so the two values can never quietly drift
+   apart the way four separate hand-written copies eventually would. ── */
 .wtn-an-panel.wtn-an-panel-pv { overflow: hidden; min-height: ${PREVIEW_PANEL_MIN_H}px; }
 .wtn-an-panel-pv > .wtn-an-body { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-height: 0; }
 .wtn-an-panel-pv > .wtn-an-body > * { flex: none; }

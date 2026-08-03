@@ -237,6 +237,13 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// `js/shared/theme.css`'s raw text -- `.wtn-flex-fixed` (the shared `flex:
+// none` fix `.wtn-an-panel-pv > .wtn-an-body > *`, below, is now pinned to)
+// lives THERE, not in this module's own injected CSS, so a cross-file read
+// is the only way to check the two agree -- same pattern as
+// `test_model_detail_view.mjs`'s own `themeCss` constant.
+const themeCss = readFileSync(path.join(__dirname, "..", "shared", "theme.css"), "utf8");
+
 let failures = 0;
 let count = 0;
 // "Save now" (task item 6) is the first thing in this file whose own
@@ -1269,6 +1276,34 @@ test("injected CSS: .wtn-an-panel-pv .wtn-an-wipe cancels the shared aspect-rati
   assert.match(body, /flex:\s*1\s+1\s+auto/, "the preview wipe must flex-fill its container");
   assert.ok(body.includes("aspect-ratio: auto"), "the preview wipe must cancel the shared aspect-ratio: 1/1");
   assert.ok(body.includes(`min-height: ${PREVIEW_IMG_MIN_H}px`), "the preview wipe's own floor must match PREVIEW_IMG_MIN_H");
+});
+
+test("injected CSS: .wtn-an-panel-pv > .wtn-an-body > * is exactly flex: none -- the structural fix for a growing sibling (e.g. the Compare card) squashing an earlier section (e.g. the Save row) to zero height, the same trap model_detail_view.mjs's own .wtn-dv-body > * guards against", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const body = cssRuleBody(cssText, ".wtn-an-panel-pv > .wtn-an-body > *");
+  assert.ok(body, ".wtn-an-panel-pv > .wtn-an-body > * must declare a rule -- the general column fix, not a per-section patch");
+  assert.match(body, /flex:\s*none;?\s*$/, "must be exactly flex: none (flex-shrink: 0), never a partial override that leaves shrink at its default 1");
+});
+
+test(".wtn-an-panel-pv > .wtn-an-body > * is pinned to .wtn-flex-fixed's own declaration (js/shared/theme.css), so the two can never quietly drift apart the way a fourth independent hand-written flex: none copy eventually would", () => {
+  const doc = makeDocStub();
+  injectStyles(doc);
+  const cssText = doc.head.children.find((c) => c.id === "wtn-anima-style").textContent;
+  const structuralBody = cssRuleBody(cssText, ".wtn-an-panel-pv > .wtn-an-body > *");
+  assert.ok(structuralBody, "expected the structural rule in this file's own injected CSS");
+  // `.wtn-flex-fixed` itself -- asserted against the real theme.css file
+  // text, same cross-file pattern this file's own `themeCss` constant is
+  // for.
+  const sharedRule = themeCss.match(/\.wtn-flex-fixed\s*\{([^}]*)\}/);
+  assert.ok(sharedRule, ".wtn-flex-fixed must be declared in js/shared/theme.css");
+  assert.match(sharedRule[1], /flex:\s*none;?\s*$/, ".wtn-flex-fixed must be exactly flex: none");
+  // Both must declare the identical value -- this is the actual "pin".
+  assert.equal(structuralBody.trim(), sharedRule[1].trim(), "the structural rule's own value must match .wtn-flex-fixed's declaration verbatim");
+  // Named as a pair -- .wtn-flex-bound must exist too, so a reader who
+  // meets one is pointed at the other.
+  assert.match(themeCss, /\.wtn-flex-bound\s*\{\s*min-width:\s*0;\s*min-height:\s*0;\s*\}/, ".wtn-flex-bound must still exist, unchanged, as the pair this class completes");
 });
 
 test("injected CSS: the 'Save now' button (.wtn-an-savenow-btn.wtn-btn) declares the SAME height as the Save card (.wtn-an-shead) beside it -- owner bug report: the button used to be a fixed 36 while the card's SHEAD_H scales with the font-size setting, so they only matched at one setting by coincidence", () => {
