@@ -28,61 +28,32 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 ## Now
 
-### 🐛 The Preview node's `Save now` does not write a file (owner, 2026-08-01) — BLOCKED on a live log
+### 🧹 Four housekeeping items, all small and all with a named cause (2026-08-03)
 
-*"i don't [see] it save to the drive (i saved twice and don't see it)"*, and after changing the path,
-*"the path i gave doesn't have the image"*. `e23e31d` instrumented `save_now` — and **disproved** the
-first hypothesis while doing it: `normalize_preview_settings` round-trips `save.path` correctly and
-`save_now` honours it, proven against the real injected `write_fn`, not a stub.
+None needs a decision; each exists because something else was fixed and left a trace.
 
-Two causes remain and the debug log now separates them, which is why this is blocked rather than
-guessed at:
-- **`save.path as received=None`** ⇒ the frontend never sent it. A frontend bug.
-- **a real path but an unexpected `output_dir`** ⇒ `folder_paths.get_output_directory()` resolves
-  somewhere other than where the owner is looking. An environment/Colab-mount question.
-
-They want opposite fixes. **Needed:** restart ComfyUI (`R` reloads JS but never re-imports Python, so
-the instrumentation is not live until a restart), set Console logging to `debug`, click **Save now**,
-and read the two lines.
-
-**Narrowed 2026-08-01 by the owner's own path.** Their `Save Image` node writes to
-`/content/ComfyUI/output/webtoon/episode 2/`, so `folder_paths.get_output_directory()` is
-`/content/ComfyUI/output` and that subfolder belongs to *that* node's widget. Our node has its **own**
-path setting defaulting to `AnimaFlow` (`src/anima/preview_settings.py:68`, `js/anima/state.mjs:319`),
-so unless the typed value reaches the payload, every Save now went to `output/AnimaFlow/` — not where
-they were looking. **The check is `ls /content/ComfyUI/output/AnimaFlow/`**, and it needs no restart.
-
-**Symlinks are ruled out** (owner asked, since their output is symlinked to Drive): `save_now` does no
-realpath check, no containment guard and no sanitization — `os.makedirs(..., exist_ok=True)` then a
-write, which follows symlinks transparently and handles a space and a nested folder in one call. A
-broken mount would raise and surface as a red error, not the `Saved …` the owner saw.
-
-`f31a83f` made the status line say **where** rather than just the filename, so this now self-diagnoses.
-
-> **Latent, found while reading this — worth fixing separately.**
-> `os.path.join(get_output_dir(), out_subfolder)` silently **discards the output root** if
-> `out_subfolder` is absolute. Typing `/content/drive/MyDrive/…` into that field — a plausible thing to
-> do for someone who thinks in absolute paths — writes outside the output directory with nothing
-> explaining it. Not a security hole (same user, no remote input), but a real surprise.
-
-### 📦 The queued Civitai work — one item of the frontend pass is left (2026-08-01)
-
-**The whole frontend pass shipped and the owner confirmed it** — the delete affordance and its
-type-to-confirm (`6ce43de` route + `99e24c5` UI + `9139d7b`), the explicit `Search` button (`99e24c5`),
-`Search Civitai by name →` wired to the `notfound` state (`model_info.mjs:725` → `civitai_search.mjs:802`),
-and §1a-vii's Civitai-name display (`a5f32b4` + `9139d7b`). All in *Done* below.
-
-**What is genuinely left of the detail view: the COMMUNITY gallery.** `f40c981` built the detail view
-with the **author's** gallery only; the owner then asked for community images at the bottom
-(*"btw can we add community images to the bottom?"*), it was specced in `2a33db5`, and it was never
-built. The three constraints from that spec still hold: the **browsing level governs it** (community
-images are the most likely adult surface in the feature), **prompts are untrusted text** rendered with
-`textContent` — a real prompt contains `<lora:name:0.8>` which must not become markup — and
-**thumbnails lazy-load with a concurrency cap**, since this is the one surface here that can pull real
-bandwidth.
-
-Then, in the order they are worth doing: **installed-by-kind in the modal**, and **M3** (Loader Panel
-reuse for checkpoints + UNET).
+1. **`max-height: 100%` may resolve against `content-box`.** Surfaced while measuring the prompt
+   drawer (`a7cd6cd`): the rendered border-box can exceed its own percentage cap by padding + border
+   (~17px). Affects BOTH galleries, currently masked at the larger tile sizes. Not fixed in that pass
+   deliberately — a `box-sizing` change needs its own verification across both, not a drive-by.
+2. **`js/anima/render.mjs:795` hand-writes `.wtn-an-panel-pv > .wtn-an-body > * { flex: none; }`** —
+   a fourth independent copy of the same fix `.wtn-flex-fixed` was created for (`25b60f1`). The class
+   exists specifically to stop a fifth; this one predates it and should adopt it.
+3. **`.claude/skills/animaflow-shared-fields/SKILL.md` is now stale, and we are what made it stale.**
+   It states `grep -rn "shared/fields.mjs" js/controls/` returns **nothing**. That was TRUE and
+   correctly measured — until `c26d180` added `js/controls/render.mjs:97`'s real import of
+   `buildSwitch`. Update the "Current state" table and say what changed, since that section's whole
+   point is being measured rather than assumed.
+   > Worth recording alongside it: a brief in that same pass asserted the import already existed,
+   > based on a substring match that hit a doc comment saying the OPPOSITE. The builder measured,
+   > refused to edit the skill to fit the claim, and reported the discrepancy. That is the behaviour
+   > that caught it.
+4. **Nothing in this pack's ~1,900 JS assertions has a layout engine.** Four layout bugs on
+   2026-08-02–03 — the filmstrip collapsing to zero height, both halves of the caret misalignment, and
+   the clipped prompt drawer — were each invisible to a green suite and each settled by one headless
+   measurement. The suites can pin a *declaration*; they cannot pin a *result*. A small measured-layout
+   check (the `css-layout-diagnose-headless` harness, run over a couple of known-fragile boxes) is the
+   only thing that would have caught any of them.
 
 ### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
 
@@ -346,6 +317,18 @@ the call on scope. They are small; none is forgotten, none was done by assumptio
 
 Shipped and green, **not yet confirmed by the owner from the UI**. Nothing leaves this section on an
 assistant's or a reviewer's judgement — see the rule at the top.
+
+### 2026-08-02/03 — pushed, awaiting the owner's own check
+
+| Item | Commit |
+|---|---|
+| **Community images carry their prompts.** `fb949a8` built that grid with no prompt and deliberately no copy affordance, on a real measurement: `/api/v1/images` returns `meta: {}` on every image (600+ sampled, re-verified). Still true — but Civitai's Meili `images_v6` carries `prompt` top-level, and `id` IS filterable there, so the same two-call shape as search recovers them (20/20 on the owner's own version). **The measurement was right about the endpoint and wrong about the data**, which is what made the conclusion so credible. `hideMeta` is honoured — a prompt its uploader hid stays hidden. Enrichment is best-effort: a failed lookup returns every image with `prompt: null`, never an empty gallery | `a7cd6cd` |
+| **A `%counter%` in the template opts out of our automatic suffix**, so a user numbering their own files gets one counter, not two. Attempt ≥1 still suffixes, or `write_without_overwriting` would emit 10,000 identical candidates and die instead of finding a free name. Shipped with the fix it could not go without: a bare `%counter%` was never substituted at all, which was harmless only while the suffix guaranteed uniqueness | `c31f1d2` |
+| **The prompt drawer fits its tile.** My own regression from `c25b9bc`: removing the tile's hover `overflow: visible` was right (it could never escape the filmstrip's clip) but it was also the only thing letting the drawer exceed its tile — measured 147px of drawer in a 115px tile, prompt clipped 23px above it. Capped at the tile; the prompt is the only child that shrinks | `e05f6fd` |
+| **Opening the ⓘ panel stopped wiping every row's Civitai name.** A lookup called `invalidateList` intending to refresh the name, but invalidation only clears and nothing refetched — so the call meant to improve the name erased it, on all rows. Adds the missing refetch (the correct pattern already existed 20 lines away) and makes `civitaiNameFor` tri-state like `hasFile`, so a row can hold what it had instead of flipping to the filename mid-window | `d255da3` |
+| **A boolean (switch) row kind for the Control Panel** — real Python `bool` on a `BOOLEAN` socket, tolerant coercion on both sides, `auto` rows resolve onto it. First use of the shared `buildSwitch` from Controls (see housekeeping item 3) | `c26d180` |
+| **Every save carries a counter from `_00001`** — reverses the "first file keeps its plain name" rule `40b3c9d` had preserved | `fd15d39` |
+| **The LoRA row's caret aligns and stopped being a text glyph.** Measured across three rows: caret x was 114.3/200.5/228.8, now 225.2 on all three. Drawn as a triangle matching the stepper arrows' own geometry, since a glyph's side bearing can never align with a drawn shape | `cc36388` |
 
 ### 2026-07-30 — pushed, awaiting the owner's own check
 
