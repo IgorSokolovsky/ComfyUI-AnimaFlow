@@ -32,10 +32,28 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 None needs a decision; each exists because something else was fixed and left a trace.
 
-1. **`max-height: 100%` may resolve against `content-box`.** Surfaced while measuring the prompt
-   drawer (`a7cd6cd`): the rendered border-box can exceed its own percentage cap by padding + border
-   (~17px). Affects BOTH galleries, currently masked at the larger tile sizes. Not fixed in that pass
-   deliberately — a `box-sizing` change needs its own verification across both, not a drive-by.
+1. ~~**`max-height: 100%` may resolve against `content-box`.**~~ **NOT A BUG — retracted 2026-08-03,
+   measured.** `theme.css:77` is `.wtn *, .wtn *::before, .wtn *::after { box-sizing: border-box; }`
+   and the detail view's root carries the bare `wtn` class (`model_detail_view.mjs:1569`), so every
+   descendant including the drawer is border-box in production and the cap holds:
+
+   ```
+   production (.wtn ancestor):  box-sizing=border-box   tile 115  drawer 115  within cap
+   probe shape (no .wtn):       box-sizing=content-box  tile 115  drawer 132  17px over
+   ```
+
+   > **The process failure is the part worth keeping.** Two builders measured the same 17px and drew
+   > opposite conclusions: the first correctly called it a probe artifact from not loading
+   > `theme.css`; the second, a pass later, reported it as a real pre-existing defect. **I did not
+   > reconcile them and put the second on this board as fact.** When two reports disagree about the
+   > same number, that is the signal to measure a third time — not to take the more recent one.
+   > `verify-the-instrument-first`'s own "when two tools disagree, believe neither until a third
+   > settles it" applies to two *sub-agents* just as well as to two shells.
+   >
+   > Standing consequence: **a standalone CSS probe of this pack must load `js/shared/theme.css` AND
+   > put the element under an ancestor with the bare `wtn` class.** Without it every box measures
+   > ~17px large and invents a bug. That has now cost two passes.
+
 2. **`js/anima/render.mjs:795` hand-writes `.wtn-an-panel-pv > .wtn-an-body > * { flex: none; }`** —
    a fourth independent copy of the same fix `.wtn-flex-fixed` was created for (`25b60f1`). The class
    exists specifically to stop a fifth; this one predates it and should adopt it.
