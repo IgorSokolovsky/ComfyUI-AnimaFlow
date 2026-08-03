@@ -46,17 +46,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from nodes.anima import _preview_helpers as ph
 from nodes.anima.preview import AnimaPreview
+from src.anima.history import HistoryStore
 
 
 def _install_fake_writers():
     """Swap `save_images`/`write_temp_stage_images` for fakes that record
     which stages they were asked to write and return ComfyUI-shaped entries
     without touching a disk or importing PIL. Returns `(calls, restore)`."""
-    calls = {"save": [], "temp": []}
+    calls = {"save": [], "temp": [], "seed": []}
     originals = {"save": ph.save_images, "temp": ph.write_temp_stage_images}
 
     def fake_save_images(*, wired, stages_to_save, preview_settings, seed=0, prompt=None, extra_pnginfo=None):
         calls["save"].append(list(stages_to_save))
+        calls["seed"].append(seed)
         return [
             {"filename": f"{stage}_out.png", "subfolder": "AnimaFlow", "type": "output", "stage": stage}
             for stage in stages_to_save
@@ -215,18 +217,27 @@ def test_one_entry_list_with_no_metadata_falls_back_to_base_label():
 # ---------------------------------------------------------------------------
 
 
-def _run_preview_with_prompt(prompt, images=None):
+def _run_preview_with_prompt(prompt, images=None, metadata_json="", save_enabled=False):
     """Same shape as `_images_from` (fake writers installed, every
     `INPUT_IS_LIST`-wrapped kwarg wrapped the way ComfyUI's own execution
     engine would) but returns the WHOLE `result["ui"]` dict, since this
-    section needs `anima_seed` alongside `anima_stages`."""
+    section needs `anima_seed` alongside `anima_stages`.
+
+    `metadata_json` defaults to `""` (genuinely absent -- the pre-2026-08-03
+    behaviour every existing caller in this section exercises); pass a real
+    JSON string to drive the "prefers metadata_json's resolved seed" half of
+    `resolve_preview_seed`. `save_enabled` defaults to `False` (the file-
+    saving default) -- pass `True` for a test that also needs `calls["seed"]`
+    (only populated when `save_images` actually runs) alongside `anima_seed`.
+    """
     calls, restore = _install_fake_writers()
     try:
         node = AnimaPreview()
+        state = {"save": {"enabled": True, "which": "every wired input"}} if save_enabled else {}
         result = node.preview(
-            preview_state=[json.dumps({})],
+            preview_state=[json.dumps(state)],
             images=list(images) if images else [],
-            metadata_json=[""],
+            metadata_json=[metadata_json],
             prompt=[prompt],
             extra_pnginfo=[None],
         )
@@ -265,6 +276,90 @@ def test_preview_ui_payload_falls_back_to_zero_with_no_prompt_seed_available():
     # and still emits a real, well-shaped `anima_seed` entry.
     ui, _ = _run_preview_with_prompt(None, images=["A"])
     assert ui["anima_seed"] == ["0"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-03 fix: the Preview's seed comes from `metadata_json`'s own
+# RESOLVED `sampler.seed`, not the `AnimaContextBridge` prompt scan -- the
+# scan is almost always empty once `seed` is wired (its own `forceInput=True`
+# means the API-format graph's `inputs.seed` is a link, not a literal), which
+# is exactly why the owner saw seed `0` in the history/save-filename/
+# `anima_seed` payload while the settings JSON on the very same entry showed
+# the real seed.
+# ---------------------------------------------------------------------------
+
+
+def test_preview_prefers_the_resolved_metadata_seed_over_the_prompt_scan():
+    # A wired seed (as it is via the Control Panel in practice): the prompt
+    # scan's own literal ("1", a hand-set widget value on the Bridge, e.g.
+    # from a test harness) must NOT win once metadata_json carries the
+    # ACTUAL resolved value the run used.
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": 1}}}
+    metadata_json = json.dumps({"sampler": {"seed": 999888777, "steps": 20}})
+    ui, _ = _run_preview_with_prompt(prompt, images=["A"], metadata_json=metadata_json)
+    assert ui["anima_seed"] == ["999888777"]
+
+
+def test_preview_metadata_seed_survives_a_20_digit_value_byte_for_byte():
+    # Same precision case as the prompt-scan version above, but through the
+    # metadata_json path this fix adds -- a real 20-digit seed must arrive
+    # with every digit intact, never rounded through a float.
+    big_seed = 16963467365598029952  # from an actual run, design doc §8
+    assert big_seed > 2 ** 53 - 1
+    metadata_json = json.dumps({"sampler": {"seed": big_seed}})
+    ui, _ = _run_preview_with_prompt(None, images=["A"], metadata_json=metadata_json)
+    assert ui["anima_seed"] == [str(big_seed)]
+
+
+def test_preview_falls_back_to_prompt_scan_when_metadata_json_is_unparseable():
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": 55}}}
+    for bad_metadata in ["", "not json", "{not json", json.dumps([1, 2, 3])]:
+        ui, _ = _run_preview_with_prompt(prompt, images=["A"], metadata_json=bad_metadata)
+        assert ui["anima_seed"] == ["55"], f"metadata_json={bad_metadata!r} should have fallen back"
+
+
+def test_preview_falls_back_to_prompt_scan_when_metadata_has_no_sampler_seed():
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": 55}}}
+    for metadata_json in [
+        json.dumps({"stage_labels": ["base"]}),  # no `sampler` block at all.
+        json.dumps({"sampler": {"steps": 20}}),  # `sampler` present, no `seed`.
+        json.dumps({"sampler": {"seed": None}}),  # `seed` present but null.
+        json.dumps({"sampler": {"seed": "garbage"}}),  # non-numeric.
+    ]:
+        ui, _ = _run_preview_with_prompt(prompt, images=["A"], metadata_json=metadata_json)
+        assert ui["anima_seed"] == ["55"], f"metadata_json={metadata_json!r} should have fallen back, not yielded 'None'"
+
+
+def test_preview_null_metadata_seed_falls_back_rather_than_yielding_the_string_none():
+    # Regression-shaped: a naive `str(seed)` on a `None` metadata seed would
+    # produce the literal string "None" -- assert that never happens.
+    prompt = {"7": {"class_type": "AnimaContextBridge", "inputs": {"seed": 7}}}
+    ui, _ = _run_preview_with_prompt(prompt, images=["A"], metadata_json=json.dumps({"sampler": {"seed": None}}))
+    assert ui["anima_seed"] == ["7"]
+    assert "None" not in ui["anima_seed"][0]
+
+
+def test_preview_all_three_seed_consumers_see_the_same_resolved_value():
+    # The task brief's "one variable, three payoffs": `save_images`'s own
+    # `seed` kwarg (the `%seed%` filename token), the recorded history
+    # entry's `seed`, and the `anima_seed` ui payload must all agree -- all
+    # three were independently getting `0` before this fix.
+    metadata_json = json.dumps({"sampler": {"seed": 424242, "steps": 20}})
+    fake_store = HistoryStore()
+    original_store = ph._HISTORY_STORE
+    ph._HISTORY_STORE = fake_store
+    try:
+        ui, calls = _run_preview_with_prompt(None, images=["A"], metadata_json=metadata_json, save_enabled=True)
+        assert ui["anima_seed"] == ["424242"]
+        assert calls["seed"] == [424242], "save_images must see the SAME resolved int, not 0"
+        recorded = fake_store.list_entries()
+        assert len(recorded) == 1
+        # `HistoryStore.record` always stringifies `seed` (its own "decimal
+        # STRING, never a JSON number" contract) -- same resolved digits,
+        # just stringified at that store's own boundary.
+        assert recorded[0]["seed"] == "424242", "the history entry must carry the SAME resolved seed"
+    finally:
+        ph._HISTORY_STORE = original_store
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +689,12 @@ ALL_TESTS = [
     test_preview_ui_payload_carries_the_resolved_seed_as_a_one_element_string_list,
     test_preview_ui_payload_seed_survives_a_20_digit_value_byte_for_byte,
     test_preview_ui_payload_falls_back_to_zero_with_no_prompt_seed_available,
+    test_preview_prefers_the_resolved_metadata_seed_over_the_prompt_scan,
+    test_preview_metadata_seed_survives_a_20_digit_value_byte_for_byte,
+    test_preview_falls_back_to_prompt_scan_when_metadata_json_is_unparseable,
+    test_preview_falls_back_to_prompt_scan_when_metadata_has_no_sampler_seed,
+    test_preview_null_metadata_seed_falls_back_rather_than_yielding_the_string_none,
+    test_preview_all_three_seed_consumers_see_the_same_resolved_value,
     test_save_now_prefers_final_then_mid_then_base,
     test_save_now_accepts_the_posted_seed_as_a_string_and_survives_a_20_digit_value,
     test_save_now_hostile_seed_inputs_never_raise_and_still_produce_a_file,

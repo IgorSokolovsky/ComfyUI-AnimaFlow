@@ -54,8 +54,8 @@ import time
 
 from ._preview_helpers import (
     build_preview_ui_images,
-    extract_seed_from_prompt,
     record_history_entries,
+    resolve_preview_seed,
     resolve_run_stage_labels,
     resolve_save_stages,
     resolve_wired_stages,
@@ -240,7 +240,13 @@ class AnimaPreview:
             else []
         )
 
-        seed = extract_seed_from_prompt(prompt)
+        # Prefers the RESOLVED seed baked into `metadata_json` (the ACTUAL
+        # value that ran), falling back to the prompt scan only when that
+        # isn't available -- see `resolve_preview_seed`'s own docstring for
+        # why the prompt scan alone (the pre-2026-08-03 behaviour) showed
+        # `0` in the common case: `AnimaContextBridge`'s `seed` is almost
+        # always a wired LINK, not a literal, once the Control Panel drives it.
+        seed = resolve_preview_seed(metadata_json, prompt)
         ui_images = build_preview_ui_images(
             wired=wired, preview_stages=preview_stages, stages_to_save=stages_to_save,
             preview_settings=settings, seed=seed, prompt=prompt, extra_pnginfo=extra_pnginfo,

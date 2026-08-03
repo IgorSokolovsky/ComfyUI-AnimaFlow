@@ -177,6 +177,67 @@ def resolve_history_settings_snapshot(metadata_json: Any) -> Optional[Dict[str, 
     return snapshot
 
 
+def resolve_preview_seed_from_metadata(metadata_json: Any) -> Optional[int]:
+    """The RESOLVED seed, as an `int`, read straight off the Generator's own
+    `metadata_json` (`pipeline.run_generator`'s `sampler.seed` — the value
+    that actually ran this pass, not the `-1` "random" sentinel, since
+    `pipeline.py` already collapses that through `settings.resolve_seed_int`
+    before it's ever written into `metadata`; see that module's own comment
+    at the call site).
+
+    **This is the fix for the 2026-08-03 owner report**: "Preview's history
+    shows seed 0 while the settings JSON on that same entry shows the real
+    seed." `nodes/anima/_preview_helpers.py`'s `extract_seed_from_prompt`
+    (this function's now-secondary fallback, called by that module's own
+    `resolve_preview_seed`) can only ever read a LITERAL `seed` widget value
+    off the queued graph, and `AnimaContextBridge` declares `seed` with
+    `forceInput=True` — always a wired link in practice, which the API-format
+    graph represents as a 2-element `[source_node_id, output_index]` list, no
+    literal to scan. `metadata_json` carries the already-RESOLVED value
+    regardless of how `seed` got there, so reading it here closes that gap
+    for the common (wired) case.
+
+    Returns `None` — "not available," never `0` — for anything that can't be
+    trusted: a non-string/empty `metadata_json`, something that doesn't parse
+    to a JSON object, a missing/non-dict `sampler` block, or a missing/`None`/
+    boolean/non-numeric `seed`. Deliberately `None` rather than `0` even
+    though `0` is itself a perfectly valid seed a user could have set
+    literally — collapsing "unavailable" into `0` would make a genuine
+    all-zeros seed indistinguishable from the very bug this function exists
+    to fix, and would silently defeat the "fall back, never replace" contract
+    `resolve_preview_seed` depends on (its caller only falls back to the
+    prompt scan when this returns `None`). A negative value (shouldn't happen
+    given `pipeline.py`'s own resolution, but a hand-edited/garbage
+    `metadata_json` is not this function's to trust) is likewise treated as
+    unavailable, not coerced to `0` — better to fall back to the prompt scan
+    than to hand a nonsensical seed forward as if it were real.
+
+    Pure: only `json.loads` + dict/int coercion, no comfy/torch import, never
+    raises.
+    """
+    if not isinstance(metadata_json, str) or not metadata_json:
+        return None
+    try:
+        parsed = json.loads(metadata_json)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    sampler = parsed.get("sampler")
+    if not isinstance(sampler, dict):
+        return None
+
+    seed = sampler.get("seed")
+    if isinstance(seed, bool) or seed is None:
+        return None
+    try:
+        value = int(seed)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
 def resolve_wired_stages(wired: Dict[str, Any]) -> List[str]:
     """Every stage actually present in `wired` (a `{stage: tensor}` dict,
     already built from this run's `images` list + its stage labels), in

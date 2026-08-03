@@ -450,6 +450,67 @@ def test_resolve_history_settings_snapshot_tolerates_a_missing_sampler_block():
     assert snapshot == {"stage_labels": ["base"]}
 
 
+# ---------------------------------------------------------------------------
+# resolve_preview_seed_from_metadata -- the 2026-08-03 fix: the Preview's
+# seed comes from `metadata_json`'s own RESOLVED `sampler.seed`, not a
+# literal-widget prompt scan (which is almost always empty once `seed` is
+# wired, per `AnimaContextBridge`'s `forceInput=True`).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_preview_seed_from_metadata_reads_the_resolved_seed():
+    metadata = json.dumps({"sampler": {"seed": 12345, "steps": 20}})
+    assert ps.resolve_preview_seed_from_metadata(metadata) == 12345
+
+
+def test_resolve_preview_seed_from_metadata_survives_a_20_digit_seed_exactly():
+    # The case design doc §8 exists for: past JS's Number.MAX_SAFE_INTEGER,
+    # but Python ints are arbitrary-precision -- this must come back with
+    # every digit intact, not rounded.
+    big_seed = 16963467365598029952
+    metadata = json.dumps({"sampler": {"seed": big_seed}})
+    resolved = ps.resolve_preview_seed_from_metadata(metadata)
+    assert resolved == big_seed
+    assert str(resolved) == "16963467365598029952"
+
+
+def test_resolve_preview_seed_from_metadata_zero_is_a_real_seed_not_unavailable():
+    # 0 is itself a valid literal seed -- must NOT be treated the same as
+    # "unavailable" (that would make a real all-zeros seed indistinguishable
+    # from the very bug this function fixes).
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": 0}})) == 0
+
+
+def test_resolve_preview_seed_from_metadata_missing_or_garbage_returns_none():
+    for bad in [None, "", "not json", "{not json", json.dumps([1, 2, 3]), 12345]:
+        assert ps.resolve_preview_seed_from_metadata(bad) is None
+
+
+def test_resolve_preview_seed_from_metadata_no_sampler_block_returns_none():
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"stage_labels": ["base"]})) is None
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": "not-a-dict"})) is None
+
+
+def test_resolve_preview_seed_from_metadata_null_or_non_numeric_seed_returns_none():
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": None}})) is None
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {}})) is None
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": "not-a-number"}})) is None
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": True}})) is None
+
+
+def test_resolve_preview_seed_from_metadata_negative_seed_returns_none():
+    # Shouldn't happen given pipeline.py's own resolve_seed_int, but a
+    # hand-edited/garbage metadata_json is not this function's to trust --
+    # never hand a nonsensical seed forward as if it were real.
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": -1}})) is None
+
+
+def test_resolve_preview_seed_from_metadata_accepts_a_numeric_string_seed():
+    # Tolerant, matching resolve_seed_int's own leniency -- a numeric string
+    # still parses to a real int.
+    assert ps.resolve_preview_seed_from_metadata(json.dumps({"sampler": {"seed": "777"}})) == 777
+
+
 ALL_TESTS = [
     test_defaults_shape,
     test_unknown_keys_survive,
@@ -504,6 +565,14 @@ ALL_TESTS = [
     test_resolve_history_settings_snapshot_never_mutates_its_input_string,
     test_resolve_history_settings_snapshot_missing_or_garbage_returns_none,
     test_resolve_history_settings_snapshot_tolerates_a_missing_sampler_block,
+    test_resolve_preview_seed_from_metadata_reads_the_resolved_seed,
+    test_resolve_preview_seed_from_metadata_survives_a_20_digit_seed_exactly,
+    test_resolve_preview_seed_from_metadata_zero_is_a_real_seed_not_unavailable,
+    test_resolve_preview_seed_from_metadata_missing_or_garbage_returns_none,
+    test_resolve_preview_seed_from_metadata_no_sampler_block_returns_none,
+    test_resolve_preview_seed_from_metadata_null_or_non_numeric_seed_returns_none,
+    test_resolve_preview_seed_from_metadata_negative_seed_returns_none,
+    test_resolve_preview_seed_from_metadata_accepts_a_numeric_string_seed,
 ]
 
 

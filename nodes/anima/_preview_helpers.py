@@ -40,6 +40,7 @@ try:
         SaveNowError,
         collision_suffixed_filename,
         format_filename,
+        resolve_preview_seed_from_metadata,
         resolve_run_stage_labels,
         resolve_save_now_stage,
         resolve_save_stages,
@@ -57,6 +58,7 @@ except ImportError:
         SaveNowError,
         collision_suffixed_filename,
         format_filename,
+        resolve_preview_seed_from_metadata,
         resolve_run_stage_labels,
         resolve_save_now_stage,
         resolve_save_stages,
@@ -119,6 +121,7 @@ __all__ = [
     "extract_seed_from_prompt",
     "record_history_entries",
     "resolve_history_view",
+    "resolve_preview_seed",
     "resolve_run_stage_labels",
     "resolve_save_now_stage",
     "resolve_save_stages",
@@ -295,27 +298,28 @@ def _write_pil_image_exclusive(pil_image: Any, full_path: str, *, pil_format: st
 
 
 def extract_seed_from_prompt(prompt: Any) -> Any:
-    """Best-effort `%seed%` token value (design doc §7a) — the Preview node
-    takes no `seed` input of its own (it's terminal; §7/§8's `preview_state`
-    shape has no seed field), so this scans the hidden `PROMPT` payload
-    (the whole API-format graph) for an `AnimaContextBridge` node's own
-    `seed` INPUT VALUE.
+    """Best-effort `%seed%` token value (design doc §7a) — the FALLBACK half
+    of `resolve_preview_seed` (below), used only when `metadata_json` isn't
+    wired, doesn't parse, or carries no usable `sampler.seed`. Scans the
+    hidden `PROMPT` payload (the whole API-format graph) for an
+    `AnimaContextBridge` node's own `seed` INPUT VALUE.
 
-    **2026-07-28 reversal**: `seed` moved off `AnimaGenerator` entirely onto
-    `AnimaContextBridge` (this task's whole point) — so the scan target
-    changed to match. This does NOT close the underlying gap this function
-    always had, and arguably makes it a hair narrower: `AnimaContextBridge`
-    declares `seed` with `forceInput=True` (no widget), so in practice its
-    `inputs.seed` in the API-format graph is almost always a wired LINK
-    (typically from a Primitive INT node this function does not trace back
-    through), not a literal — meaning this still falls back to `0` in the
-    common case. Only works when the Bridge's `seed` is a literal widget
-    value, not a wired link (ComfyUI represents a wired input as a
-    2-element `[source_node_id, output_index]` list, which carries no
-    literal seed to read) — falls back to `0` in every other case
-    (missing/garbage `prompt`, no Bridge node found, or its seed is a
-    link). A genuine design gap, not a documented mechanism — see the build
-    report.
+    **No longer the primary source (2026-08-03 fix)** — it used to be the
+    ONLY thing `nodes/anima/preview.py` called, which is exactly why the
+    Preview's history/save-filename/`anima_seed` payload showed `0` in the
+    common case: `AnimaContextBridge` declares `seed` with `forceInput=True`
+    (no widget), so in practice its `inputs.seed` in the API-format graph is
+    almost always a wired LINK (typically from a Primitive INT node this
+    function does not trace back through), not a literal — ComfyUI
+    represents a wired input as a 2-element `[source_node_id, output_index]`
+    list, which carries no literal seed to read. That gap is now closed for
+    the wired case by `resolve_preview_seed` preferring
+    `preview_settings.resolve_preview_seed_from_metadata` (the ACTUAL
+    resolved seed, read off `metadata_json`) — this function only still runs
+    when that read comes up empty. Falls back to `0` in that residual case
+    too (missing/garbage `prompt`, no Bridge node found, or its own seed is
+    also a link) — a documented, now-secondary gap, not the primary
+    mechanism.
     """
     if not isinstance(prompt, dict):
         return 0
@@ -335,6 +339,32 @@ def extract_seed_from_prompt(prompt: Any) -> Any:
         except (TypeError, ValueError):
             continue
     return 0
+
+
+def resolve_preview_seed(metadata_json: Any, prompt: Any) -> Any:
+    """THE seed value `nodes/anima/preview.py`'s `preview()` resolves once
+    and feeds to all three downstream consumers: `save_images`'s `%seed%`
+    filename token, `record_history_entries`'s history line (and its
+    Copy-seed button), and the `anima_seed` `ui` payload `"Save now"` reads.
+    All three were getting `0` in the common (wired-seed) case before this
+    fix — see `resolve_preview_seed_from_metadata`'s own docstring in
+    `src/anima/preview_settings.py` for the full "why."
+
+    **Fall back, never replace**: prefers the RESOLVED seed baked into
+    `metadata_json` (`resolve_preview_seed_from_metadata`, pure) whenever
+    that parses to a usable value; falls back to `extract_seed_from_prompt`'s
+    prompt-scan (this module's own pre-existing mechanism, unchanged) only
+    when it doesn't — `metadata_json` is an OPTIONAL input, so when it isn't
+    wired at all this reproduces today's behaviour byte-for-byte.
+
+    Never raises — both halves are individually total, and combining them
+    adds no new failure mode; the omitted-`metadata_json` case degrades to
+    exactly `extract_seed_from_prompt`'s own long-standing `0` default.
+    """
+    from_metadata = resolve_preview_seed_from_metadata(metadata_json)
+    if from_metadata is not None:
+        return from_metadata
+    return extract_seed_from_prompt(prompt)
 
 
 def save_images(
