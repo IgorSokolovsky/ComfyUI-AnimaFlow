@@ -110,8 +110,8 @@ except ImportError:
 CATEGORY = "AnimaFlow/Controls"
 
 # Fixed output-slot budget -- smaller than the Control Panel's because a
-# loader row is one of exactly three fixed kinds (unet/vae/clip), not an
-# open-ended catalog. May grow later, must NEVER shrink (see
+# loader row is one of a small fixed catalog (unet/vae/clip/checkpoint), not
+# an open-ended one. May grow later, must NEVER shrink (see
 # control_panel.MAX_ROWS's comment -- the same slot-stability rule applies).
 MAX_ROWS = 8
 
@@ -122,9 +122,10 @@ MAX_ROWS = 8
 _logger = logging.getLogger(logs_mod.LOGGER_NAME)
 
 # The kinds `_loaders_helpers.cache_probe`/`resolve_full_path` know how to
-# read a cache key / resolved path for -- the three real loader kinds a row
-# can be; anything else (an empty/unrecognized row) has neither.
-_LOADABLE_KINDS = ("unet", "vae", "clip")
+# read a cache key / resolved path for -- the real loader kinds a row can be;
+# anything else (an empty/unrecognized row) has neither. `checkpoint` (M3)
+# added alongside `unet`/`vae`/`clip`.
+_LOADABLE_KINDS = ("unet", "vae", "clip", "checkpoint")
 
 
 def _log_level() -> str:

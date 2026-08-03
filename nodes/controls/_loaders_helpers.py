@@ -63,10 +63,15 @@ LoaderCache = Dict[str, Tuple[Tuple, Any]]
 
 # Row kind -> the folder_paths folder its filename list / validation lives
 # in, matching the ComfyUI loader node each kind delegates to (§3 table).
+# `checkpoint` (M3, docs/lora-loader-design.md + docs/control-panel-
+# design.md) matches `src/model_browser/kinds.py`'s own `KIND_TO_FOLDER
+# ["checkpoints"]` -- the two whitelists must agree, same reasoning that
+# module's own docstring gives for `unet`.
 _FOLDER_FOR_KIND = {
     "unet": "diffusion_models",
     "vae": "vae",
     "clip": "text_encoders",
+    "checkpoint": "checkpoints",
 }
 
 # Fallback ONLY for a clip row's `opts` missing a `"type"` key entirely --
@@ -118,7 +123,7 @@ def _cache_key(kind: str, name: str, opts: Dict[str, Any]) -> Tuple:
         return (name, opts.get("weight_dtype", "default"))
     if kind == "clip":
         return (name, opts.get("type", _DEFAULT_CLIP_TYPE), opts.get("device", "default"))
-    return (name,)  # vae has no extra options (§3 table)
+    return (name,)  # vae/checkpoint have no extra options (§3 table)
 
 
 def load_row_model(row: Optional[Dict[str, Any]], cache: LoaderCache) -> Any:
@@ -163,6 +168,13 @@ def _load(kind: str, name: str, opts: Dict[str, Any]) -> Any:
         return comfy_nodes.UNETLoader().load_unet(name, weight_dtype)[0]
     if kind == "vae":
         return comfy_nodes.VAELoader().load_vae(name)[0]
+    if kind == "checkpoint":
+        # `CheckpointLoaderSimple.load_checkpoint` returns `(MODEL, CLIP,
+        # VAE)` -- MODEL only, deliberately (see `rows.mjs`'s
+        # `KIND_META.checkpoint` doc comment: a checkpoint row is one output
+        # socket, same as every other Loader Panel row, and exposing the
+        # baked CLIP/VAE would need a multi-socket row -- unscheduled).
+        return comfy_nodes.CheckpointLoaderSimple().load_checkpoint(name)[0]
     # kind == "clip"
     clip_type = opts.get("type", _DEFAULT_CLIP_TYPE)
     device = opts.get("device", "default")

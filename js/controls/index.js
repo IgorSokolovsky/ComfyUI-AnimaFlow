@@ -114,7 +114,11 @@ const PANEL_CONFIGS = {
     className: "AnimaLoaderPanel",
     key: "loader",
     stateProp: "loaderPanelState",
-    catalog: ["unet", "vae", "clip"],
+    // M3 (docs/lora-loader-design.md + docs/control-panel-design.md):
+    // `checkpoint` added to the catalog -- MODEL only, deliberately (see
+    // `rows.mjs`'s `KIND_META.checkpoint` doc comment for why the baked
+    // CLIP/VAE aren't exposed).
+    catalog: ["unet", "vae", "clip", "checkpoint"],
     allowAuto: false,
     reorder: false,
     addLabel: "+ Add loader",

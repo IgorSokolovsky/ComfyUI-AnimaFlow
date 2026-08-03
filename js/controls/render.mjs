@@ -54,7 +54,7 @@
  * import lands in time.
  */
 
-import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, numericPercent } from "./rows.mjs";
+import { AFTER_LETTER, formatLatentValue, formatNumericValue, isPickerKind, browserKindFor, numericPercent } from "./rows.mjs";
 import { openOverlay as sharedOpenOverlay } from "../shared/overlay.mjs";
 import { applyNodeChrome as sharedApplyNodeChrome } from "../shared/node_chrome.mjs";
 import { Z_PANEL } from "../shared/z_layers.mjs";
@@ -349,6 +349,14 @@ const CSS = `
 .wtn-ctl-gear { font-size: 14px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); cursor: pointer; flex: none; width: 18px; text-align: center; }
 .wtn-ctl-gear:hover, .wtn-ctl-gear.wtn-ctl-active { color: var(--wtn-accent, ${TOKENS.accent}); }
 
+/* ⓘ -- M3's model-browser info button (unet/checkpoint rows only, see
+   rows.mjs's browserKind), sitting BETWEEN the value area and any ⚙
+   (never after it -- ⚙ keeps its own "always rightmost" rule above). Same
+   box/hover shape as .wtn-ctl-gear, deliberately -- this is the same
+   affordance class of control, just a different glyph/action. */
+.wtn-ctl-info { font-size: 13px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); cursor: pointer; flex: none; width: 18px; text-align: center; }
+.wtn-ctl-info:hover { color: var(--wtn-accent, ${TOKENS.accent}); }
+
 /* ── "+ Add" row ── */
 .wtn-ctl-add {
   height: 28px; width: 100%; box-sizing: border-box; border-radius: 7px; cursor: pointer;
@@ -626,6 +634,20 @@ export function buildRowElement(doc, row, kindMeta, panelConfig) {
     const val = el(doc, "span", "wtn-ctl-val");
     body.appendChild(val);
     refs.val = val;
+  }
+
+  // ⓘ -- M3 (docs/lora-loader-design.md + docs/control-panel-design.md):
+  // only `unet`/`checkpoint` rows get the model-browser ⓘ panel (`rows.mjs`'s
+  // `browserKindFor`) -- `vae`/`clip` have no backend kind to read one from
+  // (`src/model_browser/kinds.py` whitelists only `loras`/`checkpoints`/
+  // `unet`), so they render NO ⓘ, unchanged from before this row existed.
+  // Built BEFORE ⚙ so ⚙ keeps its own "always rightmost" rule (below).
+  if (browserKindFor(kindMeta)) {
+    const info = el(doc, "span", "wtn-ctl-info");
+    info.textContent = "ⓘ";
+    info.title = "More info";
+    body.appendChild(info);
+    refs.info = info;
   }
 
   if (kindMeta && kindMeta.hasGear) {

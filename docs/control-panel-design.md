@@ -214,6 +214,7 @@ naming a ratio would assert a choice they never made.
 | `unet` | combo of diffusion models | `MODEL` | `UNETLoader.input.required.unet_name[0]` | `weight_dtype` |
 | `vae` | combo of VAEs | `VAE` | `VAELoader.input.required.vae_name[0]` | — |
 | `clip` | combo of CLIPs | `CLIP` | `CLIPLoader.input.required.clip_name[0]` | `type`, `device` |
+| `checkpoint` | combo of checkpoints | `MODEL` | `CheckpointLoaderSimple.input.required.ckpt_name[0]` | — |
 
 **Option lists need no backend route.** They are already in the node defs the frontend holds —
 read them from `app` at row-render time and the lists auto-track whatever is installed. If a def is
@@ -221,6 +222,35 @@ missing (node pack absent), render the row disabled with the reason rather than 
 
 The Loader Panel's Python side still needs `folder_paths.get_filename_list(...)` to validate the
 saved name and raise a legible error when a model has been moved, since its state is just a string.
+
+### 3c. M3 — `unet`/`checkpoint` get the LoRA loader's model-browser surfaces (2026-08-03)
+
+Built per `docs/lora-loader-design.md`'s M3 milestone: `unet` and `checkpoint` rows get the LoRA
+Loader's searchable model picker (`js/controls/model_picker.mjs`'s `openModelPicker`) in place of
+the plain option-list menu on a click of the row's own value, plus its ⓘ info panel
+(`model_info.mjs`'s `openModelInfo`) via a new ⓘ button — the exact two surfaces
+`lora_interaction.mjs`'s `openNamePickerFor`/`openInfoPanelFor` already wire for LoRA rows,
+reused unchanged (an IMPORT, not an extraction — `test_model_picker.mjs`'s layering guard fails
+the suite if either of those two files ever imports a `lora_*` module the other way). The row's own
+◀/▶ steppers keep cycling through the SAME `getKnownLists()`-based option list as before (both
+lists ultimately read the same `folder_paths` folder, so they can't disagree) — only the combo
+click's target changed. **`vae`/`clip` are untouched**: `src/model_browser/kinds.py` whitelists
+only `loras`/`checkpoints`/`unet`, so there is nothing for a picker to read for them, and they keep
+exactly the pre-M3 option-list behaviour.
+
+**`checkpoint` is a new row kind, MODEL only, deliberately.** A checkpoint file also bakes CLIP and
+VAE, but every Loader Panel row is one output socket at its own `.y` (this section's own core
+design) — exposing the baked CLIP/VAE would need a multi-socket row, which is a separate,
+unscheduled piece of work (see §10, "Deferred"). `checkpoint`'s Python load (`_loaders_helpers.py`)
+delegates to ComfyUI's own `CheckpointLoaderSimple.load_checkpoint(name)` and keeps only index 0
+(`MODEL`) — the CLIP/VAE it also returns are simply discarded. No ⚙ popover: unlike `unet`/`clip`,
+a checkpoint row has no per-row option (weight_dtype/type/device) to hold one.
+
+`unet`/`checkpoint`'s ⓘ panel has no trigger-word output to persist into (this row catalog carries
+no `triggers` field, unlike the LoRA Loader) — it is opened with empty candidate/selected/custom
+lists and a no-op `onChange`, so the panel's trigger section renders but is inert rather than
+`model_info.mjs` needing a kind-aware special case (which would defeat the whole point of the
+layering guard above).
 
 ### 3b. There is no `lora` row — decided, don't add one
 
@@ -604,7 +634,9 @@ js/controls/{index.js, rows.mjs, render.mjs, interaction.mjs, settings.mjs,
 
 ## 10. Deferred
 
-- A `checkpoint` row (one file → MODEL/CLIP/VAE) — three outputs from one row breaks the
-  one-row-one-slot invariant; needs its own thought.
+- **Exposing a checkpoint's baked CLIP/VAE** — the `checkpoint` row built at M3 (§3c) emits MODEL
+  only; a row that ALSO emitted the file's own CLIP/VAE would need three outputs from one row,
+  breaking the one-row-one-slot invariant. Needs its own thought — not just an implementation
+  detail to discover, per §3c's own note.
 - Multi-CLIP (dual/triple) loaders.
 - Per-panel accent override, as Pixaroma's settings panel has.

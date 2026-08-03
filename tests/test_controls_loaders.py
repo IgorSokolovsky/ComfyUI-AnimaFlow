@@ -55,6 +55,7 @@ def _install_fake_comfy():
             "diffusion_models": ["unetA.safetensors", "unetB.safetensors"],
             "vae": ["vaeA.safetensors"],
             "text_encoders": ["clipA.safetensors"],
+            "checkpoints": ["ckptA.safetensors", "ckptB.safetensors"],
         }.get(folder, [])
 
     fake_folder_paths.get_filename_list = get_filename_list
@@ -76,9 +77,25 @@ def _install_fake_comfy():
             calls.append(("clip", clip_name, type, device))
             return (_FakeModel(f"clip:{clip_name}:{type}:{device}:{len(calls)}"),)
 
+    class CheckpointLoaderSimple:
+        # M3 -- checkpoint row, MODEL only (`_loaders_helpers._load`'s own
+        # comment). Real ComfyUI returns `(MODEL, CLIP, VAE)`; the fakes for
+        # CLIP/VAE only need to be DISTINGUISHABLE from the MODEL, since
+        # `_load` discards them -- a call recording a 3-tuple would hide a
+        # regression where `_load` started keeping the wrong index.
+        def load_checkpoint(self, ckpt_name):
+            calls.append(("checkpoint", ckpt_name))
+            n = len(calls)
+            return (
+                _FakeModel(f"ckpt-model:{ckpt_name}:{n}"),
+                _FakeModel(f"ckpt-clip:{ckpt_name}:{n}"),
+                _FakeModel(f"ckpt-vae:{ckpt_name}:{n}"),
+            )
+
     fake_nodes.UNETLoader = UNETLoader
     fake_nodes.VAELoader = VAELoader
     fake_nodes.CLIPLoader = CLIPLoader
+    fake_nodes.CheckpointLoaderSimple = CheckpointLoaderSimple
 
     previous = {"folder_paths": sys.modules.get("folder_paths"), "nodes": sys.modules.get("nodes")}
     sys.modules["folder_paths"] = fake_folder_paths
@@ -202,6 +219,110 @@ def test_load_row_model_vae_has_no_extra_opts():
     try:
         lh.load_row_model({"kind": "vae", "value": "vaeA.safetensors", "opts": {}}, {})
         assert calls == [("vae", "vaeA.safetensors")]
+    finally:
+        restore()
+
+
+# ---------------------------------------------------------------------------
+# M3 -- the checkpoint row kind (docs/lora-loader-design.md + docs/control-
+# panel-design.md §3c). MODEL only, deliberately: CheckpointLoaderSimple
+# returns (MODEL, CLIP, VAE); this row keeps only MODEL.
+# ---------------------------------------------------------------------------
+
+
+def test_load_row_model_checkpoint_has_no_extra_opts_and_keeps_model_only():
+    calls, restore = _install_fake_comfy()
+    try:
+        obj = lh.load_row_model({"kind": "checkpoint", "value": "ckptA.safetensors", "opts": {}}, {})
+        assert calls == [("checkpoint", "ckptA.safetensors")]
+        assert isinstance(obj, _FakeModel)
+        assert obj.tag.startswith("ckpt-model:"), obj.tag
+    finally:
+        restore()
+
+
+def test_load_row_model_checkpoint_missing_name_raises_legible_error():
+    calls, restore = _install_fake_comfy()
+    try:
+        try:
+            lh.load_row_model({"kind": "checkpoint", "value": "does-not-exist.safetensors", "opts": {}}, {})
+            assert False, "expected LoaderRowError"
+        except lh.LoaderRowError as exc:
+            msg = str(exc)
+            assert "does-not-exist.safetensors" in msg, msg
+            assert "checkpoint" in msg, msg
+            assert "ckptA.safetensors" in msg, msg
+        assert calls == [], "loader must not be invoked when validation fails"
+    finally:
+        restore()
+
+
+def test_load_row_model_checkpoint_hostile_value_raises_legible_error_not_a_traceback():
+    calls, restore = _install_fake_comfy()
+    try:
+        for bad_value in (None, "", 42, ["a", "list"], {}, True):
+            try:
+                lh.load_row_model({"kind": "checkpoint", "value": bad_value, "opts": {}}, {})
+                assert False, f"expected LoaderRowError for value={bad_value!r}"
+            except lh.LoaderRowError:
+                pass
+        assert calls == []
+    finally:
+        restore()
+
+
+def test_cache_checkpoint_hits_when_row_is_unchanged_and_evicts_on_name_change():
+    calls, restore = _install_fake_comfy()
+    try:
+        cache = {}
+        row = {"kind": "checkpoint", "value": "ckptA.safetensors", "opts": {}}
+        first = lh.load_row_model(row, cache)
+        second = lh.load_row_model(row, cache)
+        assert first is second, "unchanged checkpoint row must hit the cache, not reload"
+        assert len(calls) == 1, calls
+
+        third = lh.load_row_model({"kind": "checkpoint", "value": "ckptB.safetensors", "opts": {}}, cache)
+        assert third is not first
+        assert len(calls) == 2, calls
+    finally:
+        restore()
+
+
+def test_cache_checkpoint_is_its_own_kind_slot_not_shared_with_unet():
+    # Same "one entry per kind" invariant as unet/vae/clip -- a checkpoint
+    # row's own slot must not evict (or be evicted by) an unrelated unet row
+    # sharing the SAME cache dict.
+    calls, restore = _install_fake_comfy()
+    try:
+        cache = {}
+        ckpt_obj = lh.load_row_model({"kind": "checkpoint", "value": "ckptA.safetensors", "opts": {}}, cache)
+        unet_obj = lh.load_row_model({"kind": "unet", "value": "unetA.safetensors", "opts": {}}, cache)
+        ckpt_again = lh.load_row_model({"kind": "checkpoint", "value": "ckptA.safetensors", "opts": {}}, cache)
+        assert ckpt_again is ckpt_obj, "the unet load must not have evicted the checkpoint slot"
+        assert len(calls) == 2, calls  # one checkpoint load, one unet load -- no reload
+        assert ckpt_obj is not unet_obj
+    finally:
+        restore()
+
+
+def test_run_checkpoint_row_loads_only_when_wired_and_emits_model_only():
+    calls, restore = _install_fake_comfy()
+    try:
+        state = _panel_state([
+            {"slot": 1, "kind": "unet", "value": "unetA.safetensors", "opts": {}},
+            {"slot": 2, "kind": "checkpoint", "value": "ckptA.safetensors", "opts": {}},
+        ])
+        prompt = {
+            "7": {"class_type": "AnimaLoaderPanel", "inputs": {"panel_state": state}},
+            # Only the checkpoint row's slot (2, i.e. output_index 1) is wired.
+            "1": {"class_type": "KSampler", "inputs": {"model": _link("7", 1)}},
+        }
+        out = AnimaLoaderPanel().run(state, prompt=prompt, unique_id="7")
+        assert out[0] == 0, "unwired unet row must NOT load"
+        assert out[1] != 0, "wired checkpoint row must load"
+        assert isinstance(out[1], _FakeModel)
+        assert out[1].tag.startswith("ckpt-model:"), "a checkpoint row must emit the MODEL element only, never a (MODEL, CLIP, VAE) tuple"
+        assert calls == [("checkpoint", "ckptA.safetensors")], calls
     finally:
         restore()
 
@@ -606,6 +727,12 @@ ALL_TESTS = [
     test_load_row_model_clip_passes_type_and_device,
     test_load_row_model_clip_missing_type_key_defaults_to_qwen_image_not_stable_diffusion,
     test_load_row_model_vae_has_no_extra_opts,
+    test_load_row_model_checkpoint_has_no_extra_opts_and_keeps_model_only,
+    test_load_row_model_checkpoint_missing_name_raises_legible_error,
+    test_load_row_model_checkpoint_hostile_value_raises_legible_error_not_a_traceback,
+    test_cache_checkpoint_hits_when_row_is_unchanged_and_evicts_on_name_change,
+    test_cache_checkpoint_is_its_own_kind_slot_not_shared_with_unet,
+    test_run_checkpoint_row_loads_only_when_wired_and_emits_model_only,
     test_cache_hits_when_row_is_unchanged,
     test_cache_evicts_on_name_change,
     test_cache_evicts_on_opts_change_same_name,

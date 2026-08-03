@@ -56,6 +56,7 @@ import {
   UNET_NAME_CANDIDATES,
   preferredNameDefault,
   coerceBoolTolerant,
+  browserKindFor,
 } from "./rows.mjs";
 
 let failures = 0;
@@ -83,7 +84,10 @@ test("MAX_ROWS: control=16, loader=8", () => {
 
 test("CONTROL_CATALOG / LOADER_CATALOG match the design doc's row catalog", () => {
   assert.deepEqual(CONTROL_CATALOG, ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"]);
-  assert.deepEqual(LOADER_CATALOG, ["unet", "vae", "clip"]);
+  // M3 (docs/lora-loader-design.md + docs/control-panel-design.md §3c) adds
+  // `checkpoint` -- MODEL only, deliberately (KIND_META.checkpoint's own
+  // doc comment).
+  assert.deepEqual(LOADER_CATALOG, ["unet", "vae", "clip", "checkpoint"]);
 });
 
 test("KIND_META has an entry for every catalog kind + auto, with hasGear matching the design's ⚙ column", () => {
@@ -103,6 +107,82 @@ test("KIND_META has an entry for every catalog kind + auto, with hasGear matchin
   assert.equal(KIND_META.latent.hasGear, true);
   assert.equal(KIND_META.unet.hasGear, true);
   assert.equal(KIND_META.clip.hasGear, true);
+  // M3's checkpoint row -- no per-row option (weight_dtype/type/device) to
+  // hold an ⚙ for, same reasoning as vae.
+  assert.equal(KIND_META.checkpoint.hasGear, false);
+});
+
+// =========================================================================
+// M3 -- unet/checkpoint get the LoRA loader's model-browser surfaces
+// (docs/lora-loader-design.md, docs/control-panel-design.md §3c)
+// =========================================================================
+
+test("KIND_META.checkpoint: MODEL socket type, loader panel, no ⚙, browser kind 'checkpoints'", () => {
+  assert.deepEqual(KIND_META.checkpoint, {
+    menu: "Checkpoint",
+    outputType: "MODEL",
+    pickerList: "checkpoint",
+    browserKind: "checkpoints",
+    hasGear: false,
+    panel: "loader",
+  });
+});
+
+test("browserKindFor: unet -> 'unet' (kinds.py already whitelists it under that name), checkpoint -> 'checkpoints' (the plural ComfyUI folder name)", () => {
+  assert.equal(browserKindFor(KIND_META.unet), "unet");
+  assert.equal(browserKindFor(KIND_META.checkpoint), "checkpoints");
+});
+
+test("browserKindFor: vae/clip and every Control Panel kind have NO browser kind -- they keep the plain option-list path, unaffected by M3", () => {
+  assert.equal(browserKindFor(KIND_META.vae), null);
+  assert.equal(browserKindFor(KIND_META.clip), null);
+  for (const kind of CONTROL_CATALOG) {
+    assert.equal(browserKindFor(KIND_META[kind]), null, `${kind} must not get a browser kind`);
+  }
+});
+
+test("browserKindFor: garbage input never throws", () => {
+  assert.equal(browserKindFor(null), null);
+  assert.equal(browserKindFor(undefined), null);
+  assert.equal(browserKindFor({}), null);
+});
+
+test('mkRow("checkpoint") defaults to value:undefined, opts:{} -- no ⚙, no extra opts', () => {
+  const row = mkRow("checkpoint");
+  assert.equal(row.value, undefined);
+  assert.deepEqual(row.opts, {});
+});
+
+test("outputTypeForRow: checkpoint is a plain MODEL socket, never the combo sentinel", () => {
+  assert.equal(outputTypeForRow({ kind: "checkpoint" }, {}), "MODEL");
+});
+
+test("menuMetaFor: checkpoint falls through to KIND_META unchanged, same as every other real kind", () => {
+  assert.equal(menuMetaFor("checkpoint"), KIND_META.checkpoint);
+});
+
+test("normalizeState: a checkpoint row's value/opts are tolerant of a hostile payload -- never throws, opts always {}", () => {
+  const state = normalizeState(
+    {
+      rows: [
+        { slot: 1, kind: "checkpoint", value: 12345, opts: { bogus: "field" } },
+        { slot: 2, kind: "checkpoint", value: null, opts: "not-an-object" },
+        { slot: 3, kind: "checkpoint", value: "real.safetensors", opts: {} },
+      ],
+    },
+    "loader",
+  );
+  const [a, b, c] = state.rows;
+  assert.equal(a.value, undefined, "a non-string value degrades to undefined, never passed through raw");
+  assert.deepEqual(a.opts, {}, "a checkpoint row has no opts of its own -- a hostile field is dropped, not kept");
+  assert.equal(b.value, undefined);
+  assert.deepEqual(b.opts, {});
+  assert.equal(c.value, "real.safetensors", "a genuine string value passes through unchanged");
+});
+
+test("normalizeState: an unknown kind is still filtered out (checkpoint's addition doesn't loosen that guard)", () => {
+  const state = normalizeState({ rows: [{ slot: 1, kind: "not-a-real-kind", value: "x" }] }, "loader");
+  assert.deepEqual(state.rows, []);
 });
 
 // =========================================================================

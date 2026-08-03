@@ -125,7 +125,7 @@ export const ZW = "​";
 export const VACANT_SLOT_TYPE = "__wtn_ctl_vacant__";
 
 export const CONTROL_CATALOG = ["sampler", "scheduler", "seed", "int", "float", "bool", "latent"];
-export const LOADER_CATALOG = ["unet", "vae", "clip"];
+export const LOADER_CATALOG = ["unet", "vae", "clip", "checkpoint"];
 
 /**
  * One entry per row kind. `outputType` is either a plain socket type string
@@ -142,13 +142,28 @@ export const LOADER_CATALOG = ["unet", "vae", "clip"];
  * key into both. `sampler`/`scheduler` happen to have BOTH `outputType:
  * "combo"` (their wire really does carry ComfyUI's COMBO type) AND
  * `pickerList` (their value is also list-picked) — easy to conflate since
- * they always agree for those two. `unet`/`vae`/`clip` are exactly the case
- * that separates them: their value is ALSO list-picked (`pickerList` set),
- * but their wire is a fixed `MODEL`/`VAE`/`CLIP` socket type, never the
- * combo sentinel. Use `isPickerKind` below for "does this row need a
- * stepper/option-list UI", and `outputType`/`outputTypeForRow` ONLY for "what
- * does this row's wire actually carry" — never substitute one check for the
- * other.
+ * they always agree for those two. `unet`/`vae`/`clip`/`checkpoint` are
+ * exactly the case that separates them: their value is ALSO list-picked
+ * (`pickerList` set), but their wire is a fixed `MODEL`/`VAE`/`CLIP` socket
+ * type, never the combo sentinel. Use `isPickerKind` below for "does this
+ * row need a stepper/option-list UI", and `outputType`/`outputTypeForRow`
+ * ONLY for "what does this row's wire actually carry" — never substitute one
+ * check for the other.
+ *
+ * `browserKind`, where present, is a THIRD, independent concern (M3, `docs/
+ * lora-loader-design.md` + `docs/control-panel-design.md`): it marks a row
+ * kind that gets the LoRA loader's own model-browser surfaces — the
+ * searchable picker (`model_picker.mjs`'s `openModelPicker`) in place of the
+ * plain option-list menu, plus the ⓘ info panel (`model_info.mjs`'s
+ * `openModelInfo`) — and names the `kind` string the model-browser ROUTES
+ * expect (`src/model_browser/kinds.py`'s whitelist), which is not always the
+ * same spelling as this row's own catalog key: `unet`'s browser kind is
+ * `"unet"` (they agree), but `checkpoint`'s is `"checkpoints"` (the plural
+ * ComfyUI folder name) — see `browserKindFor` below, the one place that
+ * distinction is resolved. `vae`/`clip` deliberately have NO `browserKind`:
+ * `kinds.py` whitelists only `loras`/`checkpoints`/`unet`, so there is
+ * nothing for a picker to read for them, and they keep exactly today's
+ * option-list behaviour (`interaction.mjs`'s `wireComboRow`).
  */
 export const KIND_META = {
   sampler: { menu: "Sampler", outputType: "combo", pickerList: "sampler", hasGear: false, panel: "control" },
@@ -162,9 +177,17 @@ export const KIND_META = {
   // itself, which the row body already shows directly.
   bool: { menu: "Bool", outputType: "BOOLEAN", hasGear: false, panel: "control" },
   latent: { menu: "Empty latent", outputType: "LATENT", hasGear: true, panel: "control" },
-  unet: { menu: "UNET loader", outputType: "MODEL", pickerList: "unet", hasGear: true, panel: "loader" },
+  unet: { menu: "UNET loader", outputType: "MODEL", pickerList: "unet", browserKind: "unet", hasGear: true, panel: "loader" },
   vae: { menu: "VAE loader", outputType: "VAE", pickerList: "vae", hasGear: false, panel: "loader" },
   clip: { menu: "CLIP loader", outputType: "CLIP", pickerList: "clip", hasGear: true, panel: "loader" },
+  // MODEL only, deliberately (owner, 2026-08-02) -- a checkpoint file also
+  // bakes CLIP/VAE, but every Loader Panel row is one socket at its own `.y`
+  // (layer 3's core design, docs/control-panel-design.md §3), and exposing
+  // the baked CLIP/VAE would need a multi-socket row -- a separate,
+  // unscheduled piece of work (`docs/control-panel-design.md`'s own
+  // "Deferred" list). No ⚙: unlike unet/clip, a checkpoint row has nothing
+  // an ⚙ would hold (no weight_dtype/type/device of its own).
+  checkpoint: { menu: "Checkpoint", outputType: "MODEL", pickerList: "checkpoint", browserKind: "checkpoints", hasGear: false, panel: "loader" },
   auto: { menu: "Auto", outputType: "*", hasGear: false, panel: "both" },
 };
 
@@ -176,6 +199,17 @@ export const KIND_META = {
  * `row.kind` straight into either once this returns true. */
 export function isPickerKind(kindMeta) {
   return !!(kindMeta && kindMeta.pickerList);
+}
+
+/** The model-browser `kind` string for `kindMeta` (`src/model_browser/
+ * kinds.py`'s whitelist), or `null` for a row kind that doesn't get the
+ * searchable picker / ⓘ panel at all (`vae`/`clip`, plus every Control Panel
+ * kind) -- see the `KIND_META` doc comment above for the full contract.
+ * Callers (`interaction.mjs`) use this to decide BOTH whether to build the ⓘ
+ * button at all and which surfaces (`openModelPicker`/`openModelInfo`'s own
+ * `kind` parameter) to open. */
+export function browserKindFor(kindMeta) {
+  return (kindMeta && kindMeta.browserKind) || null;
 }
 
 /**
@@ -191,6 +225,7 @@ export const NODE_DEF_SOURCE = {
   unet: { className: "UNETLoader", field: "unet_name" },
   vae: { className: "VAELoader", field: "vae_name" },
   clip: { className: "CLIPLoader", field: "clip_name" },
+  checkpoint: { className: "CheckpointLoaderSimple", field: "ckpt_name" },
 };
 
 // AFTER_MODES itself now lives in `js/shared/field_logic.mjs` (imported +
@@ -393,7 +428,7 @@ export function mkRow(kind, overrides = {}) {
     // either (see that site's comment for why).
     row.opts = { type: "qwen_image", device: "default" };
   }
-  // sampler / scheduler / vae / auto: no extra opts.
+  // sampler / scheduler / vae / checkpoint / auto: no extra opts.
 
   if (overrides.name !== undefined) {
     row.name = overrides.name;
@@ -768,6 +803,13 @@ function normalizeRow(raw, panelKind) {
     row.opts = { weight_dtype: UNET_DTYPES.includes(row.opts.weight_dtype) ? row.opts.weight_dtype : "default" };
     row.value = typeof row.value === "string" ? row.value : undefined;
   } else if (kind === "vae") {
+    row.opts = {};
+    row.value = typeof row.value === "string" ? row.value : undefined;
+  } else if (kind === "checkpoint") {
+    // Same tolerance as vae -- no opts of its own (MODEL only, KIND_META's
+    // own comment), a hostile/non-string saved value degrades to `undefined`
+    // rather than a traceback (`_loaders_helpers.py`'s `_validate_name`
+    // raises a readable error for THAT, downstream).
     row.opts = {};
     row.value = typeof row.value === "string" ? row.value : undefined;
   } else if (kind === "clip") {

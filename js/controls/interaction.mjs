@@ -71,6 +71,7 @@ import {
   TIERS,
   NODE_DEF_SOURCE,
   isPickerKind,
+  browserKindFor,
   normalizeState,
   defaultState,
   addRow,
@@ -130,6 +131,20 @@ import { isSizeLike } from "../shared/size.mjs";
 // relative import, zero app/window reference at module scope" reasoning as
 // the import right above it.
 import { getSetting, SETTING_IDS, SETTING_DEFAULTS } from "../shared/settings.mjs";
+
+// M3 (`docs/lora-loader-design.md` §7c/"the modal", `docs/control-panel-
+// design.md`'s Loader Panel table): `unet`/`checkpoint` rows (`rows.mjs`'s
+// `browserKindFor`) get the SAME track-agnostic searchable picker + ⓘ panel
+// the LoRA Loader already uses (`lora_interaction.mjs`'s `openNamePickerFor`/
+// `openInfoPanelFor` are the reference this file's own `openModelBrowser*`
+// functions below mirror) -- an IMPORT of that reuse boundary, not an
+// extraction: this file is not one of `test_model_picker.mjs`'s
+// `GUARDED_FILES`, so importing `model_picker.mjs`/`model_info.mjs` FROM here
+// is the allowed direction (the guard only forbids the reverse, those three
+// files reaching back into a `lora_*` module).
+import { listModels, invalidateList, cachedList } from "./civitai_api.mjs";
+import { openModelPicker } from "./model_picker.mjs";
+import { openModelInfo } from "./model_info.mjs";
 
 // FLIP drag-reorder settle animation -- the track-agnostic capture/inverse-
 // transform/settle core, shared with `lora_interaction.mjs` (which ported
@@ -352,17 +367,13 @@ function afterEdit(node, ctx) {
 // Row-kind-specific wiring
 // ---------------------------------------------------------------------------
 
-/** `rowId` only -- never a captured `row` object. Every mutation below
- * re-resolves the CURRENT row from `ensureState(node, ctx).rows` at the
- * moment the handler actually fires, mirroring `lora_interaction.mjs`'s own
- * `wireGrip`/`openNamePickerFor`/etc (see this module's top doc comment for
- * why: `node.properties[stateProp]` can be swapped out from under an
- * already-wired row -- measured live, `sameObject=false` with the id
- * preserved -- and closing over the OLD row object silently mutates a
- * detached copy `persistState` never serializes). A row that no longer
- * exists (removed while this control was open) is a safe no-op, never a
- * throw. */
-function wireComboRow(node, ctx, rowId, refs) {
+/** The ◀/▶ steppers alone -- factored out of `wireComboRow` (below) so a
+ * `unet`/`checkpoint` row (M3: `wireModelBrowserRow`) can reuse the IDENTICAL
+ * cycle behaviour while wiring its OWN combo click (the searchable picker,
+ * not `openListMenuFor`) -- see `wireRow`'s dispatch for why these two never
+ * both wire the same row's `refs.combo` (that would stack two click
+ * listeners opening two different overlays on the same click). */
+function wireStepperArrows(node, ctx, rowId, refs) {
   const cycle = (dir) => {
     const state = ensureState(node, ctx);
     const row = state.rows.find((r) => r.id === rowId);
@@ -390,6 +401,20 @@ function wireComboRow(node, ctx, rowId, refs) {
     e.stopPropagation();
     cycle(1);
   });
+}
+
+/** `rowId` only -- never a captured `row` object. Every mutation below
+ * re-resolves the CURRENT row from `ensureState(node, ctx).rows` at the
+ * moment the handler actually fires, mirroring `lora_interaction.mjs`'s own
+ * `wireGrip`/`openNamePickerFor`/etc (see this module's top doc comment for
+ * why: `node.properties[stateProp]` can be swapped out from under an
+ * already-wired row -- measured live, `sameObject=false` with the id
+ * preserved -- and closing over the OLD row object silently mutates a
+ * detached copy `persistState` never serializes). A row that no longer
+ * exists (removed while this control was open) is a safe no-op, never a
+ * throw. */
+function wireComboRow(node, ctx, rowId, refs) {
+  wireStepperArrows(node, ctx, rowId, refs);
   refs.combo.addEventListener("click", (e) => {
     e.stopPropagation();
     openListMenuFor(node, ctx, rowId, refs);
@@ -448,6 +473,137 @@ function openListMenuFor(node, ctx, rowId, refs) {
   handle.ownerKey = key;
   activeOverlayRef.current = handle;
   refs.root.classList.add("wtn-ctl-open");
+}
+
+// ---------------------------------------------------------------------------
+// M3 model-browser rows (`unet`/`checkpoint` -- `rows.mjs`'s `browserKindFor`)
+// -- the searchable picker + ⓘ panel, mirroring `lora_interaction.mjs`'s
+// `openNamePickerFor`/`openInfoPanelFor` (see this file's own import comment
+// for the reuse-boundary framing). `vae`/`clip` never reach these -- they
+// keep going through `wireComboRow`/`openListMenuFor` above, unchanged.
+// ---------------------------------------------------------------------------
+
+/** Opens (or, on a second click of the SAME row's combo, closes) the
+ * searchable model-browser picker for a `unet`/`checkpoint` row -- REPLACES
+ * `openListMenuFor` for exactly these two kinds (design doc M3: "give unet
+ * rows the LoRA loader's surfaces"). `rowId` only, resolved live at the
+ * moment this fires -- mirrors every other wireX function in this file (this
+ * module's top doc comment) and `lora_interaction.mjs`'s own
+ * `openNamePickerFor`. A row whose kind has no `browserKind` (shouldn't
+ * happen -- callers only wire this for `unet`/`checkpoint`) or that has
+ * vanished is a safe no-op. */
+function openModelBrowserPickerFor(node, ctx, rowId, refs) {
+  const state = ensureState(node, ctx);
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return;
+  }
+  const browserKind = browserKindFor(KIND_META[row.kind]);
+  if (!browserKind) {
+    return;
+  }
+  openModelPicker({
+    ctx,
+    anchorEl: refs.combo,
+    kind: browserKind,
+    ownerKey: `ctl-picker:${rowId}`,
+    currentName: row.value || "",
+    // Both read HERE, live on every open -- same convention
+    // `lora_interaction.mjs`'s `openNamePickerFor` already follows (the
+    // picker itself never reaches into `../shared/settings.mjs`).
+    hideExtension: getSetting(SETTING_IDS.HIDE_FILE_EXTENSION, SETTING_DEFAULTS[SETTING_IDS.HIDE_FILE_EXTENSION]),
+    showThumbnails: getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]),
+    onPick: (name) => {
+      const s = ensureState(node, ctx);
+      const r = s.rows.find((entry) => entry.id === rowId);
+      if (!r) {
+        return;
+      }
+      r.value = name;
+      afterEdit(node, ctx);
+    },
+  });
+}
+
+/** Opens (or, on a second click of the SAME row's ⓘ, closes) the model-
+ * browser ⓘ info panel for a `unet`/`checkpoint` row -- mirrors
+ * `lora_interaction.mjs`'s own `openInfoPanelFor`. This row kind has no
+ * `triggers` output of its own (unlike the LoRA Loader -- `docs/control-
+ * panel-design.md`'s row catalog carries no such field for `unet`/
+ * `checkpoint`), so the trigger-word candidate/selected/custom lists are all
+ * empty and `onChange` is a no-op: the panel's trigger section still renders
+ * (harmlessly inert) rather than needing `model_info.mjs` itself changed to
+ * special-case a kind with nothing to persist a word into (the layering
+ * guard's whole point -- see this file's own import comment). */
+function openModelBrowserInfoFor(node, ctx, rowId, refs) {
+  const state = ensureState(node, ctx);
+  const row = state.rows.find((r) => r.id === rowId);
+  if (!row) {
+    return;
+  }
+  const kindMeta = KIND_META[row.kind];
+  const browserKind = browserKindFor(kindMeta);
+  if (!browserKind) {
+    return;
+  }
+  const entry = cachedList(browserKind).find((m) => m && m.name === row.value);
+  const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
+  const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
+  const browsingLevel = getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]);
+  const showCivitaiName = getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
+  openModelInfo({
+    ctx,
+    anchorEl: refs.info,
+    kind: browserKind,
+    name: row.value || "",
+    ownerKey: `ctl-info:${rowId}`,
+    baseModel: (entry && entry.base_model) || "",
+    civitaiEnabled,
+    showThumbnails,
+    browsingLevel,
+    showCivitaiName,
+    sizeBytes: entry && Number.isFinite(entry.size) ? entry.size : undefined,
+    // No triggers concept for this row kind -- see this function's own doc
+    // comment.
+    onChange: () => {},
+    onListRefreshed: () => {
+      syncRows(node, ctx);
+    },
+    onDeleted: () => {
+      // Same invalidate-THEN-refetch-THEN-repaint contract
+      // `lora_interaction.mjs`'s own `onDeleted` uses (`docs/lora-loader-
+      // design.md`'s "two traps this exact area has produced" -- invalidating
+      // alone empties the cache and nothing repopulates it): a row still
+      // pointing at the just-deleted file must fall into the existing
+      // missing-file error state the next time this graph runs, not vanish
+      // silently.
+      invalidateList(browserKind);
+      listModels(browserKind, true).then(() => syncRows(node, ctx));
+    },
+  });
+}
+
+/** Wires a `unet`/`checkpoint` row in full: the ◀/▶ steppers (reusing
+ * `wireStepperArrows` -- the SAME cycle behaviour `wireComboRow` gives
+ * `vae`/`clip`, unaffected by this row's own combo-click change), its combo
+ * (opens the searchable model-browser picker, REPLACING `wireComboRow`'s
+ * `openListMenuFor` for exactly these two kinds -- see this file's own
+ * import comment), and its ⓘ button (opens the info panel). Never call
+ * `wireComboRow` for these two kinds alongside this -- both wiring the SAME
+ * `refs.combo` element would stack two click listeners opening two different
+ * overlays on one click. */
+function wireModelBrowserRow(node, ctx, rowId, refs) {
+  wireStepperArrows(node, ctx, rowId, refs);
+  refs.combo.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openModelBrowserPickerFor(node, ctx, rowId, refs);
+  });
+  if (refs.info) {
+    refs.info.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openModelBrowserInfoFor(node, ctx, rowId, refs);
+    });
+  }
 }
 
 function wireSeedRow(node, ctx, rowId, refs) {
@@ -1388,7 +1544,13 @@ function wireRow(node, ctx, row, refs) {
   if (row.kind === "auto") {
     return;
   }
-  if (isPickerKind(kindMeta)) {
+  if (browserKindFor(kindMeta)) {
+    // M3: `unet`/`checkpoint` -- the model-browser picker + ⓘ (see this
+    // file's own import comment). Checked BEFORE `isPickerKind` (which would
+    // also match, since both kinds still carry `pickerList`) so these two
+    // never ALSO get `wireComboRow`'s combo-click wiring.
+    wireModelBrowserRow(node, ctx, rowId, refs);
+  } else if (isPickerKind(kindMeta)) {
     wireComboRow(node, ctx, rowId, refs);
   } else if (row.kind === "seed") {
     wireSeedRow(node, ctx, rowId, refs);

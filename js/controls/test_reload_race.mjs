@@ -399,11 +399,16 @@ function buildSavedLoaderPanel(overrides) {
   return { savedStateJSON: getStateWidget(saved).value, savedProperties: saved.properties };
 }
 
+// `vae` (2026-08-03, M3): `unet`'s own combo click now opens the
+// model-browser searchable picker (`interaction.mjs`'s
+// `openModelBrowserPickerFor`), not `openListMenuFor` -- this repro is about
+// the async reload race, not about which row kind it fires on, and `vae`
+// still exercises the exact plain-option-list mechanism it needs.
 async function runReproOnce(delayMs) {
   const overrides = {
     getKnownLists: () => ({
-      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
-      vae: ["v.safetensors"],
+      unet: ["u.safetensors"],
+      vae: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
       clip: ["c.safetensors"],
     }),
   };
@@ -412,11 +417,11 @@ async function runReproOnce(delayMs) {
   const { node, ctx, doc } = await simulateAsyncReload({ savedStateJSON, savedProperties, overrides, delayMs });
   makeWindowStub(doc);
 
-  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
-  assert.ok(unetEntry, "the restored panel must have a unet row to click on");
-  assert.equal(unetEntry.refs.row.value, "waiANIMA_v10Base10.safetensors", "sanity: the restored row starts on the OLD model");
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+  assert.ok(vaeEntry, "the restored panel must have a vae row to click on");
+  assert.equal(vaeEntry.refs.row.value, "waiANIMA_v10Base10.safetensors", "sanity: the restored row starts on the OLD model");
 
-  fire(unetEntry.refs.combo, "click");
+  fire(vaeEntry.refs.combo, "click");
   const menu = doc.body.children[doc.body.children.length - 1];
   assert.ok(menu && menu.className.includes("wtn-ctl-overlay"), "the option-list menu must actually open");
   const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
@@ -424,10 +429,10 @@ async function runReproOnce(delayMs) {
   assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
   fire(target, "click");
 
-  const onScreenValue = unetEntry.refs.row.value;
-  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  const onScreenValue = vaeEntry.refs.row.value;
+  const persistedVae = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "vae");
   closeActiveOverlay();
-  return { onScreenValue, persistedValue: persistedUnet && persistedUnet.value, ctx };
+  return { onScreenValue, persistedValue: persistedVae && persistedVae.value, ctx };
 }
 
 test("ASYNC repro (delayMs=5): the FIRST edit after a REAL, setTimeout-delayed loadMods() gap -- modelling a hard refresh's cold dynamic import, not the previous audit's synchronous back-to-back sequence", async () => {

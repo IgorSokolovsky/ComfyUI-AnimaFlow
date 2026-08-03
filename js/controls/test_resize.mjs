@@ -80,6 +80,7 @@ import {
   mkRow,
   assignSlot,
   isPickerKind,
+  browserKindFor,
   outputTypeForRow,
   SLOT_LABEL_MODE,
   stripZeroWidthEdges,
@@ -88,6 +89,12 @@ import {
   applyResolvedKind,
   planHoleCompaction,
 } from "./rows.mjs";
+
+// M3 (docs/lora-loader-design.md + docs/control-panel-design.md §3c):
+// `unet`/`checkpoint` rows open this SAME cache -- `invalidateList` resets it
+// between tests that stub `globalThis.fetch` with their own canned model
+// list, so one test's cached list can never bleed into another's.
+import { invalidateList } from "./civitai_api.mjs";
 
 import {
   injectStyles,
@@ -143,6 +150,38 @@ function test(name, fn) {
     console.error(`FAIL - ${name}`);
     console.error(err && err.stack ? err.stack : err);
   }
+}
+
+// M3's model-browser picker/ⓘ panel both resolve a promise (`listModels`/
+// `lookupInfo`) before rendering anything real -- same `asyncTest` shape as
+// `test_model_picker.mjs`'s own.
+async function asyncTest(name, fn) {
+  count += 1;
+  try {
+    await fn();
+    console.log(`ok - ${name}`);
+  } catch (err) {
+    failures += 1;
+    console.error(`FAIL - ${name}`);
+    console.error(err && err.stack ? err.stack : err);
+  }
+}
+
+/** Every descendant of `root` (root included) carrying `className` --
+ * `model_picker.mjs`'s panel nests its rows several levels deep (panel ->
+ * list -> row), unlike this track's own flat `.wtn-ctl-menu` -- mirrors
+ * `test_model_picker.mjs`'s identically-named helper (kept as an
+ * independent copy, per this pack's own doc-stub convention). */
+function findAllByClass(root, className) {
+  const out = [];
+  const walk = (e) => {
+    if (e && e.classList && e.classList.contains(className)) {
+      out.push(e);
+    }
+    (e && e.children || []).forEach(walk);
+  };
+  walk(root);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +537,9 @@ const CONTROL_PANEL_CONFIG = {
 const LOADER_PANEL_CONFIG = {
   key: "loader",
   stateProp: "loaderPanelState",
-  catalog: ["unet", "vae", "clip"],
+  // M3 (docs/lora-loader-design.md + docs/control-panel-design.md §3c) --
+  // mirrors index.js's PANEL_CONFIGS.loader.catalog.
+  catalog: ["unet", "vae", "clip", "checkpoint"],
   allowAuto: false,
   reorder: false,
   addLabel: "+ Add loader",
@@ -2250,7 +2291,9 @@ test("each preset appears in the Control Panel's \"+ Add control\" menu (before 
   fire(loaderNode._ctrlAddWidget.element, "click");
   const loaderMenu = loaderDoc.body.children[loaderDoc.body.children.length - 1].children[0];
   const loaderLabels = loaderMenu.children.filter((c) => c.className.includes("wtn-ctl-opt")).map((c) => c.textContent);
-  assert.deepEqual(loaderLabels, ["UNET loader", "VAE loader", "CLIP loader"]);
+  // M3 (docs/lora-loader-design.md + docs/control-panel-design.md §3c) adds
+  // "Checkpoint" to the catalog -- still no presets.
+  assert.deepEqual(loaderLabels, ["UNET loader", "VAE loader", "CLIP loader", "Checkpoint"]);
   assert.ok(!loaderLabels.some((t) => t.startsWith("Steps") || t.startsWith("CFG") || t.startsWith("Denoise")));
   closeActiveOverlay();
 });
@@ -2602,23 +2645,31 @@ test("Loader Panel row (unet): clicking the steppers cycles the value and persis
 // is correct for both paths in this harness), which is exactly why the
 // live bug, if it reproduces at all, has to be something this headless
 // harness's node/widget stub cannot model (see the build report).
-test("Loader Panel row (unet): picking a NEW model from the option-list menu (not the steppers) changes the SERIALIZED panel_state widget, not just the on-screen row", () => {
+//
+// MOVED TO `vae` (2026-08-03, M3): `unet`'s own combo click now opens the
+// model-browser searchable picker (`interaction.mjs`'s
+// `openModelBrowserPickerFor`), not `openListMenuFor` -- see
+// `test_model_browser_row` below for that row's OWN new coverage. `vae`
+// keeps EXACTLY the pre-M3 option-list mechanism this regression test
+// exists to cover, so the underlying bug (list-click not reaching the
+// serialized widget) stays covered, just off a kind M3 didn't touch.
+test("Loader Panel row (vae): picking a NEW model from the option-list menu (not the steppers) changes the SERIALIZED panel_state widget, not just the on-screen row", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
     getKnownLists: () => ({
-      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
-      vae: ["v.safetensors"],
+      unet: ["u.safetensors"],
+      vae: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
       clip: ["c.safetensors"],
     }),
   });
   syncRows(node, ctx); // default loader rows: unet/vae/clip
-  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
-  assert.equal(unetEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
-  assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet").value, "waiANIMA_v10Base10.safetensors");
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+  assert.equal(vaeEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
+  assert.equal(JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "vae").value, "waiANIMA_v10Base10.safetensors");
 
-  fire(unetEntry.refs.combo, "click");
+  fire(vaeEntry.refs.combo, "click");
   const menu = doc.body.children[doc.body.children.length - 1];
   assert.ok(menu.className.includes("wtn-ctl-overlay"));
   const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
@@ -2627,15 +2678,15 @@ test("Loader Panel row (unet): picking a NEW model from the option-list menu (no
   fire(target, "click");
 
   // Row display -- the part the owner could SEE was already right.
-  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  assert.equal(vaeEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
   // The part the owner could NOT see, and the part the backend actually
   // reads (per `.claude/skills/comfyui-dynamic-node-frontend/SKILL.md` --
   // "test the widget, not node.properties"): the SERIALIZED panel_state.
-  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
-  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors");
+  const persistedVae = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "vae");
+  assert.equal(persistedVae.value, "nyaIrisAnima_base1V20.safetensors");
   // node.properties too, since that's the OTHER half of the handshake this
   // pack's skill file documents.
-  assert.equal(node.properties.loaderPanelState.rows.find((r) => r.kind === "unet").value, "nyaIrisAnima_base1V20.safetensors");
+  assert.equal(node.properties.loaderPanelState.rows.find((r) => r.kind === "vae").value, "nyaIrisAnima_base1V20.safetensors");
   closeActiveOverlay();
 });
 
@@ -2670,11 +2721,15 @@ test("Loader Panel row (unet): picking a NEW model from the option-list menu (no
 // mechanism covering both, not a Loader-Panel-only fix.
 // =========================================================================
 
-test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure reload sequence (a forced panel_state re-parse that mints fresh row ids), picking a NEW unet model through the row's own wired option-list menu still reaches the SERIALIZED panel_state widget", () => {
+// MOVED TO `vae` (2026-08-03, M3 -- same reasoning as the test right above:
+// `unet`'s combo click now opens the model-browser picker, not
+// `openListMenuFor`; `vae` still exercises the exact mechanism this audit is
+// about).
+test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure reload sequence (a forced panel_state re-parse that mints fresh row ids), picking a NEW vae model through the row's own wired option-list menu still reaches the SERIALIZED panel_state widget", () => {
   const overrides = {
     getKnownLists: () => ({
-      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
-      vae: ["v.safetensors"],
+      unet: ["u.safetensors"],
+      vae: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
       clip: ["c.safetensors"],
     }),
   };
@@ -2700,10 +2755,10 @@ test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure relo
   syncRows(reloaded, reloadedCtx);
 
   makeWindowStub(reloadedDoc);
-  const unetEntry = reloaded._ctrlRows.find((e) => e.kind === "unet");
-  assert.equal(unetEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
+  const vaeEntry = reloaded._ctrlRows.find((e) => e.kind === "vae");
+  assert.equal(vaeEntry.refs.row.value, "waiANIMA_v10Base10.safetensors");
 
-  fire(unetEntry.refs.combo, "click");
+  fire(vaeEntry.refs.combo, "click");
   const menu = reloadedDoc.body.children[reloadedDoc.body.children.length - 1];
   assert.ok(menu.className.includes("wtn-ctl-overlay"));
   const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
@@ -2711,9 +2766,9 @@ test("core-mechanic audit: after the two-phase onNodeCreated -> onConfigure relo
   assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
   fire(target, "click");
 
-  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
-  const persistedUnet = JSON.parse(getStateWidget(reloaded).value).rows.find((r) => r.kind === "unet");
-  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors", "the pick made AFTER a reload's forced re-parse must reach the SERIALIZED widget, not just the on-screen row");
+  assert.equal(vaeEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  const persistedVae = JSON.parse(getStateWidget(reloaded).value).rows.find((r) => r.kind === "vae");
+  assert.equal(persistedVae.value, "nyaIrisAnima_base1V20.safetensors", "the pick made AFTER a reload's forced re-parse must reach the SERIALIZED widget, not just the on-screen row");
   closeActiveOverlay();
 });
 
@@ -2751,10 +2806,13 @@ test("syncRows rebuilds (re-binding every row DOM closure) when node.properties 
   const node = makeFakeNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
+  // MOVED TO `vae` for the combo-menu drive below (2026-08-03, M3): `unet`'s
+  // combo click now opens the model-browser picker, not `openListMenuFor` --
+  // `vae` still exercises the exact mechanism this identity guard is about.
   const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
     getKnownLists: () => ({
-      unet: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
-      vae: ["v.safetensors"],
+      unet: ["u.safetensors"],
+      vae: ["waiANIMA_v10Base10.safetensors", "nyaIrisAnima_base1V20.safetensors"],
       clip: ["c.safetensors"],
     }),
   });
@@ -2784,17 +2842,17 @@ test("syncRows rebuilds (re-binding every row DOM closure) when node.properties 
   // Now drive an edit through the row's own wired handler (exactly what a
   // user click does) and confirm it reaches the SERIALIZED widget, not an
   // orphaned copy of the row.
-  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
-  fire(unetEntry.refs.combo, "click");
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+  fire(vaeEntry.refs.combo, "click");
   const menu = doc.body.children[doc.body.children.length - 1];
   const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
   const target = opts.find((o) => o.textContent === "nyaIrisAnima_base1V20.safetensors");
   assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
   fire(target, "click");
 
-  assert.equal(unetEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
-  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
-  assert.equal(persistedUnet.value, "nyaIrisAnima_base1V20.safetensors", "the pick must reach the SERIALIZED panel_state widget, not just the on-screen row");
+  assert.equal(vaeEntry.refs.row.value, "nyaIrisAnima_base1V20.safetensors");
+  const persistedVae = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "vae");
+  assert.equal(persistedVae.value, "nyaIrisAnima_base1V20.safetensors", "the pick must reach the SERIALIZED panel_state widget, not just the on-screen row");
   closeActiveOverlay();
 });
 
@@ -2843,14 +2901,18 @@ test("syncRows: an UNCHANGED state object (same signature, same identity) stays 
 // exact bug for exactly that reason.
 // =========================================================================
 
+// MOVED TO `vae` (2026-08-03, M3 -- same reasoning as the tests above:
+// `unet`'s combo click now opens the model-browser picker, not
+// `openListMenuFor`; `vae` still exercises the exact combo-menu handler this
+// live bug was about).
 test("BUG (live, 2026-07-30): after node.properties[stateProp] is swapped for an id-PRESERVING deep clone WITHOUT syncRows re-running (sameObject=false, idInLiveState=true, rowSig unchanged -- the exact measured symptom), picking a new value through the row's REAL wired combo-menu handler still reaches the SERIALIZED panel_state widget", () => {
   const node = makeFakeNode();
   const doc = makeDocStub();
   makeWindowStub(doc);
   const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, {
     getKnownLists: () => ({
-      unet: ["JANIMA_v10.safetensors", "animayume_v10BaseFinal.safetensors"],
-      vae: ["qwen-image/qwen_image_vae.safetensors"],
+      unet: ["u.safetensors"],
+      vae: ["JANIMA_v10.safetensors", "animayume_v10BaseFinal.safetensors"],
       clip: ["qwen_3_06b_base.safetensors"],
     }),
   });
@@ -2869,13 +2931,13 @@ test("BUG (live, 2026-07-30): after node.properties[stateProp] is swapped for an
   assert.notEqual(stateB, stateA, "sameObject must be false");
   assert.deepEqual(stateB.rows.map((r) => r.id), stateA.rows.map((r) => r.id), "idInLiveState -- ids preserved");
   assert.equal(rowSignatureOf(stateB), rowSignatureOf(stateA), "rowSig must be unchanged");
-  const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
-  const liveUnetRow = ensureState(node, ctx).rows.find((r) => r.id === unetEntry.id);
-  assert.notEqual(unetEntry.refs.row, liveUnetRow, "the DOM entry's row must be a DIFFERENT object from the live state's row of the same id");
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+  const liveVaeRow = ensureState(node, ctx).rows.find((r) => r.id === vaeEntry.id);
+  assert.notEqual(vaeEntry.refs.row, liveVaeRow, "the DOM entry's row must be a DIFFERENT object from the live state's row of the same id");
 
   // Drive the value change through the REAL wired combo-menu handler -- the
   // same route the owner's click takes (click the combo, click an option).
-  fire(unetEntry.refs.combo, "click");
+  fire(vaeEntry.refs.combo, "click");
   const menu = doc.body.children[doc.body.children.length - 1];
   assert.ok(menu.className.includes("wtn-ctl-overlay"));
   const opts = menu.children[0].children.filter((c) => c.className.includes("wtn-ctl-opt"));
@@ -2883,9 +2945,9 @@ test("BUG (live, 2026-07-30): after node.properties[stateProp] is swapped for an
   assert.ok(target, "the newly-picked model must actually be an option in the row's own list");
   fire(target, "click");
 
-  const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+  const persistedVae = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "vae");
   assert.equal(
-    persistedUnet.value,
+    persistedVae.value,
     "animayume_v10BaseFinal.safetensors",
     "the pick must reach the SERIALIZED panel_state widget, not just a detached copy of the row -- this is what makes AnimaLoaderPanel.run() actually see the new model",
   );
@@ -5014,6 +5076,216 @@ test("index.js: setupNode (Control/Loader Panel) and AnimaLoraLoader's onNodeCre
   assert.ok(createdIdx >= 0 && configureIdx > createdIdx);
   const createdBody = loraBody.slice(createdIdx, configureIdx);
   assert.match(createdBody, /triggerQueueProbe\(\)/, "AnimaLoraLoader's onNodeCreated must call triggerQueueProbe()");
+});
+
+// =========================================================================
+// M3 -- `unet`/`checkpoint` get the LoRA loader's model-browser surfaces
+// (docs/lora-loader-design.md, docs/control-panel-design.md §3c).
+// `vae`/`clip` keep exactly the pre-M3 option-list behaviour (`src/
+// model_browser/kinds.py` whitelists no backend kind for either).
+// =========================================================================
+
+test("buildRowElement: a unet row ALSO gets an ⓘ button (M3), alongside its existing weight_dtype ⚙", () => {
+  const doc = makeDocStub();
+  const row = mkRow("unet");
+  const refs = buildRowElement(doc, row, KIND_META.unet, LOADER_PANEL_CONFIG);
+  assert.ok(refs.stepLeft && refs.stepRight && refs.combo && refs.caret, "unet stays a picker-shaped row");
+  assert.ok(refs.info, "unet must get an ⓘ button (M3)");
+  assert.ok(refs.gear, "unet keeps its weight_dtype ⚙, unaffected by M3");
+});
+
+test("buildRowElement: a checkpoint row is picker-shaped (stepper+combo+caret), gets an ⓘ button, and has NO ⚙ (no per-row option)", () => {
+  const doc = makeDocStub();
+  const row = mkRow("checkpoint");
+  const refs = buildRowElement(doc, row, KIND_META.checkpoint, LOADER_PANEL_CONFIG);
+  assert.ok(refs.stepLeft && refs.stepRight && refs.combo && refs.caret, "checkpoint must be a picker-shaped row");
+  assert.ok(refs.info, "checkpoint must get an ⓘ button");
+  assert.ok(!refs.gear, "checkpoint has no ⚙ -- KIND_META.checkpoint.hasGear is false");
+});
+
+test("buildRowElement: vae/clip get NO ⓘ button -- unaffected by M3 (they have no browserKind)", () => {
+  const doc = makeDocStub();
+  for (const kind of ["vae", "clip"]) {
+    assert.equal(browserKindFor(KIND_META[kind]), null, `${kind} must have no browser kind`);
+    const row = mkRow(kind);
+    const refs = buildRowElement(doc, row, KIND_META[kind], LOADER_PANEL_CONFIG);
+    assert.ok(!refs.info, `${kind} must not get an ⓘ button`);
+  }
+});
+
+test("add menu (Loader Panel): 'checkpoint' is a real catalog entry -- menu label 'Checkpoint', hint 'MODEL'", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+  syncRows(node, ctx); // default loader rows: unet/vae/clip -- not yet full
+  const addBtn = node._ctrlAddWidget.element;
+
+  fire(addBtn, "click");
+  const menu = doc.body.children[doc.body.children.length - 1].children[0];
+  const ckptOpt = menu.children.find((c) => c.textContent === "Checkpoint");
+  assert.ok(ckptOpt, "expected a 'Checkpoint' entry in the Loader Panel's add menu");
+  const hint = ckptOpt.children.find((c) => c.className && c.className.includes("wtn-ctl-hint"));
+  assert.equal(hint.textContent, "MODEL");
+
+  fire(ckptOpt, "click");
+  assert.ok(node._ctrlRows.some((e) => e.kind === "checkpoint"), "picking 'Checkpoint' must add a checkpoint row");
+  const persisted = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "checkpoint");
+  assert.ok(persisted, "the new checkpoint row must reach the SERIALIZED panel_state widget");
+});
+
+const _origFetchCtl = globalThis.fetch;
+
+await asyncTest("Loader Panel row (unet): the combo now opens the searchable MODEL-BROWSER PICKER (M3), and picking a model updates the row + persists to panel_state", async () => {
+  invalidateList("unet");
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [
+        { name: "a.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false },
+        { name: "b.safetensors", group: "All", size: 2048, base_model: "Anima", has_preview: false },
+      ],
+    }),
+  });
+  try {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // default loader rows: unet/vae/clip
+    const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+
+    fire(unetEntry.refs.combo, "click");
+    // Let listModels("unet")'s own promise resolve, then its own re-render.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const overlay = doc.body.children[doc.body.children.length - 1];
+    assert.ok(overlay.className.includes("wtn-mp-overlay"), "unet's combo must open the model-browser PICKER, never the plain option-list menu");
+    const rows = findAllByClass(overlay, "wtn-mp-row");
+    assert.equal(rows.length, 2, "both fetched models must render as picker rows");
+    const target = findAllByClass(overlay, "wtn-mp-name").find((e) => e.textContent === "b.safetensors");
+    assert.ok(target, "the fetched model must actually appear in the picker list");
+    fire(target.parentNode.parentNode, "click"); // .wtn-mp-name -> .wtn-mp-main -> .wtn-mp-row (the clickable button)
+
+    assert.equal(unetEntry.refs.row.value, "b.safetensors");
+    const persistedUnet = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "unet");
+    assert.equal(persistedUnet.value, "b.safetensors", "the pick must reach the SERIALIZED panel_state widget");
+  } finally {
+    globalThis.fetch = _origFetchCtl;
+    invalidateList("unet");
+  }
+});
+
+await asyncTest("Loader Panel row (checkpoint): the combo opens the SAME searchable picker, kind-mapped to 'checkpoints' (the plural ComfyUI folder name, not the row's own 'checkpoint' catalog key)", async () => {
+  invalidateList("checkpoints");
+  let requestedUrl = null;
+  globalThis.fetch = async (url) => {
+    requestedUrl = url;
+    return {
+      json: async () => ({
+        reason: "ok",
+        models: [{ name: "anima-base-v1.0.safetensors", group: "All", size: 4096, base_model: "Anima", has_preview: false }],
+      }),
+    };
+  };
+  try {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx); // default loader rows -- no checkpoint row yet
+    const addBtn = node._ctrlAddWidget.element;
+    fire(addBtn, "click");
+    const addMenu = doc.body.children[doc.body.children.length - 1].children[0];
+    fire(addMenu.children.find((c) => c.textContent === "Checkpoint"), "click");
+    const ckptEntry = node._ctrlRows.find((e) => e.kind === "checkpoint");
+    assert.ok(ckptEntry, "the checkpoint row must exist after adding it");
+
+    fire(ckptEntry.refs.combo, "click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(String(requestedUrl).includes("kind=checkpoints"), `the picker must ask the model-browser route for kind=checkpoints, got: ${requestedUrl}`);
+    const overlay = doc.body.children[doc.body.children.length - 1];
+    assert.ok(overlay.className.includes("wtn-mp-overlay"), "checkpoint's combo must open the model-browser picker");
+    const target = findAllByClass(overlay, "wtn-mp-name").find((e) => e.textContent === "anima-base-v1.0.safetensors");
+    assert.ok(target, "the fetched checkpoint must appear in the picker list");
+    fire(target.parentNode.parentNode, "click");
+
+    assert.equal(ckptEntry.refs.row.value, "anima-base-v1.0.safetensors");
+    const persisted = JSON.parse(getStateWidget(node).value).rows.find((r) => r.kind === "checkpoint");
+    assert.equal(persisted.value, "anima-base-v1.0.safetensors", "the pick must reach the SERIALIZED panel_state widget");
+  } finally {
+    globalThis.fetch = _origFetchCtl;
+    invalidateList("checkpoints");
+  }
+});
+
+test("Loader Panel row (vae): the combo STILL opens the plain option-list menu, never the model-browser picker -- M3 must not touch vae/clip", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { getKnownLists: () => ({ vae: ["a.safetensors", "b.safetensors"] }) });
+  syncRows(node, ctx);
+  const vaeEntry = node._ctrlRows.find((e) => e.kind === "vae");
+
+  fire(vaeEntry.refs.combo, "click");
+  const overlay = doc.body.children[doc.body.children.length - 1];
+  assert.ok(overlay.className.includes("wtn-ctl-overlay"), "vae's combo must still open the plain option-list overlay");
+  assert.ok(!overlay.className.includes("wtn-mp-overlay"), "vae must NEVER get the model-browser picker");
+  const opts = findAllByClass(overlay, "wtn-ctl-opt");
+  assert.equal(opts.length, 2);
+  closeActiveOverlay();
+});
+
+test("Loader Panel row (clip): the combo STILL opens the plain option-list menu -- unaffected by M3", () => {
+  const node = makeFakeNode();
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc, LOADER_PANEL_CONFIG, { getKnownLists: () => ({ clip: ["c1.safetensors", "c2.safetensors"] }) });
+  syncRows(node, ctx);
+  const clipEntry = node._ctrlRows.find((e) => e.kind === "clip");
+
+  fire(clipEntry.refs.combo, "click");
+  const overlay = doc.body.children[doc.body.children.length - 1];
+  assert.ok(overlay.className.includes("wtn-ctl-overlay"));
+  assert.ok(!overlay.className.includes("wtn-mp-overlay"));
+  closeActiveOverlay();
+  // clip's own ⚙ (type/device) is unaffected by M3 too.
+  fire(clipEntry.refs.gear, "click");
+  const gearOverlay = doc.body.children[doc.body.children.length - 1];
+  assert.ok(gearOverlay.className.includes("wtn-ctl-overlay"));
+  closeActiveOverlay();
+});
+
+await asyncTest("Loader Panel row (unet): the ⓘ button opens the model-browser info panel (M3), and a second click closes it (toggle)", async () => {
+  invalidateList("unet");
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "offline", offline_reason: "unknown", message: "no network in this test", data: null }),
+  });
+  try {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx);
+    const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+    assert.ok(unetEntry.refs.info, "unet row must have an ⓘ button to click");
+
+    fire(unetEntry.refs.info, "click");
+    // model_info.mjs's own cache-only lookup settles asynchronously.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let overlay = doc.body.children[doc.body.children.length - 1];
+    assert.ok(overlay.className.includes("wtn-mi-overlay") || findAllByClass(overlay, "wtn-mi-panel").length, "the ⓘ click must open the model-browser INFO panel");
+
+    fire(unetEntry.refs.info, "click"); // toggle closed
+    assert.equal(countOpenOverlays(doc) + doc.body.children.filter((c) => c.className && c.className.includes("wtn-mi-overlay")).length, 0, "a second ⓘ click must close its own panel (toggle)");
+  } finally {
+    globalThis.fetch = _origFetchCtl;
+    invalidateList("unet");
+  }
 });
 
 console.log(`\n${count - failures}/${count} passed`);
