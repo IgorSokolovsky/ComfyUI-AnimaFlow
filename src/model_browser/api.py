@@ -235,6 +235,14 @@ def list_models_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     why it's omitted rather than blank/invented when no sidecar has a usable
     name. This is a display-only addition: `name` remains the one value a
     caller (the picker) may treat as this model's identity.
+
+    Each entry may ALSO independently carry `model_id`/`version_id`
+    (2026-08-03, "an Installed card opens the detail view") -- the SAME
+    cached sidecar read, this time surfacing the Civitai ids
+    `civitai_parse.parse_model_version` found rather than the display name.
+    Also omitted (never `0`, never invented) when the sidecar has no usable
+    id of that kind. See `local.list_models`'s own doc comment for the full
+    contract.
     """
     payload = payload or {}
     kind = payload.get("kind")

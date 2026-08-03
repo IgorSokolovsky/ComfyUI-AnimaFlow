@@ -112,17 +112,18 @@ import {
   DEFAULT_ROOT_DISPLAY,
   SCROLL_LOAD_MORE_THRESHOLD_PX,
   searchButtonEnabled,
+  queryFromModelName,
 } from "./civitai_search.mjs";
 import {
   searchUnscoped,
   fetchModelDetail,
   listModels,
   invalidateList,
-  cachedList,
   deleteModel,
   thumbUrl,
+  lookupInfo,
 } from "./civitai_api.mjs";
-import { Z_MODAL, Z_MODAL_PANEL } from "../shared/z_layers.mjs";
+import { Z_MODAL } from "../shared/z_layers.mjs";
 // "The detail view" -- one component, mounted twice (this modal's own
 // master→detail swap, decision 11, and the picker's vertical sibling panel,
 // `civitai_search.mjs`'s `openModelDetailPanel`). See that file's own top
@@ -136,10 +137,16 @@ import { buildModelDetailView, createLoadGate } from "./model_detail_view.mjs";
 // file any less track-agnostic (`model_picker.mjs` is itself one of the
 // reuse-boundary files, `civitai_api.mjs`'s own top doc comment).
 import { displayRowName, metaLineFor } from "./model_picker.mjs";
-// The ⓘ panel and the type-to-confirm delete dialog -- both already built,
-// wired here rather than rebuilt (task brief: "both exist; wire them, do
-// not rebuild them").
-import { openModelInfo } from "./model_info.mjs";
+// The type-to-confirm delete dialog -- already built, wired here rather than
+// rebuilt (task brief: "both exist; wire them, do not rebuild them").
+// `lookupStateView` -- the ⓘ panel's own notfound/offline WORDING (§7e),
+// reused rather than a second vocabulary invented for the Installed card's
+// own "no sidecar" detail state (2026-08-03 task brief) -- this file never
+// imports/opens `openModelInfo` itself any more: the Installed card's ⓘ
+// button is gone (owner, 2026-08-03: "the info button should not be
+// there"), its click now opens the SAME master->detail swap Search cards
+// already use.
+import { lookupStateView } from "./model_info.mjs";
 import { openDeleteConfirm, removedSummary } from "../shared/delete_confirm.mjs";
 import {
   getSetting,
@@ -666,6 +673,14 @@ ${THUMB_SKELETON_CSS}
    its own" convention, this file's top doc comment). */
 .wtn-cm-action-delete { background: transparent; border-color: rgba(248,113,113,.4); color: var(--wtn-bad, ${TOKENS.bad}); }
 .wtn-cm-action-delete:hover { border-color: var(--wtn-bad, ${TOKENS.bad}); }
+
+/* The Installed tab's own "checking Civitai..."/notfound/offline state
+   (2026-08-03, renderInstalledLookupHost) -- a plain, minimal box, since
+   this is a rarer, transient state (a file with no sidecar yet), not the
+   full detail view. */
+.wtn-cm-lookupbox { display: flex; flex-direction: column; gap: 8px; padding: 16px; max-width: 480px; }
+.wtn-cm-lookup-headline { font-weight: 600; font-size: 13px; }
+.wtn-cm-lookup-why { font-size: 12px; color: var(--wtn-ink-dim, ${TOKENS.inkDim}); }
 `;
 
 function el(doc, tag, className) {
@@ -1122,6 +1137,22 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   const installedGridWrap = el(targetDoc, "div", "wtn-cm-gridwrap");
   installedMain.appendChild(installedGridWrap);
 
+  // The Installed tab's OWN master->detail swap host -- a SIBLING of
+  // `installedGridWrap` within `installedMain` (2026-08-03, "an Installed
+  // card opens the detail view same as in search"), mirroring Search's own
+  // `detailHost`/`gridWrap` pair one level up rather than reusing THAT one:
+  // `detailHost` lives inside Search's own `main`, which is itself hidden
+  // (`style.display: none`) whenever the Installed tab is active, so
+  // anything painted into it would be invisible while this tab is showing.
+  // Requirement #5 ("returning from detail lands back on Installed, with its
+  // kind filters/sort intact, never on Search") holds for free from this:
+  // the swap only ever toggles `installedGridWrap`/`installedDetailHost`,
+  // never touches `installedRail` (the Kind checks/Sort select) or which
+  // tab/rail pair `setActiveTab` shows.
+  const installedDetailHost = el(targetDoc, "div", "wtn-cm-detailhost wtn-flex-bound");
+  installedDetailHost.style.display = "none";
+  installedMain.appendChild(installedDetailHost);
+
   // Per-kind local-file list -- `undefined` until that kind's `/list` fetch
   // has resolved THIS modal-open (`installedSections`'s own "loaded"
   // distinction: "not fetched yet" renders a "Loading…" line, never a false
@@ -1140,6 +1171,23 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   // Search-tab thumbnail's in-flight retry chain, and vice versa; each tab
   // owns its own "is this render pass still current" counter.
   let installedRenderGeneration = 0;
+
+  // The Installed tab's own master->detail swap state (2026-08-03) --
+  // mirrors Search's own `detailResult`/`detailVersionId`/`detailData`
+  // trio, below, one level up: `installedDetailResult` non-null means "the
+  // detail view is showing"; `installedLookupPhase` non-null is the OTHER
+  // way this tab can be in detail mode -- a card with no known ids yet,
+  // mid- or post- its own by-hash lookup ("loading"/"notfound"/"offline").
+  // Never both non-null at once: `openInstalledDetail`/`runInstalledLookup`/
+  // `closeInstalledDetail` each clear the other's state before setting their
+  // own.
+  let installedDetailResult = null;
+  let installedDetailVersionId = null;
+  let installedDetailData = { status: "loading", gallery: [] };
+  let installedLookupPhase = null; // null | "loading" | "notfound" | "offline"
+  let installedLookupResponse = null;
+  let installedLookupKind = null;
+  let installedLookupModel = null;
 
   function fetchInstalledKind(kind) {
     return listModels(kind).then((models) => {
@@ -1166,51 +1214,280 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     });
   }
 
-  function openInfoForInstalled(kind, model, anchorEl) {
-    const civitaiEnabled = getSetting(SETTING_IDS.CIVITAI_ENABLED, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_ENABLED]);
-    const showThumbnails = getSetting(SETTING_IDS.SHOW_PREVIEW_THUMBNAILS, SETTING_DEFAULTS[SETTING_IDS.SHOW_PREVIEW_THUMBNAILS]);
-    const browsingLevel = getSetting(SETTING_IDS.CIVITAI_BROWSING_LEVEL, SETTING_DEFAULTS[SETTING_IDS.CIVITAI_BROWSING_LEVEL]);
-    const showCivitaiName = getSetting(SETTING_IDS.SHOW_CIVITAI_NAME, SETTING_DEFAULTS[SETTING_IDS.SHOW_CIVITAI_NAME]);
-    openModelInfo({
-      ctx: { doc: targetDoc, getCanvasEl: () => null },
-      anchorEl,
+  /** The pseudo search-RESULT `model_detail_view.mjs`'s `buildModelDetailView`
+   * renders for an Installed card (2026-08-03) -- shaped exactly like a
+   * flattened Search result (`civitai_search.mjs`'s own `resolveVersionView`
+   * output: `model_id`/`primary_version_id`/`kind`/`name`/`base_model`/
+   * `triggers`/`images`/`installed`/...), so the SAME `buildModelDetailView`
+   * + `buildDetailAction` this file already uses for Search renders it with
+   * no third, divergent code path. `installed: true` unconditionally --
+   * this is only ever built for a file already on disk -- which is what
+   * makes `resultCardState` resolve to `"installed"` (a green "✓ installed"
+   * badge, never a download button: there is nothing to download, it's
+   * already here).
+   *
+   * `data`, when given, is a `lookupInfo` "found" response's own `data`
+   * (§2b's `parse_model_version` shape) -- richer than a bare `/list` row
+   * (it can carry `tags`/`images`/a fresher `name`/`base_model`), so its
+   * fields win when present; the `/list` row's own fields (`model`, always
+   * available) are the fallback for everything `data` doesn't carry. `null`
+   * for the "already had ids from `/list`" path, where there is no such
+   * response at all.
+   */
+  function buildInstalledDetailResult(kind, model, data) {
+    const info = data && typeof data === "object" ? data : {};
+    const modelId = Number.isFinite(info.model_id) ? info.model_id : model.model_id;
+    const versionId = Number.isFinite(info.version_id) ? info.version_id : model.version_id;
+    const name = (typeof info.name === "string" && info.name.trim())
+      || model.civitai_name
+      || model.name;
+    return {
+      model_id: modelId,
+      primary_version_id: versionId,
       kind,
-      name: model.name,
-      ownerKey: `installed-info:${kind}:${model.name}`,
-      baseModel: model.base_model || "",
-      fileTriggers: Array.isArray(model.triggers) ? model.triggers : [],
-      civitaiEnabled,
-      showThumbnails,
-      browsingLevel,
-      showCivitaiName,
-      sizeBytes: Number.isFinite(model.size) ? model.size : undefined,
-      // This panel is anchored to a card INSIDE the modal -- without this it
-      // would paint at `overlay.mjs`'s default `Z_PANEL`, BELOW the modal's
-      // own `Z_MODAL`, and be invisible (`z_layers.mjs`'s own `Z_MODAL_PANEL`
-      // doc comment has the full "why").
-      overlayZIndex: Z_MODAL_PANEL,
-      onListRefreshed: () => {
-        // A real "found" lookup's own invalidate+refetch has already landed
-        // (`model_info.mjs`'s own `onListRefreshed` doc comment) -- just
-        // adopt the freshly-cached list and repaint, no network of our own.
-        installedModels[kind] = cachedList(kind);
-        if (activeTab === "installed") {
-          renderInstalled();
-        }
+      name,
+      type: typeof info.type === "string" ? info.type : "",
+      creator: null,
+      stats: null,
+      base_model: (typeof info.base_model === "string" && info.base_model) || model.base_model || "",
+      triggers: Array.isArray(info.triggers) ? info.triggers : (Array.isArray(model.triggers) ? model.triggers : []),
+      tags: Array.isArray(info.tags) ? info.tags : [],
+      images: Array.isArray(info.images) ? info.images : [],
+      file_name: null,
+      download_url: null,
+      size_kb: null,
+      gated: false,
+      installed: true,
+    };
+  }
+
+  /** Swaps the Installed tab's own grid for its own detail view (or its own
+   * "checking Civitai…"/notfound/offline state) -- the Installed tab's
+   * mirror of `renderSwap`, below, one level up. The Kind/Sort rail
+   * (`installedRail`) is untouched either way -- "your filters are the
+   * context you came from," same rule Search's own swap already follows. */
+  function renderInstalledSwap() {
+    const inDetail = installedDetailResult != null || installedLookupPhase != null;
+    installedGridWrap.style.display = inDetail ? "none" : "";
+    installedDetailHost.style.display = inDetail ? "" : "none";
+    if (!inDetail) {
+      installedDetailHost.innerHTML = "";
+      return;
+    }
+    if (installedDetailResult != null) {
+      renderInstalledDetailHost();
+    } else {
+      renderInstalledLookupHost();
+    }
+  }
+
+  function renderInstalledDetailHost() {
+    installedDetailHost.innerHTML = "";
+    if (!installedDetailResult) {
+      return;
+    }
+    const built = buildModelDetailView({
+      // `galleryTileWidth`/`communityTileWidth` both omitted -- same "use
+      // the modal's existing defaults, don't invent a third mount's worth
+      // of numbers" rule `renderDetailHost` (below) already follows.
+      doc: targetDoc, result: installedDetailResult, versionId: installedDetailVersionId,
+      fontSizePx: modalFontSizePx(),
+      browsingLevel: levelLabelToInt(currentFilters.level), detail: installedDetailData,
+      // `buildDetailAction` -- the SAME action-column builder Search's own
+      // detail view uses, unmodified: `installedDetailResult.installed` is
+      // always `true` here, so `resultCardState` resolves to `"installed"`
+      // and this renders the identical green badge a Search card shows for
+      // a model already on disk -- no second "you have this" affordance
+      // invented for the same fact.
+      buildActionEl: buildDetailAction,
+      onVersionChange: (id) => {
+        installedDetailVersionId = id;
+        loadInstalledDetailData();
       },
-      onDeleted: () => {
-        // `model_info.mjs`'s own delete flow already ran `invalidateList
-        // (kind)` (its own `renderFooterAction` doc comment) before calling
-        // this -- only the refetch+re-render half is left to do, same split
-        // `lora_interaction.mjs`'s row `onDeleted` makes.
-        listModels(kind, true).then((models) => {
-          installedModels[kind] = models;
-          if (activeTab === "installed") {
-            renderInstalled();
-          }
-        });
-      },
+      onBack: closeInstalledDetail,
+      fixedTopBar: true,
     });
+    installedDetailHost.appendChild(built.el);
+  }
+
+  async function loadInstalledDetailData() {
+    if (!installedDetailResult) {
+      return;
+    }
+    const modelId = installedDetailResult.model_id;
+    const versionId = installedDetailVersionId;
+    installedDetailData = {
+      status: "loading", gallery: [],
+      modelDescription: installedDetailData.modelDescription,
+      modelDescriptionChecked: installedDetailData.modelDescriptionChecked,
+    };
+    renderInstalledDetailHost();
+    const resp = await fetchModelDetail(modelId, versionId);
+    // Discard a stale reply -- the user closed the detail view, or switched
+    // to a DIFFERENT installed model/version, while this fetch was in flight.
+    if (!installedDetailResult || installedDetailResult.model_id !== modelId || installedDetailVersionId !== versionId) {
+      return;
+    }
+    installedDetailData = {
+      status: resp.reason === "found" ? "loaded" : "error",
+      modelDescription: resp.model_description,
+      modelDescriptionChecked: resp.model_description_checked,
+      versionDescription: resp.version_description,
+      gallery: Array.isArray(resp.gallery) ? resp.gallery : [],
+    };
+    renderInstalledDetailHost();
+  }
+
+  /** Opens the Installed tab's own detail view for `model` (a `/list` row)
+   * -- called either straight from a card click (`data` omitted, ids
+   * already known from `/list`) or once `runInstalledLookup`'s own by-hash
+   * lookup resolves `found` (`data` is that response's own parsed record). */
+  function openInstalledDetail(kind, model, data) {
+    installedLookupPhase = null;
+    installedLookupResponse = null;
+    installedLookupKind = null;
+    installedLookupModel = null;
+    installedDetailResult = buildInstalledDetailResult(kind, model, data);
+    installedDetailVersionId = installedDetailResult.primary_version_id;
+    installedDetailData = { status: "loading", gallery: [] };
+    renderInstalledSwap();
+    loadInstalledDetailData();
+  }
+
+  function closeInstalledDetail() {
+    installedDetailResult = null;
+    installedDetailVersionId = null;
+    installedLookupPhase = null;
+    installedLookupResponse = null;
+    installedLookupKind = null;
+    installedLookupModel = null;
+    renderInstalledSwap();
+  }
+
+  /** The "no sidecar yet" click path (task brief, 2026-08-03): a file we've
+   * never identified carries no `model_id`/`version_id` on its `/list` row
+   * at all, so there is nothing to open a detail view WITH yet -- this runs
+   * the SAME by-hash lookup the (now-removed) ⓘ panel used
+   * (`lookupInfo`, `civitai_api.mjs`), showing the detail host's own
+   * loading state while it runs (a hash lookup on a multi-GB checkpoint is
+   * not instant), then:
+   *   - `found` (with a usable version id) -> we now have ids; open the
+   *     detail view exactly as the "already had ids" path does, just fed
+   *     this response's own richer data instead of `null`;
+   *   - `notfound`/`offline` (or a `found` with no usable version id at all,
+   *     an edge case even rarer than a genuine miss) -> render that state in
+   *     the detail host, reusing `model_info.mjs`'s own `lookupStateView`
+   *     wording/actions (`renderInstalledLookupHost`, below) rather than a
+   *     second, invented vocabulary.
+   *
+   * This is an explicit card click, never fired on render or on hover
+   * (§9's "network only on an explicit action") -- see `buildInstalledCard`'s
+   * own click listener, the only caller.
+   */
+  function runInstalledLookup(kind, model) {
+    installedDetailResult = null;
+    installedLookupPhase = "loading";
+    installedLookupResponse = null;
+    installedLookupKind = kind;
+    installedLookupModel = model;
+    renderInstalledSwap();
+    lookupInfo(kind, model.name).then((resp) => {
+      // Stale guard -- the user may have closed this detail, or clicked a
+      // DIFFERENT card, before a slow hash lookup on a large file resolves.
+      if (installedLookupKind !== kind || installedLookupModel !== model || installedLookupPhase !== "loading") {
+        return;
+      }
+      if (resp.reason === "found" && resp.data && Number.isFinite(resp.data.version_id)) {
+        openInstalledDetail(kind, model, resp.data);
+        return;
+      }
+      // A "found" with no usable version id can't open a detail view either
+      // -- there is nothing to fetch by -- so it degrades to the SAME
+      // honest "not found" wording as a genuine miss, rather than a third
+      // vocabulary for a corner case `model_info.mjs`'s own states never
+      // had to name.
+      installedLookupResponse = resp.reason === "found"
+        ? { reason: "notfound", offline_reason: null, message: "" }
+        : resp;
+      installedLookupPhase = resp.reason === "offline" ? "offline" : "notfound";
+      renderInstalledSwap();
+    });
+  }
+
+  /** Renders the Installed tab's own "checking Civitai…"/notfound/offline
+   * state -- `lookupStateView` (`model_info.mjs`) supplies the icon/
+   * headline/why/actions verbatim (task brief: "reusing model_info.mjs's
+   * existing wording... rather than inventing a second vocabulary"); this
+   * function only wires the two actions that can ever apply here
+   * (`search-by-name`/`retry` -- `lookupStateView`'s other action ids,
+   * `cancel`/`check`/`forget`, belong to states this surface never reaches:
+   * there is no in-flight cancel button for a plain `await`, no "not checked
+   * yet" resting state since a click always runs the lookup immediately, and
+   * no cached sidecar to forget when the whole POINT of this branch is that
+   * there wasn't one). */
+  function renderInstalledLookupHost() {
+    installedDetailHost.innerHTML = "";
+    const backBtn = el(targetDoc, "button", "wtn-cm-action");
+    backBtn.type = "button";
+    backBtn.textContent = "← back to results";
+    backBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeInstalledDetail();
+    });
+    installedDetailHost.appendChild(backBtn);
+
+    if (installedLookupPhase === "loading") {
+      const msg = el(targetDoc, "div", "wtn-cm-empty");
+      msg.textContent = "Checking Civitai…";
+      installedDetailHost.appendChild(msg);
+      return;
+    }
+
+    const view = lookupStateView({ phase: "result", response: installedLookupResponse || {} });
+    if (!view) {
+      return;
+    }
+    const box = el(targetDoc, "div", "wtn-cm-lookupbox");
+    const headline = el(targetDoc, "div", "wtn-cm-lookup-headline");
+    headline.textContent = `${view.icon} ${view.headline}`;
+    box.appendChild(headline);
+    const why = el(targetDoc, "div", "wtn-cm-lookup-why");
+    why.textContent = view.why;
+    box.appendChild(why);
+    for (const action of view.actions || []) {
+      if (action.id !== "search-by-name" && action.id !== "retry") {
+        continue;
+      }
+      const btn = el(targetDoc, "button", "wtn-cm-action");
+      btn.type = "button";
+      btn.textContent = action.label;
+      if (action.title) {
+        btn.title = action.title;
+      }
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (action.id === "search-by-name") {
+          // Hands off to THIS modal's own Search tab, pre-filled with a
+          // cheap, non-clever guess at the model's real name
+          // (`civitai_search.mjs`'s own `queryFromModelName`, the SAME
+          // guess `lora_interaction.mjs`'s own `onSearchByName` already
+          // uses) -- never a second search surface opened on top of this
+          // one, since the modal already has its own.
+          const kindForSearch = installedLookupKind;
+          const modelForSearch = installedLookupModel;
+          closeInstalledDetail();
+          setActiveTab("search");
+          search.value = queryFromModelName(modelForSearch ? modelForSearch.name : "");
+          updateSearchButtonState();
+          logSummary("Civitai browser", `installed "${kindForSearch}:${modelForSearch ? modelForSearch.name : ""}" not found by hash -- searching by name`);
+          runSearch({ resetCursor: true });
+        } else if (action.id === "retry") {
+          runInstalledLookup(installedLookupKind, installedLookupModel);
+        }
+      });
+      box.appendChild(btn);
+    }
+    installedDetailHost.appendChild(box);
   }
 
   function buildInstalledCard(kind, model, thumbGate) {
@@ -1279,16 +1556,10 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
 
     const actionCol = el(targetDoc, "div", "wtn-cm-actioncol");
 
-    const infoBtn = el(targetDoc, "button", "wtn-cm-action");
-    infoBtn.type = "button";
-    infoBtn.textContent = "ⓘ"; // ⓘ -- not an emoji, a plain circled-letter glyph (this pack's own convention)
-    infoBtn.title = "More info";
-    infoBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openInfoForInstalled(kind, model, infoBtn);
-    });
-    actionCol.appendChild(infoBtn);
-
+    // No ⓘ button any more (owner, 2026-08-03: "the info button should not
+    // be there, clicking the card open the detail page same as in search")
+    // -- Delete is the ONLY action left in this column; the card's own body
+    // click, below, is what opens the detail view now.
     const deleteBtn = el(targetDoc, "button", "wtn-cm-action wtn-cm-action-delete");
     deleteBtn.type = "button";
     deleteBtn.textContent = "Delete";
@@ -1310,6 +1581,23 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     actionCol.appendChild(deleteBtn);
 
     card.appendChild(actionCol);
+
+    // The card's own body opens the detail view -- the SAME master->detail
+    // swap a Search card's click already opens (task brief: "clicking the
+    // card open the detail page same as in search"). `deleteBtn`'s own click
+    // listener above already `stopPropagation`s, so this only ever fires
+    // for the card's own thumb/title/meta. A card whose ids are already
+    // known (this file's own sidecar had them, `local.list_models`'s
+    // `model_id`/`version_id`) opens straight into the detail view; one that
+    // doesn't runs the by-hash lookup first (`runInstalledLookup`, above).
+    card.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (Number.isFinite(model && model.model_id) && Number.isFinite(model && model.version_id)) {
+        openInstalledDetail(kind, model, null);
+      } else {
+        runInstalledLookup(kind, model);
+      }
+    });
     return card;
   }
 

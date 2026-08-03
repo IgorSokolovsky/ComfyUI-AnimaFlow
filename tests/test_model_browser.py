@@ -506,6 +506,95 @@ def test_list_models_includes_civitai_name_only_when_a_sidecar_has_one():
 
 
 # ---------------------------------------------------------------------------
+# civitai_ids_for / list_models's `model_id`/`version_id` fields -- 2026-08-03,
+# "an Installed card opens the detail view same as Search" -- the detail view
+# needs a Civitai VERSION id to fetch, and `/list` carried no id at all before
+# this.
+# ---------------------------------------------------------------------------
+
+
+def test_civitai_ids_for_no_sidecar_at_all_is_none_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        assert local.civitai_ids_for(model_path) == (None, None)
+
+
+def test_civitai_ids_for_reads_both_ids_our_own_sidecar_already_carries():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {
+            "modelId": 111, "id": 222, "baseModel": "Illustrious",
+            "model": {"name": "Realistic Skin Detail", "type": "LORA"},
+        })
+        assert local.civitai_ids_for(model_path) == (111, 222)
+
+
+def test_civitai_ids_for_each_id_is_independently_none_when_only_one_is_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        # A real, cached sidecar carrying a version id but no model id --
+        # `parse_model_version`'s own independent-key discipline; each id is
+        # its own honest answer, never invented from the other.
+        sidecar.write_sidecar(model_path, {"id": 222, "baseModel": "SD 1.5"})
+        assert local.civitai_ids_for(model_path) == (None, 222)
+
+
+def test_civitai_ids_for_sidecar_with_no_usable_ids_is_none_never_zero():
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        # A real, cached sidecar that never carried either id -- still a
+        # usable "found" record (§2b), just with nothing to surface here.
+        sidecar.write_sidecar(model_path, {"model": {"name": "No Ids Model"}})
+        assert local.civitai_ids_for(model_path) == (None, None)
+
+
+def test_civitai_name_for_and_civitai_ids_for_share_one_cached_parse():
+    # Reading BOTH the name and the ids for the same file must agree with
+    # each other -- proving they come from the one cached parse rather than
+    # two independent reads that could, in principle, disagree (e.g. a race
+    # against a concurrent sidecar rewrite between two separate reads).
+    with tempfile.TemporaryDirectory() as tmp:
+        model_path = os.path.join(tmp, "a.safetensors")
+        open(model_path, "wb").close()
+        sidecar.write_sidecar(model_path, {
+            "modelId": 5, "id": 6, "model": {"name": "Shared Parse"},
+        })
+        assert local.civitai_name_for(model_path) == "Shared Parse"
+        assert local.civitai_ids_for(model_path) == (5, 6)
+
+
+def test_list_models_includes_model_id_and_version_id_only_when_a_sidecar_has_them():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        ided_path = os.path.join(loras_root, "ided.safetensors")
+        plain_path = os.path.join(loras_root, "plain.safetensors")
+        open(ided_path, "wb").close()
+        open(plain_path, "wb").close()
+        sidecar.write_sidecar(ided_path, {"modelId": 111, "id": 222, "model": {"name": "Ided Model"}})
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["ided.safetensors", "plain.safetensors"]},
+        )
+        try:
+            models = local.list_models("loras")
+            by_name = {m["name"]: m for m in models}
+            assert by_name["ided.safetensors"]["model_id"] == 111
+            assert by_name["ided.safetensors"]["version_id"] == 222
+            # Omitted entirely, never 0, never invented, for a file with no
+            # sidecar at all.
+            assert "model_id" not in by_name["plain.safetensors"]
+            assert "version_id" not in by_name["plain.safetensors"]
+        finally:
+            restore()
+
+
+# ---------------------------------------------------------------------------
 # sidecar.py -- read / write / delete, against real temp files.
 # ---------------------------------------------------------------------------
 
@@ -6241,6 +6330,12 @@ ALL_TESTS = [
     test_civitai_name_for_caches_by_sidecar_mtime_stale_value_survives_a_same_mtime_rewrite,
     test_civitai_name_for_cache_invalidates_when_the_sidecar_mtime_actually_changes,
     test_list_models_includes_civitai_name_only_when_a_sidecar_has_one,
+    test_civitai_ids_for_no_sidecar_at_all_is_none_none,
+    test_civitai_ids_for_reads_both_ids_our_own_sidecar_already_carries,
+    test_civitai_ids_for_each_id_is_independently_none_when_only_one_is_present,
+    test_civitai_ids_for_sidecar_with_no_usable_ids_is_none_never_zero,
+    test_civitai_name_for_and_civitai_ids_for_share_one_cached_parse,
+    test_list_models_includes_model_id_and_version_id_only_when_a_sidecar_has_them,
     test_sidecar_round_trip_and_forget,
     test_interop_cminfo_path_is_the_verified_civicomfy_suffix,
     test_interop_translate_cminfo_typical_fixture_feeds_parse_model_version,

@@ -204,15 +204,19 @@ def find_preview_path(model_path: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Civitai display name (§1a-vii) -- read from whichever sidecar `sidecar.
-# read_sidecar` already prefers, cached per `(sidecar_path, mtime)` so a
-# large folder doesn't re-read + re-parse every sidecar on every `/list`
-# call. Same `(path, mtime, ...)` cache-key precedent as `api.py`'s `/thumb`
-# downscale cache (that module's own doc comment); bounded the same way.
+# Civitai display name (§1a-vii) + ids (2026-08-03, "the Installed card opens
+# a detail view") -- both read from whichever sidecar `sidecar.read_sidecar`
+# already prefers, and both come out of the exact SAME `parse_model_version`
+# call, so this caches the whole PARSED dict per `(sidecar_path, mtime)`
+# rather than caching the name alone a second time under a second key -- one
+# sidecar read + parse per `(path, mtime)` serves `civitai_name_for` AND
+# `civitai_ids_for` both. Same `(path, mtime, ...)` cache-key precedent as
+# `api.py`'s `/thumb` downscale cache (that module's own doc comment); bounded
+# the same way.
 # ---------------------------------------------------------------------------
 
-_CIVITAI_NAME_CACHE_MAX_ENTRIES = 512
-_civitai_name_cache: "collections.OrderedDict[Tuple[str, float], Optional[str]]" = collections.OrderedDict()
+_CIVITAI_PARSED_CACHE_MAX_ENTRIES = 512
+_civitai_parsed_cache: "collections.OrderedDict[Tuple[str, float], Dict[str, Any]]" = collections.OrderedDict()
 
 # A cache MISS (never looked up) must be distinguishable from a cached,
 # genuinely-negative result ("this sidecar has no usable name") -- `None` is
@@ -221,18 +225,18 @@ _civitai_name_cache: "collections.OrderedDict[Tuple[str, float], Optional[str]]"
 _UNSET = object()
 
 
-def _civitai_name_cache_get(key: Tuple[str, float]) -> Any:
-    if key in _civitai_name_cache:
-        _civitai_name_cache.move_to_end(key)
-        return _civitai_name_cache[key]
+def _civitai_parsed_cache_get(key: Tuple[str, float]) -> Any:
+    if key in _civitai_parsed_cache:
+        _civitai_parsed_cache.move_to_end(key)
+        return _civitai_parsed_cache[key]
     return _UNSET
 
 
-def _civitai_name_cache_put(key: Tuple[str, float], value: Optional[str]) -> None:
-    _civitai_name_cache[key] = value
-    _civitai_name_cache.move_to_end(key)
-    while len(_civitai_name_cache) > _CIVITAI_NAME_CACHE_MAX_ENTRIES:
-        _civitai_name_cache.popitem(last=False)
+def _civitai_parsed_cache_put(key: Tuple[str, float], value: Dict[str, Any]) -> None:
+    _civitai_parsed_cache[key] = value
+    _civitai_parsed_cache.move_to_end(key)
+    while len(_civitai_parsed_cache) > _CIVITAI_PARSED_CACHE_MAX_ENTRIES:
+        _civitai_parsed_cache.popitem(last=False)
 
 
 def _sidecar_cache_stamp(model_path: str) -> Optional[Tuple[str, float]]:
@@ -257,6 +261,29 @@ def _sidecar_cache_stamp(model_path: str) -> Optional[Tuple[str, float]]:
         return None
 
 
+def _parsed_civitai_for(model_path: str) -> Dict[str, Any]:
+    """The `civitai_parse.parse_model_version` result cached for `model_path`
+    -- `{}` when there is no sidecar at all, or one exists but parses to
+    nothing usable. The ONE sidecar read + parse both `civitai_name_for` and
+    `civitai_ids_for` (below) read from, cached per `(path, mtime)`
+    (`_sidecar_cache_stamp`, above) so a large folder doesn't re-read +
+    re-parse every sidecar TWICE per file on every `/list` call. A model with
+    no sidecar at all costs one `os.path.getmtime`-shaped stat-and-miss per
+    call (no sidecar read attempted, no cache entry made), not a cache entry
+    -- there's nothing to invalidate for a file that doesn't exist yet.
+    """
+    stamp = _sidecar_cache_stamp(model_path)
+    if stamp is None:
+        return {}
+    cached = _civitai_parsed_cache_get(stamp)
+    if cached is not _UNSET:
+        return cached
+    raw = sidecar.read_sidecar(model_path)
+    parsed = civitai_parse.parse_model_version(raw) if raw else {}
+    _civitai_parsed_cache_put(stamp, parsed)
+    return parsed
+
+
 def civitai_name_for(model_path: str) -> Optional[str]:
     """The Civitai display name cached for `model_path` (§1a-vii), or `None`
     when there is no sidecar at all, or one exists but carries no usable
@@ -269,24 +296,35 @@ def civitai_name_for(model_path: str) -> Optional[str]:
     Reads through the EXACT same `sidecar.read_sidecar` ->
     `civitai_parse.parse_model_version` pipeline `lookup.py` already uses
     for the ⓘ panel's own cached-info display, so a name shown here and one
-    shown there always agree. Cached per `(path, mtime)` (`_sidecar_cache_
-    stamp`, above) -- a model with no sidecar at all costs one `os.path.
-    getmtime`-shaped stat-and-miss per call (no sidecar read attempted), not
-    a cache entry, since there's nothing to invalidate for a file that
-    doesn't exist yet.
+    shown there always agree (`_parsed_civitai_for`, above, is the shared
+    cached read both this function and `civitai_ids_for` go through).
     """
-    stamp = _sidecar_cache_stamp(model_path)
-    if stamp is None:
-        return None
-    cached = _civitai_name_cache_get(stamp)
-    if cached is not _UNSET:
-        return cached
-    raw = sidecar.read_sidecar(model_path)
-    parsed = civitai_parse.parse_model_version(raw) if raw else {}
+    parsed = _parsed_civitai_for(model_path)
     name = parsed.get("name")
-    value = name.strip() if isinstance(name, str) and name.strip() else None
-    _civitai_name_cache_put(stamp, value)
-    return value
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def civitai_ids_for(model_path: str) -> Tuple[Optional[int], Optional[int]]:
+    """`(model_id, version_id)` cached for `model_path` (2026-08-03, "an
+    Installed card opens the detail view same as Search" -- the detail view
+    needs a Civitai VERSION id to fetch, and `/list` carried no id of any
+    kind before this), each independently `None` when the sidecar has no
+    sidecar at all, or one exists but doesn't carry that particular id
+    (`civitai_parse.parse_model_version`'s own `model_id`/`version_id` keys,
+    each only ever set from a real int in the source response) -- "omit
+    rather than invent" (§1a-vi's rule, same discipline `civitai_name_for`
+    already applies to a name), never a placeholder, never `0`.
+
+    Reads through the EXACT same shared cached parse `civitai_name_for` uses
+    (`_parsed_civitai_for`, above) -- a name and its ids always come from the
+    one sidecar read, never two independent reads that could disagree.
+    """
+    parsed = _parsed_civitai_for(model_path)
+    model_id = parsed.get("model_id")
+    version_id = parsed.get("version_id")
+    clean_model_id = model_id if isinstance(model_id, int) and not isinstance(model_id, bool) else None
+    clean_version_id = version_id if isinstance(version_id, int) and not isinstance(version_id, bool) else None
+    return (clean_model_id, clean_version_id)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +428,8 @@ def _group_for(relative_name: str) -> str:
 
 def list_models(kind: object) -> List[Dict[str, Any]]:
     """Every file `folder_paths` knows about for `kind`, each described by
-    `{name, size, group, base_model, triggers, has_preview, civitai_name?}`:
+    `{name, size, group, base_model, triggers, has_preview, civitai_name?,
+    model_id?, version_id?}`:
 
       - `name` includes any subfolder prefix, matching `folder_paths.
         get_filename_list`'s own convention (e.g. `"detail/my_lora.
@@ -407,6 +446,13 @@ def list_models(kind: object) -> List[Dict[str, Any]]:
         found a genuinely usable Civitai display name in this file's
         sidecar. This is DISPLAY data only: `name` above remains the one
         identity value this route's caller may ever persist or resolve.
+      - `model_id`/`version_id` (2026-08-03, "an Installed card opens the
+        detail view") are each OMITTED INDEPENDENTLY -- never `0`, never a
+        placeholder -- unless `civitai_ids_for` (above) found that exact id
+        in this file's sidecar. A caller (the Installed tab) uses these to
+        open the SAME master->detail view Search results open, with no
+        network call needed when they're present; their absence is the
+        caller's own signal to run a by-hash lookup first.
 
     Returns `[]` for an unwhitelisted `kind`, or if `folder_paths` itself
     can't enumerate the folder at all (matching the caution at
@@ -457,6 +503,11 @@ def list_models(kind: object) -> List[Dict[str, Any]]:
         civitai_name = civitai_name_for(path)
         if civitai_name:
             entry["civitai_name"] = civitai_name
+        model_id, version_id = civitai_ids_for(path)
+        if model_id is not None:
+            entry["model_id"] = model_id
+        if version_id is not None:
+            entry["version_id"] = version_id
         out.append(entry)
     return out
 
@@ -468,6 +519,7 @@ __all__ = (
     "base_model_from_metadata",
     "find_preview_path",
     "civitai_name_for",
+    "civitai_ids_for",
     "resolve_model_path",
     "list_models",
 )

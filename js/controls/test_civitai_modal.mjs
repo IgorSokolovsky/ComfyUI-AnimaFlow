@@ -30,7 +30,7 @@ import {
   sortInstalledModels,
   installedSections,
 } from "./civitai_modal.mjs";
-import { _resetDownloadStateForTests, sessionGatedKeys, injectStyles as injectSearchStyles } from "./civitai_search.mjs";
+import { _resetDownloadStateForTests, sessionGatedKeys, injectStyles as injectSearchStyles, queryFromModelName } from "./civitai_search.mjs";
 import { invalidateModelDetail, invalidateList, thumbUrl } from "./civitai_api.mjs";
 import { SETTING_IDS } from "../shared/settings.mjs";
 
@@ -2016,6 +2016,334 @@ await asyncTest("openCivitaiModal: switching tabs preserves the search query/res
     // Installed, not a banner this scenario was never going to show.
     const cancelBtns = findAll(handle.scrim, "wtn-cm-action-cancel");
     assert.ok(cancelBtns.length >= 1, "the search card's own live 'downloading' state (with its Cancel button) survives the round trip through Installed");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+// -------------------------------------------------------------------------
+// 2026-08-03 -- "an Installed card opens the detail view on click; the ⓘ
+// button goes." No ⓘ button any more; a card click (outside Delete) opens
+// the SAME master->detail swap Search cards already use; a card with no
+// sidecar (no `model_id`/`version_id` on its `/list` row) runs a by-hash
+// lookup first and renders found/notfound/offline.
+// -------------------------------------------------------------------------
+
+function stubFetchForInstalledDetail({
+  listByKind = {}, lookupResponses, modelDetailResponse, searchResponse,
+} = {}) {
+  let lookupCallCount = 0;
+  const lookupCalls = [];
+  const modelDetailCalls = [];
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/wtn/model_browser/list")) {
+      const kind = new URL(u, "http://x").searchParams.get("kind");
+      return jsonResponse({ reason: "ok", models: listByKind[kind] || [] });
+    }
+    if (u.includes("/wtn/model_browser/lookup")) {
+      lookupCalls.push(opts && opts.body ? JSON.parse(opts.body) : {});
+      const responses = Array.isArray(lookupResponses) ? lookupResponses : [lookupResponses];
+      const resp = responses[Math.min(lookupCallCount, responses.length - 1)] || { reason: "notfound", message: "" };
+      lookupCallCount += 1;
+      return jsonResponse(resp);
+    }
+    if (u.includes("/wtn/model_browser/model_detail")) {
+      modelDetailCalls.push(u);
+      return jsonResponse(modelDetailResponse || {
+        reason: "notfound", message: "", model_description: null,
+        model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    if (u.includes("/wtn/model_browser/thumb")) {
+      return jsonResponse({});
+    }
+    return jsonResponse(searchResponse || { reason: "ok", message: "", results: [], next_cursor: null, public_only: false });
+  });
+  return { lookupCalls, modelDetailCalls, get lookupCallCount() { return lookupCallCount; } };
+}
+
+function installedCardFor(root, name) {
+  return findAll(root, "wtn-cm-inst-card").find((c) => findAll(c, "wtn-cm-title").some((t) => t.title === name));
+}
+
+await asyncTest("openCivitaiModal: an Installed card renders NO ⓘ button any more -- Delete is the only action left", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalledDetail({
+    listByKind: { loras: [{ name: "a.safetensors", size: 10, has_preview: false, base_model: "SDXL", triggers: [] }], checkpoints: [], unet: [] },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "a.safetensors");
+    assert.ok(card, "the card renders");
+    const buttons = findAllByTag(card, "button");
+    assert.ok(!buttons.some((b) => b.textContent === "ⓘ"), "no ⓘ button renders on an Installed card any more");
+    assert.ok(buttons.some((b) => b.textContent === "Delete"), "Delete is still there");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a card click with known ids (already on its /list row) opens the detail view directly -- no lookup call needed", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  const stubs = stubFetchForInstalledDetail({
+    listByKind: {
+      loras: [{ name: "known.safetensors", size: 10, has_preview: false, base_model: "SDXL", triggers: [], model_id: 1, version_id: 2, civitai_name: "Known Model" }],
+      checkpoints: [], unet: [],
+    },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "known.safetensors");
+    assert.ok(card, "the card renders");
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(stubs.lookupCalls.length, 0, "known ids skip the by-hash lookup entirely");
+    const title = findAll(handle.scrim, "wtn-dv-title")[0];
+    assert.ok(title, "the detail view opened");
+    assert.equal(title.textContent, "Known Model");
+    assert.ok(findAll(handle.scrim, "wtn-cm-action-installed").length > 0, "an installed model's detail action shows the same installed badge a Search card would");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: clicking Delete never opens the detail view", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalledDetail({
+    listByKind: { loras: [{ name: "d.safetensors", size: 10, has_preview: false, base_model: "SDXL", triggers: [], model_id: 1, version_id: 2 }], checkpoints: [], unet: [] },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "d.safetensors");
+    const deleteBtn = findAll(card, "wtn-cm-action-delete")[0];
+    assert.ok(deleteBtn, "the card has a Delete button");
+    deleteBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(findAll(handle.scrim, "wtn-dv-title").length, 0, "Delete's own click never opened the detail view");
+    const confirmInput = findAllByTag(doc.body, "input").find((e) => e.placeholder === "delete");
+    assert.ok(confirmInput, "Delete's OWN action (the type-to-confirm dialog) still opened");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a card with no sidecar runs a by-hash lookup, then opens the detail view once it resolves 'found'", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  const stubs = stubFetchForInstalledDetail({
+    listByKind: { loras: [{ name: "unknown.safetensors", size: 10, has_preview: false, base_model: "", triggers: [] }], checkpoints: [], unet: [] },
+    lookupResponses: [{
+      reason: "found",
+      data: { model_id: 9, version_id: 10, name: "Resolved By Hash", base_model: "Illustrious", triggers: ["t1"], images: [] },
+    }],
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "unknown.safetensors");
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(stubs.lookupCalls.length, 1, "no ids on the /list row -- exactly one by-hash lookup runs");
+    assert.deepEqual(stubs.lookupCalls[0], { kind: "loras", name: "unknown.safetensors", force_refresh: false, cached_only: false });
+    const title = findAll(handle.scrim, "wtn-dv-title")[0];
+    assert.ok(title, "the detail view opened once the lookup resolved");
+    assert.equal(title.textContent, "Resolved By Hash");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a card with no sidecar, lookup 'notfound' -- renders model_info.mjs's own wording + 'Search Civitai by name →', which switches to Search pre-filled", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalledDetail({
+    listByKind: { loras: [{ name: "my_character-v2.safetensors", size: 10, has_preview: false, base_model: "", triggers: [] }], checkpoints: [], unet: [] },
+    lookupResponses: [{ reason: "notfound", message: "" }],
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "my_character-v2.safetensors");
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const headline = findAll(handle.scrim, "wtn-cm-lookup-headline")[0];
+    assert.ok(headline, "the notfound state renders");
+    assert.ok(headline.textContent.includes("This exact file isn't on Civitai"), "reuses model_info.mjs's own headline wording verbatim");
+    const searchByNameBtn = findAllByTag(handle.scrim, "button").find((b) => b.textContent === "Search Civitai by name →");
+    assert.ok(searchByNameBtn, "reuses model_info.mjs's own 'Search Civitai by name →' action label verbatim");
+
+    searchByNameBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(searchTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"), "switches to the Search tab");
+    const searchInput = findAllByTag(handle.scrim, "input").find((i) => i.type === "text");
+    assert.equal(searchInput.value, queryFromModelName("my_character-v2.safetensors"), "pre-fills the SAME cheap name-guess lora_interaction.mjs's own onSearchByName already uses");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: a card with no sidecar, lookup 'offline' -- renders the offline wording with a Retry action that re-runs the lookup", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  const stubs = stubFetchForInstalledDetail({
+    listByKind: { loras: [{ name: "flaky.safetensors", size: 10, has_preview: false, base_model: "", triggers: [] }], checkpoints: [], unet: [] },
+    lookupResponses: [
+      { reason: "offline", offline_reason: "timeout", message: "" },
+      { reason: "found", data: { model_id: 3, version_id: 4, name: "Recovered" } },
+    ],
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const card = installedCardFor(handle.scrim, "flaky.safetensors");
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const headline = findAll(handle.scrim, "wtn-cm-lookup-headline")[0];
+    assert.ok(headline.textContent.includes("Civitai timed out"), "reuses model_info.mjs's own offline headline for this offline_reason");
+    const retryBtn = findAllByTag(handle.scrim, "button").find((b) => b.textContent === "Retry");
+    assert.ok(retryBtn, "the offline state's own Retry action renders");
+
+    retryBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(stubs.lookupCalls.length, 2, "Retry re-runs the SAME lookup, not a no-op");
+    const title = findAll(handle.scrim, "wtn-dv-title")[0];
+    assert.ok(title, "the second, successful lookup opens the detail view");
+    assert.equal(title.textContent, "Recovered");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+    resetInstalledListCache();
+  }
+});
+
+await asyncTest("openCivitaiModal: '← back to results' from an Installed card's detail view lands back on Installed, with its Kind filters and Sort intact -- never on Search", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  resetInstalledListCache();
+  stubFetchForInstalledDetail({
+    listByKind: {
+      loras: [{ name: "known.safetensors", size: 10, has_preview: false, base_model: "SDXL", triggers: [], model_id: 1, version_id: 2 }],
+      checkpoints: [{ name: "b.safetensors", size: 10, has_preview: false }],
+      unet: [],
+    },
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    installedTabBtnOf(handle.scrim).dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    // Uncheck Checkpoints, and switch Sort to Size -- the state that must
+    // still hold after the round trip through the detail view.
+    const kindChecks = findAll(handle.scrim, "wtn-cm-kind-check");
+    const checkpointsCheck = kindChecks.find((l) => l.children[1] && l.children[1].textContent === "Checkpoints");
+    checkpointsCheck.children[0].checked = false;
+    checkpointsCheck.children[0].dispatch("change", { stopPropagation() {} });
+
+    const sortSelects = findAllByTag(handle.scrim, "select");
+    const installedSortSel = sortSelects.find((s) => s.children.some((o) => o.value === "size"));
+    installedSortSel.value = "size";
+    installedSortSel.dispatch("change", { stopPropagation() {} });
+
+    let headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (1)", "UNet (0)"], "Checkpoints' whole section is gone, per the unchecked Kind filter");
+
+    const card = installedCardFor(handle.scrim, "known.safetensors");
+    card.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.ok(findAll(handle.scrim, "wtn-dv-title")[0], "the detail view opened");
+    assert.ok(installedTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"), "the Installed tab is still the active one while its own detail view shows");
+
+    const backBtn = findAll(handle.scrim, "wtn-dv-back")[0];
+    assert.ok(backBtn, "the modal's own fixed-topbar '← back to results' renders for the Installed tab's detail view too");
+    backBtn.dispatch("click", { stopPropagation() {} });
+
+    assert.equal(findAll(handle.scrim, "wtn-dv-title").length, 0, "the detail view is gone after 'back'");
+    assert.ok(installedTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"), "lands back on Installed, never Search");
+    assert.ok(!searchTabBtnOf(handle.scrim).classList.contains("wtn-cm-tab-active"));
+
+    headings = findAll(handle.scrim, "wtn-cm-inst-heading").map((h) => h.textContent);
+    assert.deepEqual(headings, ["LoRAs (1)", "UNet (0)"], "the Kind filter (Checkpoints unchecked) is still in effect after the round trip");
+    assert.equal(installedSortSel.value, "size", "the Sort choice is still in effect after the round trip");
 
     handle.close();
   } finally {
