@@ -169,8 +169,11 @@ _MIXED_LEVELS_FIXTURE = {
 }
 
 # SAME query, WITH the exclusion filter this module actually sends at PG
-# (`"NOT nsfwLevel IN [2,4,8,16,32]"`) -- only the two truly-clean hits
-# survive, out of the twenty above.
+# (`"NOT nsfwLevel IN [2,4,8,16]"`, post-2026-08-03 fix -- recorded live
+# 2026-08-02 against the string this module sent BEFORE that fix, which
+# also excluded `32`; the result is identical either way here, since every
+# one of the 18 dropped hits above also carries 4/8/16, not just 32) -- only
+# the two truly-clean hits survive, out of the twenty above.
 _PG_EXCLUDED_FIXTURE = {
     "results": [{
         "hits": [
@@ -281,21 +284,63 @@ def test_level_exclusion_filter_pg_matches_the_live_verified_string():
     # The EXACT filter string measured live (2026-08-02) to reduce
     # `_MIXED_LEVELS_FIXTURE`'s 20 hits down to `_PG_EXCLUDED_FIXTURE`'s 2.
     assert civitai_search.DEFAULT_LEVEL == 1
-    assert civitai_meili.level_exclusion_filter(1) == "NOT nsfwLevel IN [2,4,8,16,32]"
+    assert civitai_meili.level_exclusion_filter(1) == "NOT nsfwLevel IN [2,4,8,16]"
 
 
 def test_level_exclusion_filter_every_level_excludes_everything_above_it():
-    assert civitai_meili.level_exclusion_filter(2) == "NOT nsfwLevel IN [4,8,16,32]"
-    assert civitai_meili.level_exclusion_filter(4) == "NOT nsfwLevel IN [8,16,32]"
-    assert civitai_meili.level_exclusion_filter(8) == "NOT nsfwLevel IN [16,32]"
-    # 16 (XXX) is the highest SELECTABLE level -- 32 ("Blocked") is still
-    # excluded, never browsable at any setting.
-    assert civitai_meili.level_exclusion_filter(16) == "NOT nsfwLevel IN [32]"
+    assert civitai_meili.level_exclusion_filter(2) == "NOT nsfwLevel IN [4,8,16]"
+    assert civitai_meili.level_exclusion_filter(4) == "NOT nsfwLevel IN [8,16]"
+    assert civitai_meili.level_exclusion_filter(8) == "NOT nsfwLevel IN [16]"
+    # 16 (XXX) is the highest SELECTABLE level, and the top of the five-rung
+    # scale -- nothing is left to exclude, so this is `None`, not a vacuous
+    # filter string. 2026-08-03 fix: `32` must NEVER appear here (it isn't a
+    # rung above XXX -- see `_LEVELS_ABOVE_PG`'s own comment); the OLD
+    # (buggy) behaviour returned `"NOT nsfwLevel IN [32]"` here, which is
+    # exactly what hid 80% of a live *Deepthroat* search at the MAXIMUM
+    # browsing level.
+    assert civitai_meili.level_exclusion_filter(16) is None
 
 
 def test_level_exclusion_filter_garbage_falls_back_to_pg():
     for bad in (0, 3, 32, "bogus", None, True):
-        assert civitai_meili.level_exclusion_filter(bad) == "NOT nsfwLevel IN [2,4,8,16,32]", bad
+        assert civitai_meili.level_exclusion_filter(bad) == "NOT nsfwLevel IN [2,4,8,16]", bad
+
+
+def test_level_exclusion_filter_32_never_appears_at_any_level():
+    # The actual defect this task fixes: `32` is not a rung above XXX on
+    # Civitai's five-rung scale (1/2/4/8/16, OR = 31) -- it's a separate
+    # marker that co-occurs constantly with ordinary adult content, so
+    # excluding it hid most adult models even at the top of the scale.
+    for level in (1, 2, 4, 8, 16, 0, 3, 32, "bogus", None, True):
+        result = civitai_meili.level_exclusion_filter(level)
+        assert result is None or "32" not in result, (level, result)
+
+
+def _excluded_set(level):
+    """Test-only helper: the excluded-levels SET a `level_exclusion_filter`
+    result implies (`set()` for `None`, i.e. XXX/no filter) -- lets these
+    tests reason about whether a model's `nsfwLevel` array would survive the
+    filter without re-implementing Meili's own `NOT ... IN [...]` semantics."""
+    result = civitai_meili.level_exclusion_filter(level)
+    if result is None:
+        return set()
+    inner = result[len("NOT nsfwLevel IN ["):-1]
+    return {int(v) for v in inner.split(",") if v}
+
+
+def test_level_exclusion_filter_the_actual_bug_a_mixed_adult_model_at_every_ceiling():
+    # THE case that would have caught the regression this task fixes: a
+    # model shaped `[4, 8, 16, 32]` (the recorded, common adult-LoRA shape --
+    # `_MIXED_LEVELS_FIXTURE`'s own id 1443103 carries exactly this) must be
+    # EXCLUDED at every ceiling below XXX, since it carries levels above
+    # each of those, but INCLUDED at the XXX ceiling -- the maximum browsing
+    # level must show it, and the old bug (excluding `32`) hid it there too.
+    model_levels = {4, 8, 16, 32}
+    for ceiling in (1, 2, 4, 8):  # PG, PG-13, R, X
+        excluded = _excluded_set(ceiling)
+        assert model_levels & excluded, (ceiling, excluded)  # excluded
+    excluded_at_xxx = _excluded_set(16)
+    assert not (model_levels & excluded_at_xxx), excluded_at_xxx  # included
 
 
 def test_period_filter_each_period_maps_to_the_epoch_it_claims():
@@ -337,7 +382,8 @@ def test_build_meili_filter_groups_a_given_kind_locks_the_type_group():
     groups = civitai_meili.build_meili_filter_groups("loras", now_ms=1_800_000_000_000)
     assert groups[0] == ['"type"="LORA"']
     assert "availability = Public" in groups
-    assert "NOT nsfwLevel IN [2,4,8,16,32]" in groups
+    assert "NOT nsfwLevel IN [2,4,8,16]" in groups
+    assert not any("32" in g for g in groups if isinstance(g, str))
 
 
 def test_build_meili_filter_groups_no_kind_validates_the_types_list():
@@ -366,6 +412,16 @@ def test_build_meili_filter_groups_all_time_period_appends_no_period_group():
     assert not any(isinstance(g, str) and g.startswith("lastVersionAtUnix") for g in groups)
 
 
+def test_build_meili_filter_groups_xxx_ceiling_omits_the_level_group_entirely():
+    # The other half of the 2026-08-03 fix: at the XXX ceiling there is
+    # nothing left to exclude (32 was never a real rung), so
+    # `level_exclusion_filter` returns `None` and this must produce NO
+    # `"NOT nsfwLevel..."` clause at all -- not an empty or vacuous one.
+    groups = civitai_meili.build_meili_filter_groups("loras", level=16, now_ms=1_800_000_000_000)
+    assert not any(isinstance(g, str) and "nsfwLevel" in g for g in groups)
+    assert groups == [['"type"="LORA"'], "availability = Public"]
+
+
 def test_build_meili_payload_full_shape_kind_scoped_relevancy_omits_sort():
     payload = civitai_meili.build_meili_payload(
         "loras", "edit", base_model=["Anima"], level=1, sort="Relevancy", period="AllTime",
@@ -380,7 +436,7 @@ def test_build_meili_payload_full_shape_kind_scoped_relevancy_omits_sort():
         ['"type"="LORA"'],
         ['"version.baseModel"="Anima"'],
         "availability = Public",
-        "NOT nsfwLevel IN [2,4,8,16,32]",
+        "NOT nsfwLevel IN [2,4,8,16]",
     ]
     assert "sort" not in query_obj  # Relevancy -- see this module's own top docstring
 
@@ -425,7 +481,7 @@ def test_build_meili_payload_encoded_wire_body_never_comma_joins_a_multi_value_f
                 ['"type"="LORA"', '"type"="LoCon"'],
                 ['"version.baseModel"="Anima"', '"version.baseModel"="Illustrious"'],
                 "availability = Public",
-                "NOT nsfwLevel IN [2,4,8,16,32]",
+                "NOT nsfwLevel IN [2,4,8,16]",
             ],
         }],
     }, sort_keys=True)
@@ -1063,6 +1119,8 @@ ALL_TESTS = [
     test_level_exclusion_filter_pg_matches_the_live_verified_string,
     test_level_exclusion_filter_every_level_excludes_everything_above_it,
     test_level_exclusion_filter_garbage_falls_back_to_pg,
+    test_level_exclusion_filter_32_never_appears_at_any_level,
+    test_level_exclusion_filter_the_actual_bug_a_mixed_adult_model_at_every_ceiling,
     test_period_filter_each_period_maps_to_the_epoch_it_claims,
     test_period_filter_all_time_is_no_filter_at_all,
     test_period_filter_garbage_falls_back_to_the_default_period,
@@ -1073,6 +1131,7 @@ ALL_TESTS = [
     test_build_meili_filter_groups_no_kind_and_no_types_omits_the_type_group_entirely,
     test_build_meili_filter_groups_base_model_is_an_or_group_never_comma_joined,
     test_build_meili_filter_groups_all_time_period_appends_no_period_group,
+    test_build_meili_filter_groups_xxx_ceiling_omits_the_level_group_entirely,
     test_build_meili_payload_full_shape_kind_scoped_relevancy_omits_sort,
     test_build_meili_payload_a_non_relevancy_sort_sends_exactly_one_value_in_a_list,
     test_build_meili_payload_falsy_query_becomes_an_explicit_empty_string,

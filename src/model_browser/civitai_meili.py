@@ -65,12 +65,26 @@ level present in it (e.g. `[4, 8, 16, 32]`), so `nsfwLevel IN [1]` (an
 inclusion filter, and Civicomfy's own approach) matches a model that ALSO
 carries level 1 among several -- it does not exclude it. VERIFIED LIVE
 2026-08-02 against a query known to carry mixed-level hits: `NOT nsfwLevel
-IN [2,4,8,16,32]` (the PG exclusion) returned only the two hits whose
+IN [2,4,8,16]` (the PG exclusion) returned only the two hits whose
 `nsfwLevel` was `[1]` and nothing else, out of twenty; the equivalent
 inclusion filter (`nsfwLevel IN [1]`) returned TWENTY-ONE, including several
 whose `nsfwLevel` also contained 4/8/16 -- an inclusion filter passes a
 clean-model smoke test perfectly while leaking mixed content. See this
 module's own test file for the recorded fixtures behind that finding.
+
+**`32` is never one of the excluded levels, at any ceiling** (fixed
+2026-08-03, `level_exclusion_filter`'s own comment) -- it is not a rung
+above XXX on Civitai's five-rung scale (1 PG, 2 PG-13, 4 R, 8 X, 16 XXX;
+their OR is 31, the top of the scale). It's a separate marker that
+co-occurs constantly with ordinary adult content (20/40 sampled adult
+LoRAs carried it alongside 4/8/16), so the ORIGINAL version of this filter
+-- which did include `32` -- hid most adult models even at the MAXIMUM
+browsing level: measured live, a *Deepthroat* search returned 347 hits
+unfiltered but only 69 with the (buggy) XXX-ceiling filter, an 80% loss, the
+exact opposite of what "maximum" is supposed to mean. `level_exclusion_
+filter(16)` (the XXX ceiling) now returns `None` -- no filter clause at all,
+not a vacuous one -- and `build_meili_filter_groups` omits the level group
+entirely in that case.
 
 **`lastVersionAtUnix` (the period filter's field) is MILLISECONDS since
 epoch**, verified live 2026-08-02 (a real hit's `lastVersionAtUnix` decoded
@@ -176,11 +190,19 @@ _PERIOD_TO_DELTA_MS: Dict[str, Optional[int]] = {
     "AllTime": None,
 }
 
-# Every `nsfwLevel` rung ABOVE "PG", including `32` ("Blocked" -- never
-# browsable at ANY setting, so it's excluded regardless of the user's chosen
-# ceiling). `level_exclusion_filter` below picks the subset of this tuple
-# that sits above the caller's level.
-_LEVELS_ABOVE_PG: Sequence[int] = (2, 4, 8, 16, 32)
+# The five REAL `nsfwLevel` rungs, PG through XXX -- `32` is deliberately
+# NOT one of them. `32` is not a rung above XXX on Civitai's own scale (1 PG,
+# 2 PG-13, 4 R, 8 X, 16 XXX; their OR is 31, the top of the scale); it's a
+# separate "Blocked"-ish marker that co-occurs constantly with ordinary adult
+# content (measured 2026-08-03: 20/40 sampled adult LoRAs carry it alongside
+# 4/8/16), so excluding it hides most adult models even at the MAXIMUM
+# browsing level -- the exact opposite of what that setting means. This is
+# also why `js/shared/civitai_thumb.mjs`'s own `NSFW_LEVEL_BITS` (the
+# frontend's equivalent bitmask, `hasNsfwAboveLevel`'s source of truth)
+# deliberately omits it; this tuple must agree with that one.
+# `level_exclusion_filter` below picks the subset of this tuple that sits
+# above the caller's level.
+_LEVELS_ABOVE_PG: Sequence[int] = (2, 4, 8, 16)
 
 # The opaque cursor this module hands back through `search_impl`'s existing
 # `next_cursor` field (docs/lora-loader-design.md §7c-0b: "`next_cursor`
@@ -217,25 +239,37 @@ def decode_meili_cursor(cursor: Any) -> Optional[int]:
     return int(rest)
 
 
-def level_exclusion_filter(level: Any) -> str:
+def level_exclusion_filter(level: Any) -> Optional[str]:
     """The "Maximum browsing level" setting -> a Meili filter STRING that
-    EXCLUDES every level above it, e.g. `"NOT nsfwLevel IN [2,4,8,16,32]"`
-    at PG (`level=1`). Deliberately an EXCLUSION -- see this module's own top
-    docstring for the measured, live-verified reason an INCLUSION filter
-    (`"nsfwLevel IN [1]"`, Civicomfy's own approach) leaks mixed-level
-    models: `nsfwLevel` is a bitmask UNION of every image a model carries,
-    so an inclusion filter matches the instant ANY element matches, while an
-    exclusion filter correctly rejects the model the instant ANY element is
-    over the ceiling.
+    EXCLUDES every rung above it, e.g. `"NOT nsfwLevel IN [2,4,8,16]"` at PG
+    (`level=1`), or `None` at XXX (`level=16`, the highest selectable rung --
+    there is nothing left to exclude, so this returns "no filter at all"
+    rather than a vacuous clause). Deliberately an EXCLUSION -- see this
+    module's own top docstring for the measured, live-verified reason an
+    INCLUSION filter (`"nsfwLevel IN [1]"`, Civicomfy's own approach) leaks
+    mixed-level models: `nsfwLevel` is a bitmask UNION of every image a model
+    carries, so an inclusion filter matches the instant ANY element matches,
+    while an exclusion filter correctly rejects the model the instant ANY
+    element is over the ceiling.
+
+    **`32` never appears here, at any level** -- see `_LEVELS_ABOVE_PG`'s own
+    comment for why: it is not a rung above XXX on Civitai's five-rung scale
+    (1/2/4/8/16), it's a separate marker that co-occurs constantly with
+    ordinary adult content, so excluding it hid most adult models even at the
+    MAXIMUM browsing level (measured live 2026-08-03, a *Deepthroat* search:
+    347 hits unfiltered, 69 with the old XXX filter that excluded `32`) --
+    the exact opposite of what "maximum" is supposed to mean. Fixed here, not
+    patched over: this function agrees with `js/shared/civitai_thumb.mjs`'s
+    own `NSFW_LEVEL_BITS`, which never included `32` either.
 
     `level` is cleaned via `civitai_search.clean_level` first (garbage/
     missing falls back to PG, same tolerance every other filter here gets),
-    so this never raises and never returns an empty exclusion list -- `32`
-    ("Blocked") is always above every real `LEVEL_VALUES` member (max `16`),
-    so there is always at least one level to exclude.
+    so this never raises.
     """
     clean = civitai_search.clean_level(level)
     excluded = [v for v in _LEVELS_ABOVE_PG if v > clean]
+    if not excluded:
+        return None
     return f"NOT nsfwLevel IN [{','.join(str(v) for v in excluded)}]"
 
 
@@ -293,8 +327,10 @@ def build_meili_filter_groups(
     `civitai_search.clean_base_models` the same way `build_search_url` does.
 
     Always ends with `"availability = Public"` (excludes unlisted/removed
-    models, unconditionally) and `level_exclusion_filter`'s own group. A
-    period filter is appended too, UNLESS `period` is `AllTime` (no filter).
+    models, unconditionally) and, UNLESS `level` is XXX (the top of the
+    scale, where `level_exclusion_filter` returns `None` -- nothing left to
+    exclude), `level_exclusion_filter`'s own group. A period filter is
+    appended too, UNLESS `period` is `AllTime` (no filter).
     An unwhitelisted/type-less `kind` simply contributes no type group at
     all (never raises) -- `civitai_meili.two_call_search`'s own caller
     (`api.py`'s `search_impl`) has already validated `kind` before reaching
@@ -316,7 +352,9 @@ def build_meili_filter_groups(
         groups.append([f'"version.baseModel"="{bm}"' for bm in cleaned_base_models])
 
     groups.append("availability = Public")
-    groups.append(level_exclusion_filter(level))
+    level_group = level_exclusion_filter(level)
+    if level_group is not None:
+        groups.append(level_group)
 
     period_group = period_filter(period, now_ms=now_ms)
     if period_group is not None:
