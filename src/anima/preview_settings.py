@@ -18,6 +18,7 @@ kept for compatibility, since nothing calls it with a socket name anymore.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from .settings import _deep_merge_defaults, detect_schema_mismatch, migrate_version, resolve_seed_int
@@ -312,26 +313,82 @@ def normalize_preview_settings(raw: Any) -> Dict[str, Any]:
     return merged
 
 
-def collision_suffixed_filename(filename: str, attempt: int) -> str:
+# Matches BOTH `%counter%` and `%counter:N%` on the RAW, unsubstituted
+# template -- shared by `template_has_counter_token` (below) and
+# `format_filename`'s own substitution so the two can never disagree about
+# what counts as "a counter token". Case-sensitive, matching every other
+# token `format_filename` recognizes (`%stage%`/`%seed%`/`%width%`/
+# `%height%` are plain `str.replace` calls, and `%date:FMT%`'s own regex is
+# likewise exact-case) -- no token in this pack has ever been matched
+# case-insensitively, so inventing that rule here would be new, not
+# "matching the others".
+_COUNTER_TOKEN_RE = re.compile(r"%counter(?::(\d+))?%")
+
+
+def template_has_counter_token(template: Any) -> bool:
+    """Does `template` (the RAW filename template, BEFORE `format_filename`
+    substitutes anything) contain a `%counter%` or `%counter:N%` token?
+    Checked pre-substitution deliberately -- afterward a counter is just
+    digits, indistinguishable from any other number the user happened to
+    type (task: 2026-08-03).
+
+    This is the "does the user manage their own numbering" decision:
+    `nodes/anima/_preview_helpers.py`'s `save_images`/`save_now` both call
+    this on their own `save.filename` template and, when it's `True`, pass
+    `omit_at_zero=True` to `collision_suffixed_filename` (via
+    `write_without_overwriting`'s own `omit_suffix_at_zero` parameter) so the
+    automatic `_00001` collision suffix does not double up with the user's
+    own counter. Hostile input (`None`, a non-string) never raises --
+    coerced to `str` first, same tolerance every other function in this
+    module gives a template/settings value.
+    """
+    return bool(_COUNTER_TOKEN_RE.search(str(template or "")))
+
+
+def collision_suffixed_filename(filename: str, attempt: int, *, omit_at_zero: bool = False) -> str:
     """The `attempt`-th candidate name in the "every saved image gets a
     counter" naming scheme (owner, 2026-08-02: "the save name is good but
     lets make sure by default we save with `<name>_00001`") -- a REVERSAL of
     this function's own earlier behaviour (`40b3c9d`, same day): that commit
     deliberately kept "the first file at a given name keeps its plain name,
-    unsuffixed" as a separate, untouched decision; the owner has now changed
-    that decision, so the early-return this docstring used to describe is
-    gone, not special-cased around.
+    unsuffixed" as a separate, untouched decision; the owner then changed
+    that decision (`fd15d39`) so the early-return this docstring used to
+    describe was gone, not special-cased around.
 
-    There is no more "no collision" case here -- EVERY `attempt` inserts a
-    zero-padded 5-digit counter BEFORE the extension, equal to `attempt + 1`
-    (1-indexed, never 0-indexed, per the owner's own numbering): `attempt=0`
-    -> `name_00001.ext`, `attempt=1` -> `name_00002.ext`, `attempt=2` ->
-    `name_00003.ext`, and so on. The collision LOOP above this function
-    (`nodes/anima/_preview_helpers.py`'s `write_without_overwriting`) still
-    starts at `attempt=0` and counts up one at a time on a real
-    `FileExistsError`, so it naturally yields "the next free number":
-    `_00001` taken -> try `_00002`, and so on -- that loop is UNCHANGED, only
-    this naming function's mapping from `attempt` to a suffix moved by one.
+    **2026-08-03: that early-return is BACK, but opt-in per call
+    (`omit_at_zero`), not unconditional.** Owner: "about the counter we
+    should manage it -- if `%counter%` provided, ignore our `_00001`
+    management." A template with its OWN `%counter%`/`%counter:N%` token
+    (`template_has_counter_token`, above) means the user is numbering the
+    file themselves, so doubling that with our own suffix produces two
+    counters in one name (`shot_0007_00001.png`) -- the bug this reversal
+    fixes. `omit_at_zero` is a parameter on THIS function (not a second
+    function, not a template lookup here) because this function is
+    deliberately template-blind (its own long-standing docstring: "pure
+    given `(filename, attempt)`, cannot see the template") -- the caller,
+    which DOES know the template (`nodes/anima/_preview_helpers.py`'s
+    `save_images`/`save_now`, both already computing the template string
+    right where they call `write_without_overwriting`), decides the flag
+    once per save and threads it through unchanged. Both call sites must
+    pass it, or the two save paths would disagree -- see the task brief.
+
+    - `omit_at_zero=False` (the default -- every EXISTING call site that
+      doesn't opt in keeps today's behaviour verbatim): EVERY `attempt`
+      inserts a zero-padded 5-digit counter BEFORE the extension, equal to
+      `attempt + 1` (1-indexed): `attempt=0` -> `name_00001.ext`,
+      `attempt=1` -> `name_00002.ext`, and so on.
+    - `omit_at_zero=True`: `attempt=0` returns `filename` completely
+      unchanged -- no suffix at all, so a template with its own counter gets
+      exactly the name the user's own token produced. `attempt >= 1` still
+      inserts the same zero-padded 5-digit suffix, equal to `attempt` itself
+      (1-indexed off the first REAL collision, not off `attempt=0`):
+      `attempt=1` -> `name_00001.ext`, `attempt=2` -> `name_00002.ext`. This
+      is what keeps the never-overwrite guarantee alive under the opt-out --
+      `write_without_overwriting`'s loop still walks `attempt=0,1,2,...`
+      expecting each candidate to differ, and it does: only attempt 0 is
+      ever unsuffixed, so a genuine collision on attempt 0 still finds a
+      free name on attempt 1 rather than generating 10,000 identical
+      candidates and raising `FilenameCollisionExhausted`.
 
     Extension-preserving via `os.path.splitext`, so a dotted stem
     (`my.file.png`) only has its LAST extension treated as one --
@@ -351,10 +408,14 @@ def collision_suffixed_filename(filename: str, attempt: int) -> str:
     no widening needed; see `tests/test_anima_preview_settings.py`'s
     top-of-range test for the pin.
     """
+    if omit_at_zero and attempt <= 0:
+        return filename
+
     import os.path
 
     stem, ext = os.path.splitext(filename)
-    return f"{stem}_{attempt + 1:05d}{ext}"
+    suffix_number = attempt if omit_at_zero else attempt + 1
+    return f"{stem}_{suffix_number:05d}{ext}"
 
 
 def format_filename(
@@ -362,12 +423,26 @@ def format_filename(
 ) -> str:
     """Expand the design doc §7a filename tokens: `%stage%` (`base`/`mid`/
     `final` — the one that justifies putting save on the Preview node at
-    all, §2/§7a), `%seed%`, `%date:FMT%`, `%counter:N%`, `%width%`,
-    `%height%`. Pure given an explicit `now` — callers pass the real current
-    time; tests pass a fixed one for determinism. No comfy/torch import.
+    all, §2/§7a), `%seed%`, `%date:FMT%`, `%counter:N%`/`%counter%`,
+    `%width%`, `%height%`. Pure given an explicit `now` — callers pass the
+    real current time; tests pass a fixed one for determinism. No comfy/torch
+    import.
+
+    **The BARE `%counter%` form (no `:N%` width) is substituted too
+    (2026-08-03 fix)** — it used to survive literally into the filename
+    (`shot_%counter%` -> `shot_%counter%_00001.png`), tolerable only while
+    the auto-suffix guaranteed uniqueness regardless. Once a template
+    containing ANY counter form opts out of that auto-suffix
+    (`template_has_counter_token`, `collision_suffixed_filename`'s own
+    `omit_at_zero`), an un-substituted bare token would make every save
+    produce the identical literal name, defeating the very opt-out the user
+    asked for — so the two fixes ship together. The bare form's default
+    width is **5 digits**, matching this pack's own collision suffix
+    (`collision_suffixed_filename`) — `docs/generator-design.md` §7a names
+    the token (`%counter:N%`) but not a bare-form default, so there was
+    nothing there to defer to.
     """
     import datetime as _dt
-    import re
 
     if now is None:
         now = _dt.datetime.now()
@@ -387,15 +462,22 @@ def format_filename(
             return now.strftime("%Y-%m-%d-%H%M%S")
 
     def _counter_token(match: "re.Match[str]") -> str:
-        try:
-            pad = int(match.group(1))
-        except (TypeError, ValueError):
-            pad = 4
+        digits = match.group(1)
+        if digits is None:
+            # Bare `%counter%` -- no explicit width given; default to 5,
+            # matching `collision_suffixed_filename`'s own suffix width
+            # (this function's own docstring explains why).
+            pad = 5
+        else:
+            try:
+                pad = int(digits)
+            except (TypeError, ValueError):
+                pad = 5
         return str(max(0, int(counter))).zfill(max(1, pad))
 
     result = str(template or "")
     result = re.sub(r"%date:([^%]*)%", _date_token, result)
-    result = re.sub(r"%counter:(\d+)%", _counter_token, result)
+    result = _COUNTER_TOKEN_RE.sub(_counter_token, result)
     result = result.replace("%stage%", str(stage))
     result = result.replace("%seed%", str(seed))
     result = result.replace("%width%", str(int(width)))

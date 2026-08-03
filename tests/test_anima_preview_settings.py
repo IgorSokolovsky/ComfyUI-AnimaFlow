@@ -144,6 +144,21 @@ def test_counter_token_zero_padded():
     assert result == "img_0007"
 
 
+def test_bare_counter_token_substitutes_with_default_width_5():
+    # 2026-08-03 fix: a bare `%counter%` (no `:N%` width) used to survive
+    # literally into the filename -- now it substitutes, defaulting to 5
+    # digits (matching `collision_suffixed_filename`'s own suffix width).
+    result = ps.format_filename("shot_%counter%", stage="base", seed=0, width=1, height=1, counter=7, now=_FIXED_NOW)
+    assert result == "shot_00007"
+
+
+def test_bare_counter_token_pads_a_large_value_beyond_its_default_width():
+    # `:05d`-style zfill only pads UP -- a value already wider than 5 digits
+    # is never truncated.
+    result = ps.format_filename("shot_%counter%", stage="base", seed=0, width=1, height=1, counter=123456, now=_FIXED_NOW)
+    assert result == "shot_123456"
+
+
 def test_width_height_tokens():
     result = ps.format_filename("%width%x%height%", stage="base", seed=0, width=832, height=1216, counter=0, now=_FIXED_NOW)
     assert result == "832x1216"
@@ -213,6 +228,49 @@ def test_collision_suffixed_filename_owners_exact_case():
     assert ps.collision_suffixed_filename("panel_ep2.png", 0) == "panel_ep2_00001.png"
     assert ps.collision_suffixed_filename("panel_ep2.png", 1) == "panel_ep2_00002.png"
     assert ps.collision_suffixed_filename("panel_ep2.png", 2) == "panel_ep2_00003.png"
+
+
+def test_collision_suffixed_filename_omit_at_zero_returns_plain_name_at_attempt_zero():
+    # 2026-08-03 opt-out: a template with its own `%counter%` must not also
+    # get our automatic `_00001` suffix -- attempt 0 is the plain name.
+    assert ps.collision_suffixed_filename("shot_0007.png", 0, omit_at_zero=True) == "shot_0007.png"
+
+
+def test_collision_suffixed_filename_omit_at_zero_still_suffixes_from_attempt_one():
+    # The never-overwrite guarantee survives the opt-out: only attempt 0 is
+    # unsuffixed, so a genuine collision still finds a free name.
+    assert ps.collision_suffixed_filename("shot_0007.png", 1, omit_at_zero=True) == "shot_0007_00001.png"
+    assert ps.collision_suffixed_filename("shot_0007.png", 2, omit_at_zero=True) == "shot_0007_00002.png"
+
+
+def test_collision_suffixed_filename_omit_at_zero_defaults_to_false():
+    # Every EXISTING call site that doesn't pass `omit_at_zero` keeps today's
+    # unconditional-suffix behaviour exactly.
+    assert ps.collision_suffixed_filename("panel_ep2.png", 0) == "panel_ep2_00001.png"
+
+
+# ---------------------------------------------------------------------------
+# template_has_counter_token -- the pre-substitution detector that decides
+# whether a save opts out of the automatic `_00001` suffix (task: 2026-08-03).
+# ---------------------------------------------------------------------------
+
+
+def test_template_has_counter_token_detects_the_width_form():
+    assert ps.template_has_counter_token("shot_%counter:4%") is True
+
+
+def test_template_has_counter_token_detects_the_bare_form():
+    assert ps.template_has_counter_token("shot_%counter%") is True
+
+
+def test_template_has_counter_token_false_when_no_counter_present():
+    assert ps.template_has_counter_token("%date:yyyy-MM-dd%_%seed%_%stage%") is False
+    assert ps.template_has_counter_token("panel_ep2") is False
+
+
+def test_template_has_counter_token_hostile_input_never_raises():
+    assert ps.template_has_counter_token(None) is False
+    assert ps.template_has_counter_token(123) is False
 
 
 def test_collision_suffixed_filename_top_of_range_stays_5_digits():
@@ -409,6 +467,8 @@ ALL_TESTS = [
     test_date_token_custom_format,
     test_date_token_with_time_components,
     test_counter_token_zero_padded,
+    test_bare_counter_token_substitutes_with_default_width_5,
+    test_bare_counter_token_pads_a_large_value_beyond_its_default_width,
     test_width_height_tokens,
     test_full_template_combining_every_token,
     test_template_with_no_tokens_passes_through_unchanged,
@@ -420,6 +480,13 @@ ALL_TESTS = [
     test_collision_suffixed_filename_handles_a_dotted_stem,
     test_collision_suffixed_filename_no_extension_at_all,
     test_collision_suffixed_filename_owners_exact_case,
+    test_collision_suffixed_filename_omit_at_zero_returns_plain_name_at_attempt_zero,
+    test_collision_suffixed_filename_omit_at_zero_still_suffixes_from_attempt_one,
+    test_collision_suffixed_filename_omit_at_zero_defaults_to_false,
+    test_template_has_counter_token_detects_the_width_form,
+    test_template_has_counter_token_detects_the_bare_form,
+    test_template_has_counter_token_false_when_no_counter_present,
+    test_template_has_counter_token_hostile_input_never_raises,
     test_collision_suffixed_filename_top_of_range_stays_5_digits,
     test_resolve_wired_stages_returns_only_wired_in_stable_order,
     test_resolve_shown_stage_prefers_compare_b_then_falls_back_to_most_finished_wired,

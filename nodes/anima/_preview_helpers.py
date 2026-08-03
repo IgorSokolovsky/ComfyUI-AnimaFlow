@@ -46,6 +46,7 @@ try:
         resolve_seed_int,
         resolve_wired_stages,
         split_preview_stages,
+        template_has_counter_token,
     )
     from ...src.anima.history import STORE as _HISTORY_STORE  # type: ignore
     from ...src.anima import frontend_settings as frontend_settings_mod  # type: ignore
@@ -62,6 +63,7 @@ except ImportError:
         resolve_seed_int,
         resolve_wired_stages,
         split_preview_stages,
+        template_has_counter_token,
     )
     from src.anima.history import STORE as _HISTORY_STORE
     from src.anima import frontend_settings as frontend_settings_mod
@@ -191,15 +193,32 @@ class FilenameCollisionExhausted(RuntimeError):
     """
 
 
-def write_without_overwriting(directory: str, filename: str, writer: Callable[[str], None]) -> str:
+def write_without_overwriting(
+    directory: str,
+    filename: str,
+    writer: Callable[[str], None],
+    *,
+    omit_suffix_at_zero: bool = False,
+) -> str:
     """Call `writer(full_path)` at the first collision-free candidate name
     under `directory` for `filename` -- as of the "every saved image gets a
     counter" reversal (owner, 2026-08-02; `collision_suffixed_filename`'s own
     docstring), there is no more "try `filename` itself, unsuffixed, first"
-    step: `attempt=0` already yields `filename`'s `_00001`-suffixed form,
-    then `_00002`, `_00003`, ... up to `_MAX_COLLISION_ATTEMPTS`, each on an
-    actual `FileExistsError` from `writer`. Returns the actual (base, not
-    full-path) filename `writer` was called with.
+    step BY DEFAULT: `attempt=0` already yields `filename`'s `_00001`-
+    suffixed form, then `_00002`, `_00003`, ... up to
+    `_MAX_COLLISION_ATTEMPTS`, each on an actual `FileExistsError` from
+    `writer`. Returns the actual (base, not full-path) filename `writer` was
+    called with.
+
+    **`omit_suffix_at_zero` (2026-08-03) reintroduces that "try the plain
+    name first" step, opt-in per call** -- threaded straight through to
+    `collision_suffixed_filename`'s own `omit_at_zero` (this function stays
+    a thin wrapper over that pure decision, never re-implementing it): pass
+    `True` when the CALLER already knows (via `template_has_counter_token`)
+    that the filename template has its own `%counter%`/`%counter:N%` token,
+    so `attempt=0` yields `filename` completely unsuffixed and only a real
+    collision (`attempt >= 1`) gets the `_00001`-style suffix. Callers that
+    don't pass it keep today's unconditional-suffix behaviour exactly.
 
     **Closes the race, doesn't just avoid it**: this does NOT `os.path.
     exists` check then write -- `writer` itself is required to use
@@ -212,7 +231,7 @@ def write_without_overwriting(directory: str, filename: str, writer: Callable[[s
     import os
 
     for attempt in range(_MAX_COLLISION_ATTEMPTS):
-        candidate = collision_suffixed_filename(filename, attempt)
+        candidate = collision_suffixed_filename(filename, attempt, omit_at_zero=omit_suffix_at_zero)
         full_path = os.path.join(directory, candidate)
         try:
             writer(full_path)
@@ -354,6 +373,11 @@ def save_images(
     subfolder = str(save_settings.get("path") or "AnimaFlow")
     template = str(save_settings.get("filename") or "%date:yyyy-MM-dd%_%seed%_%stage%")
     embed_workflow = bool(save_settings.get("embed_workflow", True))
+    # The user's own `%counter%`/`%counter:N%` opts the template out of our
+    # automatic `_00001` collision suffix at attempt 0 (task: 2026-08-03) --
+    # see `collision_suffixed_filename`'s own docstring for why the loop
+    # still suffixes attempt >= 1, keeping the never-overwrite guarantee.
+    omit_suffix_at_zero = template_has_counter_token(template)
 
     output_dir = os.path.join(folder_paths.get_output_directory(), subfolder)
     os.makedirs(output_dir, exist_ok=True)
@@ -392,6 +416,7 @@ def save_images(
                 lambda full_path, _img=pil_image, _fmt=pil_format, _meta=metadata: _write_pil_image_exclusive(
                     _img, full_path, pil_format=_fmt, pnginfo=_meta,
                 ),
+                omit_suffix_at_zero=omit_suffix_at_zero,
             )
             results.append({"filename": written_filename, "subfolder": subfolder, "type": "output", "stage": stage})
             counter += 1
@@ -832,6 +857,11 @@ def save_now(
     extension = str(save_settings.get("extension") or "png").lstrip(".")
     out_subfolder = str(raw_save_path or "AnimaFlow")
     template = str(save_settings.get("filename") or "%date:yyyy-MM-dd%_%seed%_%stage%")
+    # Same opt-out as `save_images` -- both save paths must agree, or a
+    # workflow that behaves one way from an enabled auto-save and another
+    # way from the "Save now" button is exactly the class of bug this pack
+    # keeps hitting (task: 2026-08-03).
+    omit_suffix_at_zero = template_has_counter_token(template)
 
     output_dir = os.path.join(get_output_dir(), out_subfolder)
     os.makedirs(output_dir, exist_ok=True)
@@ -848,15 +878,17 @@ def save_now(
     )
     out_filename = f"{filename_stem}.{extension}"
     # Never-overwrite (same fix as `save_images`): `out_filename`'s own
-    # `_00001`-suffixed form is tried first (no more unsuffixed attempt --
-    # see `collision_suffixed_filename`'s docstring for the 2026-08-02
-    # reversal), then `_00002`, `_00003`, ... until one writes cleanly.
-    # `write` (the default `_default_write_image_copy`, or an injected
-    # `write_fn`) is responsible for the actual exclusivity -- this loop
-    # only supplies candidates and reacts to `FileExistsError`.
+    # `_00001`-suffixed form is tried first (unless `omit_suffix_at_zero`,
+    # in which case attempt 0 is the plain name -- see
+    # `collision_suffixed_filename`'s docstring for the 2026-08-02 reversal
+    # and its 2026-08-03 opt-out), then `_00002`, `_00003`, ... until one
+    # writes cleanly. `write` (the default `_default_write_image_copy`, or
+    # an injected `write_fn`) is responsible for the actual exclusivity --
+    # this loop only supplies candidates and reacts to `FileExistsError`.
     try:
         out_filename = write_without_overwriting(
             output_dir, out_filename, lambda full_path: write(source_path, full_path),
+            omit_suffix_at_zero=omit_suffix_at_zero,
         )
     except FilenameCollisionExhausted as exc:
         # Same "readable error, not a bare traceback" contract as every

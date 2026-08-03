@@ -441,22 +441,17 @@ def test_save_now_default_writer_never_overwrites_and_first_file_survives():
 
 
 # ---------------------------------------------------------------------------
-# Existing %counter% behaviour -- `%counter:N%`'s own increment-per-batch-
-# item logic is untouched by this fix (same `_next_counter` call, same
-# per-item `counter += 1`), BUT as of the 2026-08-02 "every saved image gets
-# a counter" reversal, the NEW always-on `_NNNNN` collision suffix now lands
-# on top of it too, since `collision_suffixed_filename` no longer has an
-# unsuffixed `attempt=0` case for ANY filename -- including one whose
-# template already spelled out its own `%counter%` token. A template with
-# `%counter:3%` now reads e.g. `final_000_000_00001.png`: the explicit
-# `%counter%` value AND the new collision counter both present, back to
-# back. This is reported per the build task's own instruction ("do not
-# invent a de-duplication rule ... state what happens and let the owner
-# decide") -- NOT fixed here.
+# 2026-08-03: a template with its OWN `%counter%`/`%counter:N%` token now
+# OPTS OUT of the automatic `_00001` suffix at attempt 0 -- the doubled-
+# counter bug the section above used to document (`final_000_000_00001.png`)
+# is what this fixes. `save_images` and `save_now` both call
+# `template_has_counter_token` on their own `save.filename` template and
+# thread the result through `write_without_overwriting`'s
+# `omit_suffix_at_zero` -- both must agree, so both are exercised here.
 # ---------------------------------------------------------------------------
 
 
-def test_explicit_counter_token_now_also_gets_the_always_on_collision_suffix():
+def test_explicit_counter_token_opts_out_of_the_automatic_suffix():
     output_dir = tempfile.mkdtemp()
     restore = _install_fake_pil_and_folder_paths(output_dir)
     original_tensor_to_pil = ph._tensor_to_pil_images
@@ -479,21 +474,158 @@ def test_explicit_counter_token_now_also_gets_the_always_on_collision_suffix():
             seed=0,
         )
         # A batch of 2 -- `%counter:3%` still increments per item (batch
-        # index is ALSO appended for a batch > 1, unchanged), but EACH
-        # resolved name is now itself a fresh name in an empty directory, so
-        # `collision_suffixed_filename`'s always-on suffix lands on both:
-        # `_00001` on the first (nothing else exists yet), and -- because the
-        # first write ALSO didn't collide with the second's own resolved
-        # name -- `_00001` on the second too, since the two `%counter%`
-        # values (`000`/`001`) already keep them from colliding with each
-        # OTHER. See this section's own comment above for why this doubled-
-        # looking name is a reported behaviour, not a fixed one.
+        # index is ALSO appended for a batch > 1, unchanged), and each
+        # resolved name lands in the directory WITHOUT the extra `_00001`
+        # collision suffix, since the user's own `%counter:3%` token already
+        # made this template opt out (`template_has_counter_token` -> True).
         filenames = sorted(entry["filename"] for entry in result)
-        assert filenames == ["final_000_000_00001.png", "final_001_001_00001.png"]
+        assert filenames == ["final_000_000.png", "final_001_001.png"]
     finally:
         ph._tensor_to_pil_images = original_tensor_to_pil
         restore()
         shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def test_write_without_overwriting_omit_suffix_at_zero_first_write_is_plain_but_collision_still_suffixes():
+    # Direct test of the shared collision loop's own opt-out flag -- attempt
+    # 0 is the plain name, but a REAL collision on it still finds a free
+    # name on attempt 1 rather than looping forever on identical candidates.
+    tmp = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(tmp, "shot_0007.png"), "wb") as fh:
+            fh.write(b"ALREADY THERE")
+
+        result = ph.write_without_overwriting(tmp, "shot_0007.png", _xb_writer, omit_suffix_at_zero=True)
+
+        assert result == "shot_0007_00001.png"
+        assert os.path.isfile(os.path.join(tmp, "shot_0007_00001.png"))
+        with open(os.path.join(tmp, "shot_0007.png"), "rb") as fh:
+            assert fh.read() == b"ALREADY THERE", "the pre-existing file must be untouched"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_save_images_with_a_counter_template_two_real_saves_produce_two_different_files():
+    # The end-to-end regression guard for the task's own worked example:
+    # `shot_%counter:4%` -> `shot_0007.png` then `shot_0008.png` -- no
+    # `_00001` doubling, and `_next_counter`'s own directory scan is what
+    # advances the counter across the two saves (not the suffix, which is
+    # now suppressed at attempt 0).
+    output_root = tempfile.mkdtemp()
+    restore = _install_fake_pil_and_folder_paths(output_root)
+    original_tensor_to_pil = ph._tensor_to_pil_images
+    ph._tensor_to_pil_images = lambda image_tensor: [image_tensor]
+
+    preview_settings = {
+        "save": {
+            "enabled": True, "extension": "png", "path": "shots",
+            "filename": "shot_%counter:4%", "embed_workflow": False,
+        },
+    }
+    output_dir = os.path.join(output_root, "shots")
+    try:
+        first = ph.save_images(
+            wired={"final": _FakeImage("RUN1")}, stages_to_save=["final"],
+            preview_settings=preview_settings, seed=0,
+        )
+        second = ph.save_images(
+            wired={"final": _FakeImage("RUN2")}, stages_to_save=["final"],
+            preview_settings=preview_settings, seed=0,
+        )
+
+        assert first[0]["filename"] == "shot_0000.png"
+        assert second[0]["filename"] == "shot_0001.png", (
+            "the counter advancing (via `_next_counter`'s own directory "
+            "scan) is what keeps the second save distinct, now that the "
+            "automatic suffix is suppressed for a template with its own "
+            "counter"
+        )
+        on_disk = sorted(os.listdir(output_dir))
+        assert on_disk == ["shot_0000.png", "shot_0001.png"]
+        assert first[0]["filename"] != second[0]["filename"], "must never resolve to the same path twice"
+    finally:
+        ph._tensor_to_pil_images = original_tensor_to_pil
+        restore()
+        shutil.rmtree(output_root, ignore_errors=True)
+
+
+def test_save_images_with_a_bare_counter_template_substitutes_and_two_saves_differ():
+    # Same as above but for the BARE `%counter%` form (2026-08-03 fix): it
+    # must substitute (never survive literally into the filename) AND the
+    # opt-out must still apply, so two saves differ via the advancing
+    # counter alone.
+    output_root = tempfile.mkdtemp()
+    restore = _install_fake_pil_and_folder_paths(output_root)
+    original_tensor_to_pil = ph._tensor_to_pil_images
+    ph._tensor_to_pil_images = lambda image_tensor: [image_tensor]
+
+    preview_settings = {
+        "save": {
+            "enabled": True, "extension": "png", "path": "shots",
+            "filename": "shot_%counter%", "embed_workflow": False,
+        },
+    }
+    output_dir = os.path.join(output_root, "shots")
+    try:
+        first = ph.save_images(
+            wired={"final": _FakeImage("RUN1")}, stages_to_save=["final"],
+            preview_settings=preview_settings, seed=0,
+        )
+        second = ph.save_images(
+            wired={"final": _FakeImage("RUN2")}, stages_to_save=["final"],
+            preview_settings=preview_settings, seed=0,
+        )
+
+        assert first[0]["filename"] == "shot_00000.png"
+        assert second[0]["filename"] == "shot_00001.png"
+        assert "%counter%" not in first[0]["filename"], "the bare token must be substituted, never literal"
+        on_disk = sorted(os.listdir(output_dir))
+        assert on_disk == ["shot_00000.png", "shot_00001.png"]
+    finally:
+        ph._tensor_to_pil_images = original_tensor_to_pil
+        restore()
+        shutil.rmtree(output_root, ignore_errors=True)
+
+
+def test_save_now_default_writer_agrees_with_save_images_on_a_counter_template():
+    # Both save paths must behave identically for the SAME template -- a
+    # counter token opts BOTH out of the automatic suffix, not just one.
+    root = tempfile.mkdtemp()
+    output_dir = os.path.join(root, "output")
+    temp_dir = os.path.join(root, "temp")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    source_path = os.path.join(temp_dir, "final_temp.png")
+    with open(source_path, "wb") as fh:
+        fh.write(b"source bytes irrelevant")
+
+    restore_image = _install_fake_pil_image()
+    preview_settings = {
+        "save": {"extension": "png", "path": "shots", "filename": "shot_%counter:4%"},
+    }
+    final_output_dir = os.path.join(output_dir, "shots")
+    try:
+        fakes = {"output_dir_fn": lambda: output_dir, "temp_dir_fn": lambda: temp_dir}
+        first = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings=preview_settings, seed=0, **fakes,
+        )
+        second = ph.save_now(
+            stage_entries={"final": {"filename": "final_temp.png", "subfolder": "", "type": "temp"}},
+            preview_settings=preview_settings, seed=0, **fakes,
+        )
+
+        assert first["filename"] == "shot_0000.png"
+        assert second["filename"] == "shot_0001.png", (
+            "save_now must suppress the automatic suffix for a counter "
+            "template exactly like save_images does"
+        )
+        on_disk = sorted(os.listdir(final_output_dir))
+        assert on_disk == ["shot_0000.png", "shot_0001.png"]
+    finally:
+        restore_image()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 ALL_TESTS = [
@@ -507,7 +639,11 @@ ALL_TESTS = [
     test_pil_format_for_extension_known_and_unknown,
     test_save_images_never_overwrites_and_first_file_survives,
     test_save_now_default_writer_never_overwrites_and_first_file_survives,
-    test_explicit_counter_token_now_also_gets_the_always_on_collision_suffix,
+    test_explicit_counter_token_opts_out_of_the_automatic_suffix,
+    test_write_without_overwriting_omit_suffix_at_zero_first_write_is_plain_but_collision_still_suffixes,
+    test_save_images_with_a_counter_template_two_real_saves_produce_two_different_files,
+    test_save_images_with_a_bare_counter_template_substitutes_and_two_saves_differ,
+    test_save_now_default_writer_agrees_with_save_images_on_a_counter_template,
 ]
 
 
