@@ -94,7 +94,7 @@ import {
 // `unet`/`checkpoint` rows open this SAME cache -- `invalidateList` resets it
 // between tests that stub `globalThis.fetch` with their own canned model
 // list, so one test's cached list can never bleed into another's.
-import { invalidateList } from "./civitai_api.mjs";
+import { invalidateList, thumbUrl } from "./civitai_api.mjs";
 
 import {
   injectStyles,
@@ -176,6 +176,22 @@ function findAllByClass(root, className) {
   const out = [];
   const walk = (e) => {
     if (e && e.classList && e.classList.contains(className)) {
+      out.push(e);
+    }
+    (e && e.children || []).forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+/** Every descendant of `root` carrying `tagName` -- `test_model_info.mjs`'s
+ * identically-named helper (kept as an independent copy, per this pack's own
+ * doc-stub convention), needed here to find the ⓘ info panel's own thumbnail
+ * `<img>` element from an M3 caller's own test. */
+function findAllByTag(root, tagName) {
+  const out = [];
+  const walk = (e) => {
+    if (e && e.tagName === tagName) {
       out.push(e);
     }
     (e && e.children || []).forEach(walk);
@@ -5282,6 +5298,56 @@ await asyncTest("Loader Panel row (unet): the ⓘ button opens the model-browser
 
     fire(unetEntry.refs.info, "click"); // toggle closed
     assert.equal(countOpenOverlays(doc) + doc.body.children.filter((c) => c.className && c.className.includes("wtn-mi-overlay")).length, 0, "a second ⓘ click must close its own panel (toggle)");
+  } finally {
+    globalThis.fetch = _origFetchCtl;
+    invalidateList("unet");
+  }
+});
+
+await asyncTest("Loader Panel row (unet): openModelBrowserInfoFor passes the cached list entry's own has_preview through to the info panel -- a false one skips the guaranteed-404 local thumbnail candidate entirely (owner report: 'thumbnail slow/blank')", async () => {
+  invalidateList("unet");
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "corrupt.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  try {
+    const node = makeFakeNode();
+    const doc = makeDocStub();
+    makeWindowStub(doc);
+    const ctx = makeCtx(doc, LOADER_PANEL_CONFIG);
+    syncRows(node, ctx);
+    const unetEntry = node._ctrlRows.find((e) => e.kind === "unet");
+
+    // Prime the model-browser picker's SAME `cachedList("unet")` this info
+    // panel reads from, exactly as a real session would (the picker/list
+    // fetch always lands before a row is ever picked).
+    fire(unetEntry.refs.combo, "click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const overlay = doc.body.children[doc.body.children.length - 1];
+    const target = findAllByClass(overlay, "wtn-mp-name").find((e) => e.textContent === "corrupt.safetensors");
+    fire(target.parentNode.parentNode, "click");
+    assert.equal(unetEntry.refs.row.value, "corrupt.safetensors");
+
+    // Opening the ⓘ panel for this exact row must never even attempt the
+    // local `thumbUrl` -- the cached list entry already says there's no
+    // preview file to try.
+    globalThis.fetch = async () => ({
+      json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+    });
+    fire(unetEntry.refs.info, "click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const infoOverlay = doc.body.children[doc.body.children.length - 1];
+    const panel = findAllByClass(infoOverlay, "wtn-mi-panel")[0];
+    assert.ok(panel, "the ⓘ info panel must have opened");
+    const imgs = findAllByTag(panel, "img");
+    assert.equal(imgs.length, 0, "has_preview:false must skip the local candidate -- no <img> at all once Civitai also comes back empty");
+    const noLocalAttempt = imgs.every((img) => img.src !== thumbUrl("unet", "corrupt.safetensors"));
+    assert.ok(noLocalAttempt, "the local thumbUrl must never be attempted for a model already known to have no preview");
   } finally {
     globalThis.fetch = _origFetchCtl;
     invalidateList("unet");

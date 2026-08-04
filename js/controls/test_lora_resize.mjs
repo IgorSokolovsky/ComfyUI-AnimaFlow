@@ -107,7 +107,7 @@ import {
 // ...)` straight from `civitai_api.mjs`'s real module-singleton cache -- the
 // dedicated test below primes it via a stubbed `fetch`, same convention as
 // `test_civitai_api.mjs`.
-import { listModels, invalidateList } from "./civitai_api.mjs";
+import { listModels, invalidateList, thumbUrl } from "./civitai_api.mjs";
 
 // EVERY `mountLoraNode` call in this file triggers a `listModels("loras")`
 // warm-up fetch (Slice 3's missing-file-mark warm-up) -- the file's many
@@ -1498,6 +1498,22 @@ function findAllByClass(root, className) {
   return out;
 }
 
+/** Every descendant of `root` carrying `tagName` -- `test_model_info.mjs`'s
+ * identically-named helper (kept as an independent copy, per this pack's own
+ * doc-stub convention), needed here to find the ⓘ info panel's own thumbnail
+ * `<img>` element from THIS caller's own test. */
+function findAllByTag(root, tagName) {
+  const out = [];
+  const walk = (e) => {
+    if (e && e.tagName === tagName) {
+      out.push(e);
+    }
+    (e && e.children ? e.children : []).forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
 /** ALL text under `root`, recursively -- this suite's doc stub's own
  * `.textContent` is a plain string property (never auto-aggregated from
  * children, unlike a real DOM node), so reading it directly on a container
@@ -1624,6 +1640,48 @@ await asyncTest("row context menu: 'More info' opens the ⓘ info panel (Slice 4
     assert.equal(chips.length, 1, "the row's currently-selected trigger word shows as a chip");
   } finally {
     globalThis.fetch = origFetch;
+  }
+});
+
+await asyncTest("openInfoPanelFor passes the cached list entry's own has_preview through to the ⓘ info panel -- a false one skips the guaranteed-404 local thumbnail candidate entirely (owner report: 'thumbnail slow/blank')", async () => {
+  invalidateList("loras"); // this file's own many earlier fetch-oblivious tests may already have cached an empty list
+  const node = makeFakeNode(stateJSON([mkStateRow({ id: 1, name: "corrupt.safetensors", on: true })]));
+  const doc = makeDocStub();
+  makeWindowStub(doc);
+  const ctx = makeCtx(doc);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "ok",
+      models: [{ name: "corrupt.safetensors", group: "All", size: 1024, base_model: "SDXL", has_preview: false }],
+    }),
+  });
+  try {
+    mountLoraNode(node, ctx);
+    // Let mountLoraNode's own `listModels("loras")` warm-up (this file's top
+    // doc comment) actually land, so the row's ⓘ panel sees a REAL,
+    // resolved `has_preview: false` rather than the "list not yet resolved"
+    // undefined this suite's OTHER info-panel tests exercise.
+    await listModels("loras", true);
+    const entry = node._lrRows[0];
+
+    // Opening the panel now switches to a plain Civitai `notfound` stub --
+    // the LOOKUP itself is irrelevant here; what matters is whether the
+    // thumb ever tries the local `thumbUrl`.
+    globalThis.fetch = async () => ({ json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }) });
+    fire(entry.refs.info, "click");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const panel = findAllByClass(doc.body, "wtn-mi-panel")[0];
+    assert.ok(panel, "the ⓘ info panel must have opened");
+    const imgs = findAllByTag(panel, "img");
+    assert.equal(imgs.length, 0, "has_preview:false must skip the local candidate -- no <img> at all once Civitai also comes back empty");
+    assert.ok(imgs.every((img) => img.src !== thumbUrl("loras", "corrupt.safetensors")), "the local thumbUrl must never be attempted for a model already known to have no preview");
+  } finally {
+    globalThis.fetch = origFetch;
+    invalidateList("loras");
   }
 });
 

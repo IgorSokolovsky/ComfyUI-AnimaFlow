@@ -1020,6 +1020,146 @@ await asyncTest("openModelInfo: 'locked' -- once the local preview fails, Civita
   }
 });
 
+// =========================================================================
+// hasPreview (owner report, live server measurement: "thumbnail slow on
+// first open, blank on reopen" -- `renderThumb`'s own candidate list must
+// never offer `thumbUrl(kind, name)` as a candidate when the CALLER already
+// knows there is no local preview file (`has_preview: false` from the
+// cached `/wtn/model_browser/list` entry) -- offering it anyway means two
+// guaranteed 404s (the request, then its `THUMB_RETRY_BACKOFF_MS` retry)
+// before the real Civitai fallback even starts, on EVERY open. Tri-state,
+// same "unknown, not missing" discipline as `hasFile`/`civitaiNameFor`
+// (`civitai_api.mjs`): only an explicit `false` omits it; `undefined` (no
+// cached list entry yet) and `true` both still try it.
+// =========================================================================
+
+await asyncTest("openModelInfo: hasPreview:false OMITS the local candidate entirely -- the thumb never attempts thumbUrl(kind, name) at all, going straight to the Civitai candidate once it resolves", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-has-preview-false.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({
+      reason: "found",
+      offline_reason: null,
+      message: "",
+      data: { name: "No Local Preview", images: [{ url: "https://image.civitai.com/pg-only.jpg", nsfw_level: 1, type: "image" }] },
+    }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      hasPreview: false,
+    });
+    // BEFORE the lookup resolves, `civitaiRecord` is still null, so the
+    // candidate array is genuinely EMPTY (no local url, no Civitai images
+    // yet) -- the placeholder, never a local <img>.
+    assert.equal(findAllByTag(handle.overlay, "img").length, 0, "must not attempt the local preview even before Civitai resolves");
+    await settle();
+
+    const img = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(img, "must fall straight through to the Civitai candidate");
+    assert.equal(img.src, "https://image.civitai.com/pg-only.jpg");
+    assert.notEqual(img.src, thumbUrl(kind, name), "the local url must never have been the candidate tried");
+    assert.equal(findAllByTag(handle.overlay, "img").length, 1, "exactly one <img> ever existed -- never a local attempt first");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: hasPreview:true keeps the local candidate FIRST, same as the pre-existing behaviour", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-has-preview-true.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      hasPreview: true,
+    });
+    await settle();
+
+    const img = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(img, "the local preview must still be attempted");
+    assert.equal(img.src, thumbUrl(kind, name));
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: hasPreview ABSENT/undefined (no cached list entry yet -- the tri-state case) still keeps the local candidate FIRST -- a caller must never guess 'no preview' from missing data", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-has-preview-absent.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      hasPreview: undefined, // explicit -- this is the value an unresolved list cache produces
+    });
+    await settle();
+
+    const img = findAllByTag(handle.overlay, "img")[0];
+    assert.ok(img, "an unknown (not confirmed-absent) preview must still be tried -- guessing wrong here would permanently hide a real local thumbnail");
+    assert.equal(img.src, thumbUrl(kind, name));
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
+await asyncTest("openModelInfo: hasPreview:false AND no Civitai images at all -- candidate list is genuinely empty, renders the plain placeholder, never throws", async () => {
+  const kind = "loras";
+  const name = "info-dom-thumb-has-preview-false-empty.safetensors";
+  invalidateInfo(kind, name);
+  globalThis.fetch = async () => ({
+    json: async () => ({ reason: "notfound", offline_reason: null, message: "", data: null }),
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openModelInfo({
+      ctx: { doc, getCanvasEl: () => null },
+      anchorEl: doc.createElement("button"),
+      kind,
+      name,
+      hasPreview: false,
+    });
+    await settle();
+
+    assert.equal(findAllByTag(handle.overlay, "img").length, 0, "no candidate at all -- never an <img>");
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-locked").length, 0, "not locked -- there were no Civitai images to be above the level");
+    assert.equal(findAll(handle.overlay, "wtn-mi-thumb-ph").length, 1, "the plain placeholder, not a crash");
+
+    handle.close();
+  } finally {
+    globalThis.fetch = _origFetch;
+    invalidateInfo(kind, name);
+  }
+});
+
 await asyncTest("openModelInfo: a re-render mid-retry (e.g. a forced ↻ Civitai lookup landing while the local preview's own retry is still pending) leaves no stale timer writing into a detached thumb", async () => {
   const kind = "loras";
   const name = "info-dom-thumb-stale.safetensors";

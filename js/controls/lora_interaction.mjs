@@ -549,6 +549,14 @@ function openInfoPanelFor(node, ctx, rowId, refs) {
     name: row.name || "",
     ownerKey: `lora-info:${rowId}`,
     baseModel: (entry && entry.base_model) || "",
+    // Bug fix (owner report, live server measurement): `entry` is the SAME
+    // already-cached `/list` row `baseModel`/`fileTriggers` above already
+    // read, and it already carries `has_preview` (`src/model_browser/
+    // local.py`'s `find_preview_path(path) is not None`) -- no new lookup.
+    // `entry ? entry.has_preview : undefined` keeps the tri-state:
+    // `undefined` when this kind's list hasn't resolved yet this session
+    // (`entry` itself undefined), never collapsed to a false "no preview".
+    hasPreview: entry ? entry.has_preview : undefined,
     fileTriggers: (entry && entry.triggers) || [],
     customTriggers: Array.isArray(row.customTriggers) ? row.customTriggers : [],
     selectedTriggers: Array.isArray(row.triggers) ? row.triggers : [],

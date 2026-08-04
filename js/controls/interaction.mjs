@@ -558,6 +558,12 @@ function openModelBrowserInfoFor(node, ctx, rowId, refs) {
     name: row.value || "",
     ownerKey: `ctl-info:${rowId}`,
     baseModel: (entry && entry.base_model) || "",
+    // Same fix as `lora_interaction.mjs`'s own `openInfoPanelFor` -- `entry`
+    // is the SAME already-cached `/list` row `baseModel` above already reads,
+    // and it already carries `has_preview`; `entry ? entry.has_preview :
+    // undefined` keeps the tri-state (unresolved list stays `undefined`,
+    // never a false "no preview").
+    hasPreview: entry ? entry.has_preview : undefined,
     civitaiEnabled,
     showThumbnails,
     browsingLevel,

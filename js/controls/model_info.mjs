@@ -779,6 +779,7 @@ function prettyTitle(name) {
  * @param {string} opts.name - the model's file name (identity + thumbnail + lookup key).
  * @param {string} [opts.ownerKey] - defaults to `model-info:<kind>:<name>`.
  * @param {string} [opts.baseModel] - file-derived base-model family (identity line).
+ * @param {boolean} [opts.hasPreview] - whether a local preview file sits next to this model on disk (`/wtn/model_browser/list`'s own `has_preview`, `src/model_browser/local.py`'s `find_preview_path(path) is not None` -- the CALLER already holds this from the same cached-list entry `baseModel`/`fileTriggers` come from, so this file never fetches the list itself to find out). **Tri-state, same "unknown, not missing" discipline as `hasFile`/`civitaiNameFor` (`civitai_api.mjs`):** only an explicit `false` skips offering `thumbUrl(kind, name)` as a thumbnail candidate in `renderThumb` below -- a guaranteed-404 request otherwise made and retried on EVERY open for a model already known to have no local preview (owner report: "thumbnail slow on first open, blank on reopen" -- two failing requests plus `THUMB_RETRY_BACKOFF_MS` of waiting before the Civitai fallback even starts). `undefined` (no cached list entry yet -- the list hasn't resolved this session) still tries the local URL, exactly like the pre-existing behaviour: guessing "no preview" from missing data would permanently hide a real local thumbnail the moment it turns out to exist. Defaults to `undefined`.
  * @param {string[]} [opts.fileTriggers] - candidate words read from the file's own metadata.
  * @param {string[]} [opts.customTriggers] - every word the user has ever typed in "add your own" for this row.
  * @param {string[]} [opts.selectedTriggers] - the currently-selected subset (from ANY source) that reaches the output.
@@ -804,6 +805,7 @@ export function openModelInfo({
   name,
   ownerKey,
   baseModel = "",
+  hasPreview,
   fileTriggers = [],
   customTriggers = [],
   selectedTriggers = [],
@@ -1155,9 +1157,18 @@ export function openModelInfo({
    * too"). Precedence, per the design doc's own four-source table and the
    * owner's 2026-07-31 correction to this task's brief:
    *
-   *   1. the LOCAL on-disk preview (`thumbUrl`) -- always tried first,
-   *      NEVER level-filtered ("never what the user already has locally --
-   *      a file on disk was an explicit act");
+   *   1. the LOCAL on-disk preview (`thumbUrl`) -- tried first when it might
+   *      exist, NEVER level-filtered ("never what the user already has
+   *      locally -- a file on disk was an explicit act"). Skipped entirely
+   *      when `hasPreview === false` (this function's own top-of-closure
+   *      `opts.hasPreview` doc comment) -- the caller's already-cached list
+   *      entry settled that question, so offering `thumbUrl` here would only
+   *      ever produce a guaranteed 404, waited out via the SAME retry chain
+   *      as a candidate that might have worked (owner report: "blank on
+   *      reopen," measured as two failing requests + a full
+   *      `THUMB_RETRY_BACKOFF_MS` before candidate 1 even starts). `undefined`
+   *      (unknown -- the list hasn't resolved this session) still tries it,
+   *      same as `true`;
    *   2. once that fails to load (or there's no `name`/`kind` to resolve one
    *      at all), the Civitai lookup's own `images` candidates, filtered to
    *      the caller's `browsingLevel` and walked with the SAME
@@ -1189,7 +1200,11 @@ export function openModelInfo({
       return; // showThumbnails === false (§7b) -- no element exists to fill
     }
 
-    const localUrl = thumbUrl(kind, name);
+    // `hasPreview === false` is the ONLY value that skips this -- `undefined`
+    // (unknown, list not yet resolved) and `true` both still try it, matching
+    // `hasFile`/`civitaiNameFor`'s own "unknown, not missing" tri-state
+    // discipline (this function's own doc comment).
+    const localUrl = hasPreview !== false ? thumbUrl(kind, name) : null;
     const civitaiImages = civitaiRecord && Array.isArray(civitaiRecord.images) ? civitaiRecord.images : [];
     const levelInt = levelLabelToInt(browsingLevel);
     const civitaiCandidates = pickThumbCandidates(civitaiImages, levelInt);
