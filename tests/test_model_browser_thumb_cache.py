@@ -421,6 +421,11 @@ def test_thumb_route_first_request_returns_200_with_an_etag():
 
 
 def test_thumb_route_matching_if_none_match_returns_304_with_empty_body():
+    # This also doubles as the "known-good" regression pin for the
+    # 2026-08-04 conditional-GET fix (`thumb_cache_known_state`): the FIRST
+    # call above decodes the file and caches it as real bytes ("good"), so
+    # the SECOND call's matching `If-None-Match` is honoured with a 304 --
+    # the one row of the fix's three-state table that must NOT change.
     module, fake_routes, previous = _install_fake_aiohttp_and_server()
     try:
         handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
@@ -637,6 +642,214 @@ def test_thumb_route_still_returns_200_with_the_original_bytes_when_pillow_is_ab
         _restore_sys_modules(previous)
 
 
+# ---------------------------------------------------------------------------
+# "The conditional-GET 304 bypasses the undecodable check" (2026-08-04 fix,
+# see `thumb_cache_known_state`'s own doc comment in `src/model_browser/
+# api.py`): a 304 must only be sent once THIS `(path, mtime, max_edge)` is
+# positively known to decode -- not merely because an ETag (derived purely
+# from on-disk mtime/size, which a corrupt file's own re-save never changes)
+# happens to match. The COLD-CACHE cases below are the ones an obvious "just
+# check the sentinel" fix would still get wrong: right after a process
+# restart the in-memory downscale cache is genuinely empty, so "no entry"
+# must NOT be silently treated as "known good".
+# ---------------------------------------------------------------------------
+
+
+def test_thumb_route_matching_if_none_match_for_known_undecodable_stays_404_with_no_store():
+    # Cache warmed: the FIRST call below already establishes this exact
+    # (path, mtime, max_edge) as undecodable (`thumb_cache_known_state` ==
+    # "bad"). A later conditional request with a matching `If-None-Match`
+    # must still 404 -- a 304 here would tell a stale browser its cached
+    # BROKEN image is still current, exactly the bug this fix closes.
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=truncated)
+            restore_pillow = _with_simulated_pillow(module, _RealisticPngImageModule())
+            try:
+                first = asyncio.run(
+                    handler(_FakeRequest(query={"kind": "loras", "name": "a.safetensors"}))
+                )
+                assert first.status == 404  # warms the "bad" cache entry
+
+                stat = module.thumb_stat_impl(preview_path)
+                etag = module.thumb_etag(stat[0], stat[1], module.DEFAULT_THUMB_MAX_EDGE)
+
+                second = asyncio.run(
+                    handler(
+                        _FakeRequest(
+                            query={"kind": "loras", "name": "a.safetensors"},
+                            headers={"If-None-Match": etag},
+                        )
+                    )
+                )
+                assert second.status == 404, "a known-undecodable file must never 304"
+                assert not second.headers.get("ETag")
+                assert second.headers.get("Cache-Control") == module.THUMB_404_CACHE_CONTROL
+            finally:
+                restore_pillow()
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
+def test_thumb_route_cold_cache_conditional_request_for_corrupt_file_does_not_304():
+    # THE bug itself, reproduced: a browser cached the pre-`3e02428` broken
+    # 200 with an ETag derived purely from (mtime, size, max_edge) -- both
+    # UNCHANGED by a server restart. A naive fix ("ETag matches => 304")
+    # would keep serving that same cached broken image forever, since the
+    # corrupt file's own mtime/size never change. Simulated here by
+    # re-importing `api.py` between the two calls -- a fresh, EMPTY
+    # in-process downscale cache is exactly the shape of an actual ComfyUI
+    # restart -- then sending the conditional GET a stale-cache browser
+    # would issue right after: an `If-None-Match` computed from the
+    # (unchanged) file stat, against a process that has never decoded
+    # anything yet.
+    module1, fake_routes1, previous1 = _install_fake_aiohttp_and_server()
+    handler1 = fake_routes1.handlers.get(("GET", "/wtn/model_browser/thumb"))
+    with tempfile.TemporaryDirectory() as tmp:
+        truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+        restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=truncated)
+        try:
+            stat = module1.thumb_stat_impl(preview_path)
+            etag = module1.thumb_etag(stat[0], stat[1], module1.DEFAULT_THUMB_MAX_EDGE)
+
+            # "Restart": re-import the module fresh -- `_thumb_downscale_
+            # cache` is a brand-new, empty `OrderedDict` in the new module
+            # object, even though the file on disk (and the ETag above) is
+            # unchanged.
+            module2, fake_routes2, previous2 = _install_fake_aiohttp_and_server()
+            handler2 = fake_routes2.handlers.get(("GET", "/wtn/model_browser/thumb"))
+            restore_pillow2 = _with_simulated_pillow(module2, _RealisticPngImageModule())
+            try:
+                response = asyncio.run(
+                    handler2(
+                        _FakeRequest(
+                            query={"kind": "loras", "name": "a.safetensors"},
+                            headers={"If-None-Match": etag},
+                        )
+                    )
+                )
+                assert response.status == 404, "a cold cache must not trust a matching ETag into a 304"
+                assert response.headers.get("Cache-Control") == module2.THUMB_404_CACHE_CONTROL
+                assert not response.headers.get("ETag")
+            finally:
+                restore_pillow2()
+                _restore_sys_modules(previous2)
+        finally:
+            restore_fp()
+    _restore_sys_modules(previous1)
+
+
+def test_thumb_route_cold_cache_conditional_request_for_valid_file_decodes_then_next_one_304s():
+    # The other half of the same scenario: a GENUINELY good file, cold
+    # cache, conditional request -- must decode (not 304 on faith), and
+    # having done so once, the VERY NEXT conditional request for the same
+    # key gets the fast 304 path again ("known-good" now populated).
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            valid = _build_minimal_png_bytes()
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=valid)
+            restore_pillow = _with_simulated_pillow(module, _RealisticPngImageModule())
+            try:
+                stat = module.thumb_stat_impl(preview_path)
+                etag = module.thumb_etag(stat[0], stat[1], module.DEFAULT_THUMB_MAX_EDGE)
+
+                first = asyncio.run(
+                    handler(
+                        _FakeRequest(
+                            query={"kind": "loras", "name": "a.safetensors"},
+                            headers={"If-None-Match": etag},
+                        )
+                    )
+                )
+                assert first.status == 200, "an empty cache must not 304 on faith alone"
+                assert first.body == b"FAKE:PNG:1x1"
+
+                second = asyncio.run(
+                    handler(
+                        _FakeRequest(
+                            query={"kind": "loras", "name": "a.safetensors"},
+                            headers={"If-None-Match": etag},
+                        )
+                    )
+                )
+                assert second.status == 304, "the decode above must have populated the cache as known-good"
+            finally:
+                restore_pillow()
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
+def test_thumb_route_pillow_absent_conditional_request_on_cold_cache_still_200s_with_original_bytes():
+    # No monkeypatch -- genuinely exercises Pillow's real absence in this
+    # environment (verified elsewhere: `import PIL` fails here). A
+    # conditional request against a COLD cache must not 304 just because the
+    # ETag happens to match ("unknown" state, same as the corrupt-file case
+    # above) -- it falls through to `thumb_bytes_impl`, which (Pillow being
+    # absent) serves the untouched original, the SAME silent fallback an
+    # unconditional request already gets (pinned by
+    # `test_thumb_route_still_returns_200_with_the_original_bytes_when_
+    # pillow_is_absent_even_for_a_truncated_preview` above).
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=truncated)
+            try:
+                stat = module.thumb_stat_impl(preview_path)
+                etag = module.thumb_etag(stat[0], stat[1], module.DEFAULT_THUMB_MAX_EDGE)
+
+                response = asyncio.run(
+                    handler(
+                        _FakeRequest(
+                            query={"kind": "loras", "name": "a.safetensors"},
+                            headers={"If-None-Match": etag},
+                        )
+                    )
+                )
+                assert response.status == 200, "a cold cache must not 304 even when Pillow is absent"
+                assert response.body == truncated
+            finally:
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
+# ---------------------------------------------------------------------------
+# `thumb_cache_known_state` itself, in isolation.
+# ---------------------------------------------------------------------------
+
+
+def test_thumb_cache_known_state_is_unknown_for_a_never_seen_key():
+    key = ("/some/path.png", 111.0, 256)
+    assert mb_api.thumb_cache_known_state(key) == "unknown"
+
+
+def test_thumb_cache_known_state_is_good_after_a_successful_decode_is_cached():
+    key = ("/some/other-path.png", 222.0, 256)
+    mb_api._thumb_cache_put(key, b"decoded-bytes")
+    try:
+        assert mb_api.thumb_cache_known_state(key) == "good"
+    finally:
+        mb_api._thumb_downscale_cache.pop(key, None)
+
+
+def test_thumb_cache_known_state_is_bad_after_the_undecodable_sentinel_is_cached():
+    key = ("/some/third-path.png", 333.0, 256)
+    mb_api._thumb_cache_put(key, mb_api._THUMB_UNDECODABLE)
+    try:
+        assert mb_api.thumb_cache_known_state(key) == "bad"
+    finally:
+        mb_api._thumb_downscale_cache.pop(key, None)
+
+
 def test_thumb_route_registration_is_skipped_outside_comfyui():
     # The ORIGINAL guard behavior (this repo's actual dev environment -- no
     # aiohttp/server installed at all) must still degrade to "route not
@@ -673,6 +886,13 @@ ALL_TESTS = [
     test_thumb_route_returns_404_with_no_store_for_a_genuinely_truncated_real_preview,
     test_thumb_route_still_returns_200_downscaled_for_a_valid_real_preview_when_pillow_is_available,
     test_thumb_route_still_returns_200_with_the_original_bytes_when_pillow_is_absent_even_for_a_truncated_preview,
+    test_thumb_route_matching_if_none_match_for_known_undecodable_stays_404_with_no_store,
+    test_thumb_route_cold_cache_conditional_request_for_corrupt_file_does_not_304,
+    test_thumb_route_cold_cache_conditional_request_for_valid_file_decodes_then_next_one_304s,
+    test_thumb_route_pillow_absent_conditional_request_on_cold_cache_still_200s_with_original_bytes,
+    test_thumb_cache_known_state_is_unknown_for_a_never_seen_key,
+    test_thumb_cache_known_state_is_good_after_a_successful_decode_is_cached,
+    test_thumb_cache_known_state_is_bad_after_the_undecodable_sentinel_is_cached,
     test_thumb_route_registration_is_skipped_outside_comfyui,
 ]
 

@@ -459,6 +459,56 @@ def _thumb_cache_put(key: Tuple[str, float, int], data: bytes) -> None:
         _thumb_downscale_cache.popitem(last=False)
 
 
+# 2026-08-04 conditional-GET fix ("the conditional-GET 304 bypasses the
+# undecodable check"): the ETag alone (`thumb_etag`, derived from
+# `(mtime, size, max_edge)`) can NEVER tell a 304-safe request apart from
+# a stale one -- a truncated preview's mtime/size never change, so a
+# browser that cached the pre-fix broken 200 keeps a matching ETag
+# forever, and a 304 built purely from the ETag would hand it that exact
+# same cached broken image on every future revalidation. The one place
+# that actually knows whether THIS `(path, mtime, max_edge)` decodes is
+# this module's own downscale cache (`_thumb_downscale_cache`) -- reused
+# here rather than adding a second cache, per the fix brief -- so
+# `_route_thumb` peeks it BEFORE trusting an `If-None-Match` hit, and
+# distinguishes three states, not two:
+#
+#   "good"    -- cached as real, decoded bytes: this file is known to
+#                decode at this size, so a 304 is honest.
+#   "bad"     -- cached as `_THUMB_UNDECODABLE`: this exact file is known
+#                to NOT decode, so a 304 must NOT be sent (a 304 has no
+#                body -- it would just tell the browser "your cached
+#                broken image is still current", identically wrong to the
+#                bug this fix closes) -- answer the SAME clean
+#                `THUMB_404_CACHE_CONTROL` 404 `thumb_bytes_impl` itself
+#                would produce, without paying for the read+decode again.
+#   "unknown" -- no cache entry at all for this exact key -- e.g. right
+#                after a process restart, when the in-memory cache is
+#                empty but a browser's own `If-None-Match` still matches
+#                (the ETag is derived from on-disk mtime/size, which
+#                restarting never changes). This is the state an earlier,
+#                obvious fix gets wrong: treating "no entry" as "assume
+#                good" is exactly how a stale broken image would survive
+#                every future restart. The only safe answer is to NOT
+#                304 -- fall through to the real decode below, exactly as
+#                an unconditional request would, so the cache gets
+#                genuinely populated (and the 304 fast path starts
+#                working again from the NEXT request onward).
+def thumb_cache_known_state(key: Tuple[str, float, int]) -> str:
+    """Returns `"good"`, `"bad"`, or `"unknown"` for `key` -- see the
+    comment immediately above this function for what each means and why
+    the third one is the one that matters. Read-only: like
+    `_thumb_cache_get`, a hit (good OR bad) is still moved to the end of
+    the LRU order, since consulting it for a conditional-GET decision is
+    itself a genuine use, not a bookkeeping side effect worth avoiding.
+    """
+    cached = _thumb_cache_get(key)
+    if cached is None:
+        return "unknown"
+    if cached is _THUMB_UNDECODABLE:
+        return "bad"
+    return "good"
+
+
 def _load_pillow_image_module() -> Any:
     """Lazy import of `PIL.Image` -- returns the module, or `None` if
     Pillow isn't installed. Called ONLY from inside `downscale_thumb_bytes`
@@ -1584,13 +1634,33 @@ try:
             "Cache-Control": THUMB_CACHE_CONTROL,
             "Last-Modified": thumb_last_modified(mtime),
         }
+        cache_key = (path, mtime, max_edge)
         if if_none_match_hits(request.headers.get("If-None-Match"), etag):
-            # Empty-body round trip instead of a full image transfer --
-            # this is the actual fix for the reported "re-fetches every
-            # 1-2s" symptom on any request that DOES reach the server (the
-            # `max-age` window above is what stops most of them from even
-            # doing that).
-            return web.Response(status=304, headers=cache_headers)
+            # 2026-08-04 fix ("the conditional-GET 304 bypasses the
+            # undecodable check"): the ETag match alone is NOT enough to
+            # answer 304 -- see `thumb_cache_known_state`'s own doc comment
+            # for the three states and why "unknown" (a cold in-process
+            # cache, e.g. right after a restart) must fall through to the
+            # real decode below rather than being treated as "good".
+            cache_state = thumb_cache_known_state(cache_key)
+            if cache_state == "good":
+                # Empty-body round trip instead of a full image transfer --
+                # this is the actual fix for the reported "re-fetches every
+                # 1-2s" symptom on any request that DOES reach the server
+                # (the `max-age` window above is what stops most of them
+                # from even doing that) -- preserved for the ONLY case it's
+                # actually safe: this exact file is known to decode.
+                return web.Response(status=304, headers=cache_headers)
+            if cache_state == "bad":
+                # Known-undecodable -- a 304 here would tell the browser
+                # its cached BROKEN image is still current, the exact bug
+                # this fix closes. Same clean 404 `thumb_bytes_impl` itself
+                # would produce, without paying for the read+decode again.
+                return web.Response(status=404, headers={"Cache-Control": THUMB_404_CACHE_CONTROL})
+            # cache_state == "unknown" -- no entry for this exact key yet
+            # (falls through to the decode below, same as an unconditional
+            # request; that call populates the cache so the NEXT
+            # conditional request for this key lands on "good"/"bad" above).
 
         # THE offload that matters most on this route: a saved preview can
         # now genuinely be a multi-MB original, and reading + decoding +
