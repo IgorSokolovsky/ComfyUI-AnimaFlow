@@ -452,6 +452,113 @@ await asyncTest("openHistoryPanel: 'Copy seed' writes the entry's seed via navig
   }
 });
 
+await asyncTest("openHistoryPanel: 'Copy seed' falls back to execCommand when navigator.clipboard is absent entirely -- the actual bug (an insecure origin, e.g. plain http://, never exposes navigator.clipboard at all)", async () => {
+  const doc = makeDocStub();
+  const anchor = doc.createElement("button");
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ ok: true, entries: [liveEntry] }) });
+  const originalNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  // No `navigator` at all -- mirrors an insecure origin exactly, unlike a
+  // stub that merely omits `.clipboard` off a present navigator.
+  Object.defineProperty(globalThis, "navigator", { value: undefined, configurable: true });
+  const execCommandCalls = [];
+  doc.execCommand = (cmd) => {
+    execCommandCalls.push(cmd);
+    return true;
+  };
+  try {
+    const handle = openHistoryPanel({ ctx: { doc, getCanvasEl: () => null, fetchImpl }, anchorEl: anchor });
+    await settle();
+    const row = findAll(handle.overlay, "wtn-an-hist-row")[0];
+    const actions = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-actions"));
+    const copyBtn = actions.children.find((b) => b.textContent === "Copy seed");
+    copyBtn._listeners.click[0]({ stopPropagation() {} });
+    await settle();
+    assert.deepEqual(execCommandCalls, ["copy"]);
+    const status = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-status"));
+    assert.equal(status.textContent, "Seed copied.");
+    // The temporary textarea used to stage the selection is gone afterwards,
+    // whether the copy succeeded or not.
+    assert.ok(!doc.body.children.some((c) => c.tagName === "textarea"));
+    closeActiveOverlay();
+  } finally {
+    if (originalNavigatorDescriptor) {
+      Object.defineProperty(globalThis, "navigator", originalNavigatorDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+});
+
+await asyncTest("openHistoryPanel: 'Copy seed' reports the readable seed-specific failure when even the execCommand fallback can't copy", async () => {
+  const doc = makeDocStub();
+  const anchor = doc.createElement("button");
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ ok: true, entries: [liveEntry] }) });
+  const originalNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { value: undefined, configurable: true });
+  doc.execCommand = () => false; // simulates a browser refusing the command
+  try {
+    const handle = openHistoryPanel({ ctx: { doc, getCanvasEl: () => null, fetchImpl }, anchorEl: anchor });
+    await settle();
+    const row = findAll(handle.overlay, "wtn-an-hist-row")[0];
+    const actions = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-actions"));
+    const copyBtn = actions.children.find((b) => b.textContent === "Copy seed");
+    copyBtn._listeners.click[0]({ stopPropagation() {} });
+    await settle();
+    const status = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-status"));
+    assert.equal(status.textContent, "Couldn't copy automatically -- the seed is 999.");
+    assert.ok(status.classList.contains("wtn-an-hist-status-err"));
+    assert.ok(!doc.body.children.some((c) => c.tagName === "textarea"));
+    closeActiveOverlay();
+  } finally {
+    if (originalNavigatorDescriptor) {
+      Object.defineProperty(globalThis, "navigator", originalNavigatorDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+});
+
+await asyncTest("openHistoryPanel: 'Copy seed' falls back to execCommand when writeText rejects (not just when navigator.clipboard is absent)", async () => {
+  const doc = makeDocStub();
+  const anchor = doc.createElement("button");
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ ok: true, entries: [liveEntry] }) });
+  const originalNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => { throw new Error("simulated permission denial"); } } },
+    configurable: true,
+  });
+  const execCommandCalls = [];
+  doc.execCommand = (cmd) => {
+    execCommandCalls.push(cmd);
+    return true;
+  };
+  try {
+    const handle = openHistoryPanel({ ctx: { doc, getCanvasEl: () => null, fetchImpl }, anchorEl: anchor });
+    await settle();
+    const row = findAll(handle.overlay, "wtn-an-hist-row")[0];
+    const actions = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-actions"));
+    const copyBtn = actions.children.find((b) => b.textContent === "Copy seed");
+    copyBtn._listeners.click[0]({ stopPropagation() {} });
+    await settle();
+    assert.deepEqual(execCommandCalls, ["copy"]);
+    const status = row.children.find((c) => c.classList.contains("wtn-an-hist-body"))
+      .children.find((c) => c.classList.contains("wtn-an-hist-status"));
+    assert.equal(status.textContent, "Seed copied.");
+    closeActiveOverlay();
+  } finally {
+    if (originalNavigatorDescriptor) {
+      Object.defineProperty(globalThis, "navigator", originalNavigatorDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+});
+
 await asyncTest("openHistoryPanel: 'Save it now' posts a single-entry stages map (this entry's own stage/filename/subfolder/type) plus the node's preview_state and seed", async () => {
   const doc = makeDocStub();
   const anchor = doc.createElement("button");

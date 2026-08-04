@@ -21,6 +21,7 @@
 import { injectTheme } from "/extensions/ComfyUI-AnimaFlow/shared/theme.mjs";
 import * as api from "/extensions/ComfyUI-AnimaFlow/shared/api.mjs";
 import { Z_MODAL } from "../../shared/z_layers.mjs";
+import { copyYamlToClipboard } from "./copy_yaml.mjs";
 import {
   mkRule,
   seedRuleset,
@@ -610,11 +611,7 @@ export function openRuleBuilder(ctx = {}) {
   q("close-export").addEventListener("click", () => { exportPane.style.display = "none"; });
   q("copy-yaml").addEventListener("click", async () => {
     const copyBtn = q("copy-yaml");
-    try {
-      await navigator.clipboard.writeText(toYAML(state.rules, state.profile));
-      copyBtn.textContent = "Copied ✓";
-      setTimeout(() => { copyBtn.textContent = "Copy"; }, 1400);
-    } catch { /* clipboard not available — silently ignore, matches playground */ }
+    await copyYamlToClipboard(copyBtn, toYAML(state.rules, state.profile), document);
   });
 
   // ── close / lifecycle ────────────────────────────────────────────────

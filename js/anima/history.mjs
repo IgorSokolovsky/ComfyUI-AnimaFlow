@@ -55,6 +55,7 @@
  */
 
 import { buildPreviewImageUrl } from "./render.mjs";
+import { copyToClipboard } from "../shared/clipboard.mjs";
 import {
   openOverlayWithZoom,
   closeOverlayIfOwnedBy,
@@ -277,14 +278,15 @@ function el(doc, tag, className) {
   return e;
 }
 
-async function copySeedToClipboard(seed) {
-  try {
-    if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-      await navigator.clipboard.writeText(String(seed));
-      return { ok: true };
-    }
-  } catch {
-    // fall through to the readable failure below
+async function copySeedToClipboard(seed, doc) {
+  // Delegates the actual copy mechanism (modern API, or the insecure-origin
+  // textarea/execCommand fallback -- see `js/shared/clipboard.mjs`'s top
+  // doc comment for why the fallback exists) to the shared helper; this
+  // function only owns ITS OWN failure wording, which names the seed so the
+  // user can copy it by hand instead.
+  const result = await copyToClipboard(String(seed), doc);
+  if (result.ok) {
+    return { ok: true };
   }
   return { ok: false, message: `Couldn't copy automatically -- the seed is ${seed}.` };
 }
@@ -354,7 +356,7 @@ function buildRow(doc, ctx, entry) {
   copyBtn.textContent = "Copy seed";
   copyBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    const result = await copySeedToClipboard(entry.seed);
+    const result = await copySeedToClipboard(entry.seed, doc);
     setStatus(result.ok ? "Seed copied." : result.message, !result.ok);
   });
   actions.appendChild(copyBtn);
