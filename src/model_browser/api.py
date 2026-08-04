@@ -144,6 +144,33 @@ instead of serving it untouched (`downscale_thumb_bytes`/`thumb_bytes_impl`
 above `thumb_path_impl`) -- Pillow (ships with ComfyUI, lazily imported,
 never a hard dependency of this package) does the resize; its absence is a
 silent fallback to the original bytes, never an error.
+
+2026-08-04 fix ("an undecodable preview must behave like an absent one, not
+a broken image"): `3e02428` stopped previews being written truncated, but
+every preview saved BEFORE that fix can still be truncated on disk, forever
+-- and this route used to serve those broken bytes as a normal 200, which is
+exactly what made an owner's identity thumbnail render as a blank box or
+"only the top 1/4" of a progressive image. `downscale_thumb_bytes` already
+decodes on this route's own hot path, so the validation is free: when Pillow
+IS installed and STILL can't decode the file (as opposed to Pillow simply
+being absent, which is unchanged from the paragraph above), `/thumb` now
+answers the SAME clean 404 -- same `THUMB_404_CACHE_CONTROL` `no-store`
+headers -- it already gives an outright-absent preview. Verified (not
+assumed) both frontend consumers of this URL already fall through a 404 the
+same as an absent file: `js/controls/model_info.mjs`'s `renderThumb` tries
+this URL first, then its own level-aware Civitai candidates, then `locked`/
+placeholder -- `attachThumbCandidate`'s `onerror` handler doesn't inspect a
+status code, so a 404 and a decode failure already advanced the SAME way
+before this fix; `js/controls/civitai_modal.mjs`'s `buildInstalledCard`
+gives this URL as its ONLY candidate (there is no Civitai gallery to fall
+back to for an offline local file, by design) and already lands on its own
+placeholder glyph on any failure -- a 404 there is a faster blank box, not a
+new one. (`js/controls/model_detail_view.mjs`'s own `attachThumbCandidate`
+call is NOT a consumer of this route at all -- its candidates come only
+from a model's Civitai-hosted gallery images, never this local URL.) This
+route never rewrites or deletes the file -- a GET must not mutate disk --
+so the broken file is repaired the ordinary way, the next time a lookup
+runs `savePreview`.
 """
 from __future__ import annotations
 
@@ -377,6 +404,22 @@ def thumb_path_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
 # for this to be correct on its own (see `_route_thumb` below).
 DEFAULT_THUMB_MAX_EDGE = 256
 
+# Sentinel cached for a genuinely undecodable preview (2026-08-04 fix, "an
+# undecodable preview must behave like an absent one, not a broken image") --
+# distinct from both real bytes AND `None` (which `_thumb_cache_get` already
+# uses to mean "not cached at all"), so a repeat request for the SAME
+# `(path, mtime, max_edge)` can answer straight from this cache without
+# re-reading the file and re-attempting (and re-failing) the same decode.
+# `thumb_bytes_impl` translates this back to `None` for its OWN caller --
+# this sentinel is this module's private cache-representation detail, never
+# something that escapes `api.py`.
+class _ThumbUndecodable:
+    __slots__ = ()
+
+
+_THUMB_UNDECODABLE = _ThumbUndecodable()
+
+
 # Process-wide, bounded LRU cache of ALREADY-DOWNSCALED bytes, keyed by
 # `(path, mtime, max_edge)`. Deliberately module-level -- unlike `12625c0`
 # ("the loader model cache belongs to the node, not the module"), which had
@@ -509,35 +552,74 @@ def thumb_bytes_impl(
     *,
     max_edge: int = DEFAULT_THUMB_MAX_EDGE,
     image_module: Any = None,
-) -> bytes:
+) -> Optional[bytes]:
     """Reads `path` (already resolved and validated by `thumb_path_impl`
     above) and returns the bytes to actually SERVE for
     `GET /wtn/model_browser/thumb`: the original file downscaled to
-    `max_edge`'s longer edge when Pillow is available, or the untouched
-    original bytes when it isn't (`downscale_thumb_bytes` returning `None`
-    -- a silent, tested fallback, never an error).
+    `max_edge`'s longer edge when Pillow is available and can decode it,
+    the untouched original bytes when Pillow simply isn't installed (we
+    can't tell a good file from a bad one, so the pre-existing silent
+    fallback is unchanged), or **`None`** when Pillow IS available but
+    genuinely could not decode `data` -- corrupt/truncated bytes, the
+    2026-08-04 fix ("an undecodable preview must behave like an absent
+    one, not a broken image"): every preview saved before `3e02428`
+    (the write-side truncation fix) can be truncated on disk forever, and
+    serving those broken bytes forever is the wrong answer at that scale.
+    `None` here is `_route_thumb`'s own signal to answer the SAME clean
+    404 it already gives an absent preview, so the frontend's existing
+    local -> Civitai candidate fallback (`attachThumbCandidate`) just
+    advances -- see this module's own top docstring, "`/thumb` is Slice
+    3's own addition".
 
-    Never rewrites `path` on disk -- this is a SERVE-time-only transform,
-    the entire point of the owner's 2026-07-31 reversal (see this module's
-    own "`/thumb` downscale-on-serve" comment above `DEFAULT_THUMB_MAX_
-    EDGE`). Cached in memory keyed by `(path, mtime, max_edge)`
-    (`_thumb_cache_get`/`_thumb_cache_put`) so repeat requests for the same
-    file at the same size -- a picker scrolling past the same rows again --
-    never re-read or re-decode anything.
+    Never rewrites `path` on disk, in ANY of the three outcomes above --
+    this is a SERVE-time-only transform (the entire point of the owner's
+    2026-07-31 reversal, see this module's own "`/thumb` downscale-on-
+    serve" comment above `DEFAULT_THUMB_MAX_EDGE`); a repaired file only
+    ever comes from `lookup.save_preview` overwriting it on a LATER
+    lookup, never from this GET route.
+
+    Cached in memory keyed by `(path, mtime, max_edge)` (`_thumb_cache_get`
+    /`_thumb_cache_put`) so repeat requests for the same file at the same
+    size -- a picker scrolling past the same rows again -- never re-read or
+    re-decode anything, INCLUDING the undecodable case: `_THUMB_UNDECODABLE`
+    is the sentinel cached for that outcome so a broken file isn't re-read
+    and re-decoded (just to fail the same way again) on every subsequent
+    request until its mtime actually changes.
     """
     mtime = os.path.getmtime(path)
     key = (path, mtime, max_edge)
     cached = _thumb_cache_get(key)
     if cached is not None:
-        return cached
+        return None if cached is _THUMB_UNDECODABLE else cached
 
     with open(path, "rb") as fh:
         original = fh.read()
 
     downscaled = downscale_thumb_bytes(original, max_edge, image_module=image_module)
-    result = downscaled if downscaled is not None else original
-    _thumb_cache_put(key, result)
-    return result
+    if downscaled is not None:
+        _thumb_cache_put(key, downscaled)
+        return downscaled
+
+    # `downscale_thumb_bytes` returned `None` -- it already logged (at
+    # debug) WHICH of its two fallback branches ran; this is the SAME
+    # distinction, needed here to decide what this function itself hands
+    # back. Re-resolving Pillow's presence is cheap (an already-imported
+    # module comes back from `sys.modules` instantly; a genuinely absent
+    # one fails fast) and never re-touches `path` on disk.
+    resolved_module = image_module if image_module is not None else _load_pillow_image_module()
+    if resolved_module is None:
+        # Pillow itself isn't installed -- we cannot tell a good file from
+        # a bad one, so keep the pre-fix behaviour: serve the untouched
+        # original. Cached as real bytes, same as before this fix.
+        _thumb_cache_put(key, original)
+        return original
+
+    # Pillow IS available and still couldn't decode/re-encode `original` --
+    # genuinely corrupt/truncated bytes on disk. Cache the sentinel (not
+    # the broken bytes) so a repeat request for this exact
+    # `(path, mtime, max_edge)` gets a fast, cached "undecodable" answer.
+    _thumb_cache_put(key, _THUMB_UNDECODABLE)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1520,6 +1602,18 @@ try:
         # installed (`downscale_thumb_bytes`'s own docstring) -- still one
         # executor hop either way, never inline.
         data = await loop.run_in_executor(None, functools.partial(thumb_bytes_impl, path, max_edge=max_edge))
+        if data is None:
+            # Genuinely undecodable bytes on disk (2026-08-04 fix -- "an
+            # undecodable preview must behave like an absent one, not a
+            # broken image"): `thumb_bytes_impl` already distinguished this
+            # from "Pillow just isn't installed" (which still falls through
+            # to the 200 below with the untouched original bytes). Same
+            # `no-store` 404 as the "no such file"/"no preview" cases above
+            # -- NOT the `cache_headers` built for a 200/304 above, since
+            # this isn't a real image and a `save_preview` repair later must
+            # still be visible on the very next request, not masked by a
+            # cached negative.
+            return web.Response(status=404, headers={"Cache-Control": THUMB_404_CACHE_CONTROL})
         content_type, _ = mimetypes.guess_type(path)
         return web.Response(
             body=data,

@@ -37,6 +37,7 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -2944,6 +2945,175 @@ def test_downscale_thumb_bytes_converts_rgba_to_rgb_before_saving_as_jpeg():
 def test_downscale_thumb_bytes_returns_none_on_any_decode_failure():
     fake_module = _FakeThumbImageModule(None, raise_on_open=ValueError("corrupt"))
     assert mb_api.downscale_thumb_bytes(b"garbage", 256, image_module=fake_module) is None
+
+
+# ---------------------------------------------------------------------------
+# "An undecodable preview must behave like an absent one, not a broken
+# image" (2026-08-04 fix). `3e02428` stopped previews being written
+# truncated, but every preview SAVED BEFORE that fix can still be truncated
+# on disk, forever -- and this route used to serve those broken bytes as a
+# normal 200. These tests use a REAL, valid 1x1 PNG (built below, no PIL
+# needed) cut short, rather than random bytes -- the owner's own measured
+# symptom is "a decodable header, RIFF/PNG length fields included, with the
+# trailing pixel data missing", and only a genuinely truncated real file
+# exercises that exact shape (random bytes would fail differently, at the
+# signature check, not partway through a chunk).
+# ---------------------------------------------------------------------------
+
+
+def _build_minimal_png_bytes() -> bytes:
+    """A real, valid, decodable 1x1 RGB PNG -- hand-built with `struct`/
+    `zlib` (both stdlib, no Pillow needed, which stays consistent with this
+    file's own "Pillow is NOT importable in this environment" constraint).
+    Not a synthetic/placeholder image: a real decoder (or the chunk-walking
+    stand-in below) can walk it end to end."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))  # 1x1, 8-bit, RGB
+    raw_scanline = b"\x00\xff\x00\x00"  # filter byte (none) + one RGB pixel
+    idat = chunk(b"IDAT", zlib.compress(raw_scanline))
+    iend = chunk(b"IEND", b"")
+    return signature + ihdr + idat + iend
+
+
+def _truncate_png_bytes(data: bytes) -> bytes:
+    """Cuts `data` well before its own `IEND` trailer -- a decodable
+    signature/header, chunk length fields promising more bytes than are
+    actually present, exactly the shape `3e02428`'s write-side bug produced
+    (the owner's own measurement: a RIFF/PNG header declaring 5,584,420
+    bytes against 2,048,000 actually on disk)."""
+    return data[:-16]
+
+
+def _png_chunk_walk_or_raise(data: bytes) -> None:
+    """A genuine (if minimal) PNG chunk walker -- not a length/random-bytes
+    check -- standing in for Pillow's own decode step wherever Pillow itself
+    is unavailable (this repo's whole test environment, verified elsewhere:
+    `import PIL` fails here). Raises `ValueError` on anything a real decoder
+    would also reject: a bad signature, a chunk header/body that runs past
+    the end of `data`, or a file that never reaches its own `IEND` -- the
+    exact failure this fix is about. Returns silently on a well-formed file.
+    """
+    signature = b"\x89PNG\r\n\x1a\n"
+    if data[:8] != signature:
+        raise ValueError("not a PNG signature")
+    pos = 8
+    saw_iend = False
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise ValueError("truncated chunk header")
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        tag = data[pos + 4:pos + 8]
+        pos += 8
+        if pos + length + 4 > len(data):
+            raise ValueError("truncated chunk data")
+        pos += length + 4  # chunk data + its trailing CRC
+        if tag == b"IEND":
+            saw_iend = True
+            break
+    if not saw_iend:
+        raise ValueError("missing IEND -- truncated file")
+
+
+class _RealisticPngImageModule:
+    """Stands in for `PIL.Image` when Pillow IS (simulated as) installed --
+    unlike `_FakeThumbImageModule` above, `.open()` doesn't just return a
+    scripted image or raise a scripted exception: it actually walks the real
+    bytes handed to it (`_png_chunk_walk_or_raise`), so a genuinely truncated
+    real PNG fixture exercises the actual failure mode this fix is about,
+    and a genuinely valid one actually succeeds."""
+
+    def __init__(self):
+        self.open_calls = 0
+
+    def open(self, fh):
+        self.open_calls += 1
+        data = fh.read()
+        _png_chunk_walk_or_raise(data)
+        return _FakeThumbImage("PNG", (1, 1))
+
+
+def test_downscale_thumb_bytes_decodes_a_genuinely_valid_real_png_fixture():
+    # Guards the fixture/validator themselves: if this failed, the truncated
+    # case below would prove nothing (a validator that always raises would
+    # "pass" it too).
+    valid = _build_minimal_png_bytes()
+    result = mb_api.downscale_thumb_bytes(valid, 256, image_module=_RealisticPngImageModule())
+    assert result == b"FAKE:PNG:1x1:RGB"
+
+
+def test_downscale_thumb_bytes_returns_none_for_a_genuinely_truncated_real_png_fixture():
+    truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+    result = mb_api.downscale_thumb_bytes(truncated, 256, image_module=_RealisticPngImageModule())
+    assert result is None
+
+
+def test_thumb_bytes_impl_returns_none_for_an_undecodable_file_and_never_rewrites_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+        with open(path, "wb") as fh:
+            fh.write(truncated)
+
+        result = mb_api.thumb_bytes_impl(path, image_module=_RealisticPngImageModule())
+        assert result is None
+
+        # A GET must not mutate disk -- the file is repaired the ordinary
+        # way (a later `savePreview`), never by this route.
+        with open(path, "rb") as fh:
+            assert fh.read() == truncated
+
+
+def test_thumb_bytes_impl_caches_the_undecodable_outcome_and_never_redecodes():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+        with open(path, "wb") as fh:
+            fh.write(truncated)
+
+        first = mb_api.thumb_bytes_impl(path, image_module=_RealisticPngImageModule())
+        assert first is None
+
+        # A second call for the SAME (path, mtime, max_edge) must hit the
+        # cache -- a module that raises if ever touched proves it never
+        # re-reads/re-decodes the file just to re-learn it's broken.
+        def _must_not_be_called(fh):
+            raise AssertionError("cache hit expected -- must not re-decode")
+
+        poisoned_module = _FakeThumbImageModule(None)
+        poisoned_module.open = _must_not_be_called
+        second = mb_api.thumb_bytes_impl(path, image_module=poisoned_module)
+        assert second is None
+
+
+def test_thumb_bytes_impl_still_returns_downscaled_bytes_for_a_valid_real_png_fixture():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        valid = _build_minimal_png_bytes()
+        with open(path, "wb") as fh:
+            fh.write(valid)
+
+        result = mb_api.thumb_bytes_impl(path, image_module=_RealisticPngImageModule())
+        assert result == b"FAKE:PNG:1x1:RGB"
+
+
+def test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable_even_for_a_real_truncated_fixture():
+    # The regression this fix must NOT introduce: Pillow simply being absent
+    # (as opposed to installed-but-failing) must still silently serve the
+    # untouched original -- otherwise every preview on a no-Pillow install
+    # would start 404ing. No `image_module` injected -- this genuinely
+    # exercises this environment's real absence of Pillow.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+        with open(path, "wb") as fh:
+            fh.write(truncated)
+
+        result = mb_api.thumb_bytes_impl(path)
+        assert result == truncated
 
 
 def test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable():
@@ -6691,6 +6861,12 @@ ALL_TESTS = [
     test_downscale_thumb_bytes_never_upscales_a_smaller_source,
     test_downscale_thumb_bytes_converts_rgba_to_rgb_before_saving_as_jpeg,
     test_downscale_thumb_bytes_returns_none_on_any_decode_failure,
+    test_downscale_thumb_bytes_decodes_a_genuinely_valid_real_png_fixture,
+    test_downscale_thumb_bytes_returns_none_for_a_genuinely_truncated_real_png_fixture,
+    test_thumb_bytes_impl_returns_none_for_an_undecodable_file_and_never_rewrites_it,
+    test_thumb_bytes_impl_caches_the_undecodable_outcome_and_never_redecodes,
+    test_thumb_bytes_impl_still_returns_downscaled_bytes_for_a_valid_real_png_fixture,
+    test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable_even_for_a_real_truncated_fixture,
     test_thumb_bytes_impl_falls_back_to_the_original_bytes_when_pillow_unavailable,
     test_thumb_bytes_impl_uses_the_downscaled_bytes_and_never_rewrites_the_file,
     test_thumb_bytes_impl_caches_by_path_mtime_and_max_edge,

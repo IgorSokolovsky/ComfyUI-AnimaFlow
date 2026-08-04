@@ -24,9 +24,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import struct
 import sys
 import tempfile
 import types
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -198,6 +200,112 @@ def _make_lora_with_preview(tmp, model_bytes=b"lora-bytes", preview_bytes=b"prev
         names_by_folder={"loras": ["a.safetensors"]},
     )
     return restore, preview_path
+
+
+# ---------------------------------------------------------------------------
+# "An undecodable preview must behave like an absent one, not a broken
+# image" (2026-08-04 fix) -- same real-PNG-fixture idiom as `tests/
+# test_model_browser.py`'s own copy (deliberately duplicated, per this
+# file's own top docstring precedent, so each test file stays independently
+# runnable): a genuinely truncated real PNG, not random bytes, so this
+# exercises the owner's own actual failure mode (a decodable header with
+# missing trailing data), and a chunk-walking fake `PIL.Image` stand-in
+# (Pillow itself is NOT importable in this environment) that actually
+# succeeds/fails on the real bytes handed to it rather than a scripted
+# outcome.
+# ---------------------------------------------------------------------------
+
+
+def _build_minimal_png_bytes() -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    raw_scanline = b"\x00\xff\x00\x00"
+    idat = chunk(b"IDAT", zlib.compress(raw_scanline))
+    iend = chunk(b"IEND", b"")
+    return signature + ihdr + idat + iend
+
+
+def _truncate_png_bytes(data: bytes) -> bytes:
+    return data[:-16]
+
+
+def _png_chunk_walk_or_raise(data: bytes) -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    if data[:8] != signature:
+        raise ValueError("not a PNG signature")
+    pos = 8
+    saw_iend = False
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise ValueError("truncated chunk header")
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        tag = data[pos + 4:pos + 8]
+        pos += 8
+        if pos + length + 4 > len(data):
+            raise ValueError("truncated chunk data")
+        pos += length + 4
+        if tag == b"IEND":
+            saw_iend = True
+            break
+    if not saw_iend:
+        raise ValueError("missing IEND -- truncated file")
+
+
+class _FakeDecodedImage:
+    """Minimal `PIL.Image.Image` stand-in -- just enough surface for
+    `downscale_thumb_bytes` to call (`.format`/`.mode`/`.load()`/
+    `.thumbnail()`/`.save()`), mirroring `tests/test_model_browser.py`'s own
+    `_FakeThumbImage` (duplicated rather than imported, same "each test file
+    stays independently runnable" precedent)."""
+
+    def __init__(self, fmt: str, size):
+        self.format = fmt
+        self.size = size
+        self.mode = "RGB"
+
+    def load(self):
+        pass
+
+    def thumbnail(self, box):
+        pass
+
+    def save(self, fh, format=None):  # noqa: A002 - matches PIL's own kwarg name
+        fh.write(f"FAKE:{format}:{self.size[0]}x{self.size[1]}".encode())
+
+
+class _RealisticPngImageModule:
+    """Stands in for `PIL.Image` -- `.open()` performs a REAL PNG chunk walk
+    (`_png_chunk_walk_or_raise`) against the actual bytes handed to it,
+    rather than a scripted raise/succeed, so a genuinely truncated real PNG
+    fixture exercises the actual failure mode this fix is about."""
+
+    def open(self, fh):
+        _png_chunk_walk_or_raise(fh.read())
+        return _FakeDecodedImage("PNG", (1, 1))
+
+
+def _with_simulated_pillow(target_module, image_module):
+    """Monkeypatches `target_module._load_pillow_image_module` to return
+    `image_module` -- simulates Pillow being installed and resolving to this
+    stand-in, for a ROUTE-level test: the aiohttp handler calls
+    `thumb_bytes_impl(path, max_edge=max_edge)` with no `image_module`
+    override (there's no query param for that), so Pillow's presence is
+    resolved this same way in production. `target_module` MUST be the
+    freshly re-imported module `_install_fake_aiohttp_and_server` returned,
+    NOT this file's own top-level `mb_api` -- that import happened before
+    this file's `sys.modules.pop(MODULE_NAME, None)`/re-import, so it's a
+    stale reference to a DIFFERENT module object than the one the captured
+    route handler's own closures actually call into."""
+    previous = target_module._load_pillow_image_module
+    target_module._load_pillow_image_module = lambda: image_module
+
+    def restore():
+        target_module._load_pillow_image_module = previous
+
+    return restore
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +554,89 @@ def test_thumb_route_404_carries_no_positive_caching():
         _restore_sys_modules(previous)
 
 
+def test_thumb_route_returns_404_with_no_store_for_a_genuinely_truncated_real_preview():
+    # The 2026-08-04 fix itself: `3e02428` stopped previews being written
+    # truncated, but every preview saved BEFORE it can still be truncated on
+    # disk, forever -- this route used to serve those broken bytes as a
+    # plain 200.
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=truncated)
+            restore_pillow = _with_simulated_pillow(module, _RealisticPngImageModule())
+            try:
+                response = asyncio.run(
+                    handler(_FakeRequest(query={"kind": "loras", "name": "a.safetensors"}))
+                )
+                assert response.status == 404
+                assert not response.headers.get("ETag")
+                assert not response.headers.get("Last-Modified")
+                assert response.headers.get("Cache-Control") == module.THUMB_404_CACHE_CONTROL
+
+                # A GET must not mutate disk -- the truncated file is left
+                # exactly as it was; it's repaired the ordinary way, by a
+                # later `savePreview`, never by this route.
+                with open(preview_path, "rb") as fh:
+                    assert fh.read() == truncated
+            finally:
+                restore_pillow()
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
+def test_thumb_route_still_returns_200_downscaled_for_a_valid_real_preview_when_pillow_is_available():
+    # The other half of the same fix: a genuinely GOOD file must not be
+    # collaterally 404'd just because Pillow is (simulated as) installed.
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            valid = _build_minimal_png_bytes()
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=valid)
+            restore_pillow = _with_simulated_pillow(module, _RealisticPngImageModule())
+            try:
+                response = asyncio.run(
+                    handler(_FakeRequest(query={"kind": "loras", "name": "a.safetensors"}))
+                )
+                assert response.status == 200
+                assert response.body == b"FAKE:PNG:1x1"  # re-encoded, not the untouched original
+                assert response.headers.get("ETag")
+            finally:
+                restore_pillow()
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
+def test_thumb_route_still_returns_200_with_the_original_bytes_when_pillow_is_absent_even_for_a_truncated_preview():
+    # The regression this fix must NOT introduce (task brief, non-
+    # negotiable): Pillow simply being ABSENT -- as opposed to installed but
+    # failing to decode -- must still silently serve the untouched original,
+    # even for a file that happens to be truncated; otherwise every preview
+    # on a no-Pillow install would start 404ing. No monkeypatch here -- this
+    # genuinely exercises this environment's real absence of Pillow
+    # (verified elsewhere: `import PIL` fails here).
+    module, fake_routes, previous = _install_fake_aiohttp_and_server()
+    try:
+        handler = fake_routes.handlers.get(("GET", "/wtn/model_browser/thumb"))
+        with tempfile.TemporaryDirectory() as tmp:
+            truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+            restore_fp, preview_path = _make_lora_with_preview(tmp, preview_bytes=truncated)
+            try:
+                response = asyncio.run(
+                    handler(_FakeRequest(query={"kind": "loras", "name": "a.safetensors"}))
+                )
+                assert response.status == 200
+                assert response.body == truncated
+            finally:
+                restore_fp()
+    finally:
+        _restore_sys_modules(previous)
+
+
 def test_thumb_route_registration_is_skipped_outside_comfyui():
     # The ORIGINAL guard behavior (this repo's actual dev environment -- no
     # aiohttp/server installed at all) must still degrade to "route not
@@ -479,6 +670,9 @@ ALL_TESTS = [
     test_thumb_route_touching_the_file_changes_the_etag_and_is_200_again,
     test_thumb_route_same_file_different_max_edge_has_a_different_etag,
     test_thumb_route_404_carries_no_positive_caching,
+    test_thumb_route_returns_404_with_no_store_for_a_genuinely_truncated_real_preview,
+    test_thumb_route_still_returns_200_downscaled_for_a_valid_real_preview_when_pillow_is_available,
+    test_thumb_route_still_returns_200_with_the_original_bytes_when_pillow_is_absent_even_for_a_truncated_preview,
     test_thumb_route_registration_is_skipped_outside_comfyui,
 ]
 

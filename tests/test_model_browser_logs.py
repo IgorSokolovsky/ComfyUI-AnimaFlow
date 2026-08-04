@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 import sys
 import tempfile
 import urllib.error
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -782,6 +784,85 @@ class _RaisingThumbImageModule:
         raise self._exc
 
 
+# ---------------------------------------------------------------------------
+# "An undecodable preview must behave like an absent one, not a broken
+# image" (2026-08-04 fix) -- a real, truncated PNG fixture (same idiom as
+# `tests/test_model_browser.py`'s own copy, deliberately duplicated per this
+# file's own "each test file stays independently runnable" precedent), so
+# the decode-failure debug line is proven against the owner's actual
+# failure mode (a decodable header, missing trailing data), not merely a
+# scripted exception.
+# ---------------------------------------------------------------------------
+
+
+def _build_minimal_png_bytes() -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    ihdr = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+    raw_scanline = b"\x00\xff\x00\x00"
+    idat = chunk(b"IDAT", zlib.compress(raw_scanline))
+    iend = chunk(b"IEND", b"")
+    return signature + ihdr + idat + iend
+
+
+def _truncate_png_bytes(data: bytes) -> bytes:
+    return data[:-16]
+
+
+def _png_chunk_walk_or_raise(data: bytes) -> None:
+    signature = b"\x89PNG\r\n\x1a\n"
+    if data[:8] != signature:
+        raise ValueError("not a PNG signature")
+    pos = 8
+    saw_iend = False
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise ValueError("truncated chunk header")
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        tag = data[pos + 4:pos + 8]
+        pos += 8
+        if pos + length + 4 > len(data):
+            raise ValueError("truncated chunk data")
+        pos += length + 4
+        if tag == b"IEND":
+            saw_iend = True
+            break
+    if not saw_iend:
+        raise ValueError("missing IEND -- truncated file")
+
+
+class _RealisticPngImageModule:
+    """Stands in for `PIL.Image` -- `.open()` performs a REAL PNG chunk walk
+    against the actual bytes handed to it (`_png_chunk_walk_or_raise`),
+    rather than a scripted raise, so a genuinely truncated real PNG fixture
+    exercises the actual failure mode. This file only ever hands it a
+    truncated fixture (the decode-failure debug line is this file's own
+    concern; the success path is already covered by `tests/
+    test_model_browser.py`'s own copy of this same fixture/module), so
+    `.open()` never needs to return a usable image here."""
+
+    def open(self, fh):
+        _png_chunk_walk_or_raise(fh.read())  # always raises for this file's own fixture
+
+
+def test_downscale_thumb_bytes_debug_logs_decode_failed_for_a_genuinely_truncated_real_png_fixture():
+    restore_level = _with_level("debug")
+    records, restore_logs = _capture_logs()
+    try:
+        truncated = _truncate_png_bytes(_build_minimal_png_bytes())
+        result = mb_api.downscale_thumb_bytes(truncated, 256, image_module=_RealisticPngImageModule())
+        assert result is None
+        joined = "\n".join(records)
+        assert "thumb fallback" in joined
+        assert "reason=decode_failed" in joined
+        assert "ValueError" in joined
+    finally:
+        restore_logs()
+        restore_level()
+
+
 def test_downscale_thumb_bytes_debug_logs_pillow_missing_when_no_image_module_at_all():
     # No `image_module` injected -- this environment genuinely has no
     # Pillow installed (verified elsewhere: `import PIL` fails here).
@@ -1054,6 +1135,7 @@ ALL_TESTS = [
     test_finalize_successful_download_summary_reports_skipped_when_civitai_disabled,
     test_finalize_successful_download_summary_reports_failed_on_a_bad_response,
     test_fetch_preview_image_debug_logs_the_candidate_url,
+    test_downscale_thumb_bytes_debug_logs_decode_failed_for_a_genuinely_truncated_real_png_fixture,
     test_downscale_thumb_bytes_debug_logs_pillow_missing_when_no_image_module_at_all,
     test_downscale_thumb_bytes_debug_logs_decode_failed_with_the_exception_type,
     test_downscale_thumb_bytes_off_emits_nothing_on_either_fallback_branch,
