@@ -32,6 +32,20 @@ Anything shipped but not yet exercised in a live ComfyUI belongs in *Done (unver
 
 None needs a decision; each exists because something else was fixed and left a trace.
 
+> ### ⚠️ Three of these four were already done. Check an entry against git before acting on it.
+>
+> Items 1, 2 and 3 all turned out to be stale on 2026-08-05 — item 1 retracted as a probe artifact,
+> item 2 landed in `26d152c` two days before it was filed here, item 3's skill re-measured on
+> 2026-08-03. **Two builders were dispatched off those entries**, and one brief asserted as fact that
+> `render.mjs:795` "hand-writes" a rule it had not contained since `26d152c` — the same commit the
+> brief cited as the precedent to follow. The builder verified the line first, found it already
+> migrated, and declined to change it.
+>
+> **A board entry is a claim with a timestamp, not a fact.** `git log -- <path>` (or `git blame` on the
+> cited line) before writing a brief costs seconds and would have caught all three. This applies most
+> to entries that name a file:line — those are exactly the ones that rot, and exactly the ones a brief
+> repeats verbatim.
+
 1. ~~**`max-height: 100%` may resolve against `content-box`.**~~ **NOT A BUG — retracted 2026-08-03,
    measured.** `theme.css:77` is `.wtn *, .wtn *::before, .wtn *::after { box-sizing: border-box; }`
    and the detail view's root carries the bare `wtn` class (`model_detail_view.mjs:1569`), so every
@@ -54,24 +68,55 @@ None needs a decision; each exists because something else was fixed and left a t
    > put the element under an ancestor with the bare `wtn` class.** Without it every box measures
    > ~17px large and invents a bug. That has now cost two passes.
 
-2. **`js/anima/render.mjs:795` hand-writes `.wtn-an-panel-pv > .wtn-an-body > * { flex: none; }`** —
-   a fourth independent copy of the same fix `.wtn-flex-fixed` was created for (`25b60f1`). The class
-   exists specifically to stop a fifth; this one predates it and should adopt it.
-3. **`.claude/skills/animaflow-shared-fields/SKILL.md` is now stale, and we are what made it stale.**
-   It states `grep -rn "shared/fields.mjs" js/controls/` returns **nothing**. That was TRUE and
-   correctly measured — until `c26d180` added `js/controls/render.mjs:97`'s real import of
-   `buildSwitch`. Update the "Current state" table and say what changed, since that section's whole
-   point is being measured rather than assumed.
-   > Worth recording alongside it: a brief in that same pass asserted the import already existed,
-   > based on a substring match that hit a doc comment saying the OPPOSITE. The builder measured,
-   > refused to edit the skill to fit the claim, and reported the discrepancy. That is the behaviour
-   > that caught it.
-4. **Nothing in this pack's ~1,900 JS assertions has a layout engine.** Four layout bugs on
+2. ~~**`js/anima/render.mjs:795` hand-writes `.wtn-an-panel-pv > .wtn-an-body > * { flex: none; }`**~~
+   **ALREADY FIXED — retracted, verified 2026-08-05.** `26d152c` (2026-08-03) landed exactly this
+   migration and is an ancestor of `HEAD`; the rule is pinned to `.wtn-flex-fixed`'s own declaration by
+   a cross-file test at `js/anima/test_resize.mjs:1281-1307`, byte-identical. The guard was
+   falsification-checked rather than assumed: mutating the value to `flex: none 1 auto` drops that
+   suite 306 → 304. A `js/`-wide search found **no** remaining hand-written copy of the pattern.
+3. ~~**`.claude/skills/animaflow-shared-fields/SKILL.md` is now stale**~~ **ALREADY UPDATED —
+   retracted, verified 2026-08-05.** That skill's "Current state" section was re-measured on
+   2026-08-03 and already carries the correct table: `js/controls/` consumes `js/shared/fields.mjs`
+   **partly, since `c26d180`**, via `render.mjs:97`'s import of `buildSwitch`/`injectFieldStyles`.
+   Confirmed against the live line. Nothing to do.
+   > Still worth keeping, from that pass: a brief asserted the import already existed, based on a
+   > substring match that hit a doc comment saying the OPPOSITE. The builder measured, refused to edit
+   > the skill to fit the claim, and reported the discrepancy. That is the behaviour that caught it.
+4. ~~**Nothing in this pack's ~1,900 JS assertions has a layout engine.**~~ **BUILT 2026-08-05:**
+   `js/controls/layout_check.mjs` + `js/controls/layout_check_probe.mjs`. Four layout bugs on
    2026-08-02–03 — the filmstrip collapsing to zero height, both halves of the caret misalignment, and
    the clipped prompt drawer — were each invisible to a green suite and each settled by one headless
-   measurement. The suites can pin a *declaration*; they cannot pin a *result*. A small measured-layout
-   check (the `css-layout-diagnose-headless` harness, run over a couple of known-fragile boxes) is the
-   only thing that would have caught any of them.
+   measurement. The suites can pin a *declaration*; they cannot pin a *result*.
+
+   **How to run it:** `node js/controls/layout_check.mjs` — deliberately **not** picked up by the
+   `test_*.mjs` sweep (this is a separate, deliberate check, not part of the green suite) and needs no
+   `package.json`/`requirements.txt` entry: it spawns real headless Chrome
+   (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, override via `WTN_CHROME_BIN`) over a
+   throwaway local static server, mounts the REAL `model_detail_view.mjs`/`lora_render.mjs` production
+   modules (never a reimplementation of their markup), and measures `getBoundingClientRect()` against
+   four pinned invariants — the one thing a doc-stub `test_*.mjs` can never produce. **If Chrome is
+   missing it fails LOUDLY** (non-zero exit, an unmistakable message), never a silent skip that still
+   reads as green.
+
+   **When it fails:** read the failing invariant's own doc comment in `layout_check_probe.mjs` for which
+   commit/bug it pins, then use `.claude/skills/css-layout-diagnose-headless/SKILL.md`'s own
+   instrument-and-measure workflow against the same production file to find *where*.
+   **To add a new invariant:** `layout_check_probe.mjs`'s own top doc comment has the four-step recipe.
+
+   **Verified against its own four bugs** (task's own acceptance bar — reverted each real fix, confirmed
+   RED, restored, confirmed green again): the filmstrip-collapse revert (`25b60f1`) reproduced the
+   owner's own `filmstripHeightPx: 4, tileHeightPx: 0`; the caret revert (`cc36388`) reproduced a 131px
+   spread (owner's own bug measured ~114px); the drawer revert (`e05f6fd`) reproduced 156px of drawer in
+   a 115px tile (owner's own measurement: 147/115). **The fourth ("no page-level horizontal scroll") is
+   an honest partial:** extensive reverting (five separate `min-width: 0`/`wtn-flex-bound` declarations,
+   individually and combined) never reproduced a leak with realistic content — every overflow-prone
+   element in `model_detail_view.mjs` alone is already independently self-contained by a *different*
+   mechanism (a sized native `<select>` clips regardless of option length; a scroll-container flex item's
+   automatic minimum size is already 0 by spec). The check is kept as a legitimate forward-looking safety
+   net, but could not be proven to catch a single realistic regression the way the other three could —
+   see `layout_check_probe.mjs`'s own `checkNoPageHorizontalScroll` doc comment for the full log. The
+   most plausible real failure mode lives in `civitai_modal.mjs`'s own rail+main flex row, not exercised
+   here.
 
 ### 📋 Owner's check — what happens to a download when the browser is closed? (owner asked 2026-07-30)
 
