@@ -340,8 +340,6 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 | Item | Commit |
 |---|---|
-| **Saved previews were being truncated on disk.** `HTTPResponse.read(n)` returns UP TO n bytes; on a chunked response it returns what is available, and we wrote that partial buffer as a finished file. Measured on the owner's server: 2,048,000 bytes against a RIFF header declaring 5,584,420. The correct loop already existed twelve lines up in `stream_download`. Also: the extension came from a `Content-Type` that lied (WebP bytes under `image/jpeg`), now sniffed from magic bytes; and `downscale_thumb_bytes`'s two fallback branches now log which ran, since the silent one turned a corrupt file into a mystery blank | `3e02428` |
-| **An undecodable preview now serves 404**, the same as an absent one, so the frontend's candidate chain falls through to the Civitai image. Files truncated before `3e02428` stay broken on disk; this makes them self-heal visually without deleting anything. **Pillow-missing still serves the original** — that branch cannot tell good bytes from bad | *(pending)* |
 | **An Installed card opens the detail view; the ⓘ button is gone.** Needed a backend change that was not obvious from the ask: `/list` carried no Civitai ids, so the card had nothing to open a detail view with. A file with no sidecar runs the by-hash lookup on click and reuses `model_info.mjs`'s own found/notfound/offline wording | `58c9ea7` |
 | **M3 — the Loader Panel gets the picker and ⓘ, plus a `checkpoint` row** (MODEL only; the CLIP/VAE gap is recorded in `control-panel-design.md` §3c, not closed). "An import, not an extraction" held: `model_picker.mjs`/`model_info.mjs` are byte-untouched and the layering guard still passes | `3121d12` |
 | **An Installed tab in the browser modal**, grouped by kind, rail per tab. Exposed a real z-index defect the scale caught: an ⓘ panel opened from inside the modal would have painted behind it, so `Z_MODAL_PANEL` joined the scale rather than a hand-picked literal | `f90b136` |
@@ -445,6 +443,40 @@ assistant's or a reviewer's judgement — see the rule at the top.
 
 **Suites as of 2026-07-30: Python 907 (1 skip), JS 1380, 5 auto-loaded `.js`, 8 nodes.** These only
 ever grow — re-count rather than trusting the number.
+
+> ### ✅ Local previews render again, end to end (owner, 2026-08-05)
+>
+> `3e02428` · `0489628` · `f0f421b` · `4d04ce8` · `e71b534`. Confirmed on the **Loader Panel's ⓘ**
+> (the browser modal's detail view was confirmed a step earlier in the same session).
+>
+> **One symptom, four defects, each hiding the next** — which is why three of the fixes shipped green
+> and changed nothing the owner could see:
+> 1. **Written truncated.** `HTTPResponse.read(n)` returns UP TO n bytes; on a chunked response it
+>    returns what is available, and we wrote that partial buffer as a finished file. Measured on the
+>    owner's server: 2,048,000 bytes against a RIFF header declaring 5,584,420. The correct loop
+>    already existed twelve lines up in `stream_download`. Same commit: the extension came from a
+>    `Content-Type` that lied (WebP bytes under `image/jpeg`), now sniffed from magic bytes.
+> 2. **Served broken.** An undecodable preview now 404s like an absent one, so the frontend's
+>    candidate chain falls through to Civitai. **Pillow-missing still serves the original** — that
+>    branch cannot tell good bytes from bad.
+> 3. **Cached broken.** The `If-None-Match` check ran BEFORE the decode, so a 304 handed back the bad
+>    image forever. Every test had warmed the cache first, so (2) was provably dead code until this
+>    landed.
+> 4. **Never repaired.** `save_preview` returned `already_present` for any existing file, so a
+>    pre-`3e02428` truncation was permanent and that model re-fetched from Civitai on every render.
+>    It may now replace a preview it can **prove** is undecodable — `is_preview_provably_corrupt`
+>    is deliberately tri-state (`None` when Pillow is absent), because inverting it would delete good
+>    previews on every install without Pillow.
+>
+> Two things worth keeping:
+> - **A green suite asserted the broken behaviour three separate times here.** The preview fake
+>   returned the whole body in one `read()`; every conditional-GET test warmed the cache first. Since
+>   this thread, builders falsify their own tests — stash the fix, confirm red — before reporting.
+> - **The repaired file being decodable is what proves (1)**, since the replacement is written through
+>   the same fixed `fetch_preview_image` loop. There was no other live confirmation of the write path.
+>
+> Open, minor, on the record: if a replacement sniffs a different extension than the corrupt original
+> (`.png` → `.webp`), the old file is shadowed rather than deleted. It is never served.
 
 > ### ✅ The LoRA Loader really does change the image (owner, 2026-07-30)
 >
