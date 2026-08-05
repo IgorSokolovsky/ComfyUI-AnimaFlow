@@ -18,6 +18,15 @@ import {
   openDeleteConfirm,
   DELETE_CONFIRM_WORD,
 } from "./delete_confirm.mjs";
+// `civitai_search.mjs`'s own `DEFAULT_ROOT_DISPLAY` -- imported HERE, in the
+// test, never by `delete_confirm.mjs` itself (that module's own `ROOT_FOR_
+// KIND` doc comment: "duplicated rather than imported so this shared module
+// carries no dependency on a track file"). This cross-file agreement test is
+// what makes that duplication safe going forward -- see the test below,
+// added 2026-08-05 after `ROOT_FOR_KIND.unet` was found to say `"models/unet"`
+// (the wrong folder, in a DESTRUCTIVE confirmation dialog of all places)
+// while `civitai_search.mjs`'s own copy had already been fixed.
+import { DEFAULT_ROOT_DISPLAY } from "../controls/civitai_search.mjs";
 
 let failures = 0;
 let count = 0;
@@ -106,7 +115,23 @@ test("formatDeleteFileSize: garbage/negative degrades to '', never throws", () =
 test("folderLabelFor: the kind's own root for a bare filename", () => {
   assert.equal(folderLabelFor("loras", "my_lora.safetensors"), "models/loras");
   assert.equal(folderLabelFor("checkpoints", "sdxl.safetensors"), "models/checkpoints");
-  assert.equal(folderLabelFor("unet", "flux.safetensors"), "models/unet");
+  // Fixed 2026-08-05 -- this used to assert "models/unet", a folder that does
+  // not exist (`src/model_browser/kinds.py`'s own `KIND_TO_FOLDER["unet"]` is
+  // `diffusion_models`) -- a green test defending the exact bug it should
+  // have caught. `civitai_modal.mjs`'s own `test_civitai_modal.mjs` fixed the
+  // identical mistake in that module's copy under a973001; this one was
+  // missed because it lives in a different file.
+  assert.equal(folderLabelFor("unet", "flux.safetensors"), "models/diffusion_models");
+});
+
+test("folderLabelFor: agrees with civitai_search.mjs's own DEFAULT_ROOT_DISPLAY for every kind -- two copies (deliberately, see ROOT_FOR_KIND's own doc comment for why this module never imports the other), pinned so they can never silently diverge again", () => {
+  for (const kind of Object.keys(DEFAULT_ROOT_DISPLAY)) {
+    assert.equal(
+      folderLabelFor(kind, ""),
+      DEFAULT_ROOT_DISPLAY[kind],
+      `folderLabelFor("${kind}") must match civitai_search.mjs's own DEFAULT_ROOT_DISPLAY["${kind}"]`,
+    );
+  }
 });
 
 test("folderLabelFor: a subfolder prefix in `name` is appended to the root", () => {

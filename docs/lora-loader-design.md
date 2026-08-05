@@ -1950,25 +1950,42 @@ base-model name or file size would be silently wrong some of the time, and a sil
 than a visible default: the user has no reason to doubt it, so they never look. The fix is an explicit
 choice with the derived kind as the default, not a smarter default.
 
-**The selector, scoped to the detail view only.** When a search result's derived kind (`resultKind`) is
-`checkpoints` or `unet`, the modal's detail-view action column (`buildDetailAction`, `civitai_modal.mjs`)
-replaces the plain `→ models/checkpoints/`-style static caption with a small `<select>` offering both
-folders, defaulting to the derived kind (`downloadKindChoices`/`resolveDownloadKind`). Every other kind
-(`loras`) keeps the static caption unchanged — there's no ambiguity to resolve there. The selector is
-offered **symmetrically**: a `UNet`-typed result gets the identical two-way choice, not a special case,
-because the same ambiguity runs the other way (rarer, but not different in kind) and symmetric is less
-code than asymmetric. The choice drives both the displayed destination text and the `kind` field sent to
-`/download/start` — never just a label.
+**The selector, on both surfaces that show a destination at all.** When a search result's derived kind
+(`resultKind`) is `checkpoints` or `unet`, the modal's detail-view action column (`buildDetailAction`,
+`civitai_modal.mjs`) replaces the plain `→ models/checkpoints/`-style static caption with a small
+`<select>` offering both folders, defaulting to the derived kind (`downloadKindChoices`/
+`resolveDownloadKind`). Every other kind (`loras`) keeps the static caption unchanged — there's no
+ambiguity to resolve there. The selector is offered **symmetrically**: a `UNet`-typed result gets the
+identical two-way choice, not a special case, because the same ambiguity runs the other way (rarer, but
+not different in kind) and symmetric is less code than asymmetric. The choice drives both the displayed
+destination text and the `kind` field sent to `/download/start` — never just a label.
 
-Deliberately **not** offered on the grid card: that caption was already removed there as noise
-(2026-08-01, "remove the -> models/checkpoints/ caption") and never grew back, so the detail view is the
-only place a destination is shown at all.
+**Extended to the grid card, same day (2026-08-05, follow-up).** This first landed scoped to the detail
+view only, reasoned as "that's the only place a destination is shown at all" — the grid card's own
+destination caption had already been removed as noise (2026-08-01, "remove the -> models/checkpoints/
+caption"). That missed that the grid card's own `↓ Download` button calls `startDownloadJob` directly,
+with no detour through the detail view — the fastest, most likely path (search, click Download) silently
+kept the wrong-folder behaviour unless the user happened to open the detail view first. Fixed the same
+day: an ambiguous card (derived kind `checkpoints`/`unet`) now renders the identical selector
+(`buildDownloadKindSelect`, the ONE DOM builder both surfaces share, extracted out of `buildDetailAction`)
+above its own Download button. A `loras` card, the common case, is untouched — still no caption, no
+selector, pixel-identical to before; the "removed as noise" reasoning still holds for the case it was
+actually about.
 
-**Per download, never persisted.** The chosen kind lives in one plain closure variable
-(`detailChosenKind`), reset to "nothing chosen" every time a detail view opens (including re-opening the
-SAME result) — there is no settings-backed memory of a past choice, unlike the rail's own filters. A
-user who downloads one Anima checkpoint to `diffusion_models` today gets asked again, starting from the
-derived default, the next time.
+**Per-card state, per-download, never persisted.** The grid shows many results at once, so the card's own
+choice is a `model_id -> chosen kind` map (`cardChosenKinds`), the same per-card idiom `buildCard`'s
+pre-existing `selectedVersions` map already uses — not the detail view's own single closure variable
+(`detailChosenKind`), which only ever shows one result at a time. Neither survives a fresh search
+(`runSearch`'s reset-cursor branch clears `cardChosenKinds` explicitly) or a modal re-open (both are
+declared inside `openCivitaiModal`'s own closure, recreated every open). `detailChosenKind` itself still
+resets on every fresh `openDetail` call the way it always did, EXCEPT it now seeds from the clicked card's
+own `cardChosenKinds` entry first, falling back to "nothing chosen" (the derived kind) only when the card
+has no entry — the reconciliation between the two surfaces, one direction only: picking UNet on the card
+and then downloading from that model's detail view does not silently revert to the derived kind, but
+switching the choice inside the detail view and leaving-and-re-entering it without touching the card still
+resets, exactly as before this change. A user who downloads one Anima checkpoint to `diffusion_models`
+today still gets asked again, starting from the derived default, the next time (a fresh search, or a fresh
+result the card was never touched for).
 
 **The installed check spans both folders.** Once a user can choose either destination, a Checkpoint-typed
 card that was actually downloaded to `unet` (or vice versa) must not show "not installed" and offer a
@@ -1983,6 +2000,17 @@ in one small helper called from that single call site, not inlined or duplicated
 while `unet` was never a chosen destination (`subfolderFromDestinationField` strips whatever prefix it
 displays, so the wrong string never actually misdirected a write), but it would have been a visible lie
 the moment this selector made `unet` choosable. Fixed to `"models/diffusion_models"`.
+
+**The same bug's twin, found in review of the grid-card follow-up (2026-08-05):** `delete_confirm.mjs`'s
+own `ROOT_FOR_KIND.unet` carried the identical `"models/unet"` mistake, in a DIFFERENT module the first fix
+never touched. This copy was worse — it names the folder inside a **destructive** type-to-confirm dialog,
+the one place the whole point is telling the user exactly what is about to be deleted, and the module's
+own regression test asserted the wrong value (`folderLabelFor("unet", ...) === "models/unet"`), a green
+test defending the bug. Fixed to `"models/diffusion_models"`; the test corrected to expect that; a new
+cross-file test (`test_delete_confirm.mjs`) pins `folderLabelFor` against `civitai_search.mjs`'s own
+`DEFAULT_ROOT_DISPLAY` for every kind, so the two copies — kept as two copies deliberately, per
+`ROOT_FOR_KIND`'s own doc comment: `delete_confirm.mjs` is a cross-track shared module and must not import
+from a Civitai-track file — can never silently diverge again.
 
 #### The Installed tab, grouped by kind (owner, 2026-07-30; placement 2026-08-02/03) — BUILT
 

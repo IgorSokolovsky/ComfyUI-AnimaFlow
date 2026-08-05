@@ -72,7 +72,7 @@
  * supported set shortly, and keeping it in ONE place (never inlined into
  * the rail-rendering code) is what makes that a one-line change later.
  *
- * ## The Checkpoint/UNet destination selector (2026-08-05)
+ * ## The Checkpoint/UNet destination selector (2026-08-05, extended same day)
  *
  * Owner report: many models -- Anima, Qwen- and Flux-family especially --
  * are typed `Checkpoint` on Civitai while shipping UNet-only weights, and
@@ -83,15 +83,33 @@
  * and `models/diffusion_models/` whenever the result's DERIVED kind is
  * either one (`downloadKindChoices`), defaulting to that derived kind
  * (`resolveDownloadKind`) -- see `docs/lora-loader-design.md`'s own
- * subsection for the full "why no heuristic" reasoning. The choice is PER
- * DOWNLOAD, never persisted (`detailChosenKind` resets on every fresh
- * `openDetail`), and drives both the `/download/start` payload's `kind` and
- * the displayed destination live. A `loras`-derived result (or any other
- * kind) keeps today's plain static caption unchanged -- there's no ambiguity
- * to resolve there. This selector is scoped to the detail view specifically
- * because that is the only place a destination is shown at all: the grid
- * card's own destination caption was removed outright as noise (2026-08-01,
- * see `buildCard`'s own comment) and never grew one back.
+ * subsection for the full "why no heuristic" reasoning. A `loras`-derived
+ * result (or any other kind) keeps today's plain static caption unchanged --
+ * there's no ambiguity to resolve there.
+ *
+ * **This first landed scoped to the detail view only** -- reasoned then as
+ * "the only place a destination is shown at all", since the grid card's own
+ * destination caption had been removed outright as noise (2026-08-01, see
+ * `buildCard`'s own comment). That reasoning missed that the grid card's own
+ * `↓ Download` button calls `startDownloadJob` directly, with no detour
+ * through the detail view -- the fastest, most likely path (search, click
+ * Download) silently kept the wrong-folder behaviour unless the user
+ * happened to open the detail view first. Fixed the same day: an ambiguous
+ * card (derived kind `checkpoints`/`unet`) now renders the SAME selector
+ * (`buildDownloadKindSelect`, shared by both surfaces) above its own Download
+ * button, via its own `cardChosenKinds` per-model_id map (`selectedVersions`'
+ * own idiom, immediately below that map's declaration) -- a `loras` card, the
+ * common case, is untouched: still no caption, no selector, pixel-identical.
+ * The two surfaces' choices reconcile ONE direction, card -> detail
+ * (`openDetail`'s own comment): opening a result's detail view seeds
+ * `detailChosenKind` from that card's own choice, so picking UNet on the
+ * card and then downloading from the detail view does not silently revert
+ * to the derived kind; the detail view's own pre-existing "resets on
+ * re-open" contract (below) is otherwise unchanged. The choice is PER
+ * DOWNLOAD, never persisted -- neither map survives a fresh search
+ * (`runSearch`'s own reset-cursor branch) or a modal re-open (both are
+ * declared inside `openCivitaiModal`'s own closure) -- and each drives both
+ * the `/download/start` payload's `kind` and the displayed destination live.
  *
  * ## Integration note -- the backend contract this file is written against
  *
@@ -960,6 +978,40 @@ function buildThumb(doc, state, candidates, isStale, backoffMs) {
   return thumb;
 }
 
+/**
+ * Builds the Checkpoint/UNet destination `<select>` (`downloadKindChoices`'s
+ * own doc comment) -- the ONE DOM builder for this control, extended
+ * 2026-08-05 to be shared by the grid card (`buildCard`) AND the detail
+ * view's own action column (`buildDetailAction`), rather than each keeping
+ * its own copy of the same option-building loop (task brief: "reuse the
+ * exported `downloadKindChoices`/`resolveDownloadKind` and the
+ * `.wtn-cm-dest-select` styling... do not write a second copy of that
+ * logic"). `onChange(value)` is the caller's own state write (a card's
+ * per-model_id map entry, or the detail view's single `detailChosenKind`) --
+ * this function holds none of that state itself, matching every other DOM
+ * builder in this file (`buildChipFilterSection`, `buildSingleSelectRow`).
+ */
+function buildDownloadKindSelect(doc, kindChoices, chosenKind, onChange) {
+  const dest = el(doc, "select", "wtn-select wtn-cm-dest wtn-cm-dest-select");
+  dest.title = "Civitai marks this ambiguously between a full checkpoint and UNet-only weights -- choose where it actually installs.";
+  for (const choice of kindChoices) {
+    const opt = el(doc, "option");
+    opt.value = choice;
+    opt.textContent = destinationLabelForKind(choice);
+    if (choice === chosenKind) {
+      opt.selected = true;
+    }
+    dest.appendChild(opt);
+  }
+  dest.value = chosenKind;
+  dest.addEventListener("click", (e) => e.stopPropagation());
+  dest.addEventListener("change", (e) => {
+    e.stopPropagation();
+    onChange(dest.value);
+  });
+  return dest;
+}
+
 // ---------------------------------------------------------------------------
 // The modal shell.
 // ---------------------------------------------------------------------------
@@ -1734,10 +1786,26 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   // own doc comment) -- `null` means "nothing chosen yet, use the derived kind"
   // (`resolveDownloadKind`'s own fallback). Deliberately a SINGLE variable, not
   // a per-model_id map like `selectedVersions` below: the choice is per
-  // DOWNLOAD, never persisted (task brief), so `openDetail` resets it to
-  // `null` on every fresh detail-view open -- there is nothing to remember
-  // across a different result, or even a re-open of the SAME one.
+  // DOWNLOAD, never persisted (task brief), so a fresh detail-view open with
+  // no card-level choice to seed from (see `cardChosenKinds`, immediately
+  // below, and `openDetail`'s own comment) still resets to `null` -- there is
+  // nothing to remember across a re-open with no card selection behind it.
   let detailChosenKind = null;
+  // The SAME ambiguity's per-CARD choice (2026-08-05, follow-up to a973001:
+  // "the grid card can still download with no destination choice -- the
+  // primary path") -- a `model_id -> chosen kind` map, the SAME per-card-
+  // state idiom `selectedVersions` (below) already uses, since the GRID
+  // shows many results at once and each needs its own independent choice
+  // (unlike the detail view's deliberately-single `detailChosenKind`, above).
+  // Cleared on every fresh search (`runSearch`'s own reset-cursor branch) --
+  // never a stored setting -- and never survives a modal re-open either,
+  // since it's declared inside this closure. `openDetail`, below, seeds
+  // `detailChosenKind` from THIS map's own entry for the clicked result (if
+  // any) rather than always starting blank, so a choice made on the card is
+  // not silently discarded on opening its detail view -- see `openDetail`'s
+  // own comment for the full reconciliation this decision makes (one
+  // direction only: card -> detail, not the reverse).
+  const cardChosenKinds = new Map();
   const cardMessages = new Map();
   // Per-card version choice (owner, 2026-08-01: "add a version select above
   // the download button, the same per-card picker the anchored search panel
@@ -1935,6 +2003,25 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       // never called here any more; `kind` itself still drives which folder
       // `startDownloadJob`, below, actually writes into -- only the VISIBLE
       // caption is gone, not the destination logic.
+      //
+      // The Checkpoint/UNet ambiguity's ACTIONABLE selector (2026-08-05,
+      // follow-up to a973001) is a different thing from that removed
+      // caption -- it renders ONLY for the two derived kinds that are
+      // actually ambiguous (`downloadKindChoices`, `null` for everything
+      // else including `loras`), so every non-ambiguous card here stays
+      // pixel-identical to before. `buildDownloadKindSelect` is the SAME DOM
+      // builder the detail view's own action column uses (its own doc
+      // comment); `chosenKind`, not `kind`, is what actually drives the
+      // download below.
+      const kindChoices = downloadKindChoices(kind);
+      const chosenKind = resolveDownloadKind(kind, cardChosenKinds.get(result.model_id));
+      if (kindChoices) {
+        const destSel = buildDownloadKindSelect(targetDoc, kindChoices, chosenKind, (value) => {
+          cardChosenKinds.set(result.model_id, value);
+          renderGrid();
+        });
+        actionCol.appendChild(destSel);
+      }
       const btn = el(targetDoc, "button", "wtn-cm-action");
       btn.type = "button";
       btn.textContent = "↓ Download"; // ↓ Download
@@ -1961,14 +2048,14 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
           triggers: view.triggers,
         };
         const resp = await startDownloadJob({
-          kind, subfolder: "", filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
+          kind: chosenKind, subfolder: "", filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
           key: rKey, civitaiMeta, previewUrl,
         }, pollIntervalMs);
         if (resp.reason !== "started") {
           cardMessages.set(rKey, downloadStartMessage(resp));
           logSummary("Civitai browser", `download NOT started: ${view.file_name} (${resp.reason})`);
         } else {
-          logSummary("Civitai browser", `download started: ${view.file_name} (${kind})`);
+          logSummary("Civitai browser", `download started: ${view.file_name} (${chosenKind})`);
         }
         renderGrid();
       });
@@ -2104,28 +2191,16 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     // text -- never just a display-only choice.
     const kindChoices = downloadKindChoices(detailKind);
     const chosenKind = resolveDownloadKind(detailKind, detailChosenKind);
-    let dest;
-    if (kindChoices) {
-      dest = el(doc, "select", "wtn-select wtn-cm-dest wtn-cm-dest-select");
-      dest.title = "Civitai marks this ambiguously between a full checkpoint and UNet-only weights -- choose where it actually installs.";
-      for (const choice of kindChoices) {
-        const opt = el(doc, "option");
-        opt.value = choice;
-        opt.textContent = destinationLabelForKind(choice);
-        if (choice === chosenKind) {
-          opt.selected = true;
-        }
-        dest.appendChild(opt);
-      }
-      dest.value = chosenKind;
-      dest.addEventListener("click", (e) => e.stopPropagation());
-      dest.addEventListener("change", (e) => {
-        e.stopPropagation();
-        detailChosenKind = dest.value;
+    // `buildDownloadKindSelect` -- the SAME DOM builder the grid card's own
+    // action column uses (its own doc comment, above `buildCard`) -- keeps
+    // this the ONE place the <select>'s markup exists, 2026-08-05.
+    const dest = kindChoices
+      ? buildDownloadKindSelect(doc, kindChoices, chosenKind, (value) => {
+        detailChosenKind = value;
         renderDetailHost();
-      });
-    } else {
-      dest = el(doc, "div", "wtn-cm-dest");
+      })
+      : el(doc, "div", "wtn-cm-dest");
+    if (!kindChoices) {
       dest.textContent = destinationLabelForKind(chosenKind);
     }
     const missingFile = !view.file_name || !view.download_url;
@@ -2246,7 +2321,21 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     detailVersionId = resolveVersionView(result).primary_version_id;
     detailData = { status: "loading", gallery: [] };
     detailActionMessage = null;
-    detailChosenKind = null; // per-download, not persisted -- always start from the derived kind
+    // Reconciliation (2026-08-05, follow-up to a973001): seed the detail
+    // view's own choice from whatever THIS card already has chosen
+    // (`cardChosenKinds`), rather than unconditionally resetting to the
+    // derived kind -- "if a user picks UNet on the card... downloads from
+    // there, the choice should not silently revert." A result whose card was
+    // never touched (or has no ambiguity at all) has no entry here, so this
+    // is `undefined` -> `?? null` -> `resolveDownloadKind`'s own "nothing
+    // chosen yet" fallback, exactly the prior behaviour. Deliberately ONE
+    // direction only (card -> detail): switching the selector INSIDE the
+    // detail view, then leaving and re-entering it WITHOUT touching the
+    // card, still resets to the derived kind -- the pre-existing, still-
+    // tested "per-download, not persisted" contract for the detail view's
+    // own re-open path is unchanged; only a card-level choice carries
+    // forward.
+    detailChosenKind = cardChosenKinds.get(result.model_id) ?? null;
     renderSwap();
     loadDetailData();
   }
@@ -2265,6 +2354,12 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     if (resetCursor) {
       nextCursor = null;
       loadingMore = false;
+      // The per-card Checkpoint/UNet choice is per-download, never a stored
+      // preference (`cardChosenKinds`'s own doc comment) -- a genuinely NEW
+      // search (never a `resetCursor: false` pagination fetch) must not let
+      // a stale choice from the previous result set silently carry over,
+      // even if a model of the SAME id happens to reappear.
+      cardChosenKinds.clear();
     } else if (loadingMore || !nextCursor) {
       return;
     } else {

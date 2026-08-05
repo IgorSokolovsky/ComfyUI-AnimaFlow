@@ -798,19 +798,195 @@ await asyncTest("openCivitaiModal: a kind: null result shows NO download button,
   }
 });
 
-await asyncTest("owner-reported (2026-08-01): 'remove the -> models/checkpoints/ caption' -- a downloadable grid card renders NO destination line at all (repeated on every card it was noise; the destination is already stated by the 'Save to:' field elsewhere)", async () => {
+await asyncTest("owner-reported (2026-08-01): 'remove the -> models/checkpoints/ caption' -- a NON-AMBIGUOUS (loras) grid card renders NO destination line at all (repeated on every card it was noise; the destination is already stated by the 'Save to:' field elsewhere)", async () => {
   _resetDownloadStateForTests();
   _resetModalForTests();
-  const results = [makeResult({ modelId: 1, versionId: 1, name: "Lands Somewhere", kind: "checkpoints" })];
+  // `kind: "loras"` specifically -- 2026-08-05 gave a `checkpoints`/`unet`
+  // card its own actionable selector (below), which ALSO carries the
+  // `wtn-cm-dest` class, so this must stay scoped to the one kind that has
+  // no ambiguity to resolve, or it would assert against the new feature.
+  const results = [makeResult({ modelId: 1, versionId: 1, name: "Lands Somewhere", kind: "loras" })];
   stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
   try {
     const doc = makeDocStub();
     const handle = openCivitaiModal({ doc });
     await settle();
-    assert.equal(findAll(handle.scrim, "wtn-cm-dest").length, 0, "the grid card must never render a destination caption");
+    assert.equal(findAll(handle.scrim, "wtn-cm-dest").length, 0, "a loras card must never render a destination caption or selector");
     // The download button itself is unaffected -- only the caption is gone.
     const downloadBtn = findAll(handle.scrim, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
     assert.ok(downloadBtn, "the Download button must still render");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("2026-08-05 (follow-up to a973001): a checkpoints-derived GRID CARD (not just the detail view) renders the Checkpoint/UNet destination selector above its Download button, defaulting to the derived kind and driving what /download/start actually receives", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 80, versionId: 1, name: "Ambiguous On The Card", kind: "checkpoints", type: "Checkpoint" })];
+  let startedKind = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/download/start")) {
+      startedKind = JSON.parse(opts.body).kind;
+      return jsonResponse({ reason: "started", message: "", job_id: "job-80" });
+    }
+    if (u.includes("/download/progress")) {
+      return jsonResponse({ reason: "ok", status: "downloading", bytes: 0, total: null, message: "" });
+    }
+    return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const card = findAll(handle.scrim, "wtn-cm-card")[0];
+    const sel = findAll(card, "wtn-cm-dest-select")[0];
+    assert.ok(sel, "an ambiguous grid card must render the destination selector");
+    assert.equal(sel.value, "checkpoints", "defaults to the DERIVED kind");
+    // "above the Download button" -- DOM order controls read order in this
+    // pack's own flex-column action columns (`buildDetailAction`'s own doc
+    // comment makes the identical point for the detail view).
+    const actionCol = sel.parentNode;
+    const btn = findAll(actionCol, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    assert.ok(actionCol.children.indexOf(sel) < actionCol.children.indexOf(btn), "the selector must sit ABOVE the Download button");
+
+    sel.value = "unet";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    const cardAfter = findAll(handle.scrim, "wtn-cm-card")[0];
+    const selAfter = findAll(cardAfter, "wtn-cm-dest-select")[0];
+    assert.equal(selAfter.value, "unet", "the card's own choice is retained across its re-render");
+
+    const downloadBtn = findAll(cardAfter, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(startedKind, "unet", "/download/start must carry the CARD's chosen kind, not the original derived one");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("2026-08-05: a unet-derived grid card ALSO renders the selector (symmetric), defaulting to unet", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 81, versionId: 1, name: "Ambiguous UNet On The Card", kind: "unet", type: "UNet" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    const card = findAll(handle.scrim, "wtn-cm-card")[0];
+    const sel = findAll(card, "wtn-cm-dest-select")[0];
+    assert.ok(sel, "a unet-derived grid card must ALSO render the destination selector");
+    assert.equal(sel.value, "unet", "defaults to the DERIVED kind");
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("2026-08-05: choosing UNet on the grid card, then opening that model's detail view, keeps the choice -- it does not silently revert to the derived kind", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 82, versionId: 1, name: "Reconciled", kind: "checkpoints", type: "Checkpoint" })];
+  invalidateModelDetail(82, 1);
+  let startedKind = null;
+  stubFetch(async (url, opts) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    if (u.includes("/download/start")) {
+      startedKind = JSON.parse(opts.body).kind;
+      return jsonResponse({ reason: "started", message: "", job_id: "job-82" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    const card = findAll(handle.scrim, "wtn-cm-card")[0];
+    const cardSel = findAll(card, "wtn-cm-dest-select")[0];
+    cardSel.value = "unet";
+    cardSel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    // Open the detail view -- via the re-rendered card's own body, NOT its
+    // selector (which stopPropagation's its own click).
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    const detailSel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
+    assert.equal(detailSel.value, "unet", "opening the detail view must carry the CARD's own choice forward, not reset to the derived kind");
+
+    const downloadBtn = findAll(detailHostEl, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(startedKind, "unet", "downloading from the detail view must still target the reconciled (card-chosen) kind");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("2026-08-05: a fresh search clears the grid card's own destination choice -- it is per-download, never a stored preference", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 83, versionId: 1, name: "Not Sticky Card", kind: "checkpoints", type: "Checkpoint" })];
+  stubFetch(async () => jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false }));
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+
+    let card = findAll(handle.scrim, "wtn-cm-card")[0];
+    let sel = findAll(card, "wtn-cm-dest-select")[0];
+    sel.value = "unet";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+    card = findAll(handle.scrim, "wtn-cm-card")[0];
+    sel = findAll(card, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "unet");
+
+    // Re-run the SAME search (Search button -- a resetCursor:true search),
+    // and the SAME model_id reappears (the stub always returns the same
+    // `results`) -- its own choice must not have carried over.
+    // `.wtn-cm-search-btn` specifically -- NOT a plain textContent match on
+    // "Search": the head's own Search/Installed TAB button carries the
+    // identical label, and a `button` tag-scan would find that one first.
+    const searchBtn = findAll(handle.panel, "wtn-cm-search-btn")[0];
+    searchBtn.disabled = false; // same text as before is normally disabled -- force it for this test
+    searchBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    card = findAll(handle.scrim, "wtn-cm-card")[0];
+    sel = findAll(card, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "checkpoints", "a fresh search must reset the card's own choice back to the derived kind");
+
     handle.close();
   } finally {
     restoreFetch();
@@ -1825,20 +2001,32 @@ await asyncTest("openCivitaiModal: the Checkpoint/UNet choice is per-download, n
     findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
     await settle();
 
-    let sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    // Scoped to the detail host specifically -- the (hidden, not removed)
+    // grid behind it now has its OWN destination selector too (2026-08-05,
+    // the grid card follow-up), so an unscoped `handle.panel` query could
+    // silently grab that one instead (see the 2026-08-01 test just above
+    // this one, which already made the identical point for a different
+    // reason).
+    let detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    let sel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
     sel.value = "unet";
     sel.dispatch("change", { stopPropagation() {} });
     await settle();
-    sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    sel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
     assert.equal(sel.value, "unet");
 
-    const backBtn = findAll(handle.panel, "wtn-dv-back")[0];
+    const backBtn = findAll(detailHostEl, "wtn-dv-back")[0];
     backBtn.dispatch("click", { stopPropagation() {} });
+    // Re-opening the SAME (single) card -- this stub has no real event
+    // bubbling, so the click must dispatch on the card element itself
+    // (which carries its own listener), not a child of it.
     findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
     await settle();
 
-    sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
-    assert.equal(sel.value, "checkpoints", "re-opening the detail view must reset to the DERIVED kind, never remember the earlier choice");
+    detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    sel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "checkpoints", "re-opening the detail view must reset to the DERIVED kind, never remember the earlier choice (the card's own selector was never touched in this test)");
 
     handle.close();
   } finally {

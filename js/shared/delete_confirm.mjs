@@ -196,7 +196,23 @@ export function formatDeleteFileSize(bytes) {
 // Civitai-track module already whitelists (`js/controls/civitai_search.mjs`'s
 // own `DEFAULT_ROOT_DISPLAY`, duplicated rather than imported so this shared
 // module carries no dependency on a track file).
-const ROOT_FOR_KIND = { loras: "models/loras", checkpoints: "models/checkpoints", unet: "models/unet" };
+//
+// Fixed 2026-08-05 -- `unet` used to say `"models/unet"`, the SAME wrong
+// folder `civitai_search.mjs`'s own `DEFAULT_ROOT_DISPLAY` had before a973001
+// fixed it there (`unet`'s real folder is `models/diffusion_models`,
+// `src/model_browser/kinds.py`'s own `KIND_TO_FOLDER["unet"]` -- ComfyUI
+// renamed the folder_paths key across versions; `diffusion_models` is
+// current). This copy is WORSE than that one was: it names the folder in a
+// DESTRUCTIVE confirmation dialog, whose entire point is telling the user
+// exactly what is about to be deleted -- a wrong folder there is not cosmetic
+// noise, it's a false statement at the one moment accuracy matters most.
+// `test_delete_confirm.mjs` pins this against `civitai_search.mjs`'s own
+// `DEFAULT_ROOT_DISPLAY` directly (a cross-file agreement test, not just a
+// hardcoded expected string) so the two copies can never silently diverge
+// again -- kept as two copies rather than one shared export/import, per this
+// comment's own "no dependency on a track file" reasoning above; a test can
+// import both without creating that dependency in the shipped module.
+const ROOT_FOR_KIND = { loras: "models/loras", checkpoints: "models/checkpoints", unet: "models/diffusion_models" };
 
 /** The folder line the confirm dialog shows -- the kind's own root, plus any
  * subfolder prefix carried in `name` itself (`folder_paths`' own convention:
