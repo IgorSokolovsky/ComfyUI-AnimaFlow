@@ -1936,6 +1936,54 @@ than showing results the user cannot act on. Two consequences for anything built
 from that folder). Whatever is decided, the reasoning belongs in the comment, because it sets the standard
 for every type added later.
 
+#### The Checkpoint/UNet destination ambiguity — a per-download CHOICE, not a heuristic (owner, 2026-08-05) — BUILT
+
+**The problem.** Civitai's `Checkpoint` type doesn't mean "full checkpoint" reliably — many models, Anima,
+Qwen- and Flux-family especially, are typed `Checkpoint` while shipping UNet-only weights. `KIND_FOR_TYPE`
+maps `Checkpoint` → `checkpoints` (unconditionally, and that default does not change here), so those
+models land in `models/checkpoints/`, where a UNet loader — **including this pack's own** Loader Panel
+`unet` row, which resolves through `models/diffusion_models` (`kinds.KIND_TO_FOLDER`) — cannot find them.
+A model downloaded through this feature could become invisible to this feature's own picker.
+
+**Why no heuristic.** There is no reliable Civitai API field distinguishing the two cases. A guess from
+base-model name or file size would be silently wrong some of the time, and a silently-wrong guess is worse
+than a visible default: the user has no reason to doubt it, so they never look. The fix is an explicit
+choice with the derived kind as the default, not a smarter default.
+
+**The selector, scoped to the detail view only.** When a search result's derived kind (`resultKind`) is
+`checkpoints` or `unet`, the modal's detail-view action column (`buildDetailAction`, `civitai_modal.mjs`)
+replaces the plain `→ models/checkpoints/`-style static caption with a small `<select>` offering both
+folders, defaulting to the derived kind (`downloadKindChoices`/`resolveDownloadKind`). Every other kind
+(`loras`) keeps the static caption unchanged — there's no ambiguity to resolve there. The selector is
+offered **symmetrically**: a `UNet`-typed result gets the identical two-way choice, not a special case,
+because the same ambiguity runs the other way (rarer, but not different in kind) and symmetric is less
+code than asymmetric. The choice drives both the displayed destination text and the `kind` field sent to
+`/download/start` — never just a label.
+
+Deliberately **not** offered on the grid card: that caption was already removed there as noise
+(2026-08-01, "remove the -> models/checkpoints/ caption") and never grew back, so the detail view is the
+only place a destination is shown at all.
+
+**Per download, never persisted.** The chosen kind lives in one plain closure variable
+(`detailChosenKind`), reset to "nothing chosen" every time a detail view opens (including re-opening the
+SAME result) — there is no settings-backed memory of a past choice, unlike the rail's own filters. A
+user who downloads one Anima checkpoint to `diffusion_models` today gets asked again, starting from the
+derived default, the next time.
+
+**The installed check spans both folders.** Once a user can choose either destination, a Checkpoint-typed
+card that was actually downloaded to `unet` (or vice versa) must not show "not installed" and offer a
+redundant second download. `_annotate_search_results`'s own `installed` computation (`api.py`) now checks
+BOTH `checkpoints` and `unet` folders whenever the result's derived kind is either one
+(`_installed_in_any_kind_folder`) — every other kind keeps the original single-folder check. This is still
+the ONE code path that decision is made in (that function's own docstring) — the dual-folder logic lives
+in one small helper called from that single call site, not inlined or duplicated.
+
+**A second, smaller bug fixed alongside this:** `civitai_search.mjs`'s `DEFAULT_ROOT_DISPLAY.unet` said
+`"models/unet"` — never a real folder (`kinds.KIND_TO_FOLDER["unet"]` is `diffusion_models`). Harmless
+while `unet` was never a chosen destination (`subfolderFromDestinationField` strips whatever prefix it
+displays, so the wrong string never actually misdirected a write), but it would have been a visible lie
+the moment this selector made `unet` choosable. Fixed to `"models/diffusion_models"`.
+
 #### The Installed tab, grouped by kind (owner, 2026-07-30; placement 2026-08-02/03) — BUILT
 
 Owner: *"installed-by-kind section in the browser"* — asked for on 2026-07-30, never specced beyond that

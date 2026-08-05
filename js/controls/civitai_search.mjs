@@ -521,7 +521,7 @@ export function injectStyles(doc) {
  * parameterised from day one (§7a), only `loras` reachable from a live route
  * today. Falls back to the bare literal `"models"` for an unknown/future
  * kind rather than guessing a folder name that might not exist. */
-export const DEFAULT_ROOT_DISPLAY = { loras: "models/loras", checkpoints: "models/checkpoints", unet: "models/unet" };
+export const DEFAULT_ROOT_DISPLAY = { loras: "models/loras", checkpoints: "models/checkpoints", unet: "models/diffusion_models" };
 
 /** `kind` -> the label shown on the LOCKED `type:` pill (§7c-i: "only `type`
  * is locked, shown but not changeable"). */

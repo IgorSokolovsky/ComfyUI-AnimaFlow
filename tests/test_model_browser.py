@@ -6244,6 +6244,144 @@ def test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_o
             restore_limiter()
 
 
+# ---------------------------------------------------------------------------
+# The Checkpoint/UNet installed-check ambiguity (owner report: many Anima/
+# Qwen/Flux-family models are typed `Checkpoint` on Civitai while shipping
+# UNet-only weights -- `civitai_search.KIND_FOR_TYPE`'s own docstring). A
+# `checkpoints`/`unet`-DERIVED result's `installed` field must check BOTH
+# folders (`_installed_in_any_kind_folder`, `api.py`); every other kind
+# (`loras`) keeps the single-folder check unchanged.
+# ---------------------------------------------------------------------------
+
+def _fake_search_models_one_checkpoint_typed_item(filename):
+    def fake_search_models(kind, query, **kwargs):
+        assert kind is None  # the modal's unscoped search -- kind is DERIVED per result, not locked
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "Ambiguous Checkpoint", "type": "Checkpoint",
+                "modelVersions": [{"id": 10, "baseModel": "SDXL",
+                                   "files": [{"name": filename, "downloadUrl": "https://civitai.com/x", "primary": True}]}],
+            }]},
+        }
+    return fake_search_models
+
+
+def test_search_impl_checkpoint_typed_result_installed_when_file_exists_only_in_diffusion_models():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    mb_api.civitai_search.search_models = _fake_search_models_one_checkpoint_typed_item("actually_unet.safetensors")
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoints_root = os.path.join(tmp, "checkpoints")
+        diffusion_root = os.path.join(tmp, "diffusion_models")
+        os.makedirs(checkpoints_root)
+        os.makedirs(diffusion_root)
+        # The file is ONLY under diffusion_models (our own unet loader's real
+        # folder, `kinds.KIND_TO_FOLDER["unet"]`) -- never under checkpoints.
+        open(os.path.join(diffusion_root, "actually_unet.safetensors"), "wb").close()
+        restore_fp = _install_fake_folder_paths(
+            roots_by_folder={"checkpoints": [checkpoints_root], "diffusion_models": [diffusion_root]},
+            names_by_folder={"checkpoints": [], "diffusion_models": []},
+        )
+        try:
+            result = mb_api.search_impl({"query": "x"})  # no "kind" -- unscoped, kind derived from the result's own type
+            card = result["results"][0]
+            assert card["kind"] == "checkpoints"  # the DERIVED kind is still "checkpoints" -- Checkpoint -> checkpoints, unchanged default
+            assert card["installed"] is True  # but it must read as installed anyway -- the file IS on disk, just under the other folder
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_checkpoint_typed_result_installed_when_file_exists_only_in_checkpoints():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    mb_api.civitai_search.search_models = _fake_search_models_one_checkpoint_typed_item("real_checkpoint.safetensors")
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoints_root = os.path.join(tmp, "checkpoints")
+        diffusion_root = os.path.join(tmp, "diffusion_models")
+        os.makedirs(checkpoints_root)
+        os.makedirs(diffusion_root)
+        open(os.path.join(checkpoints_root, "real_checkpoint.safetensors"), "wb").close()
+        restore_fp = _install_fake_folder_paths(
+            roots_by_folder={"checkpoints": [checkpoints_root], "diffusion_models": [diffusion_root]},
+            names_by_folder={"checkpoints": [], "diffusion_models": []},
+        )
+        try:
+            result = mb_api.search_impl({"query": "x"})
+            card = result["results"][0]
+            assert card["kind"] == "checkpoints"
+            assert card["installed"] is True
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_checkpoint_typed_result_not_installed_when_file_exists_in_neither_folder():
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+    mb_api.civitai_search.search_models = _fake_search_models_one_checkpoint_typed_item("nowhere.safetensors")
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoints_root = os.path.join(tmp, "checkpoints")
+        diffusion_root = os.path.join(tmp, "diffusion_models")
+        os.makedirs(checkpoints_root)
+        os.makedirs(diffusion_root)
+        restore_fp = _install_fake_folder_paths(
+            roots_by_folder={"checkpoints": [checkpoints_root], "diffusion_models": [diffusion_root]},
+            names_by_folder={"checkpoints": [], "diffusion_models": []},
+        )
+        try:
+            result = mb_api.search_impl({"query": "x"})
+            card = result["results"][0]
+            assert card["kind"] == "checkpoints"
+            assert card["installed"] is False
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
+def test_search_impl_lora_typed_result_installed_check_is_still_a_single_folder():
+    # The SAME file present under `checkpoints` (never `loras`) must NOT make
+    # a LORA-typed result read as installed -- proves the dual-folder check
+    # added for checkpoints/unet did not widen to every kind.
+    restore_limiter = _install_permissive_search_limiter()
+    previous_search_models = civitai_search.search_models
+
+    def fake_search_models(kind, query, **kwargs):
+        return {
+            "reason": "found", "offline_reason": None, "message": "",
+            "data": {"items": [{
+                "id": 1, "name": "A LoRA", "type": "LORA",
+                "modelVersions": [{"id": 10, "baseModel": "SDXL",
+                                   "files": [{"name": "shared_name.safetensors", "downloadUrl": "https://civitai.com/x", "primary": True}]}],
+            }]},
+        }
+
+    mb_api.civitai_search.search_models = fake_search_models
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        checkpoints_root = os.path.join(tmp, "checkpoints")
+        os.makedirs(loras_root)
+        os.makedirs(checkpoints_root)
+        open(os.path.join(checkpoints_root, "shared_name.safetensors"), "wb").close()  # only under checkpoints
+        restore_fp = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root], "checkpoints": [checkpoints_root]},
+            names_by_folder={"loras": [], "checkpoints": []},
+        )
+        try:
+            result = mb_api.search_impl({"kind": "loras", "query": "x"})
+            card = result["results"][0]
+            assert card["kind"] == "loras"
+            assert card["installed"] is False  # the checkpoints-folder file must never count for a LoRA
+        finally:
+            restore_fp()
+            mb_api.civitai_search.search_models = previous_search_models
+            restore_limiter()
+
+
 def test_search_impl_marks_a_gated_result_before_any_download_attempt():
     restore_limiter = _install_permissive_search_limiter()
     previous_search_models = civitai_search.search_models
@@ -7267,6 +7405,10 @@ ALL_TESTS = [
     test_annotate_search_results_computes_all_five_fields_for_every_version_not_just_the_primary,
     test_annotate_search_results_top_level_flatten_matches_versions_zero_exactly,
     test_search_impl_marks_a_result_installed_when_its_primary_file_is_already_on_disk,
+    test_search_impl_checkpoint_typed_result_installed_when_file_exists_only_in_diffusion_models,
+    test_search_impl_checkpoint_typed_result_installed_when_file_exists_only_in_checkpoints,
+    test_search_impl_checkpoint_typed_result_not_installed_when_file_exists_in_neither_folder,
+    test_search_impl_lora_typed_result_installed_check_is_still_a_single_folder,
     test_search_impl_marks_a_gated_result_before_any_download_attempt,
     test_search_impl_passes_through_offline_reason_and_still_reports_public_only,
     test_search_impl_rate_limited_never_reaches_the_network,

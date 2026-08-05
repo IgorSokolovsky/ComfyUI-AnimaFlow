@@ -72,6 +72,27 @@
  * supported set shortly, and keeping it in ONE place (never inlined into
  * the rail-rendering code) is what makes that a one-line change later.
  *
+ * ## The Checkpoint/UNet destination selector (2026-08-05)
+ *
+ * Owner report: many models -- Anima, Qwen- and Flux-family especially --
+ * are typed `Checkpoint` on Civitai while shipping UNet-only weights, and
+ * Civitai has no reliable field distinguishing the two. Rather than guess
+ * (a heuristic on base-model name or file size would be silently wrong
+ * sometimes -- worse than a visible default), the detail view's own action
+ * column offers an explicit per-download choice between `models/checkpoints/`
+ * and `models/diffusion_models/` whenever the result's DERIVED kind is
+ * either one (`downloadKindChoices`), defaulting to that derived kind
+ * (`resolveDownloadKind`) -- see `docs/lora-loader-design.md`'s own
+ * subsection for the full "why no heuristic" reasoning. The choice is PER
+ * DOWNLOAD, never persisted (`detailChosenKind` resets on every fresh
+ * `openDetail`), and drives both the `/download/start` payload's `kind` and
+ * the displayed destination live. A `loras`-derived result (or any other
+ * kind) keeps today's plain static caption unchanged -- there's no ambiguity
+ * to resolve there. This selector is scoped to the detail view specifically
+ * because that is the only place a destination is shown at all: the grid
+ * card's own destination caption was removed outright as noise (2026-08-01,
+ * see `buildCard`'s own comment) and never grew one back.
+ *
  * ## Integration note -- the backend contract this file is written against
  *
  * **Landed** (`a6bc45b`): `kind` is optional on the SEARCH path only (its
@@ -264,6 +285,48 @@ export function destinationLabelForKind(kind) {
     return "";
   }
   return `→ ${DEFAULT_ROOT_DISPLAY[kind] || `models/${kind}`}/`; // → models/<kind>/
+}
+
+/**
+ * The Checkpoint/UNet ambiguity (owner report, `docs/lora-loader-design.md`'s
+ * own "the modal is unscoped" section, checkpoint/unet subsection): many
+ * models -- Anima, Qwen- and Flux-family especially -- are typed
+ * `Checkpoint` on Civitai while shipping UNet-only weights, and there is NO
+ * reliable API field distinguishing the two (`civitai_search.KIND_FOR_TYPE`'s
+ * own docstring). Rather than guessing (a heuristic on base-model name or
+ * file size would be silently wrong sometimes, which is worse than a visible
+ * default), the detail view offers an explicit per-download choice, WHICH
+ * DEFAULTS TO the backend's own derived kind.
+ *
+ * `kind` -> the two choices to offer, or `null` when there's no ambiguity to
+ * resolve (a `loras` result, or a falsy/unmapped kind -- `resultKind`'s own
+ * "never guess a folder" already handles the latter). The order is FIXED
+ * (`checkpoints` before `unet`, matching `INSTALLED_KIND_ORDER`) regardless
+ * of which of the two IS the derived kind -- offered symmetrically, since a
+ * `UNet`-typed result runs the identical ambiguity the other way (task
+ * brief: "symmetric is less code than a special case"). Never throws.
+ */
+export function downloadKindChoices(kind) {
+  return kind === "checkpoints" || kind === "unet" ? ["checkpoints", "unet"] : null;
+}
+
+/**
+ * The download-kind selector's own state resolution: given the result's
+ * DERIVED kind and whatever this session's already-chosen override is (or
+ * `null`/undefined for "nothing chosen yet"), the kind that actually drives
+ * both the `/download/start` payload and the displayed destination. Falls
+ * back to the derived kind whenever the chosen one isn't one of THIS
+ * result's own offered choices (covers "never chosen" and "chosen for a
+ * DIFFERENT result" alike, since the caller's chosen-kind state is a single
+ * variable, not keyed per result -- see `buildDetailAction`'s own comment for
+ * why that's safe). Never throws.
+ */
+export function resolveDownloadKind(derivedKind, chosenKind) {
+  const choices = downloadKindChoices(derivedKind);
+  if (choices && choices.includes(chosenKind)) {
+    return chosenKind;
+  }
+  return derivedKind;
 }
 
 /**
@@ -595,6 +658,13 @@ ${THUMB_SKELETON_CSS}
    third time here -- this rule needs no height of its own any more. */
 .wtn-cm-version-sel { width: 100%; box-sizing: border-box; }
 .wtn-cm-dest { font-size: 10.5px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); }
+/* The Checkpoint/UNet download-kind selector (\`downloadKindChoices\`'s own doc
+   comment) -- carries \`.wtn-cm-dest\`'s own tone (above) PLUS this width/
+   sizing rule, the SAME "full width, box-sizing border-box" convention
+   \`.wtn-cm-version-sel\` already gives the per-card version picker; \`wtn-
+   select\` (also on the element) is what supplies the shared 26px control
+   height every select in this track inherits. */
+.wtn-cm-dest-select { width: 100%; box-sizing: border-box; }
 .wtn-cm-nokind { font-size: 11px; color: var(--wtn-ink-faint, ${TOKENS.inkFaint}); font-style: italic; }
 /* Same report, same screenshot: the fix above only works if the Download
    button UNDER this select actually resolves to the SAME 26px, not merely a
@@ -1660,6 +1730,14 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
   let detailVersionId = null;
   let detailData = { status: "loading", gallery: [] };
   let detailActionMessage = null;
+  // The Checkpoint/UNet ambiguity's per-download override (`downloadKindChoices`'s
+  // own doc comment) -- `null` means "nothing chosen yet, use the derived kind"
+  // (`resolveDownloadKind`'s own fallback). Deliberately a SINGLE variable, not
+  // a per-model_id map like `selectedVersions` below: the choice is per
+  // DOWNLOAD, never persisted (task brief), so `openDetail` resets it to
+  // `null` on every fresh detail-view open -- there is nothing to remember
+  // across a different result, or even a re-open of the SAME one.
+  let detailChosenKind = null;
   const cardMessages = new Map();
   // Per-card version choice (owner, 2026-08-01: "add a version select above
   // the download button, the same per-card picker the anchored search panel
@@ -2017,8 +2095,39 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     // before the button is), appended AFTER `btn` below -- DOM order is
     // what actually controls the read order, not source order of the two
     // `el()` calls.
-    const dest = el(doc, "div", "wtn-cm-dest");
-    dest.textContent = destinationLabelForKind(detailKind);
+    //
+    // The Checkpoint/UNet ambiguity (`downloadKindChoices`'s own doc comment)
+    // -- a `checkpoints`/`unet`-DERIVED result gets a small `<select>`
+    // offering both, defaulting to the derived kind, INSTEAD of the plain
+    // static caption every other kind (`loras`) still gets. `chosenKind` is
+    // what actually drives the download's `kind` below AND the caption/select
+    // text -- never just a display-only choice.
+    const kindChoices = downloadKindChoices(detailKind);
+    const chosenKind = resolveDownloadKind(detailKind, detailChosenKind);
+    let dest;
+    if (kindChoices) {
+      dest = el(doc, "select", "wtn-select wtn-cm-dest wtn-cm-dest-select");
+      dest.title = "Civitai marks this ambiguously between a full checkpoint and UNet-only weights -- choose where it actually installs.";
+      for (const choice of kindChoices) {
+        const opt = el(doc, "option");
+        opt.value = choice;
+        opt.textContent = destinationLabelForKind(choice);
+        if (choice === chosenKind) {
+          opt.selected = true;
+        }
+        dest.appendChild(opt);
+      }
+      dest.value = chosenKind;
+      dest.addEventListener("click", (e) => e.stopPropagation());
+      dest.addEventListener("change", (e) => {
+        e.stopPropagation();
+        detailChosenKind = dest.value;
+        renderDetailHost();
+      });
+    } else {
+      dest = el(doc, "div", "wtn-cm-dest");
+      dest.textContent = destinationLabelForKind(chosenKind);
+    }
     const missingFile = !view.file_name || !view.download_url;
     const btn = el(doc, "button", "wtn-cm-action");
     btn.type = "button";
@@ -2042,14 +2151,14 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
       };
       const previewCandidates = pickThumbCandidates(view.images, levelLabelToInt(currentFilters.level));
       const resp = await startDownloadJob({
-        kind: detailKind, subfolder: "", filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
+        kind: chosenKind, subfolder: "", filename: view.file_name, downloadUrl: view.download_url, sizeKb: view.size_kb,
         key: rKey, civitaiMeta, previewUrl: previewCandidates.length > 0 ? previewCandidates[0] : null,
       }, pollIntervalMs);
       if (resp.reason !== "started") {
         detailActionMessage = downloadStartMessage(resp);
         logSummary("Civitai browser", `download NOT started: ${view.file_name} (${resp.reason})`);
       } else {
-        logSummary("Civitai browser", `download started: ${view.file_name} (${detailKind})`);
+        logSummary("Civitai browser", `download started: ${view.file_name} (${chosenKind})`);
       }
       renderDetailHost();
       renderGrid(); // keep the list's own card in sync for when the user swaps back
@@ -2137,6 +2246,7 @@ export function openCivitaiModal({ doc, onClose, pollIntervalMs = 800, thumbRetr
     detailVersionId = resolveVersionView(result).primary_version_id;
     detailData = { status: "loading", gallery: [] };
     detailActionMessage = null;
+    detailChosenKind = null; // per-download, not persisted -- always start from the derived kind
     renderSwap();
     loadDetailData();
   }

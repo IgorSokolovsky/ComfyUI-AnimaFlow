@@ -786,6 +786,35 @@ def thumb_last_modified(mtime: float) -> str:
 # ---------------------------------------------------------------------------
 
 
+# The two kinds a Civitai `Checkpoint`-typed result can genuinely land in
+# (`civitai_search.KIND_FOR_TYPE`'s own docstring has the full "no reliable
+# API field distinguishes them" reasoning, and `civitai_modal.mjs`'s own
+# per-download kind-choice selector is the frontend half of this same
+# ambiguity). Kept as its own tuple -- not re-derived from `kinds.ACTIVE_KINDS`
+# -- because it names a SPECIFIC pair (never `loras`), the same "explicit,
+# not inferred" convention `civitai_search.KIND_FOR_TYPE`'s own comment argues
+# for.
+_CHECKPOINT_UNET_KINDS = ("checkpoints", "unet")
+
+
+def _installed_in_any_kind_folder(kind: object, filename: object) -> bool:
+    """Whether `filename` is already installed, for the `installed`
+    convenience field `_annotate_search_results` computes below -- the ONE
+    place that decision is made (this function's own caller, per that
+    function's docstring). For a `checkpoints`- or `unet`-DERIVED result, a
+    file already on disk under EITHER folder counts as installed: since
+    there's no reliable API field telling a full checkpoint apart from
+    UNet-only weights (the same ambiguity the frontend's per-download kind
+    selector lets a user resolve at download time), a model the user chose to
+    download to `unet` must not show as "not installed" (and offer a second,
+    redundant download) on the SAME model's `Checkpoint`-typed card, or vice
+    versa. Every other kind (`loras`, or `None` for an unmapped type) still
+    checks exactly its own single folder, unchanged."""
+    if kind in _CHECKPOINT_UNET_KINDS:
+        return any(download.destination_exists(candidate, "", filename) for candidate in _CHECKPOINT_UNET_KINDS)
+    return download.destination_exists(kind, "", filename)
+
+
 def _annotate_search_results(results: list, kind: object) -> list:
     """Adds the disk-touching fields `civitai_search.parse_search_response`
     deliberately leaves out (that function stays pure/offline-testable --
@@ -832,6 +861,17 @@ def _annotate_search_results(results: list, kind: object) -> list:
     show as downloadable again here even though it's technically already on
     disk elsewhere. This is a known, documented approximation, not an
     oversight.
+
+    `checkpoints`/`unet`-derived results are the ONE exception to "check the
+    derived kind's own folder" -- `_installed_in_any_kind_folder` (below)
+    checks BOTH folders for either of those two kinds, because Civitai's own
+    `Checkpoint` type is ambiguous between a real checkpoint and UNet-only
+    weights (no reliable API field says which), and the frontend now lets a
+    user override the derived kind per download (`civitai_modal.mjs`'s
+    destination selector) -- so a model downloaded to `unet` must still read
+    as installed on its `Checkpoint`-typed card, and vice versa. This is
+    still the SAME one code path this docstring's opening paragraph
+    describes; the dual-folder check lives in one helper, not inlined here.
     """
     for result in results:
         result_kind = kind if kind is not None else civitai_search.kind_for_type(result.get("type"))
@@ -840,7 +880,7 @@ def _annotate_search_results(results: list, kind: object) -> list:
         versions = result.get("versions") or []
         for version in versions:
             for file in version.get("files", []):
-                file["installed"] = download.destination_exists(result_kind, "", file.get("name"))
+                file["installed"] = _installed_in_any_kind_folder(result_kind, file.get("name"))
 
             # This version's own chosen file -- computed for EVERY version,
             # not just the primary one, so a version-selector card can show

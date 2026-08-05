@@ -18,6 +18,8 @@ import {
   NOT_INSTALLABLE_MESSAGE,
   resultKind,
   destinationLabelForKind,
+  downloadKindChoices,
+  resolveDownloadKind,
   addFilterValue,
   removeFilterValue,
   parseStoredList,
@@ -122,7 +124,12 @@ test("resultKind: null/absent/garbage all mean 'never guess a folder'", () => {
 test("destinationLabelForKind: shows the kind's own default root", () => {
   assert.equal(destinationLabelForKind("loras"), "→ models/loras/");
   assert.equal(destinationLabelForKind("checkpoints"), "→ models/checkpoints/");
-  assert.equal(destinationLabelForKind("unet"), "→ models/unet/");
+  // Fixed 2026-08-05 -- `DEFAULT_ROOT_DISPLAY.unet` used to say
+  // "models/unet" (never the real folder -- `kinds.KIND_TO_FOLDER["unet"]`
+  // is `diffusion_models`), harmless while `unet` was never a chosen
+  // destination but a visible lie the moment it becomes one (the download-
+  // kind selector, below).
+  assert.equal(destinationLabelForKind("unet"), "→ models/diffusion_models/");
 });
 
 test("destinationLabelForKind: empty for a falsy kind (never rendered anyway)", () => {
@@ -132,6 +139,40 @@ test("destinationLabelForKind: empty for a falsy kind (never rendered anyway)", 
 
 test("destinationLabelForKind: an unmapped-but-truthy kind still produces a plausible label rather than throwing", () => {
   assert.equal(destinationLabelForKind("future_kind"), "→ models/future_kind/");
+});
+
+// =========================================================================
+// downloadKindChoices / resolveDownloadKind -- the Checkpoint/UNet
+// ambiguity's per-download override (docs/lora-loader-design.md's own
+// "no reliable API field" subsection).
+// =========================================================================
+
+test("downloadKindChoices: offers both checkpoints and unet, symmetrically, for EITHER derived kind", () => {
+  assert.deepEqual(downloadKindChoices("checkpoints"), ["checkpoints", "unet"]);
+  assert.deepEqual(downloadKindChoices("unet"), ["checkpoints", "unet"]);
+});
+
+test("downloadKindChoices: null for a loras result, or any falsy/unmapped kind -- no ambiguity there", () => {
+  assert.equal(downloadKindChoices("loras"), null);
+  assert.equal(downloadKindChoices(null), null);
+  assert.equal(downloadKindChoices(""), null);
+  assert.equal(downloadKindChoices("future_kind"), null);
+});
+
+test("resolveDownloadKind: with nothing chosen yet, the derived kind is the default", () => {
+  assert.equal(resolveDownloadKind("checkpoints", null), "checkpoints");
+  assert.equal(resolveDownloadKind("unet", null), "unet");
+  assert.equal(resolveDownloadKind("loras", null), "loras");
+});
+
+test("resolveDownloadKind: an explicit choice among THIS result's own offered choices wins", () => {
+  assert.equal(resolveDownloadKind("checkpoints", "unet"), "unet");
+  assert.equal(resolveDownloadKind("unet", "checkpoints"), "checkpoints");
+});
+
+test("resolveDownloadKind: a chosen kind that isn't one of this result's own choices falls back to the derived kind (e.g. a stale choice from a DIFFERENT result)", () => {
+  assert.equal(resolveDownloadKind("checkpoints", "loras"), "checkpoints");
+  assert.equal(resolveDownloadKind("loras", "unet"), "loras"); // loras has no choices at all -- always itself
 });
 
 // =========================================================================
@@ -1572,6 +1613,232 @@ await asyncTest("openCivitaiModal: the detail view's own download targets the re
     const detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
     assert.equal(findAll(detailHostEl, "wtn-cm-nokind").length, 1, "a null-kind result's detail view shows the honest line");
     assert.equal(findAll(detailHostEl, "wtn-cm-action").filter((e) => e.textContent.includes("Download")).length, 0);
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: a checkpoints-derived result's detail view renders the Checkpoint/UNet selector, defaulting to checkpoints, and NOT a plain static caption", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 70, versionId: 1, name: "Ambiguous Checkpoint", kind: "checkpoints", type: "Checkpoint" })];
+  invalidateModelDetail(70, 1);
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    assert.ok(sel, "a checkpoints-derived result must render the destination SELECTOR");
+    assert.equal(sel.tagName, "select");
+    assert.equal(sel.value, "checkpoints", "defaults to the DERIVED kind");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: a unet-derived result's detail view ALSO renders the selector (symmetric), defaulting to unet", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 71, versionId: 1, name: "Ambiguous UNet", kind: "unet", type: "UNet" })];
+  invalidateModelDetail(71, 1);
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    const sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    assert.ok(sel, "a unet-derived result must ALSO render the destination selector -- the ambiguity runs both ways");
+    assert.equal(sel.value, "unet", "defaults to the DERIVED kind");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: a loras-derived result's detail view keeps the plain static caption -- NO selector", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 72, versionId: 1, name: "A LoRA", kind: "loras", type: "LORA" })];
+  invalidateModelDetail(72, 1);
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    assert.equal(findAll(handle.panel, "wtn-cm-dest-select").length, 0, "a loras result must never get the ambiguity selector");
+    const caption = findAll(handle.panel, "wtn-cm-dest")[0];
+    assert.ok(caption, "the plain static caption must still render");
+    assert.equal(caption.tagName, "div");
+    assert.equal(caption.textContent, "→ models/loras/");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: changing the Checkpoint/UNet selector updates the displayed path AND the kind sent to /download/start", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 73, versionId: 1, name: "Switchable", kind: "checkpoints", type: "Checkpoint" })];
+  invalidateModelDetail(73, 1);
+  let startedKind = null;
+  stubFetch(async (url, init) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    if (u.includes("/download/start")) {
+      startedKind = JSON.parse(init.body).kind;
+      return jsonResponse({ reason: "started", message: "", job_id: "job-73" });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    // Scoped to the detail host specifically -- the (hidden, not removed)
+    // grid behind it still has its own card with its OWN, unrelated
+    // "↓ Download" button (fixed to the derived kind, no selector there),
+    // so an unscoped query could silently grab the wrong one.
+    let detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    let sel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "checkpoints");
+    const selectedOptionBefore = sel.children.find((o) => o.value === sel.value);
+    assert.equal(selectedOptionBefore.textContent, "→ models/checkpoints/", "the displayed path starts at the derived kind's own folder");
+
+    // Switch the selection to unet.
+    sel.value = "unet";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+
+    detailHostEl = findAll(handle.panel, "wtn-cm-detailhost")[0];
+    sel = findAll(detailHostEl, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "unet", "the selection change is retained across the re-render");
+    const selectedOptionAfter = sel.children.find((o) => o.value === sel.value);
+    assert.equal(selectedOptionAfter.textContent, "→ models/diffusion_models/", "the displayed path updates LIVE to the newly chosen folder");
+
+    const downloadBtn = findAll(detailHostEl, "wtn-cm-action").find((e) => e.textContent === "↓ Download");
+    downloadBtn.dispatch("click", { stopPropagation() {} });
+    await settle();
+    assert.equal(startedKind, "unet", "the /download/start payload must carry the CHOSEN kind, not the original derived one");
+
+    handle.close();
+  } finally {
+    restoreFetch();
+    _resetDownloadStateForTests();
+    _resetModalForTests();
+  }
+});
+
+await asyncTest("openCivitaiModal: the Checkpoint/UNet choice is per-download, not persisted -- re-opening the SAME result's detail view resets to the derived kind", async () => {
+  _resetDownloadStateForTests();
+  _resetModalForTests();
+  const results = [makeResult({ modelId: 74, versionId: 1, name: "Not Sticky", kind: "checkpoints", type: "Checkpoint" })];
+  invalidateModelDetail(74, 1);
+  stubFetch(async (url) => {
+    const u = String(url);
+    if (u.includes("/search")) {
+      return jsonResponse({ reason: "ok", message: "", results, next_cursor: null, public_only: false });
+    }
+    if (u.includes("/model_detail")) {
+      return jsonResponse({
+        reason: "found", message: "", offline_reason: null,
+        model_description: null, model_description_checked: true, version_description: null, gallery: [],
+      });
+    }
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+  try {
+    const doc = makeDocStub();
+    const handle = openCivitaiModal({ doc });
+    await settle();
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    let sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    sel.value = "unet";
+    sel.dispatch("change", { stopPropagation() {} });
+    await settle();
+    sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "unet");
+
+    const backBtn = findAll(handle.panel, "wtn-dv-back")[0];
+    backBtn.dispatch("click", { stopPropagation() {} });
+    findAll(handle.scrim, "wtn-cm-card")[0].dispatch("click", { stopPropagation() {} });
+    await settle();
+
+    sel = findAll(handle.panel, "wtn-cm-dest-select")[0];
+    assert.equal(sel.value, "checkpoints", "re-opening the detail view must reset to the DERIVED kind, never remember the earlier choice");
 
     handle.close();
   } finally {

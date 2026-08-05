@@ -404,6 +404,15 @@ test("DEFAULT_ROOT_DISPLAY / TYPE_LABEL_FOR_KIND: loras is the only wired kind, 
   assert.equal(TYPE_LABEL_FOR_KIND.loras, "LoRA");
 });
 
+test("DEFAULT_ROOT_DISPLAY.unet is the REAL folder (kinds.py's KIND_TO_FOLDER['unet'] == 'diffusion_models'), not the folder-key literal", () => {
+  // Fixed 2026-08-05 -- this used to say "models/unet", which never existed
+  // on disk; harmless while `unet` was never a chosen destination
+  // (`subfolderFromDestinationField` strips whatever prefix it displays), but
+  // it became a visible lie the moment the Civitai modal's download-kind
+  // selector made `unet` choosable.
+  assert.equal(DEFAULT_ROOT_DISPLAY.unet, "models/diffusion_models");
+});
+
 // =========================================================================
 // searchReasonMessage / downloadStartMessage / downloadTerminalMessage
 // =========================================================================
