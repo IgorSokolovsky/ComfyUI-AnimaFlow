@@ -336,6 +336,13 @@ the call on scope. They are small; none is forgotten, none was done by assumptio
 Shipped and green, **not yet confirmed by the owner from the UI**. Nothing leaves this section on an
 assistant's or a reviewer's judgement — see the rule at the top.
 
+### 2026-08-05 — pushed, awaiting the owner's own check
+
+| Item | Commit |
+|---|---|
+| **A Checkpoint result can be sent to `models/diffusion_models/` instead.** Owner report: Anima, Qwen- and Flux-family models are typed `Checkpoint` on Civitai while shipping UNet-only weights, so they landed where no UNet loader could see them — **including our own** Loader Panel, whose `unet` row resolves through `diffusion_models`. Civitai has no field distinguishing the two, and a heuristic (base-model name, file size) would be silently wrong sometimes, so it's an explicit per-download choice defaulting to the derived kind. `Checkpoint → checkpoints` remains the default — this is an override, not a new mapping. Two things had to come with it: the **installed badge** counts either folder for that ambiguous pair, or a model sent to `unet` reads as not-installed on its own card and offers a redundant second download; and `DEFAULT_ROOT_DISPLAY.unet` said `models/unet`, **a folder that has never existed** | `a973001` |
+| **…and the selector reaches the grid card, which is the path people actually use.** `a973001` scoped it to the detail view, reasoning that was the only surface showing a destination — the card's caption having been removed as noise on 2026-08-01. It missed that the card's own Download button calls the backend directly, so *search → click Download* kept the old behaviour intact. Ambiguous cards only; a LoRA card is pixel-identical. Card→detail reconciles one way; the reverse doesn't propagate and needn't, since each surface always shows the folder it will write to. Same commit fixes `models/unet` in **`delete_confirm.mjs`**, where it was worse — a destructive confirmation naming a folder that doesn't exist — and whose test **asserted the wrong value**, so a green suite was defending it | `01a3fc2` |
+
 ### 2026-08-03/04 — pushed, awaiting the owner's own check
 
 | Item | Commit |
