@@ -15,7 +15,7 @@ from typing import Any, Dict
 from . import civitai_client, civitai_parse, hashing, sidecar
 from . import download as download_mod
 from . import logs as logs_mod
-from .local import find_preview_path, resolve_model_path
+from .local import find_preview_path, is_preview_provably_corrupt, resolve_model_path
 
 # One logger for the whole feature (`logs.py`'s own docstring).
 _logger = logging.getLogger(logs_mod.LOGGER_NAME)
@@ -284,6 +284,7 @@ def save_preview(
     preview_url: Any,
     *,
     opener: Any = None,
+    image_module: Any = None,
 ) -> Dict[str, Any]:
     """"Save this preview URL for this model" -- docs/lora-loader-design.md
     §7c-iv, "The ⓘ backfill must save the image too": a model identified
@@ -303,6 +304,20 @@ def save_preview(
     must resolve to a real, guarded local file (`local.resolve_model_path`)
     before anything else happens.
 
+    2026-08-05, "`save_preview` may replace a preview it can PROVE is
+    corrupt": the never-overwrite rule below used to protect ANY existing
+    preview file, including one truncated forever by `3e02428`'s (now fixed)
+    write-side bug -- `0489628`/`4d04ce8` made a truncated file 404 rather
+    than serve broken bytes, but neither REPAIRS it, so an affected model
+    re-fetches from Civitai on every render, exactly the cost this whole
+    function was built to remove. The rule is now narrowed to what it
+    actually protects: a WORKING preview someone deliberately put there is
+    still never touched; only a file `local.is_preview_provably_corrupt`
+    can PROVE is undecodable may be replaced -- and "cannot tell" (Pillow
+    absent) is treated exactly like "proven fine", never like "proven
+    corrupt" (see that function's own docstring for why getting this
+    backwards would be worse than doing nothing).
+
     ALWAYS returns `{"reason": ..., "message": str, "saved": bool,
     "detail": str|None, "path": str|None}`, never raises:
 
@@ -312,17 +327,31 @@ def save_preview(
           * `detail="no_url"`             -- no `preview_url` at all, or not
             a non-empty string. Correct behaviour, not a failure.
           * `detail="already_present"`    -- a preview already sits next to
-            the model (`local.find_preview_path`) -- NEVER overwritten,
-            whoever wrote it is the owner of that file now.
+            the model (`local.find_preview_path`), and it is NOT proven
+            corrupt (`local.is_preview_provably_corrupt` returned `False`
+            -- genuinely fine -- or `None` -- Pillow absent, cannot tell) --
+            NEVER overwritten, whoever wrote it is the owner of that file
+            now.
           * `detail="fetch_failed"`       -- `download.fetch_preview_image`
             (never raises on its own) came back empty-handed for any
             reason. The metadata this lookup already resolved is the
             valuable part; a failed image fetch must never fail THIS call.
-      - `ok`, `saved=True`      -- the preview file now exists at `path`.
+            Also covers a failed REPLACEMENT attempt on a proven-corrupt
+            existing file: the corrupt file is fetched-then-replaced, never
+            deleted-then-fetched (`download.fetch_preview_image` itself
+            writes `.part`-then-`os.replace`), so a failed fetch here always
+            leaves that file exactly as it was -- still broken, still
+            404ing, still falling through to Civitai, which is strictly
+            better than no file and a lost `has_preview` at all.
+      - `ok`, `saved=True`      -- the preview file now exists at `path`:
+          * `detail=None`               -- there was no preview before.
+          * `detail="replaced_corrupt"` -- a PROVEN-corrupt existing preview
+            was overwritten with a freshly fetched one.
 
-    `opener` is the same injectable network seam `download.
-    fetch_preview_image` already exposes for its own tests -- threaded
-    straight through, `None` meaning "use the real network".
+    `opener`/`image_module` are the same two injectable seams `download.
+    fetch_preview_image`/`local.is_preview_provably_corrupt` already expose
+    for their own tests -- both threaded straight through, `None` meaning
+    "use the real network"/"use the real, lazily-imported Pillow".
     """
     def _result(reason: str, saved: bool, *, detail: Any = None, path: Any = None, message: str = "") -> Dict[str, Any]:
         return {"reason": reason, "message": message, "saved": saved, "detail": detail, "path": path}
@@ -335,15 +364,31 @@ def save_preview(
         logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="no preview URL")
         return _result("ok", False, detail="no_url")
 
-    if find_preview_path(model_path) is not None:
-        # A file on disk is the user's, whatever wrote it -- never clobber it.
-        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="already present")
-        return _result("ok", False, detail="already_present")
+    existing_preview = find_preview_path(model_path)
+    replacing_corrupt = False
+    if existing_preview is not None:
+        corrupt = is_preview_provably_corrupt(existing_preview, image_module=image_module)
+        if corrupt is not True:
+            # `False` (proven fine) or `None` (Pillow absent -- cannot tell)
+            # -- either way, never overwrite: a file on disk is the user's,
+            # whatever wrote it, unless THIS function can prove otherwise.
+            logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="skipped", detail="already present")
+            return _result("ok", False, detail="already_present")
+        # `corrupt is True` -- proven undecodable, so a replacement is
+        # justified. Fall through to the SAME fetch call below; nothing on
+        # disk is touched yet (constraint: fetch first, replace only once
+        # the new bytes exist -- `fetch_preview_image`'s own `.part`-then-
+        # `os.replace` already guarantees that).
+        replacing_corrupt = True
 
     saved_path = download_mod.fetch_preview_image(preview_url, model_path, opener=opener)
     if saved_path is None:
         logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="failed")
         return _result("ok", False, detail="fetch_failed")
+
+    if replacing_corrupt:
+        logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="replaced", detail=saved_path)
+        return _result("ok", True, path=saved_path, detail="replaced_corrupt")
 
     logs_mod.log_summary(_logger, logs_mod.format_preview_summary, status="saved", detail=saved_path)
     return _result("ok", True, path=saved_path)

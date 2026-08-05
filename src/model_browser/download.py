@@ -1106,6 +1106,23 @@ def finalize_successful_download(
         `<base>.preview.<ext>` convention this package already reads, per
         `interop.py`'s own verification) -- never silently replace a file
         whose origin isn't known.
+
+        2026-08-05 assessment (deliberately NOT applying `lookup.
+        save_preview`'s new "replace only what's PROVEN corrupt" narrowing
+        here): considered and left as a plain never-replace, not silently.
+        `save_preview`'s own fix targets a MODEL that has been installed and
+        looked up before, and whose preview was truncated by `3e02428`'s
+        (now-fixed) bug -- the common, repeatedly-hit case, since a model
+        gets looked up on every ⓘ-panel open. This function instead fires
+        once, right after a FRESH download -- the model just landed on disk,
+        so a pre-existing preview here is either from a rare re-download of
+        an already-installed model (which the UI's own "already installed"
+        gate makes uncommon in the first place) or from another tool having
+        already dropped one. Proving corruption is only valuable if it is
+        actually likely to be corrupt; that's a much colder path than the
+        lookup one this task was actually reported against. Left alone for
+        now -- worth revisiting only if a truncated-preview report is ever
+        traced back to a fresh download instead.
     """
     if civitai_meta:
         translated = civitai_parse.civitai_shape_from_search_meta(civitai_meta)

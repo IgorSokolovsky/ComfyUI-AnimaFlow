@@ -204,6 +204,104 @@ def find_preview_path(model_path: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Preview corruption proof (2026-08-05, "`save_preview` may replace a
+# preview it can PROVE is corrupt") -- `lookup.save_preview`'s never-
+# overwrite rule used to protect ANY existing preview file, including one
+# `3e02428`'s write-side truncation bug left broken forever (that fix closed
+# the WRITE-side hole; every file already truncated before it stayed broken,
+# re-fetching from Civitai on every render since `api.py`'s own `/thumb` 404s
+# it -- `0489628`/`4d04ce8`). This narrows the rule to what it actually
+# protects: a WORKING preview someone deliberately put there stays
+# untouched; only a file this module can PROVE is undecodable may be
+# replaced.
+#
+# Lives HERE, not `api.py` (which already owns an near-identical Pillow-
+# presence check, `_load_pillow_image_module`/`downscale_thumb_bytes`,
+# `api.py:512`): `api.py` imports `lookup.py`, so `lookup.py` must never
+# import `api.py` back -- a cycle. `local.py` already owns `find_preview_
+# path` and every other file-inspection role both `api.py` and `lookup.py`
+# import, so the validator lives here instead, with its OWN lazy Pillow
+# import. This is a deliberate SECOND copy of "try `from PIL import Image`,
+# `None` if that fails" -- `api.py`'s own decode path was fixed twice in the
+# last day and does not need a third round of churn in this pass; folding
+# the two into one shared helper is left for a later tidy.
+# ---------------------------------------------------------------------------
+
+
+def _load_pillow_image_module() -> Any:
+    """Lazy import of `PIL.Image` -- returns the module, or `None` if
+    Pillow isn't installed. A second copy of `api.py`'s identically-named,
+    identically-behaved helper -- see the module comment just above this
+    function for why it isn't shared. Called ONLY from inside
+    `is_preview_provably_corrupt` below, never at module import time --
+    `src/model_browser/local.py` must stay importable (and testable) with no
+    ComfyUI AND no Pillow installed, same constraint this module's own top
+    docstring states for `folder_paths`.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    return Image
+
+
+def is_preview_provably_corrupt(path: str, *, image_module: Any = None) -> Optional[bool]:
+    """Whether the preview image at `path` is PROVEN undecodable --
+    `lookup.save_preview`'s "may replace only what it can PROVE is corrupt"
+    rule needs exactly this tri-state, not a plain bool:
+
+      - `True`  -- Pillow is installed and could NOT open+verify `path` --
+        genuinely corrupt/truncated bytes (the owner's own measured symptom:
+        a decodable PNG/RIFF header declaring far more bytes than are
+        actually on disk, `0489628`). This is the ONLY value that may ever
+        justify treating an existing preview as replaceable.
+      - `False` -- Pillow is installed and opened+verified `path` cleanly --
+        a working preview, whatever wrote it, stays untouched.
+      - `None`  -- Pillow ISN'T installed, so this function genuinely cannot
+        tell good bytes from bad. A caller MUST treat this exactly like
+        `False` (never replace) -- "cannot tell" means keep, never "assume
+        corrupt": getting this backwards would destroy every good preview on
+        any install without Pillow, the same discipline `api.py`'s own
+        `thumb_bytes_impl`/`downscale_thumb_bytes` already apply to the
+        (separate) question of what bytes to SERVE.
+
+    Deliberately a HEADER/VERIFY-level check, not a full decode-and-re-
+    encode: `Image.open(path)` followed by `.verify()` -- Pillow's own
+    "check this file for damage without fully decoding the pixel data" API
+    (it walks e.g. every PNG chunk's CRC), which is exactly the proof this
+    function needs and nothing more. This runs on the ⓘ-panel lookup path,
+    only ever called when a preview already exists to check (`save_preview`
+    below never calls this for a model with no preview at all) -- there is
+    nothing cheaper that would still prove anything.
+
+    Never raises: ANY exception while opening or verifying `path` -- a
+    missing file, a truncated header, a decodable header with missing pixel
+    data, or anything else -- is `True` (proven corrupt), never propagated.
+
+    `image_module` is the same injectable Pillow seam `api.py`'s own
+    `downscale_thumb_bytes` already exposes for its tests (`None`, the
+    default, means "use the real, lazily-imported `PIL.Image`" -- Pillow
+    itself is NOT importable in this repo's test environment, verified
+    elsewhere in this package's own test suite).
+    """
+    if image_module is None:
+        image_module = _load_pillow_image_module()
+    if image_module is None:
+        return None
+    try:
+        img = image_module.open(path)
+        try:
+            img.verify()
+        finally:
+            close = getattr(img, "close", None)
+            if callable(close):
+                close()
+        return False
+    except Exception:  # noqa: BLE001 - any decode failure is proof enough, never propagated
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Civitai display name (§1a-vii) + ids (2026-08-03, "the Installed card opens
 # a detail view") -- both read from whichever sidecar `sidecar.read_sidecar`
 # already prefers, and both come out of the exact SAME `parse_model_version`
@@ -518,6 +616,7 @@ __all__ = (
     "trigger_words_from_metadata",
     "base_model_from_metadata",
     "find_preview_path",
+    "is_preview_provably_corrupt",
     "civitai_name_for",
     "civitai_ids_for",
     "resolve_model_path",

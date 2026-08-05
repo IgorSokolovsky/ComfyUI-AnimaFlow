@@ -2746,6 +2746,239 @@ def test_save_preview_impl_valid_kind_delegates_to_lookup_save_preview():
             restore()
 
 
+# ---------------------------------------------------------------------------
+# local.is_preview_provably_corrupt / lookup.save_preview's 2026-08-05
+# narrowing -- "save_preview may replace a preview it can PROVE is corrupt".
+# Reuses the SAME real truncated/valid PNG fixtures `0489628` built for
+# api.py's own undecodable-preview fix (`_build_minimal_png_bytes`/
+# `_truncate_png_bytes`/`_png_chunk_walk_or_raise`, defined further below in
+# this file -- referenced here only at TEST-RUN time, well after the whole
+# module has finished loading, same as every other forward reference in this
+# file's own `ALL_TESTS` list) -- this is the SAME failure shape (a
+# decodable header, missing trailing bytes), just proven through a header/
+# verify-level decode (`.verify()`) rather than a full decode-and-re-encode
+# (`.open()+.thumbnail()+.save()`, `api.py`'s own job, untouched by this fix).
+# ---------------------------------------------------------------------------
+
+
+class _VerifyOnlyPngImage:
+    """A minimal stand-in for what `Image.open(path).verify()` needs --
+    `.verify()` performs the REAL chunk walk (`_png_chunk_walk_or_raise`,
+    below) against the bytes `.open()` already read; `.close()` is a no-op
+    recorded for inspection."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self.verify_calls = 0
+        self.closed = False
+
+    def verify(self):
+        self.verify_calls += 1
+        _png_chunk_walk_or_raise(self._data)
+
+    def close(self):
+        self.closed = True
+
+
+class _RealisticPngVerifyImageModule:
+    """Stands in for `PIL.Image` for `local.is_preview_provably_corrupt`'s
+    own decode step -- `.open(path)` reads the REAL file at `path` (real
+    Pillow's own `Image.open` also accepts a path, not just a file object)
+    and returns a `_VerifyOnlyPngImage` bound to those exact bytes, so a
+    genuinely truncated real PNG fixture exercises the actual failure mode
+    this fix is about (raises from `.verify()`), and a genuinely valid one
+    actually succeeds -- same realism precedent as `_RealisticPngImageModule`
+    (further below) already established for `api.py`'s own decode path,
+    applied here to `.verify()` instead of a full decode+re-encode.
+    """
+
+    def __init__(self):
+        self.open_calls = 0
+        self.last_image = None
+
+    def open(self, path):
+        self.open_calls += 1
+        with open(path, "rb") as fh:
+            data = fh.read()
+        self.last_image = _VerifyOnlyPngImage(data)
+        return self.last_image
+
+
+def test_is_preview_provably_corrupt_true_for_a_genuinely_truncated_real_png_fixture():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        with open(path, "wb") as fh:
+            fh.write(_truncate_png_bytes(_build_minimal_png_bytes()))
+
+        module = _RealisticPngVerifyImageModule()
+        assert local.is_preview_provably_corrupt(path, image_module=module) is True
+        assert module.open_calls == 1
+        assert module.last_image.closed is True  # never leaves the handle open
+
+
+def test_is_preview_provably_corrupt_false_for_a_genuinely_valid_real_png_fixture():
+    # Guards the fixture/fake itself: if this failed, the truncated-file
+    # test above would prove nothing (a fake that always raises would
+    # "pass" it too).
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        with open(path, "wb") as fh:
+            fh.write(_build_minimal_png_bytes())
+
+        module = _RealisticPngVerifyImageModule()
+        assert local.is_preview_provably_corrupt(path, image_module=module) is False
+        assert module.last_image.verify_calls == 1
+
+
+def test_is_preview_provably_corrupt_none_when_pillow_unavailable():
+    # No `image_module` injected -- genuinely exercises this environment's
+    # real absence of Pillow (verified elsewhere in this suite: `import PIL`
+    # fails here). `None`, never `True` -- "cannot tell" must not be
+    # mistaken for "proven corrupt" even against a genuinely corrupt file.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "a.preview.png")
+        with open(path, "wb") as fh:
+            fh.write(_truncate_png_bytes(_build_minimal_png_bytes()))
+
+        assert local.is_preview_provably_corrupt(path) is None
+
+
+def test_save_preview_replaces_a_provably_corrupt_existing_preview():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        with open(preview_path, "wb") as fh:
+            fh.write(_truncate_png_bytes(_build_minimal_png_bytes()))
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def opener(url, timeout):
+                return _FakeDownloadResponse(b"\x89PNG-fresh-complete-bytes", headers={"Content-Type": "image/png"})
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/xyz/original=true/1.png",
+                opener=opener, image_module=_RealisticPngVerifyImageModule(),
+            )
+            assert result == {
+                "reason": "ok", "message": "", "saved": True, "detail": "replaced_corrupt", "path": preview_path,
+            }
+            with open(preview_path, "rb") as fh:
+                assert fh.read() == b"\x89PNG-fresh-complete-bytes"
+            assert not os.path.isfile(preview_path + ".part")
+        finally:
+            restore()
+
+
+def test_save_preview_never_touches_a_valid_existing_preview_even_with_pillow_available():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        valid_bytes = _build_minimal_png_bytes()
+        with open(preview_path, "wb") as fh:
+            fh.write(valid_bytes)
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def _must_not_be_called(*args, **kwargs):
+                raise AssertionError("a genuinely valid existing preview must never be fetched over")
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/x.jpeg",
+                opener=_must_not_be_called, image_module=_RealisticPngVerifyImageModule(),
+            )
+            assert result == {
+                "reason": "ok", "message": "", "saved": False, "detail": "already_present", "path": None,
+            }
+            with open(preview_path, "rb") as fh:
+                assert fh.read() == valid_bytes
+        finally:
+            restore()
+
+
+def test_save_preview_pillow_absent_leaves_a_corrupt_existing_preview_untouched():
+    # THE constraint-1 regression: Pillow simply being absent must be
+    # treated exactly like "proven fine", never like "proven corrupt" --
+    # getting this backwards would destroy a good preview on any install
+    # without Pillow. No `image_module` injected -- genuine absence of
+    # Pillow in this environment, against a genuinely (not just nominally)
+    # corrupt file.
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        truncated_bytes = _truncate_png_bytes(_build_minimal_png_bytes())
+        with open(preview_path, "wb") as fh:
+            fh.write(truncated_bytes)
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def _must_not_be_called(*args, **kwargs):
+                raise AssertionError("Pillow absent must never trigger a replacement fetch")
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/x.jpeg", opener=_must_not_be_called,
+            )
+            assert result == {
+                "reason": "ok", "message": "", "saved": False, "detail": "already_present", "path": None,
+            }
+            with open(preview_path, "rb") as fh:
+                assert fh.read() == truncated_bytes
+        finally:
+            restore()
+
+
+def test_save_preview_failed_replacement_fetch_leaves_the_corrupt_file_intact():
+    with tempfile.TemporaryDirectory() as tmp:
+        loras_root = os.path.join(tmp, "loras")
+        os.makedirs(loras_root)
+        model_path = os.path.join(loras_root, "a.safetensors")
+        open(model_path, "wb").close()
+        preview_path = os.path.join(loras_root, "a.preview.png")
+        truncated_bytes = _truncate_png_bytes(_build_minimal_png_bytes())
+        with open(preview_path, "wb") as fh:
+            fh.write(truncated_bytes)
+
+        restore = _install_fake_folder_paths(
+            roots_by_folder={"loras": [loras_root]},
+            names_by_folder={"loras": ["a.safetensors"]},
+        )
+        try:
+            def raising_opener(url, timeout):
+                raise urllib.error.URLError("no route to host")
+
+            result = lookup.save_preview(
+                "loras", "a.safetensors", "https://image.civitai.com/x.jpeg",
+                opener=raising_opener, image_module=_RealisticPngVerifyImageModule(),
+            )
+            assert result == {"reason": "ok", "message": "", "saved": False, "detail": "fetch_failed", "path": None}
+            # Fetch-first, never delete-before-replace (`download.
+            # fetch_preview_image`'s own `.part`-then-`os.replace`): a failed
+            # fetch leaves the corrupt file EXACTLY as it was, and no `.part`
+            # scratch file survives either.
+            with open(preview_path, "rb") as fh:
+                assert fh.read() == truncated_bytes
+            assert not os.path.isfile(preview_path + ".part")
+        finally:
+            restore()
+
+
 def test_thumb_path_impl_rejects_traversal_kind_without_folder_paths():
     result = mb_api.thumb_path_impl({"kind": "../../etc", "name": "passwd"})
     assert result["reason"] == "invalid_kind"
@@ -6850,6 +7083,13 @@ ALL_TESTS = [
     test_save_preview_impl_rejects_traversal_kind_without_folder_paths,
     test_save_preview_impl_missing_kind_key_is_invalid,
     test_save_preview_impl_valid_kind_delegates_to_lookup_save_preview,
+    test_is_preview_provably_corrupt_true_for_a_genuinely_truncated_real_png_fixture,
+    test_is_preview_provably_corrupt_false_for_a_genuinely_valid_real_png_fixture,
+    test_is_preview_provably_corrupt_none_when_pillow_unavailable,
+    test_save_preview_replaces_a_provably_corrupt_existing_preview,
+    test_save_preview_never_touches_a_valid_existing_preview_even_with_pillow_available,
+    test_save_preview_pillow_absent_leaves_a_corrupt_existing_preview_untouched,
+    test_save_preview_failed_replacement_fetch_leaves_the_corrupt_file_intact,
     test_thumb_path_impl_rejects_traversal_kind_without_folder_paths,
     test_thumb_path_impl_missing_kind_key_is_invalid,
     test_thumb_path_impl_unresolvable_name_is_not_found,
